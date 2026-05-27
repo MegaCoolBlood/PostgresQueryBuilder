@@ -98,7 +98,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                     for (const schema of schemas) {
                         const tables = await this.connectionManager.query(
                             `SELECT table_name FROM information_schema.tables
-                             WHERE table_schema = $1 AND table_type = 'BASE TABLE'
+                             WHERE table_schema = $1 AND table_type IN ('BASE TABLE', 'FOREIGN')
                              ORDER BY table_name`,
                             [schema.schema]
                         );
@@ -117,7 +117,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
             } else if (element.type === 'schema') {
                 const result = await this.connectionManager.query(
                     `SELECT table_name FROM information_schema.tables
-                     WHERE table_schema = $1 AND table_type = 'BASE TABLE'
+                     WHERE table_schema = $1 AND table_type IN ('BASE TABLE', 'FOREIGN')
                      ORDER BY table_name`,
                     [element.schema]
                 );
