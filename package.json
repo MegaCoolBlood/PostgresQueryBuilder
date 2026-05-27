@@ -27,6 +27,11 @@
         {
           "id": "postgresTableExplorer",
           "name": "Tables"
+        },
+        {
+          "id": "postgresTableSearch",
+          "name": "Search",
+          "type": "webview"
         }
       ]
     },
