@@ -244,3 +244,68 @@ td[contenteditable="true"]:focus {
     color: var(--vscode-descriptionForeground);
     font-style: italic;
 }
+
+/* SQL Preview Dialog */
+.sql-dialog-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.sql-dialog {
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 4px;
+    width: 80%;
+    max-width: 700px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.sql-dialog-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    font-weight: 600;
+}
+
+.sql-dialog-close {
+    background: none;
+    border: none;
+    color: var(--vscode-foreground);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 0 4px;
+}
+
+.sql-dialog-content {
+    padding: 14px;
+    overflow: auto;
+    flex: 1;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+    color: var(--vscode-editor-foreground);
+    background: var(--vscode-input-background);
+}
+
+.sql-dialog-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 10px 14px;
+    border-top: 1px solid var(--vscode-panel-border);
+}
