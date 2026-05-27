@@ -70,6 +70,15 @@ export class TableWebViewManager {
                         });
                         break;
                     }
+                    case 'previewSQL': {
+                        const sql = queryRunner.generateSQL(
+                            schema,
+                            table,
+                            message.changes
+                        );
+                        panel.webview.postMessage({ command: 'sqlPreview', sql });
+                        break;
+                    }
                     case 'commitChanges': {
                         await queryRunner.commitChanges(
                             schema,

@@ -15,7 +15,7 @@
             </div>
             <div class="toolbar-right">
                 <button class="btn btn-primary" id="insertRowBtn" title="Insert new row">+ Insert Row</button>
-                <button class="btn btn-success" id="commitBtn" title="Commit all changes" disabled>Commit Changes</button>
+                <button class="btn btn-success" id="commitBtn" title="Save all changes" disabled>Save</button>
                 <button class="btn btn-warning" id="discardBtn" title="Discard all changes" disabled>Discard Changes</button>
                 <button class="btn btn-default" id="loadMoreBtn" title="Load more rows">Load More</button>
             </div>
@@ -28,6 +28,20 @@
         </div>
         <div class="status-bar" id="statusBar">
             <span id="changeCount">No pending changes</span>
+        </div>
+        <!-- SQL Preview Dialog -->
+        <div class="sql-dialog-overlay" id="sqlDialogOverlay" style="display:none;">
+            <div class="sql-dialog">
+                <div class="sql-dialog-header">
+                    <span>SQL Preview</span>
+                    <button class="sql-dialog-close" id="sqlDialogClose">&times;</button>
+                </div>
+                <pre class="sql-dialog-content" id="sqlDialogContent"></pre>
+                <div class="sql-dialog-footer">
+                    <button class="btn btn-success" id="sqlDialogExecute">Execute</button>
+                    <button class="btn btn-default" id="sqlDialogCancel">Cancel</button>
+                </div>
+            </div>
         </div>
     </div>
     <script>/* JS_PLACEHOLDER */</script>

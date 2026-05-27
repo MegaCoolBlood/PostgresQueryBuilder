@@ -146,4 +146,63 @@ export class QueryRunner {
             rowCount: result.rowCount || 0
         };
     }
+
+    generateSQL(schema: string, table: string, changes: ChangeSet): string {
+        const statements: string[] = [];
+
+        // Updates
+        for (const update of changes.updates) {
+            const setClauses: string[] = [];
+            for (const [col, val] of Object.entries(update.changes)) {
+                setClauses.push(`"${col}" = ${this.formatValue(val)}`);
+            }
+
+            const whereClauses: string[] = [];
+            for (const [col, val] of Object.entries(update.primaryKey)) {
+                whereClauses.push(`"${col}" = ${this.formatValue(val)}`);
+            }
+
+            statements.push(
+                `UPDATE "${schema}"."${table}" SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')};`
+            );
+        }
+
+        // Inserts
+        for (const insert of changes.inserts) {
+            const columns = Object.keys(insert).filter(k => insert[k] !== null && insert[k] !== '');
+            if (columns.length === 0) { continue; }
+
+            const values = columns.map(c => this.formatValue(insert[c]));
+            statements.push(
+                `INSERT INTO "${schema}"."${table}" (${columns.map(c => `"${c}"`).join(', ')}) VALUES (${values.join(', ')});`
+            );
+        }
+
+        // Deletes
+        for (const del of changes.deletes) {
+            const whereClauses: string[] = [];
+            for (const [col, val] of Object.entries(del)) {
+                whereClauses.push(`"${col}" = ${this.formatValue(val)}`);
+            }
+            statements.push(
+                `DELETE FROM "${schema}"."${table}" WHERE ${whereClauses.join(' AND ')};`
+            );
+        }
+
+        return statements.join('\n\n');
+    }
+
+    private formatValue(val: any): string {
+        if (val === null || val === undefined) {
+            return 'NULL';
+        }
+        if (typeof val === 'number') {
+            return String(val);
+        }
+        if (typeof val === 'boolean') {
+            return val ? 'TRUE' : 'FALSE';
+        }
+        // Escape single quotes for SQL strings
+        return `'${String(val).replace(/'/g, "''")}'`;
+    }
 }

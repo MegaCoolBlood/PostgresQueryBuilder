@@ -35,6 +35,11 @@
     const insertRowBtn = document.getElementById('insertRowBtn');
     const loadMoreBtn = document.getElementById('loadMoreBtn');
     const changeCount = document.getElementById('changeCount');
+    const sqlDialogOverlay = document.getElementById('sqlDialogOverlay');
+    const sqlDialogContent = document.getElementById('sqlDialogContent');
+    const sqlDialogExecute = document.getElementById('sqlDialogExecute');
+    const sqlDialogCancel = document.getElementById('sqlDialogCancel');
+    const sqlDialogClose = document.getElementById('sqlDialogClose');
 
     // Request initial data
     vscode.postMessage({ command: 'loadData', offset: 0, limit: PAGE_SIZE });
@@ -44,6 +49,9 @@
     discardBtn.addEventListener('click', discardChanges);
     insertRowBtn.addEventListener('click', insertRow);
     loadMoreBtn.addEventListener('click', loadMore);
+    sqlDialogCancel.addEventListener('click', closeSqlDialog);
+    sqlDialogClose.addEventListener('click', closeSqlDialog);
+    sqlDialogExecute.addEventListener('click', executePendingChanges);
 
     // Listen for messages from extension
     window.addEventListener('message', (event) => {
@@ -51,6 +59,9 @@
         switch (msg.command) {
             case 'dataLoaded':
                 handleDataLoaded(msg);
+                break;
+            case 'sqlPreview':
+                showSqlDialog(msg.sql);
                 break;
             case 'commitSuccess':
                 handleCommitSuccess();
@@ -367,13 +378,11 @@
         }
     }
 
+    let pendingChanges = null;
+
     function commitChanges() {
         const totalChanges = modifiedCells.size + deletedRows.size + insertedRows.length + duplicatedRows.length;
         if (totalChanges === 0) return;
-
-        if (!confirm(`Commit ${totalChanges} change(s) to ${schema}.${table}? This cannot be undone.`)) {
-            return;
-        }
 
         // Build change set
         const changes = {
@@ -423,7 +432,26 @@
             changes.deletes.push(pk);
         }
 
-        vscode.postMessage({ command: 'commitChanges', changes });
+        pendingChanges = changes;
+        vscode.postMessage({ command: 'previewSQL', changes });
+    }
+
+    function showSqlDialog(sql) {
+        sqlDialogContent.textContent = sql;
+        sqlDialogOverlay.style.display = 'flex';
+    }
+
+    function closeSqlDialog() {
+        sqlDialogOverlay.style.display = 'none';
+        pendingChanges = null;
+    }
+
+    function executePendingChanges() {
+        if (pendingChanges) {
+            vscode.postMessage({ command: 'commitChanges', changes: pendingChanges });
+            sqlDialogOverlay.style.display = 'none';
+            pendingChanges = null;
+        }
     }
 
     function handleCommitSuccess() {
@@ -437,13 +465,13 @@
     }
 
     function discardChanges() {
-        if (!confirm('Discard all pending changes?')) return;
         modifiedCells.clear();
         deletedRows.clear();
         insertedRows = [];
         duplicatedRows = [];
-        renderBody();
-        updateRowCount();
+        currentOffset = 0;
+        vscode.postMessage({ command: 'loadData', offset: 0, limit: PAGE_SIZE });
+        updateChangeIndicator();
     }
 
     function showError(text) {
