@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PostgreSQL Connection</title>
+    <style>
+        body {
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            color: var(--vscode-foreground);
+            background: var(--vscode-editor-background);
+            padding: 20px;
+            margin: 0;
+        }
+        h2 {
+            margin-top: 0;
+            color: var(--vscode-foreground);
+        }
+        .form-group {
+            margin-bottom: 12px;
+        }
+        label {
+            display: block;
+            margin-bottom: 4px;
+            color: var(--vscode-foreground);
+            font-weight: 500;
+        }
+        input {
+            width: 100%;
+            max-width: 400px;
+            padding: 6px 8px;
+            box-sizing: border-box;
+            background: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border, transparent);
+            border-radius: 2px;
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+        }
+        input:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+            border-color: var(--vscode-focusBorder);
+        }
+        .button-row {
+            margin-top: 20px;
+            display: flex;
+            gap: 8px;
+        }
+        button {
+            padding: 6px 14px;
+            border: none;
+            border-radius: 2px;
+            cursor: pointer;
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+        }
+        button.primary {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+        }
+        button.primary:hover {
+            background: var(--vscode-button-hoverBackground);
+        }
+        button.secondary {
+            background: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+        }
+        button.secondary:hover {
+            background: var(--vscode-button-secondaryHoverBackground);
+        }
+        .error {
+            color: var(--vscode-errorForeground);
+            margin-top: 10px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h2 id="title">New Connection</h2>
+    <form id="connectionForm">
+        <div class="form-group">
+            <label for="name">Connection Name</label>
+            <input type="text" id="name" placeholder="My Database" autofocus />
+        </div>
+        <div class="form-group">
+            <label for="host">Host</label>
+            <input type="text" id="host" placeholder="localhost" />
+        </div>
+        <div class="form-group">
+            <label for="port">Port</label>
+            <input type="number" id="port" placeholder="5432" />
+        </div>
+        <div class="form-group">
+            <label for="database">Database</label>
+            <input type="text" id="database" placeholder="postgres" />
+        </div>
+        <div class="form-group">
+            <label for="user">Username</label>
+            <input type="text" id="user" placeholder="postgres" />
+        </div>
+        <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" placeholder="Password" />
+        </div>
+        <div class="error" id="error"></div>
+        <div class="button-row">
+            <button type="submit" class="primary">Connect</button>
+            <button type="button" class="secondary" id="cancelBtn">Cancel</button>
+        </div>
+    </form>
+    <script>
+        const vscode = acquireVsCodeApi();
+
+        window.addEventListener('message', event => {
+            const msg = event.data;
+            if (msg.type === 'prefill') {
+                if (msg.name) document.getElementById('name').value = msg.name;
+                if (msg.host) document.getElementById('host').value = msg.host;
+                if (msg.port) document.getElementById('port').value = msg.port;
+                if (msg.database) document.getElementById('database').value = msg.database;
+                if (msg.user) document.getElementById('user').value = msg.user;
+                if (msg.title) document.getElementById('title').textContent = msg.title;
+            } else if (msg.type === 'error') {
+                const el = document.getElementById('error');
+                el.textContent = msg.message;
+                el.style.display = 'block';
+            }
+        });
+
+        document.getElementById('connectionForm').addEventListener('submit', e => {
+            e.preventDefault();
+            const name = document.getElementById('name').value.trim();
+            const host = document.getElementById('host').value.trim();
+            const port = document.getElementById('port').value.trim();
+            const database = document.getElementById('database').value.trim();
+            const user = document.getElementById('user').value.trim();
+            const password = document.getElementById('password').value;
+
+            if (!name || !host || !port || !database || !user) {
+                const el = document.getElementById('error');
+                el.textContent = 'All fields except password are required.';
+                el.style.display = 'block';
+                return;
+            }
+
+            document.getElementById('error').style.display = 'none';
+            vscode.postMessage({
+                type: 'connect',
+                name, host, port: parseInt(port, 10), database, user, password
+            });
+        });
+
+        document.getElementById('cancelBtn').addEventListener('click', () => {
+            vscode.postMessage({ type: 'cancel' });
+        });
+    </script>
+</body>
+</html>
