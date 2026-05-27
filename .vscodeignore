@@ -1,0 +1,7 @@
+.vscode/**
+.vscode-test/**
+src/**
+!src/webview/**
+node_modules/**
+.gitignore
+tsconfig.json

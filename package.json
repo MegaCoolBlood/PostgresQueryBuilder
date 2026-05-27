@@ -1,0 +1,119 @@
+{
+  "name": "postgres-query-builder",
+  "displayName": "PostgreSQL Query Builder",
+  "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
+  "version": "0.1.0",
+  "publisher": "postgres-query-builder",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onView:postgresTableExplorer"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "postgres-explorer",
+          "title": "PostgreSQL Explorer",
+          "icon": "$(database)"
+        }
+      ]
+    },
+    "views": {
+      "postgres-explorer": [
+        {
+          "id": "postgresTableExplorer",
+          "name": "Tables"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "postgresQueryBuilder.connect",
+        "title": "Connect to PostgreSQL Database",
+        "category": "PostgreSQL"
+      },
+      {
+        "command": "postgresQueryBuilder.disconnect",
+        "title": "Disconnect from PostgreSQL Database",
+        "category": "PostgreSQL"
+      },
+      {
+        "command": "postgresQueryBuilder.refreshExplorer",
+        "title": "Refresh Table Explorer",
+        "category": "PostgreSQL",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "postgresQueryBuilder.openTable",
+        "title": "Open Table",
+        "category": "PostgreSQL"
+      },
+      {
+        "command": "postgresQueryBuilder.selectConnection",
+        "title": "Select Connection",
+        "category": "PostgreSQL"
+      },
+      {
+        "command": "postgresQueryBuilder.openSqlEditor",
+        "title": "Open SQL Editor",
+        "category": "PostgreSQL"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "postgresQueryBuilder.refreshExplorer",
+          "when": "view == postgresTableExplorer",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "PostgreSQL Query Builder",
+      "properties": {
+        "postgresQueryBuilder.defaultHost": {
+          "type": "string",
+          "default": "localhost",
+          "description": "Default host for new connections"
+        },
+        "postgresQueryBuilder.defaultPort": {
+          "type": "number",
+          "default": 5432,
+          "description": "Default port for new connections"
+        },
+        "postgresQueryBuilder.defaultDatabase": {
+          "type": "string",
+          "default": "postgres",
+          "description": "Default database name for new connections"
+        },
+        "postgresQueryBuilder.savedConnections": {
+          "type": "array",
+          "default": [],
+          "description": "Saved connection configurations (passwords stored in SecretStorage)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.85.0",
+    "@types/pg": "^8.10.9",
+    "typescript": "^5.3.3",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "eslint": "^8.56.0"
+  },
+  "dependencies": {
+    "pg": "^8.11.3"
+  }
+}
