@@ -77,7 +77,7 @@ export function activate(context: vscode.ExtensionContext) {
     function updateStatusBar() {
         if (connectionManager.isConnected()) {
             const config = connectionManager.getActiveConnectionConfig();
-            statusBarItem.text = `$(database) ${config?.database || 'PostgreSQL'}`;
+            statusBarItem.text = `$(database) ${config?.name || 'PostgreSQL'}`;
             statusBarItem.tooltip = `Connected to ${config?.host}:${config?.port}/${config?.database}`;
             statusBarItem.backgroundColor = undefined;
         } else {
