@@ -195,9 +195,22 @@ export class ConnectionManager {
 
         this.pool = new Pool(poolConfig);
 
-        // Test the connection
-        const client = await this.pool.connect();
-        client.release();
+        try {
+            const client = await this.pool.connect();
+            client.release();
+        } catch (err: any) {
+            // If SSL is not supported, retry without SSL
+            if (err.message && err.message.includes('does not support SSL')) {
+                console.log(`[PG] SSL not supported, retrying without SSL`);
+                await this.pool.end();
+                delete poolConfig.ssl;
+                this.pool = new Pool(poolConfig);
+                const client = await this.pool.connect();
+                client.release();
+            } else {
+                throw err;
+            }
+        }
 
         this.activeConfig = config;
         this._onConnectionChanged.fire();
