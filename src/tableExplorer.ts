@@ -19,9 +19,15 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
     private connectionManager: ConnectionManager;
+    private _filterText = '';
 
     constructor(connectionManager: ConnectionManager) {
         this.connectionManager = connectionManager;
+    }
+
+    setFilter(filterText: string): void {
+        this._filterText = filterText.toLowerCase();
+        this._onDidChangeTreeData.fire();
     }
 
     refresh(): void {
@@ -61,10 +67,41 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                      ORDER BY schema_name`
                 );
 
-                return result.rows.map((row: any) => ({
+                const schemas = result.rows.map((row: any) => ({
                     type: 'schema' as const,
                     schema: row.schema_name
                 }));
+
+                if (this._filterText) {
+                    // If filter contains a dot, match schema prefix
+                    const dotIndex = this._filterText.indexOf('.');
+                    if (dotIndex > 0) {
+                        const schemaFilter = this._filterText.substring(0, dotIndex);
+                        return schemas.filter((s: SchemaNode) =>
+                            s.schema.toLowerCase().includes(schemaFilter)
+                        );
+                    }
+                    // Otherwise show all schemas that have matching tables
+                    const filtered: SchemaNode[] = [];
+                    for (const schema of schemas) {
+                        const tables = await this.connectionManager.query(
+                            `SELECT table_name FROM information_schema.tables
+                             WHERE table_schema = $1 AND table_type = 'BASE TABLE'
+                             ORDER BY table_name`,
+                            [schema.schema]
+                        );
+                        const hasMatch = tables.rows.some((row: any) =>
+                            row.table_name.toLowerCase().includes(this._filterText) ||
+                            schema.schema.toLowerCase().includes(this._filterText)
+                        );
+                        if (hasMatch) {
+                            filtered.push(schema);
+                        }
+                    }
+                    return filtered;
+                }
+
+                return schemas;
             } else if (element.type === 'schema') {
                 const result = await this.connectionManager.query(
                     `SELECT table_name FROM information_schema.tables
@@ -73,11 +110,26 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                     [element.schema]
                 );
 
-                return result.rows.map((row: any) => ({
+                let tables = result.rows.map((row: any) => ({
                     type: 'table' as const,
                     schema: element.schema,
                     table: row.table_name
                 }));
+
+                if (this._filterText) {
+                    const dotIndex = this._filterText.indexOf('.');
+                    const tableFilter = dotIndex > 0
+                        ? this._filterText.substring(dotIndex + 1)
+                        : this._filterText;
+
+                    if (tableFilter) {
+                        tables = tables.filter((t: TableNode) =>
+                            t.table.toLowerCase().includes(tableFilter)
+                        );
+                    }
+                }
+
+                return tables;
             }
         } catch (err: any) {
             vscode.window.showErrorMessage(`Failed to load tables: ${err.message}`);

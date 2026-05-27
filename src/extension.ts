@@ -3,6 +3,7 @@ import { ConnectionManager } from './connectionManager';
 import { TableExplorerProvider } from './tableExplorer';
 import { TableWebViewManager } from './tableWebView';
 import { SqlEditorManager } from './sqlEditor';
+import { SearchViewProvider } from './searchViewProvider';
 
 let connectionManager: ConnectionManager;
 let tableExplorer: TableExplorerProvider;
@@ -29,6 +30,15 @@ export function activate(context: vscode.ExtensionContext) {
         showCollapseAll: true
     });
     context.subscriptions.push(treeView);
+
+    // Search view
+    const searchViewProvider = new SearchViewProvider();
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(SearchViewProvider.viewType, searchViewProvider)
+    );
+    searchViewProvider.onDidChangeFilter((filter) => {
+        tableExplorer.setFilter(filter);
+    });
 
     // Commands
     context.subscriptions.push(
