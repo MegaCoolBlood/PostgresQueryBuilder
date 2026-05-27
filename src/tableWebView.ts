@@ -95,6 +95,21 @@ export class TableWebViewManager {
                         vscode.window.showErrorMessage(message.text);
                         break;
                     }
+                    case 'runCustomQuery': {
+                        const result = await queryRunner.executeSQL(message.sql);
+                        const cols = result.fields.map((f: any) => ({
+                            name: f.name,
+                            dataType: '',
+                            isNullable: true,
+                            columnDefault: null
+                        }));
+                        panel.webview.postMessage({
+                            command: 'queryResult',
+                            rows: result.rows,
+                            columns: cols
+                        });
+                        break;
+                    }
                 }
             } catch (err: any) {
                 panel.webview.postMessage({

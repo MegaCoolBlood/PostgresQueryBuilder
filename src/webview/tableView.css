@@ -29,6 +29,33 @@ body {
     flex-shrink: 0;
 }
 
+/* Query Bar */
+.query-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--vscode-editorWidget-background);
+    border-bottom: 1px solid var(--vscode-panel-border);
+    flex-shrink: 0;
+}
+
+.query-input {
+    flex: 1;
+    padding: 5px 8px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 13px;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, transparent);
+    border-radius: 2px;
+    outline: none;
+}
+
+.query-input:focus {
+    border-color: var(--vscode-focusBorder);
+}
+
 .toolbar-left {
     display: flex;
     align-items: center;
