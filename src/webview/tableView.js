@@ -171,7 +171,28 @@
                 filters[col] = e.target.value;
                 renderBody();
             });
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    applyFiltersToQuery();
+                }
+            });
         });
+    }
+
+    function applyFiltersToQuery() {
+        const whereClauses = [];
+        for (const [col, val] of Object.entries(filters)) {
+            if (!val) continue;
+            const escaped = val.replace(/'/g, "''");
+            whereClauses.push(`"${col}"::text ILIKE '%${escaped}%'`);
+        }
+
+        let sql = `SELECT * FROM "${schema}"."${table}"`;
+        if (whereClauses.length > 0) {
+            sql += ` WHERE ${whereClauses.join(' AND ')}`;
+        }
+        queryInput.value = sql;
+        runCustomQuery();
     }
 
     function getFilteredAndSortedRows() {
