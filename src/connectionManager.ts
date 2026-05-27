@@ -163,12 +163,15 @@ export class ConnectionManager {
             // Fall back to original hostname if lookup fails
         }
 
+        console.log(`[PG] Connecting to ${resolvedHost}:${config.port} (resolved from ${config.host})`);
+
         const poolConfig: PoolConfig = {
             host: resolvedHost,
             port: config.port,
             database: config.database,
             user: config.user,
             password: password,
+            ssl: { rejectUnauthorized: false },
             max: 10,
             connectionTimeoutMillis: 5000
         };
