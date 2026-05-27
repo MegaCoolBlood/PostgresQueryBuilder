@@ -40,6 +40,8 @@
     const sqlDialogExecute = document.getElementById('sqlDialogExecute');
     const sqlDialogCancel = document.getElementById('sqlDialogCancel');
     const sqlDialogClose = document.getElementById('sqlDialogClose');
+    const queryInput = document.getElementById('queryInput');
+    const queryRunBtn = document.getElementById('queryRunBtn');
 
     // Request initial data
     vscode.postMessage({ command: 'loadData', offset: 0, limit: PAGE_SIZE });
@@ -52,6 +54,10 @@
     sqlDialogCancel.addEventListener('click', closeSqlDialog);
     sqlDialogClose.addEventListener('click', closeSqlDialog);
     sqlDialogExecute.addEventListener('click', executePendingChanges);
+    queryRunBtn.addEventListener('click', runCustomQuery);
+    queryInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { runCustomQuery(); }
+    });
 
     // Listen for messages from extension
     window.addEventListener('message', (event) => {
@@ -59,6 +65,9 @@
         switch (msg.command) {
             case 'dataLoaded':
                 handleDataLoaded(msg);
+                break;
+            case 'queryResult':
+                handleQueryResult(msg);
                 break;
             case 'sqlPreview':
                 showSqlDialog(msg.sql);
@@ -85,8 +94,25 @@
         table = msg.table;
 
         tableName.textContent = `${schema}.${table}`;
+        queryInput.value = `SELECT * FROM "${schema}"."${table}" LIMIT ${PAGE_SIZE} OFFSET ${currentOffset}`;
         updateRowCount();
         renderTable();
+    }
+
+    function handleQueryResult(msg) {
+        allRows = msg.rows;
+        columns = msg.columns;
+        totalCount = msg.rows.length;
+        tableName.textContent = `${schema}.${table} (custom query)`;
+        rowCount.textContent = `${msg.rows.length} rows returned`;
+        loadMoreBtn.disabled = true;
+        renderTable();
+    }
+
+    function runCustomQuery() {
+        const sql = queryInput.value.trim();
+        if (!sql) return;
+        vscode.postMessage({ command: 'runCustomQuery', sql });
     }
 
     function updateRowCount() {
