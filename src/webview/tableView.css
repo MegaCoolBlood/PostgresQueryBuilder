@@ -1,0 +1,246 @@
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+    color: var(--vscode-foreground);
+    background: var(--vscode-editor-background);
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+}
+
+.container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+/* Toolbar */
+.toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--vscode-editorWidget-background);
+    border-bottom: 1px solid var(--vscode-panel-border);
+    flex-shrink: 0;
+}
+
+.toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.toolbar-right {
+    display: flex;
+    gap: 8px;
+}
+
+.table-name {
+    font-weight: bold;
+    font-size: 14px;
+}
+
+.row-count {
+    color: var(--vscode-descriptionForeground);
+    font-size: 12px;
+}
+
+/* Buttons */
+.btn {
+    border: none;
+    padding: 5px 12px;
+    cursor: pointer;
+    font-size: 12px;
+    border-radius: 2px;
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-primary {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+}
+
+.btn-primary:hover:not(:disabled) {
+    background: var(--vscode-button-hoverBackground);
+}
+
+.btn-success {
+    background: #388e3c;
+    color: white;
+}
+
+.btn-success:hover:not(:disabled) {
+    background: #2e7d32;
+}
+
+.btn-warning {
+    background: #f57c00;
+    color: white;
+}
+
+.btn-warning:hover:not(:disabled) {
+    background: #e65100;
+}
+
+.btn-default {
+    background: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+}
+
+.btn-default:hover:not(:disabled) {
+    background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.btn-danger {
+    background: #d32f2f;
+    color: white;
+    padding: 2px 6px;
+    font-size: 11px;
+}
+
+.btn-danger:hover {
+    background: #b71c1c;
+}
+
+.btn-duplicate {
+    background: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+    padding: 2px 6px;
+    font-size: 11px;
+}
+
+.btn-duplicate:hover {
+    background: var(--vscode-button-secondaryHoverBackground);
+}
+
+/* Table */
+.table-wrapper {
+    flex: 1;
+    overflow: auto;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+th, td {
+    border: 1px solid var(--vscode-panel-border);
+    padding: 4px 8px;
+    text-align: left;
+    white-space: nowrap;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+th {
+    background: var(--vscode-editorWidget-background);
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    cursor: pointer;
+    user-select: none;
+}
+
+th:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+
+th.sorted-asc::after {
+    content: ' ▲';
+    font-size: 10px;
+}
+
+th.sorted-desc::after {
+    content: ' ▼';
+    font-size: 10px;
+}
+
+/* Filter row */
+.filter-row th {
+    position: sticky;
+    top: 26px;
+    z-index: 1;
+    padding: 2px 4px;
+    background: var(--vscode-editorWidget-background);
+}
+
+.filter-input {
+    width: 100%;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border);
+    padding: 2px 4px;
+    font-size: 11px;
+}
+
+.filter-input:focus {
+    outline: 1px solid var(--vscode-focusBorder);
+}
+
+/* Row states */
+tr.row-modified td {
+    background: rgba(255, 235, 59, 0.15);
+}
+
+tr.row-inserted td {
+    background: rgba(76, 175, 80, 0.15);
+}
+
+tr.row-deleted td {
+    background: rgba(244, 67, 54, 0.15);
+    text-decoration: line-through;
+    opacity: 0.7;
+}
+
+tr.row-duplicated td {
+    background: rgba(33, 150, 243, 0.15);
+}
+
+/* Editable cells */
+td.cell-modified {
+    background: rgba(255, 235, 59, 0.3) !important;
+    outline: 1px solid rgba(255, 235, 59, 0.5);
+}
+
+td[contenteditable="true"]:focus {
+    outline: 2px solid var(--vscode-focusBorder);
+    background: var(--vscode-editor-background);
+}
+
+/* Actions column */
+.actions-cell {
+    white-space: nowrap;
+    width: 1%;
+}
+
+.actions-cell button {
+    margin-right: 4px;
+}
+
+/* Status bar */
+.status-bar {
+    padding: 4px 12px;
+    background: var(--vscode-editorWidget-background);
+    border-top: 1px solid var(--vscode-panel-border);
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    flex-shrink: 0;
+}
+
+/* NULL indicator */
+.null-value {
+    color: var(--vscode-descriptionForeground);
+    font-style: italic;
+}

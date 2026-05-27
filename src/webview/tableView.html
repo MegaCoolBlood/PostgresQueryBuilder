@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Table View</title>
+    <style>/* CSS_PLACEHOLDER */</style>
+</head>
+<body>
+    <div class="container">
+        <div class="toolbar">
+            <div class="toolbar-left">
+                <span class="table-name" id="tableName"></span>
+                <span class="row-count" id="rowCount"></span>
+            </div>
+            <div class="toolbar-right">
+                <button class="btn btn-primary" id="insertRowBtn" title="Insert new row">+ Insert Row</button>
+                <button class="btn btn-success" id="commitBtn" title="Commit all changes" disabled>Commit Changes</button>
+                <button class="btn btn-warning" id="discardBtn" title="Discard all changes" disabled>Discard Changes</button>
+                <button class="btn btn-default" id="loadMoreBtn" title="Load more rows">Load More</button>
+            </div>
+        </div>
+        <div class="table-wrapper" id="tableWrapper">
+            <table id="dataTable">
+                <thead id="tableHead"></thead>
+                <tbody id="tableBody"></tbody>
+            </table>
+        </div>
+        <div class="status-bar" id="statusBar">
+            <span id="changeCount">No pending changes</span>
+        </div>
+    </div>
+    <script>/* JS_PLACEHOLDER */</script>
+</body>
+</html>
