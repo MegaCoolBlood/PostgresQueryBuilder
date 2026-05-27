@@ -61,11 +61,23 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
 
         try {
             if (!element) {
-                const result = await this.connectionManager.query(
-                    `SELECT schema_name FROM information_schema.schemata
-                     WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-                     ORDER BY schema_name`
-                );
+                const configSchemas = this.connectionManager.getActiveConnectionConfig()?.schemas;
+                let query: string;
+                let params: any[] | undefined;
+
+                if (configSchemas && configSchemas.length > 0) {
+                    const placeholders = configSchemas.map((_, i) => `$${i + 1}`).join(', ');
+                    query = `SELECT schema_name FROM information_schema.schemata
+                             WHERE schema_name IN (${placeholders})
+                             ORDER BY schema_name`;
+                    params = configSchemas;
+                } else {
+                    query = `SELECT schema_name FROM information_schema.schemata
+                             WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                             ORDER BY schema_name`;
+                }
+
+                const result = await this.connectionManager.query(query, params);
 
                 const schemas = result.rows.map((row: any) => ({
                     type: 'schema' as const,

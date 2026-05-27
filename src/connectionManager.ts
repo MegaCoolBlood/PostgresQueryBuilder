@@ -13,6 +13,7 @@ export interface ConnectionConfig {
     port: number;
     database: string;
     user: string;
+    schemas?: string[];
 }
 
 export class ConnectionManager {
@@ -56,8 +57,8 @@ export class ConnectionManager {
 
         // Prefill with defaults or existing config
         const prefill = existingConfig
-            ? { ...existingConfig, port: String(existingConfig.port), title: `Edit: ${existingConfig.name}` }
-            : { name: 'My Database', host: defaultHost, port: String(defaultPort), database: defaultDatabase, user: 'postgres', title: 'New Connection' };
+            ? { ...existingConfig, port: String(existingConfig.port), schemas: (existingConfig.schemas || []).join(', '), title: `Edit: ${existingConfig.name}` }
+            : { name: 'My Database', host: defaultHost, port: String(defaultPort), database: defaultDatabase, user: 'postgres', schemas: '', title: 'New Connection' };
 
         // Send prefill after webview is ready
         setTimeout(() => panel.webview.postMessage({ type: 'prefill', ...prefill }), 100);
@@ -70,12 +71,16 @@ export class ConnectionManager {
                     return;
                 }
                 if (msg.type === 'connect') {
+                    const schemas = msg.schemas
+                        ? msg.schemas.split(',').map((s: string) => s.trim()).filter((s: string) => s)
+                        : undefined;
                     const connConfig: ConnectionConfig = {
                         name: msg.name,
                         host: msg.host,
                         port: msg.port,
                         database: msg.database,
-                        user: msg.user
+                        user: msg.user,
+                        schemas: schemas
                     };
                     try {
                         await this.connect(connConfig, msg.password);
@@ -108,9 +113,11 @@ export class ConnectionManager {
             ...savedConnections.map(c => ({
                 label: c.name,
                 description: `${c.host}:${c.port}/${c.database}`,
-                detail: `User: ${c.user}`
+                detail: `User: ${c.user}` + (c.schemas?.length ? ` | Schemas: ${c.schemas.join(', ')}` : '')
             })),
-            { label: '$(add) New Connection', description: 'Create a new connection' }
+            { label: '$(add) New Connection', description: 'Create a new connection' },
+            { label: '$(edit) Edit Connection', description: 'Edit an existing connection' },
+            { label: '$(trash) Delete Connection', description: 'Remove a saved connection' }
         ];
 
         const selected = await vscode.window.showQuickPick(items, {
@@ -121,6 +128,16 @@ export class ConnectionManager {
 
         if (selected.label === '$(add) New Connection') {
             await this.connectWithInputFlow();
+            return;
+        }
+
+        if (selected.label === '$(edit) Edit Connection') {
+            await this.editConnection(savedConnections);
+            return;
+        }
+
+        if (selected.label === '$(trash) Delete Connection') {
+            await this.deleteConnection(savedConnections);
             return;
         }
 
@@ -222,6 +239,44 @@ export class ConnectionManager {
             throw new Error('Not connected to a database');
         }
         return this.pool.query(sql, params);
+    }
+
+    private async editConnection(savedConnections: ConnectionConfig[]): Promise<void> {
+        const items = savedConnections.map(c => ({
+            label: c.name,
+            description: `${c.host}:${c.port}/${c.database}`
+        }));
+
+        const selected = await vscode.window.showQuickPick(items, {
+            placeHolder: 'Select connection to edit'
+        });
+
+        if (!selected) { return; }
+
+        const conn = savedConnections.find(c => c.name === selected.label);
+        if (conn) {
+            await this.connectWithInputFlow(conn);
+        }
+    }
+
+    private async deleteConnection(savedConnections: ConnectionConfig[]): Promise<void> {
+        const items = savedConnections.map(c => ({
+            label: c.name,
+            description: `${c.host}:${c.port}/${c.database}`
+        }));
+
+        const selected = await vscode.window.showQuickPick(items, {
+            placeHolder: 'Select connection to delete'
+        });
+
+        if (!selected) { return; }
+
+        const config = vscode.workspace.getConfiguration('postgresQueryBuilder');
+        const saved = config.get<ConnectionConfig[]>('savedConnections', []);
+        const filtered = saved.filter(c => c.name !== selected.label);
+        await config.update('savedConnections', filtered, vscode.ConfigurationTarget.Global);
+        await this.context.secrets.delete(`pgqb_password_${selected.label}`);
+        vscode.window.showInformationMessage(`Connection "${selected.label}" deleted.`);
     }
 
     dispose(): void {
