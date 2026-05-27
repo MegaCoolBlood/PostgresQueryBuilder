@@ -1,5 +1,11 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
+import * as dns from 'dns';
+import { promisify } from 'util';
 import { Pool, PoolConfig } from 'pg';
+
+const dnsLookup = promisify(dns.lookup);
 
 export interface ConnectionConfig {
     name: string;
@@ -32,63 +38,56 @@ export class ConnectionManager {
         return this.pool;
     }
 
-    async connectWithInputFlow(): Promise<void> {
+    async connectWithInputFlow(existingConfig?: ConnectionConfig): Promise<void> {
         const config = vscode.workspace.getConfiguration('postgresQueryBuilder');
         const defaultHost = config.get<string>('defaultHost', 'localhost');
         const defaultPort = config.get<number>('defaultPort', 5432);
         const defaultDatabase = config.get<string>('defaultDatabase', 'postgres');
 
-        const name = await vscode.window.showInputBox({
-            prompt: 'Connection name',
-            placeHolder: 'My Database',
-            value: 'My Database'
+        const panel = vscode.window.createWebviewPanel(
+            'pgConnectionForm',
+            existingConfig ? `Edit: ${existingConfig.name}` : 'New Connection',
+            vscode.ViewColumn.Active,
+            { enableScripts: true, retainContextWhenHidden: true }
+        );
+
+        const htmlPath = path.join(this.context.extensionPath, 'src', 'webview', 'connectionForm.html');
+        panel.webview.html = fs.readFileSync(htmlPath, 'utf8');
+
+        // Prefill with defaults or existing config
+        const prefill = existingConfig
+            ? { ...existingConfig, port: String(existingConfig.port), title: `Edit: ${existingConfig.name}` }
+            : { name: 'My Database', host: defaultHost, port: String(defaultPort), database: defaultDatabase, user: 'postgres', title: 'New Connection' };
+
+        // Send prefill after webview is ready
+        setTimeout(() => panel.webview.postMessage({ type: 'prefill', ...prefill }), 100);
+
+        return new Promise<void>((resolve) => {
+            panel.onDidDispose(() => resolve());
+            panel.webview.onDidReceiveMessage(async (msg) => {
+                if (msg.type === 'cancel') {
+                    panel.dispose();
+                    return;
+                }
+                if (msg.type === 'connect') {
+                    const connConfig: ConnectionConfig = {
+                        name: msg.name,
+                        host: msg.host,
+                        port: msg.port,
+                        database: msg.database,
+                        user: msg.user
+                    };
+                    try {
+                        await this.connect(connConfig, msg.password);
+                        await this.saveConnection(connConfig, msg.password);
+                        vscode.window.showInformationMessage(`Connected to ${msg.database} on ${msg.host}:${msg.port}`);
+                        panel.dispose();
+                    } catch (err: any) {
+                        panel.webview.postMessage({ type: 'error', message: `Connection failed: ${err.message}` });
+                    }
+                }
+            });
         });
-        if (!name) { return; }
-
-        const host = await vscode.window.showInputBox({
-            prompt: 'Host',
-            placeHolder: defaultHost,
-            value: defaultHost
-        });
-        if (!host) { return; }
-
-        const portStr = await vscode.window.showInputBox({
-            prompt: 'Port',
-            placeHolder: String(defaultPort),
-            value: String(defaultPort)
-        });
-        if (!portStr) { return; }
-        const port = parseInt(portStr, 10);
-
-        const database = await vscode.window.showInputBox({
-            prompt: 'Database name',
-            placeHolder: defaultDatabase,
-            value: defaultDatabase
-        });
-        if (!database) { return; }
-
-        const user = await vscode.window.showInputBox({
-            prompt: 'Username',
-            placeHolder: 'postgres',
-            value: 'postgres'
-        });
-        if (!user) { return; }
-
-        const password = await vscode.window.showInputBox({
-            prompt: 'Password',
-            password: true
-        });
-        if (password === undefined) { return; }
-
-        const connConfig: ConnectionConfig = { name, host, port, database, user };
-
-        try {
-            await this.connect(connConfig, password);
-            await this.saveConnection(connConfig, password);
-            vscode.window.showInformationMessage(`Connected to ${database} on ${host}:${port}`);
-        } catch (err: any) {
-            vscode.window.showErrorMessage(`Connection failed: ${err.message}`);
-        }
     }
 
     async selectConnection(): Promise<void> {
@@ -155,8 +154,17 @@ export class ConnectionManager {
             await this.pool.end();
         }
 
+        // Resolve hostname via OS resolver (respects hosts file)
+        let resolvedHost = config.host;
+        try {
+            const { address } = await dnsLookup(config.host);
+            resolvedHost = address;
+        } catch {
+            // Fall back to original hostname if lookup fails
+        }
+
         const poolConfig: PoolConfig = {
-            host: config.host,
+            host: resolvedHost,
             port: config.port,
             database: config.database,
             user: config.user,
