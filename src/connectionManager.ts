@@ -32,127 +32,19 @@ export class ConnectionManager {
         return this.pool;
     }
 
-    async connectWithInputFlow(): Promise<void> {
+    getSavedConnections(): ConnectionConfig[] {
         const config = vscode.workspace.getConfiguration('postgresQueryBuilder');
-        const defaultHost = config.get<string>('defaultHost', 'localhost');
-        const defaultPort = config.get<number>('defaultPort', 5432);
-        const defaultDatabase = config.get<string>('defaultDatabase', 'postgres');
-
-        const name = await vscode.window.showInputBox({
-            prompt: 'Connection name',
-            placeHolder: 'My Database',
-            value: 'My Database'
-        });
-        if (!name) { return; }
-
-        const host = await vscode.window.showInputBox({
-            prompt: 'Host',
-            placeHolder: defaultHost,
-            value: defaultHost
-        });
-        if (!host) { return; }
-
-        const portStr = await vscode.window.showInputBox({
-            prompt: 'Port',
-            placeHolder: String(defaultPort),
-            value: String(defaultPort)
-        });
-        if (!portStr) { return; }
-        const port = parseInt(portStr, 10);
-
-        const database = await vscode.window.showInputBox({
-            prompt: 'Database name',
-            placeHolder: defaultDatabase,
-            value: defaultDatabase
-        });
-        if (!database) { return; }
-
-        const user = await vscode.window.showInputBox({
-            prompt: 'Username',
-            placeHolder: 'postgres',
-            value: 'postgres'
-        });
-        if (!user) { return; }
-
-        const password = await vscode.window.showInputBox({
-            prompt: 'Password',
-            password: true
-        });
-        if (password === undefined) { return; }
-
-        const connConfig: ConnectionConfig = { name, host, port, database, user };
-
-        try {
-            await this.connect(connConfig, password);
-            await this.saveConnection(connConfig, password);
-            vscode.window.showInformationMessage(`Connected to ${database} on ${host}:${port}`);
-        } catch (err: any) {
-            vscode.window.showErrorMessage(`Connection failed: ${err.message}`);
-        }
+        return config.get<ConnectionConfig[]>('savedConnections', []);
     }
 
-    async selectConnection(): Promise<void> {
-        const savedConnections = this.getSavedConnections();
-
-        if (savedConnections.length === 0) {
-            const choice = await vscode.window.showQuickPick(
-                ['Create new connection'],
-                { placeHolder: 'No saved connections. Create one?' }
-            );
-            if (choice) {
-                await this.connectWithInputFlow();
-            }
-            return;
-        }
-
-        const items: vscode.QuickPickItem[] = [
-            ...savedConnections.map(c => ({
-                label: c.name,
-                description: `${c.host}:${c.port}/${c.database}`,
-                detail: `User: ${c.user}`
-            })),
-            { label: '$(add) New Connection', description: 'Create a new connection' }
-        ];
-
-        const selected = await vscode.window.showQuickPick(items, {
-            placeHolder: 'Select a database connection'
-        });
-
-        if (!selected) { return; }
-
-        if (selected.label === '$(add) New Connection') {
-            await this.connectWithInputFlow();
-            return;
-        }
-
-        const conn = savedConnections.find(c => c.name === selected.label);
-        if (!conn) { return; }
-
-        const password = await this.context.secrets.get(`pgqb_password_${conn.name}`);
-        if (password === undefined) {
-            const pwd = await vscode.window.showInputBox({
-                prompt: `Password for ${conn.name}`,
-                password: true
-            });
-            if (pwd === undefined) { return; }
-            try {
-                await this.connect(conn, pwd);
-                await this.context.secrets.store(`pgqb_password_${conn.name}`, pwd);
-            } catch (err: any) {
-                vscode.window.showErrorMessage(`Connection failed: ${err.message}`);
-            }
-        } else {
-            try {
-                await this.connect(conn, password);
-            } catch (err: any) {
-                vscode.window.showErrorMessage(`Connection failed: ${err.message}`);
-            }
-        }
+    async getPassword(name: string): Promise<string | undefined> {
+        return this.context.secrets.get(`pgqb_password_${name}`);
     }
 
-    private async connect(config: ConnectionConfig, password: string): Promise<void> {
+    async connectByConfig(config: ConnectionConfig, password: string): Promise<void> {
         if (this.pool) {
             await this.pool.end();
+            this.pool = null;
         }
 
         const poolConfig: PoolConfig = {
@@ -165,14 +57,51 @@ export class ConnectionManager {
             connectionTimeoutMillis: 5000
         };
 
-        this.pool = new Pool(poolConfig);
+        const newPool = new Pool(poolConfig);
 
-        // Test the connection
-        const client = await this.pool.connect();
+        // Test the connection before committing
+        const client = await newPool.connect();
         client.release();
 
+        this.pool = newPool;
         this.activeConfig = config;
         this._onConnectionChanged.fire();
+    }
+
+    async saveConnection(config: ConnectionConfig, password: string): Promise<void> {
+        await this.context.secrets.store(`pgqb_password_${config.name}`, password);
+
+        const vsConfig = vscode.workspace.getConfiguration('postgresQueryBuilder');
+        const saved = vsConfig.get<ConnectionConfig[]>('savedConnections', []);
+
+        const existing = saved.findIndex(c => c.name === config.name);
+        if (existing >= 0) {
+            saved[existing] = config;
+        } else {
+            saved.push(config);
+        }
+
+        await vsConfig.update('savedConnections', saved, vscode.ConfigurationTarget.Global);
+    }
+
+    async deleteConnection(name: string): Promise<void> {
+        if (this.activeConfig?.name === name) {
+            if (this.pool) {
+                await this.pool.end();
+                this.pool = null;
+            }
+            this.activeConfig = null;
+            this._onConnectionChanged.fire();
+        }
+        await this.context.secrets.delete(`pgqb_password_${name}`);
+
+        const vsConfig = vscode.workspace.getConfiguration('postgresQueryBuilder');
+        const saved = vsConfig.get<ConnectionConfig[]>('savedConnections', []);
+        await vsConfig.update(
+            'savedConnections',
+            saved.filter(c => c.name !== name),
+            vscode.ConfigurationTarget.Global
+        );
     }
 
     async disconnect(): Promise<void> {
@@ -183,27 +112,6 @@ export class ConnectionManager {
             this._onConnectionChanged.fire();
             vscode.window.showInformationMessage('Disconnected from PostgreSQL');
         }
-    }
-
-    private getSavedConnections(): ConnectionConfig[] {
-        const config = vscode.workspace.getConfiguration('postgresQueryBuilder');
-        return config.get<ConnectionConfig[]>('savedConnections', []);
-    }
-
-    private async saveConnection(connConfig: ConnectionConfig, password: string): Promise<void> {
-        await this.context.secrets.store(`pgqb_password_${connConfig.name}`, password);
-
-        const config = vscode.workspace.getConfiguration('postgresQueryBuilder');
-        const saved = config.get<ConnectionConfig[]>('savedConnections', []);
-
-        const existing = saved.findIndex(c => c.name === connConfig.name);
-        if (existing >= 0) {
-            saved[existing] = connConfig;
-        } else {
-            saved.push(connConfig);
-        }
-
-        await config.update('savedConnections', saved, vscode.ConfigurationTarget.Global);
     }
 
     async query(sql: string, params?: any[]): Promise<any> {

@@ -37,6 +37,21 @@
         "category": "PostgreSQL"
       },
       {
+        "command": "postgresQueryBuilder.connectToSaved",
+        "title": "Connect",
+        "category": "PostgreSQL"
+      },
+      {
+        "command": "postgresQueryBuilder.editConnection",
+        "title": "Edit Connection",
+        "category": "PostgreSQL"
+      },
+      {
+        "command": "postgresQueryBuilder.deleteConnection",
+        "title": "Delete Connection",
+        "category": "PostgreSQL"
+      },
+      {
         "command": "postgresQueryBuilder.disconnect",
         "title": "Disconnect from PostgreSQL Database",
         "category": "PostgreSQL"
@@ -69,6 +84,28 @@
           "command": "postgresQueryBuilder.refreshExplorer",
           "when": "view == postgresTableExplorer",
           "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "postgresQueryBuilder.connectToSaved",
+          "when": "view == postgresTableExplorer && viewItem == connectionInactive",
+          "group": "1_connect@1"
+        },
+        {
+          "command": "postgresQueryBuilder.disconnect",
+          "when": "view == postgresTableExplorer && viewItem == connectionActive",
+          "group": "1_connect@1"
+        },
+        {
+          "command": "postgresQueryBuilder.editConnection",
+          "when": "view == postgresTableExplorer && viewItem =~ /^connection/",
+          "group": "2_manage@1"
+        },
+        {
+          "command": "postgresQueryBuilder.deleteConnection",
+          "when": "view == postgresTableExplorer && viewItem =~ /^connection/",
+          "group": "2_manage@2"
         }
       ]
     },
