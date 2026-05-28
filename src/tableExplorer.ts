@@ -31,6 +31,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
     }
 
     refresh(): void {
+        this.connectionManager.clearMetadataCache();
         this._onDidChangeTreeData.fire();
     }
 
@@ -77,9 +78,9 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                              ORDER BY schema_name`;
                 }
 
-                const result = await this.connectionManager.query(query, params);
+                const rows = await this.connectionManager.queryMetadata(query, params);
 
-                const schemas = result.rows.map((row: any) => ({
+                const schemas = rows.map((row: any) => ({
                     type: 'schema' as const,
                     schema: row.schema_name
                 }));
@@ -96,13 +97,13 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                     // Otherwise show all schemas that have matching tables
                     const filtered: SchemaNode[] = [];
                     for (const schema of schemas) {
-                        const tables = await this.connectionManager.query(
+                        const rows = await this.connectionManager.queryMetadata(
                             `SELECT table_name FROM information_schema.tables
                              WHERE table_schema = $1 AND table_type IN ('BASE TABLE', 'FOREIGN')
                              ORDER BY table_name`,
                             [schema.schema]
                         );
-                        const hasMatch = tables.rows.some((row: any) =>
+                        const hasMatch = rows.some((row: any) =>
                             row.table_name.toLowerCase().includes(this._filterText) ||
                             schema.schema.toLowerCase().includes(this._filterText)
                         );
@@ -115,14 +116,14 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
 
                 return schemas;
             } else if (element.type === 'schema') {
-                const result = await this.connectionManager.query(
+                const rows = await this.connectionManager.queryMetadata(
                     `SELECT table_name FROM information_schema.tables
                      WHERE table_schema = $1 AND table_type IN ('BASE TABLE', 'FOREIGN')
                      ORDER BY table_name`,
                     [element.schema]
                 );
 
-                let tables = result.rows.map((row: any) => ({
+                let tables = rows.map((row: any) => ({
                     type: 'table' as const,
                     schema: element.schema,
                     table: row.table_name
