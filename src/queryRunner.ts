@@ -1,6 +1,22 @@
 import { ConnectionManager } from './connectionManager';
 import * as vscode from 'vscode';
 
+const POSTGRES_RESERVED_KEYWORDS = new Set([
+    'all', 'analyse', 'analyze', 'and', 'any', 'array', 'as', 'asc', 'asymmetric',
+    'authorization', 'between', 'binary', 'both', 'case', 'cast', 'check', 'collate',
+    'column', 'concurrently', 'constraint', 'create', 'cross', 'current_catalog',
+    'current_date', 'current_role', 'current_schema', 'current_time', 'current_timestamp',
+    'current_user', 'default', 'deferrable', 'desc', 'distinct', 'do', 'else', 'end',
+    'except', 'false', 'fetch', 'for', 'foreign', 'from', 'freeze', 'full', 'grant',
+    'group', 'having', 'ilike', 'in', 'initially', 'inner', 'intersect', 'into', 'is',
+    'isnull', 'join', 'lateral', 'leading', 'left', 'like', 'limit', 'localtime',
+    'localtimestamp', 'natural', 'not', 'notnull', 'null', 'offset', 'on', 'only', 'or',
+    'order', 'outer', 'overlaps', 'placing', 'primary', 'references', 'returning', 'right',
+    'select', 'session_user', 'similar', 'some', 'symmetric', 'table', 'then', 'to',
+    'trailing', 'true', 'union', 'unique', 'user', 'using', 'variadic', 'verbose', 'when',
+    'where', 'window', 'with'
+]);
+
 export interface ColumnInfo {
     name: string;
     dataType: string;
@@ -30,7 +46,6 @@ export interface ReferencingTableInfo {
 
 export class QueryRunner {
     private connectionManager: ConnectionManager;
-    private searchPathSchemas: Set<string> | null = null;
 
     constructor(connectionManager: ConnectionManager) {
         this.connectionManager = connectionManager;
@@ -305,15 +320,12 @@ export class QueryRunner {
     }
 
     private async isSchemaInSearchPath(schema: string): Promise<boolean> {
-        if (!this.searchPathSchemas) {
-            const result = await this.connectionManager.query('SELECT current_schemas(false) AS schemas');
-            const schemas = result.rows[0]?.schemas;
-            this.searchPathSchemas = new Set(
-                Array.isArray(schemas) ? schemas.map((s: string) => s.toLowerCase()) : []
-            );
-        }
-
-        return this.searchPathSchemas.has(schema.toLowerCase());
+        const result = await this.connectionManager.query('SELECT current_schemas(false) AS schemas');
+        const schemas = result.rows[0]?.schemas;
+        const schemaSet = new Set(
+            Array.isArray(schemas) ? schemas.map((s: string) => s.toLowerCase()) : []
+        );
+        return schemaSet.has(schema.toLowerCase());
     }
 
     private formatIdentifier(identifier: string, alwaysQuote: boolean): string {
@@ -324,6 +336,6 @@ export class QueryRunner {
     }
 
     private needsQuoting(identifier: string): boolean {
-        return !/^[a-z_][a-z0-9_$]*$/.test(identifier);
+        return !/^[a-z_][a-z0-9_$]*$/.test(identifier) || POSTGRES_RESERVED_KEYWORDS.has(identifier.toLowerCase());
     }
 }

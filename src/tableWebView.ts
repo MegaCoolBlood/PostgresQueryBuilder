@@ -47,11 +47,21 @@ export class TableWebViewManager {
         panel.webview.html = this.getWebviewContent(panel.webview);
 
         // Send initial info immediately so the webview can show query + loading state
+        const alwaysQuote = vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false);
+        let tableReference = `${schema}.${table}`;
+        try {
+            const initQueryRunner = new QueryRunner(this.connectionManager);
+            const initSelectBuildInfo = await initQueryRunner.getSelectBuildInfo(schema, table);
+            tableReference = initSelectBuildInfo.tableReference;
+        } catch {
+            // Ignore init formatting errors; loadData will provide the authoritative value
+        }
         panel.webview.postMessage({
             command: 'init',
             schema: schema,
             table: table,
-            alwaysQuote: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false)
+            alwaysQuote: alwaysQuote,
+            tableReference: tableReference
         });
 
         // Handle messages from webview
@@ -207,5 +217,6 @@ export class TableWebViewManager {
             this.pendingFilters.set(key, { column, value: String(value) });
             await this.openTableView(schema, table);
         }
+
     }
 }
