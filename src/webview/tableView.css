@@ -272,6 +272,28 @@ td[contenteditable="true"]:focus {
     font-style: italic;
 }
 
+/* Foreign key button */
+.fk-btn {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 0 3px;
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    background: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+    border: none;
+    border-radius: 2px;
+    vertical-align: middle;
+    opacity: 0.7;
+}
+
+.fk-btn:hover {
+    opacity: 1;
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+}
+
 /* SQL Preview Dialog */
 .sql-dialog-overlay {
     position: fixed;

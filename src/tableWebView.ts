@@ -6,6 +6,7 @@ import * as fs from 'fs';
 
 export class TableWebViewManager {
     private panels: Map<string, vscode.WebviewPanel> = new Map();
+    private pendingFilters: Map<string, { column: string; value: string }> = new Map();
     private context: vscode.ExtensionContext;
     private connectionManager: ConnectionManager;
 
@@ -58,6 +59,7 @@ export class TableWebViewManager {
                         const totalCount = await queryRunner.getRowCount(schema, table);
                         const columns = await queryRunner.getColumns(schema, table);
                         const primaryKeys = await queryRunner.getPrimaryKeys(schema, table);
+                        const foreignKeys = await queryRunner.getForeignKeys(schema, table);
 
                         panel.webview.postMessage({
                             command: 'dataLoaded',
@@ -65,9 +67,21 @@ export class TableWebViewManager {
                             totalCount: totalCount,
                             columns: columns,
                             primaryKeys: primaryKeys,
+                            foreignKeys: foreignKeys,
                             schema: schema,
                             table: table
                         });
+
+                        // Send pending filter after data is loaded
+                        const pendingFilter = this.pendingFilters.get(key);
+                        if (pendingFilter) {
+                            this.pendingFilters.delete(key);
+                            panel.webview.postMessage({
+                                command: 'applyFilter',
+                                column: pendingFilter.column,
+                                value: pendingFilter.value
+                            });
+                        }
                         break;
                     }
                     case 'previewSQL': {
@@ -110,6 +124,14 @@ export class TableWebViewManager {
                         });
                         break;
                     }
+                    case 'openForeignKey': {
+                        const fkSchema = message.refSchema;
+                        const fkTable = message.refTable;
+                        const fkColumn = message.refColumn;
+                        const fkValue = message.value;
+                        await this.openTableViewWithFilter(fkSchema, fkTable, fkColumn, fkValue);
+                        break;
+                    }
                 }
             } catch (err: any) {
                 panel.webview.postMessage({
@@ -135,5 +157,24 @@ export class TableWebViewManager {
         html = html.replace('/* JS_PLACEHOLDER */', js);
 
         return html;
+    }
+
+    async openTableViewWithFilter(schema: string, table: string, column: string, value: any): Promise<void> {
+        const key = `${schema}.${table}`;
+        const existingPanel = this.panels.get(key);
+
+        if (existingPanel) {
+            // Panel already exists and has data loaded — send filter directly
+            existingPanel.reveal();
+            existingPanel.webview.postMessage({
+                command: 'applyFilter',
+                column: column,
+                value: String(value)
+            });
+        } else {
+            // Panel will be created — store filter to send after first dataLoaded
+            this.pendingFilters.set(key, { column, value: String(value) });
+            await this.openTableView(schema, table);
+        }
     }
 }
