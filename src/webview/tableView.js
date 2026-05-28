@@ -15,6 +15,21 @@
     let totalCount = 0;
     let currentOffset = 0;
     const PAGE_SIZE = 50;
+    const POSTGRES_RESERVED_KEYWORDS = new Set([
+        'all', 'analyse', 'analyze', 'and', 'any', 'array', 'as', 'asc', 'asymmetric',
+        'authorization', 'between', 'binary', 'both', 'case', 'cast', 'check', 'collate',
+        'column', 'concurrently', 'constraint', 'create', 'cross', 'current_catalog',
+        'current_date', 'current_role', 'current_schema', 'current_time', 'current_timestamp',
+        'current_user', 'default', 'deferrable', 'desc', 'distinct', 'do', 'else', 'end',
+        'except', 'false', 'fetch', 'for', 'foreign', 'from', 'freeze', 'full', 'grant',
+        'group', 'having', 'ilike', 'in', 'initially', 'inner', 'intersect', 'into', 'is',
+        'isnull', 'join', 'lateral', 'leading', 'left', 'like', 'limit', 'localtime',
+        'localtimestamp', 'natural', 'not', 'notnull', 'null', 'offset', 'on', 'only', 'or',
+        'order', 'outer', 'overlaps', 'placing', 'primary', 'references', 'returning', 'right',
+        'select', 'session_user', 'similar', 'some', 'symmetric', 'table', 'then', 'to',
+        'trailing', 'true', 'union', 'unique', 'user', 'using', 'variadic', 'verbose', 'when',
+        'where', 'window', 'with'
+    ]);
 
     // Change tracking
     let modifiedCells = new Map(); // "rowIndex:colName" -> newValue
@@ -118,6 +133,7 @@
     function handleInit(msg) {
         schema = msg.schema;
         table = msg.table;
+        tableReference = msg.tableReference || '';
         alwaysQuote = Boolean(msg.alwaysQuote);
         tableName.textContent = `${schema}.${table}`;
         queryInput.value = `SELECT * FROM ${getDefaultTableReference()} LIMIT ${PAGE_SIZE} OFFSET 0`;
@@ -802,7 +818,7 @@
     }
 
     function needsQuoting(identifier) {
-        return !/^[a-z_][a-z0-9_$]*$/.test(identifier);
+        return !/^[a-z_][a-z0-9_$]*$/.test(identifier) || POSTGRES_RESERVED_KEYWORDS.has(String(identifier).toLowerCase());
     }
 
     function escapeHtml(text) {
