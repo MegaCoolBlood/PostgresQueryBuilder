@@ -46,6 +46,13 @@ export class TableWebViewManager {
 
         panel.webview.html = this.getWebviewContent(panel.webview);
 
+        // Send initial info immediately so the webview can show query + loading state
+        panel.webview.postMessage({
+            command: 'init',
+            schema: schema,
+            table: table
+        });
+
         // Handle messages from webview
         panel.webview.onDidReceiveMessage(async (message) => {
             const queryRunner = new QueryRunner(this.connectionManager);
@@ -53,23 +60,18 @@ export class TableWebViewManager {
             try {
                 switch (message.command) {
                     case 'loadData': {
+                        // First: fetch and send rows + columns (fast essentials)
+                        const columns = await queryRunner.getColumns(schema, table);
                         const data = await queryRunner.fetchRows(
                             schema, table, message.offset || 0, message.limit || 50
                         );
                         const totalCount = await queryRunner.getRowCount(schema, table);
-                        const columns = await queryRunner.getColumns(schema, table);
-                        const primaryKeys = await queryRunner.getPrimaryKeys(schema, table);
-                        const foreignKeys = await queryRunner.getForeignKeys(schema, table);
-                        const referencingTables = await queryRunner.getReferencingTables(schema, table);
 
                         panel.webview.postMessage({
                             command: 'dataLoaded',
                             data: data,
                             totalCount: totalCount,
                             columns: columns,
-                            primaryKeys: primaryKeys,
-                            foreignKeys: foreignKeys,
-                            referencingTables: referencingTables,
                             schema: schema,
                             table: table
                         });
@@ -84,6 +86,29 @@ export class TableWebViewManager {
                                 value: pendingFilter.value
                             });
                         }
+
+                        // Fetch metadata independently in parallel
+                        queryRunner.getPrimaryKeys(schema, table).then(primaryKeys => {
+                            panel.webview.postMessage({
+                                command: 'primaryKeysLoaded',
+                                primaryKeys: primaryKeys
+                            });
+                        }).catch(err => console.warn(`Failed to load PKs: ${err.message}`));
+
+                        queryRunner.getForeignKeys(schema, table).then(foreignKeys => {
+                            panel.webview.postMessage({
+                                command: 'foreignKeysLoaded',
+                                foreignKeys: foreignKeys
+                            });
+                        }).catch(err => console.warn(`Failed to load FKs: ${err.message}`));
+
+                        queryRunner.getReferencingTables(schema, table).then(referencingTables => {
+                            panel.webview.postMessage({
+                                command: 'referencingTablesLoaded',
+                                referencingTables: referencingTables
+                            });
+                        }).catch(err => console.warn(`Failed to load referencing tables: ${err.message}`));
+
                         break;
                     }
                     case 'previewSQL': {
