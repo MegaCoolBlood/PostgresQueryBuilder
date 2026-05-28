@@ -60,6 +60,7 @@ export class TableWebViewManager {
                         const columns = await queryRunner.getColumns(schema, table);
                         const primaryKeys = await queryRunner.getPrimaryKeys(schema, table);
                         const foreignKeys = await queryRunner.getForeignKeys(schema, table);
+                        const referencingTables = await queryRunner.getReferencingTables(schema, table);
 
                         panel.webview.postMessage({
                             command: 'dataLoaded',
@@ -68,6 +69,7 @@ export class TableWebViewManager {
                             columns: columns,
                             primaryKeys: primaryKeys,
                             foreignKeys: foreignKeys,
+                            referencingTables: referencingTables,
                             schema: schema,
                             table: table
                         });
