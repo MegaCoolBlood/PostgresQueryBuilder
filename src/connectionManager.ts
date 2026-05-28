@@ -19,6 +19,7 @@ export interface ConnectionConfig {
 export class ConnectionManager {
     private pool: Pool | null = null;
     private activeConfig: ConnectionConfig | null = null;
+    private metadataQueryCache = new Map<string, any[]>();
     private context: vscode.ExtensionContext;
     private _onConnectionChanged = new vscode.EventEmitter<void>();
     public readonly onConnectionChanged = this._onConnectionChanged.event;
@@ -170,6 +171,7 @@ export class ConnectionManager {
         if (this.pool) {
             await this.pool.end();
         }
+        this.clearMetadataCache();
 
         // Resolve hostname via OS resolver (respects hosts file)
         let resolvedHost = config.host;
@@ -221,6 +223,7 @@ export class ConnectionManager {
             await this.pool.end();
             this.pool = null;
             this.activeConfig = null;
+            this.clearMetadataCache();
             this._onConnectionChanged.fire();
             vscode.window.showInformationMessage('Disconnected from PostgreSQL');
         }
@@ -252,6 +255,23 @@ export class ConnectionManager {
             throw new Error('Not connected to a database');
         }
         return this.pool.query(sql, params);
+    }
+
+    async queryMetadata(sql: string, params?: any[]): Promise<any[]> {
+        const cacheKey = `${sql}|${JSON.stringify(params ?? [])}`;
+        const cachedRows = this.metadataQueryCache.get(cacheKey);
+        if (cachedRows) {
+            return cachedRows.map(row => ({ ...row }));
+        }
+
+        const result = await this.query(sql, params);
+        const rows = Array.isArray(result.rows) ? result.rows : [];
+        this.metadataQueryCache.set(cacheKey, rows.map((row: any) => ({ ...row })));
+        return rows;
+    }
+
+    clearMetadataCache(): void {
+        this.metadataQueryCache.clear();
     }
 
     private async editConnection(savedConnections: ConnectionConfig[]): Promise<void> {
@@ -297,6 +317,7 @@ export class ConnectionManager {
             this.pool.end();
             this.pool = null;
         }
+        this.clearMetadataCache();
         this._onConnectionChanged.dispose();
     }
 }
