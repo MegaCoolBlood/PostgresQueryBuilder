@@ -29,9 +29,20 @@ export interface ReferencingTableInfo {
 
 export class QueryRunner {
     private connectionManager: ConnectionManager;
+    private static columnsCache = new Map<string, ColumnInfo[]>();
+    private static primaryKeysCache = new Map<string, string[]>();
+    private static foreignKeysCache = new Map<string, ForeignKeyInfo[]>();
+    private static referencingTablesCache = new Map<string, ReferencingTableInfo[]>();
 
     constructor(connectionManager: ConnectionManager) {
         this.connectionManager = connectionManager;
+    }
+
+    static clearMetadataCache(): void {
+        this.columnsCache.clear();
+        this.primaryKeysCache.clear();
+        this.foreignKeysCache.clear();
+        this.referencingTablesCache.clear();
     }
 
     async fetchRows(schema: string, table: string, offset: number, limit: number): Promise<any[]> {
@@ -50,6 +61,12 @@ export class QueryRunner {
     }
 
     async getColumns(schema: string, table: string): Promise<ColumnInfo[]> {
+        const cacheKey = this.getTableCacheKey(schema, table);
+        const cached = QueryRunner.columnsCache.get(cacheKey);
+        if (cached) {
+            return cached.map(column => ({ ...column }));
+        }
+
         const result = await this.connectionManager.query(
             `SELECT column_name, data_type, is_nullable, column_default
              FROM information_schema.columns
@@ -57,15 +74,23 @@ export class QueryRunner {
              ORDER BY ordinal_position`,
             [schema, table]
         );
-        return result.rows.map((row: any) => ({
+        const columns = result.rows.map((row: any) => ({
             name: row.column_name,
             dataType: row.data_type,
             isNullable: row.is_nullable === 'YES',
             columnDefault: row.column_default
         }));
+        QueryRunner.columnsCache.set(cacheKey, columns);
+        return columns.map((column: ColumnInfo) => ({ ...column }));
     }
 
     async getPrimaryKeys(schema: string, table: string): Promise<string[]> {
+        const cacheKey = this.getTableCacheKey(schema, table);
+        const cached = QueryRunner.primaryKeysCache.get(cacheKey);
+        if (cached) {
+            return [...cached];
+        }
+
         const result = await this.connectionManager.query(
             `SELECT a.attname
              FROM pg_index i
@@ -73,10 +98,18 @@ export class QueryRunner {
              WHERE i.indrelid = '"${schema}"."${table}"'::regclass
              AND i.indisprimary`,
         );
-        return result.rows.map((row: any) => row.attname);
+        const primaryKeys = result.rows.map((row: any) => row.attname);
+        QueryRunner.primaryKeysCache.set(cacheKey, primaryKeys);
+        return [...primaryKeys];
     }
 
     async getForeignKeys(schema: string, table: string): Promise<ForeignKeyInfo[]> {
+        const cacheKey = this.getTableCacheKey(schema, table);
+        const cached = QueryRunner.foreignKeysCache.get(cacheKey);
+        if (cached) {
+            return cached.map(foreignKey => ({ ...foreignKey }));
+        }
+
         const result = await this.connectionManager.query(
             `SELECT
                 kcu.column_name AS fk_column,
@@ -95,15 +128,23 @@ export class QueryRunner {
                 AND tc.table_name = $2`,
             [schema, table]
         );
-        return result.rows.map((row: any) => ({
+        const foreignKeys = result.rows.map((row: any) => ({
             column: row.fk_column,
             refSchema: row.ref_schema,
             refTable: row.ref_table,
             refColumn: row.ref_column
         }));
+        QueryRunner.foreignKeysCache.set(cacheKey, foreignKeys);
+        return foreignKeys.map((foreignKey: ForeignKeyInfo) => ({ ...foreignKey }));
     }
 
     async getReferencingTables(schema: string, table: string): Promise<ReferencingTableInfo[]> {
+        const cacheKey = this.getTableCacheKey(schema, table);
+        const cached = QueryRunner.referencingTablesCache.get(cacheKey);
+        if (cached) {
+            return cached.map(referencingTable => ({ ...referencingTable }));
+        }
+
         const result = await this.connectionManager.query(
             `SELECT
                 kcu.table_schema AS fk_schema,
@@ -122,12 +163,14 @@ export class QueryRunner {
                 AND ccu.table_name = $2`,
             [schema, table]
         );
-        return result.rows.map((row: any) => ({
+        const referencingTables = result.rows.map((row: any) => ({
             fkSchema: row.fk_schema,
             fkTable: row.fk_table,
             fkColumn: row.fk_column,
             localColumn: row.local_column
         }));
+        QueryRunner.referencingTablesCache.set(cacheKey, referencingTables);
+        return referencingTables.map((referencingTable: ReferencingTableInfo) => ({ ...referencingTable }));
     }
 
     async commitChanges(schema: string, table: string, changes: ChangeSet): Promise<void> {
@@ -272,5 +315,13 @@ export class QueryRunner {
         }
         // Escape single quotes for SQL strings
         return `'${String(val).replace(/'/g, "''")}'`;
+    }
+
+    private getTableCacheKey(schema: string, table: string): string {
+        const config = this.connectionManager.getActiveConnectionConfig();
+        const connectionKey = config
+            ? `${config.host}:${config.port}/${config.database}:${config.user}`
+            : 'disconnected';
+        return `${connectionKey}:${schema}.${table}`;
     }
 }

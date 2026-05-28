@@ -20,6 +20,8 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
 
     private connectionManager: ConnectionManager;
     private _filterText = '';
+    private cachedSchemas: SchemaNode[] | null = null;
+    private cachedTablesBySchema: Map<string, TableNode[]> = new Map();
 
     constructor(connectionManager: ConnectionManager) {
         this.connectionManager = connectionManager;
@@ -31,6 +33,8 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
     }
 
     refresh(): void {
+        this.cachedSchemas = null;
+        this.cachedTablesBySchema.clear();
         this._onDidChangeTreeData.fire();
     }
 
@@ -56,33 +60,14 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
 
     async getChildren(element?: TreeNode): Promise<TreeNode[]> {
         if (!this.connectionManager.isConnected()) {
+            this.cachedSchemas = null;
+            this.cachedTablesBySchema.clear();
             return [];
         }
 
         try {
             if (!element) {
-                const configSchemas = this.connectionManager.getActiveConnectionConfig()?.schemas;
-                let query: string;
-                let params: any[] | undefined;
-
-                if (configSchemas && configSchemas.length > 0) {
-                    const placeholders = configSchemas.map((_, i) => `$${i + 1}`).join(', ');
-                    query = `SELECT schema_name FROM information_schema.schemata
-                             WHERE schema_name IN (${placeholders})
-                             ORDER BY schema_name`;
-                    params = configSchemas;
-                } else {
-                    query = `SELECT schema_name FROM information_schema.schemata
-                             WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-                             ORDER BY schema_name`;
-                }
-
-                const result = await this.connectionManager.query(query, params);
-
-                const schemas = result.rows.map((row: any) => ({
-                    type: 'schema' as const,
-                    schema: row.schema_name
-                }));
+                const schemas = await this.getSchemas();
 
                 if (this._filterText) {
                     // If filter contains a dot, match schema prefix
@@ -96,14 +81,9 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                     // Otherwise show all schemas that have matching tables
                     const filtered: SchemaNode[] = [];
                     for (const schema of schemas) {
-                        const tables = await this.connectionManager.query(
-                            `SELECT table_name FROM information_schema.tables
-                             WHERE table_schema = $1 AND table_type IN ('BASE TABLE', 'FOREIGN')
-                             ORDER BY table_name`,
-                            [schema.schema]
-                        );
-                        const hasMatch = tables.rows.some((row: any) =>
-                            row.table_name.toLowerCase().includes(this._filterText) ||
+                        const tables = await this.getTablesForSchema(schema.schema);
+                        const hasMatch = tables.some((row: TableNode) =>
+                            row.table.toLowerCase().includes(this._filterText) ||
                             schema.schema.toLowerCase().includes(this._filterText)
                         );
                         if (hasMatch) {
@@ -115,18 +95,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
 
                 return schemas;
             } else if (element.type === 'schema') {
-                const result = await this.connectionManager.query(
-                    `SELECT table_name FROM information_schema.tables
-                     WHERE table_schema = $1 AND table_type IN ('BASE TABLE', 'FOREIGN')
-                     ORDER BY table_name`,
-                    [element.schema]
-                );
-
-                let tables = result.rows.map((row: any) => ({
-                    type: 'table' as const,
-                    schema: element.schema,
-                    table: row.table_name
-                }));
+                let tables = [...await this.getTablesForSchema(element.schema)];
 
                 if (this._filterText) {
                     const dotIndex = this._filterText.indexOf('.');
@@ -148,5 +117,57 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
         }
 
         return [];
+    }
+
+    private async getSchemas(): Promise<SchemaNode[]> {
+        if (this.cachedSchemas) {
+            return this.cachedSchemas;
+        }
+
+        const configSchemas = this.connectionManager.getActiveConnectionConfig()?.schemas;
+        let query: string;
+        let params: any[] | undefined;
+
+        if (configSchemas && configSchemas.length > 0) {
+            const placeholders = configSchemas.map((_, i) => `$${i + 1}`).join(', ');
+            query = `SELECT schema_name FROM information_schema.schemata
+                     WHERE schema_name IN (${placeholders})
+                     ORDER BY schema_name`;
+            params = configSchemas;
+        } else {
+            query = `SELECT schema_name FROM information_schema.schemata
+                     WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                     ORDER BY schema_name`;
+        }
+
+        const result = await this.connectionManager.query(query, params);
+        const schemas = result.rows.map((row: any) => ({
+            type: 'schema' as const,
+            schema: row.schema_name
+        }));
+        this.cachedSchemas = schemas;
+        return schemas;
+    }
+
+    private async getTablesForSchema(schema: string): Promise<TableNode[]> {
+        const cachedTables = this.cachedTablesBySchema.get(schema);
+        if (cachedTables) {
+            return cachedTables;
+        }
+
+        const result = await this.connectionManager.query(
+            `SELECT table_name FROM information_schema.tables
+             WHERE table_schema = $1 AND table_type IN ('BASE TABLE', 'FOREIGN')
+             ORDER BY table_name`,
+            [schema]
+        );
+
+        const tables = result.rows.map((row: any) => ({
+            type: 'table' as const,
+            schema: schema,
+            table: row.table_name
+        }));
+        this.cachedTablesBySchema.set(schema, tables);
+        return tables;
     }
 }

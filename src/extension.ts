@@ -4,6 +4,7 @@ import { TableExplorerProvider } from './tableExplorer';
 import { TableWebViewManager } from './tableWebView';
 import { SqlEditorManager } from './sqlEditor';
 import { SearchViewProvider } from './searchViewProvider';
+import { QueryRunner } from './queryRunner';
 
 let connectionManager: ConnectionManager;
 let tableExplorer: TableExplorerProvider;
@@ -53,6 +54,7 @@ export function activate(context: vscode.ExtensionContext) {
             tableExplorer.refresh();
         }),
         vscode.commands.registerCommand('postgresQueryBuilder.refreshExplorer', () => {
+            QueryRunner.clearMetadataCache();
             tableExplorer.refresh();
         }),
         vscode.commands.registerCommand('postgresQueryBuilder.openTable', (schema: string, table: string) => {
@@ -70,6 +72,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Listen for connection changes
     connectionManager.onConnectionChanged(() => {
+        QueryRunner.clearMetadataCache();
         updateStatusBar();
         tableExplorer.refresh();
     });
