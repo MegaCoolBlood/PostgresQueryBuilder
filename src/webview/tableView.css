@@ -243,6 +243,24 @@ th.sorted-desc::after {
     outline: 1px solid var(--vscode-focusBorder);
 }
 
+.filter-mode {
+    width: 100%;
+    margin-bottom: 2px;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border);
+    padding: 2px 4px;
+    font-size: 11px;
+}
+
+.filter-input-secondary {
+    margin-top: 2px;
+}
+
+.filter-input.hidden {
+    display: none;
+}
+
 /* Row states */
 tr.row-modified td {
     background: rgba(255, 235, 59, 0.15);

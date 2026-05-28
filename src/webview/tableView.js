@@ -44,6 +44,8 @@
     // Filter state
     let filters = {};
     let exactFilters = {}; // FK filters that use exact match
+    let filterModes = {};
+    let filterRangeValues = {};
 
     // DOM refs
     const tableHead = document.getElementById('tableHead');
@@ -246,8 +248,33 @@
         html += '<tr class="filter-row">';
         html += '<th></th>';
         columns.forEach(col => {
-            const val = filters[col.name] || '';
-            html += `<th><input class="filter-input" data-col="${escapeAttr(col.name)}" placeholder="Filter..." value="${escapeAttr(val)}"></th>`;
+            const colName = col.name;
+            const val = filters[colName] || '';
+            const type = getColumnFilterType(colName);
+            if (type === 'number' || type === 'date') {
+                const mode = filterModes[colName] || getDefaultFilterMode(type);
+                const secondVal = filterRangeValues[colName] || '';
+                const inputType = getFilterInputType(type, col.dataType);
+                const between = mode === 'between';
+                html += '<th>';
+                html += `<select class="filter-mode" data-col="${escapeAttr(colName)}">`;
+                if (type === 'number') {
+                    html += `<option value="equals"${mode === 'equals' ? ' selected' : ''}>=</option>`;
+                    html += `<option value="gt"${mode === 'gt' ? ' selected' : ''}>&gt;</option>`;
+                    html += `<option value="lt"${mode === 'lt' ? ' selected' : ''}>&lt;</option>`;
+                } else {
+                    html += `<option value="equals"${mode === 'equals' ? ' selected' : ''}>On</option>`;
+                    html += `<option value="after"${mode === 'after' ? ' selected' : ''}>After</option>`;
+                    html += `<option value="before"${mode === 'before' ? ' selected' : ''}>Before</option>`;
+                }
+                html += `<option value="between"${between ? ' selected' : ''}>Between</option>`;
+                html += '</select>';
+                html += `<input type="${escapeAttr(inputType)}" class="filter-input" data-col="${escapeAttr(colName)}" data-filter-role="primary" placeholder="Value..." value="${escapeAttr(val)}">`;
+                html += `<input type="${escapeAttr(inputType)}" class="filter-input filter-input-secondary${between ? '' : ' hidden'}" data-col="${escapeAttr(colName)}" data-filter-role="secondary" placeholder="And..." value="${escapeAttr(secondVal)}">`;
+                html += '</th>';
+            } else {
+                html += `<th><input class="filter-input" data-col="${escapeAttr(colName)}" data-filter-role="primary" placeholder="Filter..." value="${escapeAttr(val)}"></th>`;
+            }
         });
         html += '</tr>';
 
@@ -271,7 +298,12 @@
         tableHead.querySelectorAll('.filter-input').forEach(input => {
             input.addEventListener('input', (e) => {
                 const col = e.target.getAttribute('data-col');
-                filters[col] = e.target.value;
+                const role = e.target.getAttribute('data-filter-role') || 'primary';
+                if (role === 'secondary') {
+                    filterRangeValues[col] = e.target.value;
+                } else {
+                    filters[col] = e.target.value;
+                }
                 delete exactFilters[col]; // Manual input = ILIKE, not exact
                 renderBody();
             });
@@ -279,6 +311,24 @@
                 if (e.key === 'Enter') {
                     applyFiltersToQuery();
                 }
+            });
+        });
+
+        tableHead.querySelectorAll('.filter-mode').forEach(select => {
+            select.addEventListener('change', (e) => {
+                const col = e.target.getAttribute('data-col');
+                const mode = e.target.value;
+                filterModes[col] = mode;
+                delete exactFilters[col];
+                const secondaryInput = tableHead.querySelector(`.filter-input-secondary[data-col="${cssEscape(col)}"]`);
+                if (secondaryInput) {
+                    secondaryInput.classList.toggle('hidden', mode !== 'between');
+                    if (mode !== 'between') {
+                        filterRangeValues[col] = '';
+                        secondaryInput.value = '';
+                    }
+                }
+                renderBody();
             });
         });
     }
@@ -289,12 +339,20 @@
         const whereClauses = [];
         for (const [col, val] of Object.entries(filters)) {
             if (!val) continue;
-            const escaped = val.replace(/'/g, "''");
-            if (exactFilters[col]) {
+            if (Object.prototype.hasOwnProperty.call(exactFilters, col)) {
                 // Exact match for FK navigation
-                whereClauses.push(`"${col}" = '${escaped}'`);
-            } else {
-                whereClauses.push(`"${col}"::text ILIKE '%${escaped}%'`);
+                const exactLiteral = formatSqlLiteral(exactFilters[col], getColumnFilterType(col));
+                if (exactLiteral !== null) {
+                    whereClauses.push(`"${col}" = ${exactLiteral}`);
+                }
+                continue;
+            }
+
+            const filterType = getColumnFilterType(col);
+            const mode = filterModes[col] || getDefaultFilterMode(filterType);
+            const clause = buildFilterClause(col, filterType, mode, val, filterRangeValues[col] || '');
+            if (clause) {
+                whereClauses.push(clause);
             }
         }
 
@@ -336,9 +394,10 @@
                 label: 'Exclude this Value from Query',
                 action: () => {
                     if (!schema || !table) return;
-                    const escaped = String(cellValue).replace(/'/g, "''");
+                    const literal = formatSqlLiteral(cellValue, getColumnFilterType(colName));
+                    if (literal === null) return;
                     const currentSql = queryInput.value.trim();
-                    const excludeClause = `"${colName}" != '${escaped}'`;
+                    const excludeClause = `"${colName}" <> ${literal}`;
                     let sql;
                     if (currentSql.toLowerCase().includes(' where ')) {
                         sql = currentSql + ` AND ${excludeClause}`;
@@ -426,12 +485,7 @@
         // Apply filters
         for (const [col, filterVal] of Object.entries(filters)) {
             if (!filterVal) continue;
-            const lowerFilter = filterVal.toLowerCase();
-            rows = rows.filter(row => {
-                const cellVal = row[col];
-                if (cellVal === null || cellVal === undefined) return false;
-                return String(cellVal).toLowerCase().includes(lowerFilter);
-            });
+            rows = rows.filter(row => doesRowMatchFilter(row, col, filterVal));
         }
 
         // Apply sort
@@ -785,6 +839,164 @@
     }
 
     // Utility
+    function getColumnInfo(columnName) {
+        return columns.find(col => col.name === columnName);
+    }
+
+    function getColumnFilterType(columnName) {
+        const dataType = (getColumnInfo(columnName)?.dataType || '').toLowerCase();
+        if (
+            dataType.includes('int') ||
+            dataType.includes('numeric') ||
+            dataType.includes('decimal') ||
+            dataType.includes('real') ||
+            dataType.includes('double') ||
+            dataType.includes('serial')
+        ) {
+            return 'number';
+        }
+        if (
+            dataType.includes('date') ||
+            dataType.includes('time') ||
+            dataType.includes('timestamp')
+        ) {
+            return 'date';
+        }
+        return 'text';
+    }
+
+    function getDefaultFilterMode(filterType) {
+        return filterType === 'text' ? 'contains' : 'equals';
+    }
+
+    function getFilterInputType(filterType, rawDataType) {
+        if (filterType === 'number') {
+            return 'number';
+        }
+        if (filterType === 'date') {
+            const normalized = (rawDataType || '').toLowerCase();
+            if (normalized.includes('time')) {
+                return 'datetime-local';
+            }
+            return 'date';
+        }
+        return 'text';
+    }
+
+    function formatSqlLiteral(value, filterType) {
+        if (value === null || value === undefined) {
+            return 'NULL';
+        }
+        if (filterType === 'number') {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) {
+                return null;
+            }
+            return String(numeric);
+        }
+        const escaped = String(value).replace(/'/g, "''");
+        return `'${escaped}'`;
+    }
+
+    function buildFilterClause(columnName, filterType, mode, primaryValue, secondaryValue) {
+        if (filterType === 'number') {
+            const primary = formatSqlLiteral(primaryValue, 'number');
+            if (primary === null) return null;
+            if (mode === 'between') {
+                const secondary = formatSqlLiteral(secondaryValue, 'number');
+                return secondary === null
+                    ? `"${columnName}" >= ${primary}`
+                    : `"${columnName}" BETWEEN ${primary} AND ${secondary}`;
+            }
+            if (mode === 'gt') {
+                return `"${columnName}" > ${primary}`;
+            }
+            if (mode === 'lt') {
+                return `"${columnName}" < ${primary}`;
+            }
+            return `"${columnName}" = ${primary}`;
+        }
+
+        if (filterType === 'date') {
+            const primary = formatSqlLiteral(primaryValue, 'date');
+            if (primary === null) return null;
+            if (mode === 'between') {
+                const secondary = formatSqlLiteral(secondaryValue, 'date');
+                return secondary === null
+                    ? `"${columnName}" >= ${primary}`
+                    : `"${columnName}" BETWEEN ${primary} AND ${secondary}`;
+            }
+            if (mode === 'after') {
+                return `"${columnName}" > ${primary}`;
+            }
+            if (mode === 'before') {
+                return `"${columnName}" < ${primary}`;
+            }
+            return `"${columnName}" = ${primary}`;
+        }
+
+        const escaped = String(primaryValue).replace(/'/g, "''");
+        return `"${columnName}" ILIKE '%${escaped}%'`;
+    }
+
+    function doesRowMatchFilter(row, col, filterVal) {
+        const cellVal = row[col];
+        if (cellVal === null || cellVal === undefined) return false;
+
+        if (Object.prototype.hasOwnProperty.call(exactFilters, col)) {
+            return String(cellVal) === String(exactFilters[col]);
+        }
+
+        const filterType = getColumnFilterType(col);
+        const mode = filterModes[col] || getDefaultFilterMode(filterType);
+        const secondVal = filterRangeValues[col];
+
+        if (filterType === 'number') {
+            const cellNum = Number(cellVal);
+            const firstNum = Number(filterVal);
+            if (!Number.isFinite(cellNum) || !Number.isFinite(firstNum)) {
+                return false;
+            }
+            if (mode === 'between') {
+                const secondNum = Number(secondVal);
+                if (!Number.isFinite(secondNum)) {
+                    return cellNum >= firstNum;
+                }
+                return cellNum >= firstNum && cellNum <= secondNum;
+            }
+            if (mode === 'gt') return cellNum > firstNum;
+            if (mode === 'lt') return cellNum < firstNum;
+            return cellNum === firstNum;
+        }
+
+        if (filterType === 'date') {
+            const cellDate = Date.parse(String(cellVal));
+            const firstDate = Date.parse(String(filterVal));
+            if (Number.isNaN(cellDate) || Number.isNaN(firstDate)) {
+                return false;
+            }
+            if (mode === 'between') {
+                const secondDate = Date.parse(String(secondVal));
+                if (Number.isNaN(secondDate)) {
+                    return cellDate >= firstDate;
+                }
+                return cellDate >= firstDate && cellDate <= secondDate;
+            }
+            if (mode === 'after') return cellDate > firstDate;
+            if (mode === 'before') return cellDate < firstDate;
+            return cellDate === firstDate;
+        }
+
+        return String(cellVal).toLowerCase().includes(String(filterVal).toLowerCase());
+    }
+
+    function cssEscape(value) {
+        if (window.CSS && typeof window.CSS.escape === 'function') {
+            return window.CSS.escape(value);
+        }
+        return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    }
+
     function getCellTextContent(td) {
         let text = '';
         td.childNodes.forEach(node => {
