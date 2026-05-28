@@ -258,15 +258,15 @@ export class ConnectionManager {
     }
 
     async queryMetadata(sql: string, params?: any[]): Promise<any[]> {
-        const cacheKey = `${sql}|${JSON.stringify(params ?? [])}`;
+        const cacheKey = JSON.stringify([sql, params ?? []]);
         const cachedRows = this.metadataQueryCache.get(cacheKey);
         if (cachedRows) {
-            return cachedRows.map(row => ({ ...row }));
+            return cachedRows;
         }
 
         const result = await this.query(sql, params);
         const rows = Array.isArray(result.rows) ? result.rows : [];
-        this.metadataQueryCache.set(cacheKey, rows.map((row: any) => ({ ...row })));
+        this.metadataQueryCache.set(cacheKey, rows);
         return rows;
     }
 
