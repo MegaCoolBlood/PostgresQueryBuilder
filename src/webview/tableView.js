@@ -10,9 +10,26 @@
     let displayedRows = [];
     let schema = '';
     let table = '';
+    let tableReference = '';
+    let alwaysQuote = false;
     let totalCount = 0;
     let currentOffset = 0;
     const PAGE_SIZE = 50;
+    const POSTGRES_RESERVED_KEYWORDS = new Set([
+        'all', 'analyse', 'analyze', 'and', 'any', 'array', 'as', 'asc', 'asymmetric',
+        'authorization', 'between', 'binary', 'both', 'case', 'cast', 'check', 'collate',
+        'column', 'concurrently', 'constraint', 'create', 'cross', 'current_catalog',
+        'current_date', 'current_role', 'current_schema', 'current_time', 'current_timestamp',
+        'current_user', 'default', 'deferrable', 'desc', 'distinct', 'do', 'else', 'end',
+        'except', 'false', 'fetch', 'for', 'foreign', 'from', 'freeze', 'full', 'grant',
+        'group', 'having', 'ilike', 'in', 'initially', 'inner', 'intersect', 'into', 'is',
+        'isnull', 'join', 'lateral', 'leading', 'left', 'like', 'limit', 'localtime',
+        'localtimestamp', 'natural', 'not', 'notnull', 'null', 'offset', 'on', 'only', 'or',
+        'order', 'outer', 'overlaps', 'placing', 'primary', 'references', 'returning', 'right',
+        'select', 'session_user', 'similar', 'some', 'symmetric', 'table', 'then', 'to',
+        'trailing', 'true', 'union', 'unique', 'user', 'using', 'variadic', 'verbose', 'when',
+        'where', 'window', 'with'
+    ]);
 
     // Change tracking
     let modifiedCells = new Map(); // "rowIndex:colName" -> newValue
@@ -116,8 +133,10 @@
     function handleInit(msg) {
         schema = msg.schema;
         table = msg.table;
+        tableReference = msg.tableReference || '';
+        alwaysQuote = Boolean(msg.alwaysQuote);
         tableName.textContent = `${schema}.${table}`;
-        queryInput.value = `SELECT * FROM "${schema}"."${table}" LIMIT ${PAGE_SIZE} OFFSET 0`;
+        queryInput.value = `SELECT * FROM ${getDefaultTableReference()} LIMIT ${PAGE_SIZE} OFFSET 0`;
     }
 
     function handleDataLoaded(msg) {
@@ -131,9 +150,11 @@
         totalCount = msg.totalCount;
         schema = msg.schema;
         table = msg.table;
+        tableReference = msg.tableReference || '';
+        alwaysQuote = Boolean(msg.alwaysQuote);
 
         tableName.textContent = `${schema}.${table}`;
-        queryInput.value = `SELECT * FROM "${schema}"."${table}" LIMIT ${PAGE_SIZE} OFFSET ${currentOffset}`;
+        queryInput.value = `SELECT * FROM ${getDefaultTableReference()} LIMIT ${PAGE_SIZE} OFFSET ${currentOffset}`;
         dataLoading.classList.add('hidden');
         updateRowCount();
         renderTable();
@@ -277,7 +298,7 @@
             }
         }
 
-        let sql = `SELECT * FROM "${schema}"."${table}"`;
+        let sql = `SELECT * FROM ${getDefaultTableReference()}`;
         if (whereClauses.length > 0) {
             sql += ` WHERE ${whereClauses.join(' AND ')}`;
         }
@@ -322,7 +343,7 @@
                     if (currentSql.toLowerCase().includes(' where ')) {
                         sql = currentSql + ` AND ${excludeClause}`;
                     } else {
-                        sql = `SELECT * FROM "${schema}"."${table}" WHERE ${excludeClause}`;
+                        sql = `SELECT * FROM ${getDefaultTableReference()} WHERE ${excludeClause}`;
                     }
                     queryInput.value = sql;
                     runCustomQuery();
@@ -774,6 +795,30 @@
             }
         });
         return text.trim();
+    }
+
+    function getDefaultTableReference() {
+        if (tableReference) {
+            return tableReference;
+        }
+
+        const formattedTable = formatIdentifier(table);
+        if (!schema) {
+            return formattedTable;
+        }
+
+        return `${formatIdentifier(schema)}.${formattedTable}`;
+    }
+
+    function formatIdentifier(identifier) {
+        if (alwaysQuote || needsQuoting(identifier)) {
+            return `"${String(identifier).replace(/"/g, '""')}"`;
+        }
+        return identifier;
+    }
+
+    function needsQuoting(identifier) {
+        return !/^[a-z_][a-z0-9_$]*$/.test(identifier) || POSTGRES_RESERVED_KEYWORDS.has(String(identifier).toLowerCase());
     }
 
     function escapeHtml(text) {
