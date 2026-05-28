@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as dns from 'dns';
 import { promisify } from 'util';
 import { Pool, PoolConfig } from 'pg';
+import { createHash } from 'crypto';
 
 const dnsLookup = promisify(dns.lookup);
 
@@ -19,6 +20,7 @@ export interface ConnectionConfig {
 export class ConnectionManager {
     private pool: Pool | null = null;
     private activeConfig: ConnectionConfig | null = null;
+    private metadataQueryCache = new Map<string, any[]>();
     private context: vscode.ExtensionContext;
     private _onConnectionChanged = new vscode.EventEmitter<void>();
     public readonly onConnectionChanged = this._onConnectionChanged.event;
@@ -170,6 +172,7 @@ export class ConnectionManager {
         if (this.pool) {
             await this.pool.end();
         }
+        this.clearMetadataCache();
 
         // Resolve hostname via OS resolver (respects hosts file)
         let resolvedHost = config.host;
@@ -221,6 +224,7 @@ export class ConnectionManager {
             await this.pool.end();
             this.pool = null;
             this.activeConfig = null;
+            this.clearMetadataCache();
             this._onConnectionChanged.fire();
             vscode.window.showInformationMessage('Disconnected from PostgreSQL');
         }
@@ -252,6 +256,44 @@ export class ConnectionManager {
             throw new Error('Not connected to a database');
         }
         return this.pool.query(sql, params);
+    }
+
+    async queryMetadata(sql: string, params?: any[]): Promise<any[]> {
+        const normalizedParams = (params ?? []).map(param =>
+            `${param === null ? 'null' : typeof param}:${this.stableSerialize(param)}`
+        );
+        const cacheKey = createHash('sha256')
+            .update(sql)
+            .update('\u0000')
+            .update(normalizedParams.join('\u0001'))
+            .digest('hex');
+        const cachedRows = this.metadataQueryCache.get(cacheKey);
+        if (cachedRows) {
+            return cachedRows;
+        }
+
+        const result = await this.query(sql, params);
+        const rows = result.rows;
+        this.metadataQueryCache.set(cacheKey, rows);
+        return rows;
+    }
+
+    clearMetadataCache(): void {
+        this.metadataQueryCache.clear();
+    }
+
+    private stableSerialize(value: any): string {
+        if (value === null || value === undefined) {
+            return String(value);
+        }
+        if (Array.isArray(value)) {
+            return `[${value.map(v => this.stableSerialize(v)).join(',')}]`;
+        }
+        if (typeof value === 'object') {
+            const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
+            return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${this.stableSerialize(v)}`).join(',')}}`;
+        }
+        return JSON.stringify(value);
     }
 
     private async editConnection(savedConnections: ConnectionConfig[]): Promise<void> {
@@ -297,6 +339,7 @@ export class ConnectionManager {
             this.pool.end();
             this.pool = null;
         }
+        this.clearMetadataCache();
         this._onConnectionChanged.dispose();
     }
 }
