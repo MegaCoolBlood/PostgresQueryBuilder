@@ -28,11 +28,14 @@ export interface ReferencingTableInfo {
 }
 
 export class QueryRunner {
+    private static readonly MAX_METADATA_CACHE_ENTRIES = 500;
     private connectionManager: ConnectionManager;
     private static columnsCache = new Map<string, ColumnInfo[]>();
     private static primaryKeysCache = new Map<string, string[]>();
     private static foreignKeysCache = new Map<string, ForeignKeyInfo[]>();
     private static referencingTablesCache = new Map<string, ReferencingTableInfo[]>();
+    private static poolIds = new WeakMap<object, number>();
+    private static nextPoolId = 1;
 
     constructor(connectionManager: ConnectionManager) {
         this.connectionManager = connectionManager;
@@ -64,7 +67,7 @@ export class QueryRunner {
         const cacheKey = this.getTableCacheKey(schema, table);
         const cached = QueryRunner.columnsCache.get(cacheKey);
         if (cached) {
-            return cached.map(column => ({ ...column }));
+            return cached;
         }
 
         const result = await this.connectionManager.query(
@@ -80,15 +83,15 @@ export class QueryRunner {
             isNullable: row.is_nullable === 'YES',
             columnDefault: row.column_default
         }));
-        QueryRunner.columnsCache.set(cacheKey, columns);
-        return columns.map((column: ColumnInfo) => ({ ...column }));
+        QueryRunner.setCacheEntry(QueryRunner.columnsCache, cacheKey, columns);
+        return columns;
     }
 
     async getPrimaryKeys(schema: string, table: string): Promise<string[]> {
         const cacheKey = this.getTableCacheKey(schema, table);
         const cached = QueryRunner.primaryKeysCache.get(cacheKey);
         if (cached) {
-            return [...cached];
+            return cached;
         }
 
         const result = await this.connectionManager.query(
@@ -99,15 +102,15 @@ export class QueryRunner {
              AND i.indisprimary`,
         );
         const primaryKeys = result.rows.map((row: any) => row.attname);
-        QueryRunner.primaryKeysCache.set(cacheKey, primaryKeys);
-        return [...primaryKeys];
+        QueryRunner.setCacheEntry(QueryRunner.primaryKeysCache, cacheKey, primaryKeys);
+        return primaryKeys;
     }
 
     async getForeignKeys(schema: string, table: string): Promise<ForeignKeyInfo[]> {
         const cacheKey = this.getTableCacheKey(schema, table);
         const cached = QueryRunner.foreignKeysCache.get(cacheKey);
         if (cached) {
-            return cached.map(foreignKey => ({ ...foreignKey }));
+            return cached;
         }
 
         const result = await this.connectionManager.query(
@@ -134,15 +137,15 @@ export class QueryRunner {
             refTable: row.ref_table,
             refColumn: row.ref_column
         }));
-        QueryRunner.foreignKeysCache.set(cacheKey, foreignKeys);
-        return foreignKeys.map((foreignKey: ForeignKeyInfo) => ({ ...foreignKey }));
+        QueryRunner.setCacheEntry(QueryRunner.foreignKeysCache, cacheKey, foreignKeys);
+        return foreignKeys;
     }
 
     async getReferencingTables(schema: string, table: string): Promise<ReferencingTableInfo[]> {
         const cacheKey = this.getTableCacheKey(schema, table);
         const cached = QueryRunner.referencingTablesCache.get(cacheKey);
         if (cached) {
-            return cached.map(referencingTable => ({ ...referencingTable }));
+            return cached;
         }
 
         const result = await this.connectionManager.query(
@@ -169,8 +172,8 @@ export class QueryRunner {
             fkColumn: row.fk_column,
             localColumn: row.local_column
         }));
-        QueryRunner.referencingTablesCache.set(cacheKey, referencingTables);
-        return referencingTables.map((referencingTable: ReferencingTableInfo) => ({ ...referencingTable }));
+        QueryRunner.setCacheEntry(QueryRunner.referencingTablesCache, cacheKey, referencingTables);
+        return referencingTables;
     }
 
     async commitChanges(schema: string, table: string, changes: ChangeSet): Promise<void> {
@@ -318,10 +321,34 @@ export class QueryRunner {
     }
 
     private getTableCacheKey(schema: string, table: string): string {
-        const config = this.connectionManager.getActiveConnectionConfig();
-        const connectionKey = config
-            ? `${config.host}:${config.port}/${config.database}:${config.user}`
-            : 'disconnected';
+        const pool = this.connectionManager.getPool();
+        let connectionKey = 'disconnected';
+
+        if (pool) {
+            let poolId = QueryRunner.poolIds.get(pool);
+            if (!poolId) {
+                poolId = QueryRunner.nextPoolId++;
+                QueryRunner.poolIds.set(pool, poolId);
+            }
+            connectionKey = `pool-${poolId}`;
+        } else {
+            const config = this.connectionManager.getActiveConnectionConfig();
+            if (config) {
+                connectionKey = `${config.host}:${config.port}/${config.database}:${config.user}`;
+            }
+        }
+
         return `${connectionKey}:${schema}.${table}`;
+    }
+
+    private static setCacheEntry<T>(cache: Map<string, T>, key: string, value: T): void {
+        cache.set(key, value);
+        while (cache.size > QueryRunner.MAX_METADATA_CACHE_ENTRIES) {
+            const oldestKey = cache.keys().next().value;
+            if (oldestKey === undefined) {
+                break;
+            }
+            cache.delete(oldestKey);
+        }
     }
 }

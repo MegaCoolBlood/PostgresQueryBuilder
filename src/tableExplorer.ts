@@ -95,7 +95,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
 
                 return schemas;
             } else if (element.type === 'schema') {
-                let tables = [...await this.getTablesForSchema(element.schema)];
+                let tables = await this.getTablesForSchema(element.schema);
 
                 if (this._filterText) {
                     const dotIndex = this._filterText.indexOf('.');
