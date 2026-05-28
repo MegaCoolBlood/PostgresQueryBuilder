@@ -4,6 +4,7 @@
     // State
     let columns = [];
     let primaryKeys = [];
+    let foreignKeys = []; // [{column, refSchema, refTable, refColumn}]
     let allRows = [];
     let displayedRows = [];
     let schema = '';
@@ -24,6 +25,7 @@
 
     // Filter state
     let filters = {};
+    let exactFilters = {}; // FK filters that use exact match
 
     // DOM refs
     const tableHead = document.getElementById('tableHead');
@@ -75,6 +77,9 @@
             case 'commitSuccess':
                 handleCommitSuccess();
                 break;
+            case 'applyFilter':
+                handleApplyFilter(msg);
+                break;
             case 'error':
                 showError(msg.text);
                 break;
@@ -89,6 +94,7 @@
         }
         columns = msg.columns;
         primaryKeys = msg.primaryKeys;
+        foreignKeys = msg.foreignKeys || [];
         totalCount = msg.totalCount;
         schema = msg.schema;
         table = msg.table;
@@ -113,6 +119,12 @@
         const sql = queryInput.value.trim();
         if (!sql) return;
         vscode.postMessage({ command: 'runCustomQuery', sql });
+    }
+
+    function handleApplyFilter(msg) {
+        exactFilters[msg.column] = msg.value;
+        filters[msg.column] = msg.value;
+        applyFiltersToQuery();
     }
 
     function updateRowCount() {
@@ -169,6 +181,7 @@
             input.addEventListener('input', (e) => {
                 const col = e.target.getAttribute('data-col');
                 filters[col] = e.target.value;
+                delete exactFilters[col]; // Manual input = ILIKE, not exact
                 renderBody();
             });
             input.addEventListener('keydown', (e) => {
@@ -180,11 +193,18 @@
     }
 
     function applyFiltersToQuery() {
+        if (!schema || !table) return;
+
         const whereClauses = [];
         for (const [col, val] of Object.entries(filters)) {
             if (!val) continue;
             const escaped = val.replace(/'/g, "''");
-            whereClauses.push(`"${col}"::text ILIKE '%${escaped}%'`);
+            if (exactFilters[col]) {
+                // Exact match for FK navigation
+                whereClauses.push(`"${col}" = '${escaped}'`);
+            } else {
+                whereClauses.push(`"${col}"::text ILIKE '%${escaped}%'`);
+            }
         }
 
         let sql = `SELECT * FROM "${schema}"."${table}"`;
@@ -261,7 +281,12 @@
                 const cellClass = isModifiedCell ? 'cell-modified' : '';
                 const displayVal = currentVal === null ? '<span class="null-value">NULL</span>' : escapeHtml(String(currentVal));
 
-                html += `<td class="${cellClass}" contenteditable="${!isDeleted}" data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : String(originalVal))}">${displayVal}</td>`;
+                const fk = foreignKeys.find(f => f.column === col.name);
+                const fkBtn = (fk && currentVal !== null && currentVal !== undefined)
+                    ? `<button class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(String(currentVal))}" title="Open ${fk.refSchema}.${fk.refTable}">&#8599;</button>`
+                    : '';
+
+                html += `<td class="${cellClass}" contenteditable="${!isDeleted}" data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : String(originalVal))}">${displayVal}${fkBtn}</td>`;
             });
             html += '</tr>';
         });
@@ -303,6 +328,21 @@
         // Attach blur listeners for duplicated rows
         tableBody.querySelectorAll('td[data-dup][contenteditable="true"]').forEach(td => {
             td.addEventListener('blur', handleDupCellEdit);
+        });
+
+        // Attach FK button listeners
+        tableBody.querySelectorAll('.fk-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const refSchema = btn.getAttribute('data-ref-schema');
+                const refTable = btn.getAttribute('data-ref-table');
+                const refColumn = btn.getAttribute('data-ref-column');
+                const value = btn.getAttribute('data-value');
+                vscode.postMessage({
+                    command: 'openForeignKey',
+                    refSchema, refTable, refColumn, value
+                });
+            });
         });
 
         updateChangeIndicator();

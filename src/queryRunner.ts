@@ -13,6 +13,13 @@ export interface ChangeSet {
     deletes: Array<Record<string, any>>;
 }
 
+export interface ForeignKeyInfo {
+    column: string;
+    refSchema: string;
+    refTable: string;
+    refColumn: string;
+}
+
 export class QueryRunner {
     private connectionManager: ConnectionManager;
 
@@ -60,6 +67,33 @@ export class QueryRunner {
              AND i.indisprimary`,
         );
         return result.rows.map((row: any) => row.attname);
+    }
+
+    async getForeignKeys(schema: string, table: string): Promise<ForeignKeyInfo[]> {
+        const result = await this.connectionManager.query(
+            `SELECT
+                kcu.column_name AS fk_column,
+                ccu.table_schema AS ref_schema,
+                ccu.table_name AS ref_table,
+                ccu.column_name AS ref_column
+             FROM information_schema.table_constraints tc
+             JOIN information_schema.key_column_usage kcu
+                ON tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+             JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = tc.constraint_name
+                AND ccu.table_schema = tc.table_schema
+             WHERE tc.constraint_type = 'FOREIGN KEY'
+                AND tc.table_schema = $1
+                AND tc.table_name = $2`,
+            [schema, table]
+        );
+        return result.rows.map((row: any) => ({
+            column: row.fk_column,
+            refSchema: row.ref_schema,
+            refTable: row.ref_table,
+            refColumn: row.ref_column
+        }));
     }
 
     async commitChanges(schema: string, table: string, changes: ChangeSet): Promise<void> {
