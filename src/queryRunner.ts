@@ -1,4 +1,5 @@
 import { ConnectionManager } from './connectionManager';
+import * as vscode from 'vscode';
 
 export interface ColumnInfo {
     name: string;
@@ -29,24 +30,33 @@ export interface ReferencingTableInfo {
 
 export class QueryRunner {
     private connectionManager: ConnectionManager;
+    private searchPathSchemas: Set<string> | null = null;
 
     constructor(connectionManager: ConnectionManager) {
         this.connectionManager = connectionManager;
     }
 
     async fetchRows(schema: string, table: string, offset: number, limit: number): Promise<any[]> {
+        const tableReference = await this.getSelectTableReference(schema, table);
         const result = await this.connectionManager.query(
-            `SELECT * FROM "${schema}"."${table}" LIMIT $1 OFFSET $2`,
+            `SELECT * FROM ${tableReference} LIMIT $1 OFFSET $2`,
             [limit, offset]
         );
         return result.rows;
     }
 
     async getRowCount(schema: string, table: string): Promise<number> {
+        const tableReference = await this.getSelectTableReference(schema, table);
         const result = await this.connectionManager.query(
-            `SELECT COUNT(*) as count FROM "${schema}"."${table}"`
+            `SELECT COUNT(*) as count FROM ${tableReference}`
         );
         return parseInt(result.rows[0].count, 10);
+    }
+
+    async getSelectBuildInfo(schema: string, table: string): Promise<{ alwaysQuote: boolean; tableReference: string }> {
+        const { alwaysQuote } = this.getSelectOptions();
+        const tableReference = await this.getSelectTableReference(schema, table);
+        return { alwaysQuote, tableReference };
     }
 
     async getColumns(schema: string, table: string): Promise<ColumnInfo[]> {
@@ -272,5 +282,48 @@ export class QueryRunner {
         }
         // Escape single quotes for SQL strings
         return `'${String(val).replace(/'/g, "''")}'`;
+    }
+
+    private getSelectOptions(): { alwaysQualifySchema: boolean; alwaysQuote: boolean } {
+        const config = vscode.workspace.getConfiguration('postgresQueryBuilder');
+        return {
+            alwaysQualifySchema: config.get<boolean>('alwaysQualifySchema', false),
+            alwaysQuote: config.get<boolean>('alwaysQuote', false)
+        };
+    }
+
+    private async getSelectTableReference(schema: string, table: string): Promise<string> {
+        const { alwaysQualifySchema, alwaysQuote } = this.getSelectOptions();
+        const shouldQualify = alwaysQualifySchema || !(await this.isSchemaInSearchPath(schema));
+        const tableName = this.formatIdentifier(table, alwaysQuote);
+
+        if (!shouldQualify) {
+            return tableName;
+        }
+
+        return `${this.formatIdentifier(schema, alwaysQuote)}.${tableName}`;
+    }
+
+    private async isSchemaInSearchPath(schema: string): Promise<boolean> {
+        if (!this.searchPathSchemas) {
+            const result = await this.connectionManager.query('SELECT current_schemas(false) AS schemas');
+            const schemas = result.rows[0]?.schemas;
+            this.searchPathSchemas = new Set(
+                Array.isArray(schemas) ? schemas.map((s: string) => s.toLowerCase()) : []
+            );
+        }
+
+        return this.searchPathSchemas.has(schema.toLowerCase());
+    }
+
+    private formatIdentifier(identifier: string, alwaysQuote: boolean): string {
+        if (alwaysQuote || this.needsQuoting(identifier)) {
+            return `"${identifier.replace(/"/g, '""')}"`;
+        }
+        return identifier;
+    }
+
+    private needsQuoting(identifier: string): boolean {
+        return !/^[a-z_][a-z0-9_$]*$/.test(identifier);
     }
 }

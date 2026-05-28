@@ -191,6 +191,8 @@ All commands are available via the Command Palette (`Ctrl+Shift+P`) under the **
 | `postgresQueryBuilder.defaultPort` | number | `5432` | Default port for new connections |
 | `postgresQueryBuilder.defaultDatabase` | string | `postgres` | Default database name |
 | `postgresQueryBuilder.savedConnections` | array | `[]` | Saved connection configurations |
+| `postgresQueryBuilder.alwaysQualifySchema` | boolean | `false` | Always include schema in generated SELECT table references |
+| `postgresQueryBuilder.alwaysQuote` | boolean | `false` | Always quote identifiers in generated SELECT statements |
 
 ---
 

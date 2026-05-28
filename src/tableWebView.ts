@@ -50,7 +50,8 @@ export class TableWebViewManager {
         panel.webview.postMessage({
             command: 'init',
             schema: schema,
-            table: table
+            table: table,
+            alwaysQuote: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false)
         });
 
         // Handle messages from webview
@@ -60,6 +61,7 @@ export class TableWebViewManager {
             try {
                 switch (message.command) {
                     case 'loadData': {
+                        const selectBuildInfo = await queryRunner.getSelectBuildInfo(schema, table);
                         // First: fetch and send rows + columns (fast essentials)
                         const columns = await queryRunner.getColumns(schema, table);
                         const data = await queryRunner.fetchRows(
@@ -73,7 +75,9 @@ export class TableWebViewManager {
                             totalCount: totalCount,
                             columns: columns,
                             schema: schema,
-                            table: table
+                            table: table,
+                            alwaysQuote: selectBuildInfo.alwaysQuote,
+                            tableReference: selectBuildInfo.tableReference
                         });
 
                         // Send pending filter after data is loaded
