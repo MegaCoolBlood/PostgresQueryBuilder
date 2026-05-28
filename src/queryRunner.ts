@@ -75,14 +75,14 @@ export class QueryRunner {
     }
 
     async getColumns(schema: string, table: string): Promise<ColumnInfo[]> {
-        const result = await this.connectionManager.query(
+        const rows = await this.connectionManager.queryMetadata(
             `SELECT column_name, data_type, is_nullable, column_default
              FROM information_schema.columns
              WHERE table_schema = $1 AND table_name = $2
              ORDER BY ordinal_position`,
             [schema, table]
         );
-        return result.rows.map((row: any) => ({
+        return rows.map((row: any) => ({
             name: row.column_name,
             dataType: row.data_type,
             isNullable: row.is_nullable === 'YES',
@@ -91,18 +91,18 @@ export class QueryRunner {
     }
 
     async getPrimaryKeys(schema: string, table: string): Promise<string[]> {
-        const result = await this.connectionManager.query(
+        const rows = await this.connectionManager.queryMetadata(
             `SELECT a.attname
              FROM pg_index i
              JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
              WHERE i.indrelid = '"${schema}"."${table}"'::regclass
              AND i.indisprimary`,
         );
-        return result.rows.map((row: any) => row.attname);
+        return rows.map((row: any) => row.attname);
     }
 
     async getForeignKeys(schema: string, table: string): Promise<ForeignKeyInfo[]> {
-        const result = await this.connectionManager.query(
+        const rows = await this.connectionManager.queryMetadata(
             `SELECT
                 kcu.column_name AS fk_column,
                 ccu.table_schema AS ref_schema,
@@ -120,7 +120,7 @@ export class QueryRunner {
                 AND tc.table_name = $2`,
             [schema, table]
         );
-        return result.rows.map((row: any) => ({
+        return rows.map((row: any) => ({
             column: row.fk_column,
             refSchema: row.ref_schema,
             refTable: row.ref_table,
@@ -129,7 +129,7 @@ export class QueryRunner {
     }
 
     async getReferencingTables(schema: string, table: string): Promise<ReferencingTableInfo[]> {
-        const result = await this.connectionManager.query(
+        const rows = await this.connectionManager.queryMetadata(
             `SELECT
                 kcu.table_schema AS fk_schema,
                 kcu.table_name AS fk_table,
@@ -147,7 +147,7 @@ export class QueryRunner {
                 AND ccu.table_name = $2`,
             [schema, table]
         );
-        return result.rows.map((row: any) => ({
+        return rows.map((row: any) => ({
             fkSchema: row.fk_schema,
             fkTable: row.fk_table,
             fkColumn: row.fk_column,
