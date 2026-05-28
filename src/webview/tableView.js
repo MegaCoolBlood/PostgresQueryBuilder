@@ -47,8 +47,12 @@
     const queryRunBtn = document.getElementById('queryRunBtn');
     const contextMenu = document.getElementById('contextMenu');
     const contextMenuItems = document.getElementById('contextMenuItems');
+    const dataLoading = document.getElementById('dataLoading');
+    const metaLoading = document.getElementById('metaLoading');
 
-    // Request initial data
+    // Show data loading, request initial data
+    dataLoading.classList.remove('hidden');
+    metaLoading.classList.remove('hidden');
     vscode.postMessage({ command: 'loadData', offset: 0, limit: PAGE_SIZE });
 
     // Event listeners
@@ -73,8 +77,23 @@
     window.addEventListener('message', (event) => {
         const msg = event.data;
         switch (msg.command) {
+            case 'init':
+                handleInit(msg);
+                break;
             case 'dataLoaded':
                 handleDataLoaded(msg);
+                break;
+            case 'primaryKeysLoaded':
+                handlePrimaryKeysLoaded(msg);
+                break;
+            case 'foreignKeysLoaded':
+                handleForeignKeysLoaded(msg);
+                break;
+            case 'referencingTablesLoaded':
+                handleReferencingTablesLoaded(msg);
+                break;
+            case 'metadataLoaded':
+                handleMetadataLoaded(msg);
                 break;
             case 'queryResult':
                 handleQueryResult(msg);
@@ -94,6 +113,13 @@
         }
     });
 
+    function handleInit(msg) {
+        schema = msg.schema;
+        table = msg.table;
+        tableName.textContent = `${schema}.${table}`;
+        queryInput.value = `SELECT * FROM "${schema}"."${table}" LIMIT ${PAGE_SIZE} OFFSET 0`;
+    }
+
     function handleDataLoaded(msg) {
         if (currentOffset === 0) {
             allRows = msg.data;
@@ -101,17 +127,50 @@
             allRows = allRows.concat(msg.data);
         }
         columns = msg.columns;
-        primaryKeys = msg.primaryKeys;
-        foreignKeys = msg.foreignKeys || [];
-        referencingTables = msg.referencingTables || [];
+        if (msg.primaryKeys) { primaryKeys = msg.primaryKeys; }
         totalCount = msg.totalCount;
         schema = msg.schema;
         table = msg.table;
 
         tableName.textContent = `${schema}.${table}`;
         queryInput.value = `SELECT * FROM "${schema}"."${table}" LIMIT ${PAGE_SIZE} OFFSET ${currentOffset}`;
+        dataLoading.classList.add('hidden');
         updateRowCount();
         renderTable();
+    }
+
+    function handleMetadataLoaded(msg) {
+        foreignKeys = msg.foreignKeys || [];
+        referencingTables = msg.referencingTables || [];
+        metaLoading.classList.add('hidden');
+        renderBody();
+    }
+
+    let fkLoaded = false;
+    let refsLoaded = false;
+
+    function handlePrimaryKeysLoaded(msg) {
+        primaryKeys = msg.primaryKeys || [];
+    }
+
+    function handleForeignKeysLoaded(msg) {
+        foreignKeys = msg.foreignKeys || [];
+        fkLoaded = true;
+        checkMetaComplete();
+        renderBody();
+    }
+
+    function handleReferencingTablesLoaded(msg) {
+        referencingTables = msg.referencingTables || [];
+        refsLoaded = true;
+        checkMetaComplete();
+        renderBody();
+    }
+
+    function checkMetaComplete() {
+        if (fkLoaded && refsLoaded) {
+            metaLoading.classList.add('hidden');
+        }
     }
 
     function handleQueryResult(msg) {
@@ -121,12 +180,14 @@
         tableName.textContent = `${schema}.${table} (custom query)`;
         rowCount.textContent = `${msg.rows.length} rows returned`;
         loadMoreBtn.disabled = true;
+        dataLoading.classList.add('hidden');
         renderTable();
     }
 
     function runCustomQuery() {
         const sql = queryInput.value.trim();
         if (!sql) return;
+        dataLoading.classList.remove('hidden');
         vscode.postMessage({ command: 'runCustomQuery', sql });
     }
 
