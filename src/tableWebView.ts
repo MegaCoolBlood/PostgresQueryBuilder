@@ -47,10 +47,21 @@ export class TableWebViewManager {
         panel.webview.html = this.getWebviewContent(panel.webview);
 
         // Send initial info immediately so the webview can show query + loading state
+        const alwaysQuote = vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false);
+        let tableReference = `${schema}.${table}`;
+        try {
+            const initQueryRunner = new QueryRunner(this.connectionManager);
+            const initSelectBuildInfo = await initQueryRunner.getSelectBuildInfo(schema, table);
+            tableReference = initSelectBuildInfo.tableReference;
+        } catch {
+            // Ignore init formatting errors; loadData will provide the authoritative value
+        }
         panel.webview.postMessage({
             command: 'init',
             schema: schema,
-            table: table
+            table: table,
+            alwaysQuote: alwaysQuote,
+            tableReference: tableReference
         });
 
         // Handle messages from webview
@@ -60,6 +71,7 @@ export class TableWebViewManager {
             try {
                 switch (message.command) {
                     case 'loadData': {
+                        const selectBuildInfo = await queryRunner.getSelectBuildInfo(schema, table);
                         // First: fetch and send rows + columns (fast essentials)
                         const columns = await queryRunner.getColumns(schema, table);
                         const data = await queryRunner.fetchRows(
@@ -73,7 +85,9 @@ export class TableWebViewManager {
                             totalCount: totalCount,
                             columns: columns,
                             schema: schema,
-                            table: table
+                            table: table,
+                            alwaysQuote: selectBuildInfo.alwaysQuote,
+                            tableReference: selectBuildInfo.tableReference
                         });
 
                         // Send pending filter after data is loaded
@@ -203,5 +217,6 @@ export class TableWebViewManager {
             this.pendingFilters.set(key, { column, value: String(value) });
             await this.openTableView(schema, table);
         }
+
     }
 }
