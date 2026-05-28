@@ -467,7 +467,7 @@
 
                 const fk = foreignKeys.find(f => f.column === col.name);
                 const fkBtn = (fk && currentVal !== null && currentVal !== undefined)
-                    ? `<button class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(String(currentVal))}" title="Open ${fk.refSchema}.${fk.refTable}">&#8599;</button>`
+                    ? `<button contenteditable="false" class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(String(currentVal))}" title="Open ${fk.refSchema}.${fk.refTable}">&#8599;</button>`
                     : '';
 
                 html += `<td class="${cellClass}" contenteditable="${!isDeleted}" data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : String(originalVal))}">${displayVal}${fkBtn}</td>`;
@@ -546,7 +546,8 @@
         const colName = td.getAttribute('data-col');
         const originalStr = td.getAttribute('data-original');
         const original = originalStr === '__NULL__' ? null : originalStr;
-        let newValue = td.textContent.trim();
+        // Read only text nodes, excluding FK button content
+        let newValue = getCellTextContent(td);
 
         if (newValue === '' && original === null) {
             newValue = null;
@@ -763,6 +764,18 @@
     }
 
     // Utility
+    function getCellTextContent(td) {
+        let text = '';
+        td.childNodes.forEach(node => {
+            if (node.nodeType === Node.TEXT_NODE) {
+                text += node.textContent;
+            } else if (node.nodeType === Node.ELEMENT_NODE && !node.classList.contains('fk-btn')) {
+                text += node.textContent;
+            }
+        });
+        return text.trim();
+    }
+
     function escapeHtml(text) {
         if (text === null || text === undefined) return '';
         const div = document.createElement('div');
