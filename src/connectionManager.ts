@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as dns from 'dns';
 import { promisify } from 'util';
 import { Pool, PoolConfig } from 'pg';
+import { createHash } from 'crypto';
 
 const dnsLookup = promisify(dns.lookup);
 
@@ -258,19 +259,14 @@ export class ConnectionManager {
     }
 
     async queryMetadata(sql: string, params?: any[]): Promise<any[]> {
-        const normalizedParams = (params ?? []).map(param => {
-            if (param === null) {
-                return 'null';
-            }
-            if (param === undefined) {
-                return 'undefined';
-            }
-            if (typeof param === 'object') {
-                return `object:${JSON.stringify(param)}`;
-            }
-            return `${typeof param}:${String(param)}`;
-        });
-        const cacheKey = `${sql}\u0000${normalizedParams.join('\u0001')}`;
+        const normalizedParams = (params ?? []).map(param =>
+            `${param === null ? 'null' : typeof param}:${this.stableSerialize(param)}`
+        );
+        const cacheKey = createHash('sha256')
+            .update(sql)
+            .update('\u0000')
+            .update(normalizedParams.join('\u0001'))
+            .digest('hex');
         const cachedRows = this.metadataQueryCache.get(cacheKey);
         if (cachedRows) {
             return cachedRows;
@@ -284,6 +280,20 @@ export class ConnectionManager {
 
     clearMetadataCache(): void {
         this.metadataQueryCache.clear();
+    }
+
+    private stableSerialize(value: any): string {
+        if (value === null || value === undefined) {
+            return String(value);
+        }
+        if (Array.isArray(value)) {
+            return `[${value.map(v => this.stableSerialize(v)).join(',')}]`;
+        }
+        if (typeof value === 'object') {
+            const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
+            return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${this.stableSerialize(v)}`).join(',')}}`;
+        }
+        return JSON.stringify(value);
     }
 
     private async editConnection(savedConnections: ConnectionConfig[]): Promise<void> {
