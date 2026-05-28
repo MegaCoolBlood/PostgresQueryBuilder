@@ -5,6 +5,7 @@
     let columns = [];
     let primaryKeys = [];
     let foreignKeys = []; // [{column, refSchema, refTable, refColumn}]
+    let referencingTables = []; // [{fkSchema, fkTable, fkColumn, localColumn}]
     let allRows = [];
     let displayedRows = [];
     let schema = '';
@@ -44,6 +45,8 @@
     const sqlDialogClose = document.getElementById('sqlDialogClose');
     const queryInput = document.getElementById('queryInput');
     const queryRunBtn = document.getElementById('queryRunBtn');
+    const contextMenu = document.getElementById('contextMenu');
+    const contextMenuItems = document.getElementById('contextMenuItems');
 
     // Request initial data
     vscode.postMessage({ command: 'loadData', offset: 0, limit: PAGE_SIZE });
@@ -59,6 +62,11 @@
     queryRunBtn.addEventListener('click', runCustomQuery);
     queryInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { runCustomQuery(); }
+    });
+
+    // Close context menu on click outside
+    document.addEventListener('click', () => {
+        contextMenu.style.display = 'none';
     });
 
     // Listen for messages from extension
@@ -95,6 +103,7 @@
         columns = msg.columns;
         primaryKeys = msg.primaryKeys;
         foreignKeys = msg.foreignKeys || [];
+        referencingTables = msg.referencingTables || [];
         totalCount = msg.totalCount;
         schema = msg.schema;
         table = msg.table;
@@ -213,6 +222,120 @@
         }
         queryInput.value = sql;
         runCustomQuery();
+    }
+
+    function showCellContextMenu(e, td) {
+        const colName = td.getAttribute('data-col');
+        const rowIdx = td.getAttribute('data-row');
+        let cellValue = null;
+        if (rowIdx !== null) {
+            const idx = parseInt(rowIdx);
+            const modKey = `${idx}:${colName}`;
+            cellValue = modifiedCells.has(modKey) ? modifiedCells.get(modKey) : allRows[idx][colName];
+        }
+
+        const items = [];
+
+        // 1. Add as exact match
+        if (cellValue !== null && cellValue !== undefined) {
+            items.push({
+                label: 'Add as Exact Match to Query',
+                action: () => {
+                    exactFilters[colName] = String(cellValue);
+                    filters[colName] = String(cellValue);
+                    applyFiltersToQuery();
+                }
+            });
+        }
+
+        // 2. Exclude from query
+        if (cellValue !== null && cellValue !== undefined) {
+            items.push({
+                label: 'Exclude this Value from Query',
+                action: () => {
+                    if (!schema || !table) return;
+                    const escaped = String(cellValue).replace(/'/g, "''");
+                    const currentSql = queryInput.value.trim();
+                    const excludeClause = `"${colName}" != '${escaped}'`;
+                    let sql;
+                    if (currentSql.toLowerCase().includes(' where ')) {
+                        sql = currentSql + ` AND ${excludeClause}`;
+                    } else {
+                        sql = `SELECT * FROM "${schema}"."${table}" WHERE ${excludeClause}`;
+                    }
+                    queryInput.value = sql;
+                    runCustomQuery();
+                }
+            });
+        }
+
+        // 3. Open Primary Key (if this column is a FK)
+        const fk = foreignKeys.find(f => f.column === colName);
+        if (fk && cellValue !== null && cellValue !== undefined) {
+            items.push({ separator: true });
+            items.push({
+                label: `Open Primary Key (${fk.refSchema}.${fk.refTable}.${fk.refColumn})`,
+                action: () => {
+                    vscode.postMessage({
+                        command: 'openForeignKey',
+                        refSchema: fk.refSchema,
+                        refTable: fk.refTable,
+                        refColumn: fk.refColumn,
+                        value: String(cellValue)
+                    });
+                }
+            });
+        }
+
+        // 4. Open Foreign Keys (tables referencing this column)
+        const refs = referencingTables.filter(r => r.localColumn === colName);
+        if (refs.length > 0 && cellValue !== null && cellValue !== undefined) {
+            if (!fk) { items.push({ separator: true }); }
+            refs.forEach(ref => {
+                items.push({
+                    label: `Open Foreign Key (${ref.fkSchema}.${ref.fkTable}.${ref.fkColumn})`,
+                    action: () => {
+                        vscode.postMessage({
+                            command: 'openForeignKey',
+                            refSchema: ref.fkSchema,
+                            refTable: ref.fkTable,
+                            refColumn: ref.fkColumn,
+                            value: String(cellValue)
+                        });
+                    }
+                });
+            });
+        }
+
+        if (items.length === 0) return;
+
+        // Render menu
+        let html = '';
+        items.forEach((item, i) => {
+            if (item.separator) {
+                html += '<li class="separator"></li>';
+            } else {
+                html += `<li data-action-idx="${i}">${escapeHtml(item.label)}</li>`;
+            }
+        });
+        contextMenuItems.innerHTML = html;
+
+        // Position
+        contextMenu.style.left = e.clientX + 'px';
+        contextMenu.style.top = e.clientY + 'px';
+        contextMenu.style.display = 'block';
+
+        // Attach click handlers
+        contextMenuItems.querySelectorAll('li[data-action-idx]').forEach(li => {
+            li.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                const idx = parseInt(li.getAttribute('data-action-idx'));
+                contextMenu.style.display = 'none';
+                if (items[idx] && items[idx].action) {
+                    items[idx].action();
+                }
+            });
+        });
     }
 
     function getFilteredAndSortedRows() {
@@ -342,6 +465,14 @@
                     command: 'openForeignKey',
                     refSchema, refTable, refColumn, value
                 });
+            });
+        });
+
+        // Attach context menu to data cells
+        tableBody.querySelectorAll('td[data-col]').forEach(td => {
+            td.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                showCellContextMenu(e, td);
             });
         });
 

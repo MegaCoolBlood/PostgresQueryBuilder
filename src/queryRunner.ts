@@ -20,6 +20,13 @@ export interface ForeignKeyInfo {
     refColumn: string;
 }
 
+export interface ReferencingTableInfo {
+    fkSchema: string;
+    fkTable: string;
+    fkColumn: string;
+    localColumn: string;
+}
+
 export class QueryRunner {
     private connectionManager: ConnectionManager;
 
@@ -93,6 +100,33 @@ export class QueryRunner {
             refSchema: row.ref_schema,
             refTable: row.ref_table,
             refColumn: row.ref_column
+        }));
+    }
+
+    async getReferencingTables(schema: string, table: string): Promise<ReferencingTableInfo[]> {
+        const result = await this.connectionManager.query(
+            `SELECT
+                kcu.table_schema AS fk_schema,
+                kcu.table_name AS fk_table,
+                kcu.column_name AS fk_column,
+                ccu.column_name AS local_column
+             FROM information_schema.table_constraints tc
+             JOIN information_schema.key_column_usage kcu
+                ON tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+             JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = tc.constraint_name
+                AND ccu.table_schema = tc.table_schema
+             WHERE tc.constraint_type = 'FOREIGN KEY'
+                AND ccu.table_schema = $1
+                AND ccu.table_name = $2`,
+            [schema, table]
+        );
+        return result.rows.map((row: any) => ({
+            fkSchema: row.fk_schema,
+            fkTable: row.fk_table,
+            fkColumn: row.fk_column,
+            localColumn: row.local_column
         }));
     }
 
