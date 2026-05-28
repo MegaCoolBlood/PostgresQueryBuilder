@@ -99,6 +99,16 @@
           "type": "array",
           "default": [],
           "description": "Saved connection configurations (passwords stored in SecretStorage)"
+        },
+        "postgresQueryBuilder.alwaysQualifySchema": {
+          "type": "boolean",
+          "default": false,
+          "description": "Always include schema in generated SELECT table references"
+        },
+        "postgresQueryBuilder.alwaysQuote": {
+          "type": "boolean",
+          "default": false,
+          "description": "Always quote identifiers in generated SELECT statements"
         }
       }
     }
