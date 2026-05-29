@@ -247,6 +247,22 @@ th.sorted-desc::after {
     background: var(--vscode-editorWidget-background);
 }
 
+.filter-cell {
+    display: flex;
+    gap: 2px;
+    align-items: center;
+}
+
+.filter-mode-select {
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border);
+    font-size: 11px;
+    padding: 2px;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+
 .filter-input {
     width: 100%;
     background: var(--vscode-input-background);
@@ -254,6 +270,18 @@ th.sorted-desc::after {
     border: 1px solid var(--vscode-input-border);
     padding: 2px 4px;
     font-size: 11px;
+}
+
+.filter-input[type="number"] {
+    min-width: 70px;
+}
+
+.filter-input-range {
+    width: 50%;
+}
+
+.filter-input-range[type="number"] {
+    min-width: 60px;
 }
 
 .filter-input:focus {
