@@ -320,12 +320,24 @@ export class QueryRunner {
     }
 
     private async isSchemaInSearchPath(schema: string): Promise<boolean> {
+        const lowerSchema = schema.toLowerCase();
+
+        // Check schemas configured in the connection settings
+        const connConfig = this.connectionManager.getActiveConnectionConfig();
+        if (connConfig?.schemas?.length) {
+            const configSchemas = new Set(connConfig.schemas.map((s: string) => s.toLowerCase()));
+            if (configSchemas.has(lowerSchema)) {
+                return true;
+            }
+        }
+
+        // Fall back to PostgreSQL's runtime search path
         const result = await this.connectionManager.query('SELECT current_schemas(false) AS schemas');
         const schemas = result.rows[0]?.schemas;
         const schemaSet = new Set(
             Array.isArray(schemas) ? schemas.map((s: string) => s.toLowerCase()) : []
         );
-        return schemaSet.has(schema.toLowerCase());
+        return schemaSet.has(lowerSchema);
     }
 
     private formatIdentifier(identifier: string, alwaysQuote: boolean): string {
