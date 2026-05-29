@@ -72,7 +72,13 @@ export class TableWebViewManager {
                 switch (message.command) {
                     case 'loadData': {
                         const selectBuildInfo = await queryRunner.getSelectBuildInfo(schema, table);
-                        // First: fetch and send rows + columns (fast essentials)
+
+                        // Start metadata fetches in parallel with data fetch
+                        const pkPromise = queryRunner.getPrimaryKeys(schema, table);
+                        const fkPromise = queryRunner.getForeignKeys(schema, table);
+                        const refsPromise = queryRunner.getReferencingTables(schema, table);
+
+                        // Fetch rows + columns (fast essentials)
                         const columns = await queryRunner.getColumns(schema, table);
                         const data = await queryRunner.fetchRows(
                             schema, table, message.offset || 0, message.limit || 50
@@ -101,22 +107,22 @@ export class TableWebViewManager {
                             });
                         }
 
-                        // Fetch metadata independently in parallel
-                        queryRunner.getPrimaryKeys(schema, table).then(primaryKeys => {
+                        // Deliver metadata results as they resolve
+                        pkPromise.then(primaryKeys => {
                             panel.webview.postMessage({
                                 command: 'primaryKeysLoaded',
                                 primaryKeys: primaryKeys
                             });
                         }).catch(err => console.warn(`Failed to load PKs: ${err.message}`));
 
-                        queryRunner.getForeignKeys(schema, table).then(foreignKeys => {
+                        fkPromise.then(foreignKeys => {
                             panel.webview.postMessage({
                                 command: 'foreignKeysLoaded',
                                 foreignKeys: foreignKeys
                             });
                         }).catch(err => console.warn(`Failed to load FKs: ${err.message}`));
 
-                        queryRunner.getReferencingTables(schema, table).then(referencingTables => {
+                        refsPromise.then(referencingTables => {
                             panel.webview.postMessage({
                                 command: 'referencingTablesLoaded',
                                 referencingTables: referencingTables
