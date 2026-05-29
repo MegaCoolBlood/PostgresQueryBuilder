@@ -83,6 +83,23 @@ body {
     border-color: var(--vscode-focusBorder);
 }
 
+.query-history-dropdown {
+    padding: 5px 8px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 13px;
+    background: var(--vscode-dropdown-background);
+    color: var(--vscode-dropdown-foreground);
+    border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, transparent));
+    border-radius: 2px;
+    outline: none;
+    max-width: 200px;
+    cursor: pointer;
+}
+
+.query-history-dropdown:focus {
+    border-color: var(--vscode-focusBorder);
+}
+
 .toolbar-left {
     display: flex;
     align-items: center;

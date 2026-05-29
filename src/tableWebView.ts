@@ -183,6 +183,21 @@ export class TableWebViewManager {
                         });
                         break;
                     }
+                    case 'saveQueryHistory': {
+                        this.saveQueryToHistory(schema, table, message.sql);
+                        panel.webview.postMessage({
+                            command: 'queryHistoryUpdated',
+                            history: this.getQueryHistory(schema, table)
+                        });
+                        break;
+                    }
+                    case 'getQueryHistory': {
+                        panel.webview.postMessage({
+                            command: 'queryHistoryUpdated',
+                            history: this.getQueryHistory(schema, table)
+                        });
+                        break;
+                    }
                     case 'openForeignKey': {
                         const fkSchema = message.refSchema;
                         const fkTable = message.refTable;
@@ -216,6 +231,26 @@ export class TableWebViewManager {
         html = html.replace('/* JS_PLACEHOLDER */', js);
 
         return html;
+    }
+
+    private getQueryHistory(schema: string, table: string): { sql: string; lastUsed: number }[] {
+        const key = `queryHistory:${schema}.${table}`;
+        const history = this.context.globalState.get<{ sql: string; lastUsed: number }[]>(key, []);
+        return history.sort((a, b) => b.lastUsed - a.lastUsed);
+    }
+
+    private saveQueryToHistory(schema: string, table: string, sql: string): void {
+        const key = `queryHistory:${schema}.${table}`;
+        let history = this.context.globalState.get<{ sql: string; lastUsed: number }[]>(key, []);
+        // Remove existing entry for same SQL
+        history = history.filter(h => h.sql !== sql);
+        // Add at front with current timestamp
+        history.unshift({ sql, lastUsed: Date.now() });
+        // Keep max 50 entries
+        if (history.length > 50) {
+            history = history.slice(0, 50);
+        }
+        this.context.globalState.update(key, history);
     }
 
     async openTableViewWithFilter(schema: string, table: string, column: string, value: any): Promise<void> {
