@@ -62,6 +62,7 @@
     const sqlDialogClose = document.getElementById('sqlDialogClose');
     const queryInput = document.getElementById('queryInput');
     const queryRunBtn = document.getElementById('queryRunBtn');
+    const queryHistoryDropdown = document.getElementById('queryHistoryDropdown');
     const contextMenu = document.getElementById('contextMenu');
     const contextMenuItems = document.getElementById('contextMenuItems');
     const dataLoading = document.getElementById('dataLoading');
@@ -83,6 +84,13 @@
     queryRunBtn.addEventListener('click', runCustomQuery);
     queryInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { runCustomQuery(); }
+    });
+    queryHistoryDropdown.addEventListener('change', () => {
+        const selected = queryHistoryDropdown.value;
+        if (selected) {
+            queryInput.value = selected;
+            queryHistoryDropdown.value = '';
+        }
     });
 
     // Close context menu on click outside
@@ -115,6 +123,9 @@
             case 'queryResult':
                 handleQueryResult(msg);
                 break;
+            case 'queryHistoryUpdated':
+                updateQueryHistoryDropdown(msg.history);
+                break;
             case 'sqlPreview':
                 showSqlDialog(msg.sql);
                 break;
@@ -137,6 +148,8 @@
         alwaysQuote = Boolean(msg.alwaysQuote);
         tableName.textContent = `${schema}.${table}`;
         queryInput.value = `SELECT * FROM ${getDefaultTableReference()}`;
+        // Request query history for this table
+        vscode.postMessage({ command: 'getQueryHistory' });
     }
 
     function handleDataLoaded(msg) {
@@ -205,9 +218,22 @@
         renderTable();
     }
 
+    function updateQueryHistoryDropdown(history) {
+        let html = '<option value="">-- History --</option>';
+        if (history && history.length > 0) {
+            history.forEach(entry => {
+                const display = entry.sql.length > 80 ? entry.sql.substring(0, 80) + '...' : entry.sql;
+                html += `<option value="${escapeAttr(entry.sql)}">${escapeHtml(display)}</option>`;
+            });
+        }
+        queryHistoryDropdown.innerHTML = html;
+    }
+
     function runCustomQuery() {
         let sql = queryInput.value.trim();
         if (!sql) return;
+        // Save to history
+        vscode.postMessage({ command: 'saveQueryHistory', sql: sql });
         // Silently add LIMIT and OFFSET if not already present
         const sqlLower = sql.toLowerCase();
         if (!sqlLower.includes(' limit ')) {
