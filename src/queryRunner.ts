@@ -104,20 +104,20 @@ export class QueryRunner {
     async getForeignKeys(schema: string, table: string): Promise<ForeignKeyInfo[]> {
         const rows = await this.connectionManager.queryMetadata(
             `SELECT
-                kcu.column_name AS fk_column,
-                ccu.table_schema AS ref_schema,
-                ccu.table_name AS ref_table,
-                ccu.column_name AS ref_column
-             FROM information_schema.table_constraints tc
-             JOIN information_schema.key_column_usage kcu
-                ON tc.constraint_name = kcu.constraint_name
-                AND tc.table_schema = kcu.table_schema
-             JOIN information_schema.constraint_column_usage ccu
-                ON ccu.constraint_name = tc.constraint_name
-                AND ccu.table_schema = tc.table_schema
-             WHERE tc.constraint_type = 'FOREIGN KEY'
-                AND tc.table_schema = $1
-                AND tc.table_name = $2`,
+                a1.attname AS fk_column,
+                n2.nspname AS ref_schema,
+                c2.relname AS ref_table,
+                a2.attname AS ref_column
+             FROM pg_constraint con
+             JOIN pg_class c1 ON c1.oid = con.conrelid
+             JOIN pg_namespace n1 ON n1.oid = c1.relnamespace
+             JOIN pg_class c2 ON c2.oid = con.confrelid
+             JOIN pg_namespace n2 ON n2.oid = c2.relnamespace
+             JOIN pg_attribute a1 ON a1.attrelid = con.conrelid AND a1.attnum = ANY(con.conkey)
+             JOIN pg_attribute a2 ON a2.attrelid = con.confrelid AND a2.attnum = ANY(con.confkey)
+             WHERE con.contype = 'f'
+                AND n1.nspname = $1
+                AND c1.relname = $2`,
             [schema, table]
         );
         return rows.map((row: any) => ({
@@ -131,20 +131,20 @@ export class QueryRunner {
     async getReferencingTables(schema: string, table: string): Promise<ReferencingTableInfo[]> {
         const rows = await this.connectionManager.queryMetadata(
             `SELECT
-                kcu.table_schema AS fk_schema,
-                kcu.table_name AS fk_table,
-                kcu.column_name AS fk_column,
-                ccu.column_name AS local_column
-             FROM information_schema.table_constraints tc
-             JOIN information_schema.key_column_usage kcu
-                ON tc.constraint_name = kcu.constraint_name
-                AND tc.table_schema = kcu.table_schema
-             JOIN information_schema.constraint_column_usage ccu
-                ON ccu.constraint_name = tc.constraint_name
-                AND ccu.table_schema = tc.table_schema
-             WHERE tc.constraint_type = 'FOREIGN KEY'
-                AND ccu.table_schema = $1
-                AND ccu.table_name = $2`,
+                n2.nspname AS fk_schema,
+                c2.relname AS fk_table,
+                a2.attname AS fk_column,
+                a1.attname AS local_column
+             FROM pg_constraint con
+             JOIN pg_class c1 ON c1.oid = con.confrelid
+             JOIN pg_namespace n1 ON n1.oid = c1.relnamespace
+             JOIN pg_class c2 ON c2.oid = con.conrelid
+             JOIN pg_namespace n2 ON n2.oid = c2.relnamespace
+             JOIN pg_attribute a1 ON a1.attrelid = con.confrelid AND a1.attnum = ANY(con.confkey)
+             JOIN pg_attribute a2 ON a2.attrelid = con.conrelid AND a2.attnum = ANY(con.conkey)
+             WHERE con.contype = 'f'
+                AND n1.nspname = $1
+                AND c1.relname = $2`,
             [schema, table]
         );
         return rows.map((row: any) => ({
