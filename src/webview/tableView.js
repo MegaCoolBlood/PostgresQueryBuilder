@@ -136,7 +136,7 @@
         tableReference = msg.tableReference || '';
         alwaysQuote = Boolean(msg.alwaysQuote);
         tableName.textContent = `${schema}.${table}`;
-        queryInput.value = `SELECT * FROM ${getDefaultTableReference()} LIMIT ${PAGE_SIZE} OFFSET 0`;
+        queryInput.value = `SELECT * FROM ${getDefaultTableReference()}`;
     }
 
     function handleDataLoaded(msg) {
@@ -154,7 +154,7 @@
         alwaysQuote = Boolean(msg.alwaysQuote);
 
         tableName.textContent = `${schema}.${table}`;
-        queryInput.value = `SELECT * FROM ${getDefaultTableReference()} LIMIT ${PAGE_SIZE} OFFSET ${currentOffset}`;
+        queryInput.value = `SELECT * FROM ${getDefaultTableReference()}`;
         dataLoading.classList.add('hidden');
         updateRowCount();
         renderTable();
@@ -206,8 +206,13 @@
     }
 
     function runCustomQuery() {
-        const sql = queryInput.value.trim();
+        let sql = queryInput.value.trim();
         if (!sql) return;
+        // Silently add LIMIT and OFFSET if not already present
+        const sqlLower = sql.toLowerCase();
+        if (!sqlLower.includes(' limit ')) {
+            sql += ` LIMIT ${PAGE_SIZE} OFFSET 0`;
+        }
         dataLoading.classList.remove('hidden');
         vscode.postMessage({ command: 'runCustomQuery', sql });
     }
