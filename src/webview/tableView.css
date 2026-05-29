@@ -276,12 +276,22 @@ th.sorted-desc::after {
     min-width: 70px;
 }
 
+.filter-input[type="datetime-local"],
+.filter-input[type="date"] {
+    min-width: 100px;
+}
+
 .filter-input-range {
     width: 50%;
 }
 
 .filter-input-range[type="number"] {
     min-width: 60px;
+}
+
+.filter-input-range[type="datetime-local"],
+.filter-input-range[type="date"] {
+    min-width: 80px;
 }
 
 .filter-input:focus {
