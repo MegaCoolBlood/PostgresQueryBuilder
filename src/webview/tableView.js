@@ -290,11 +290,12 @@
         for (const [col, val] of Object.entries(filters)) {
             if (!val) continue;
             const escaped = val.replace(/'/g, "''");
+            const fmtCol = formatIdentifier(col);
             if (exactFilters[col]) {
                 // Exact match for FK navigation
-                whereClauses.push(`"${col}" = '${escaped}'`);
+                whereClauses.push(`${fmtCol} = '${escaped}'`);
             } else {
-                whereClauses.push(`"${col}"::text ILIKE '%${escaped}%'`);
+                whereClauses.push(`${fmtCol}::text ILIKE '%${escaped}%'`);
             }
         }
 
@@ -338,7 +339,7 @@
                     if (!schema || !table) return;
                     const escaped = String(cellValue).replace(/'/g, "''");
                     const currentSql = queryInput.value.trim();
-                    const excludeClause = `"${colName}" != '${escaped}'`;
+                    const excludeClause = `${formatIdentifier(colName)} != '${escaped}'`;
                     let sql;
                     if (currentSql.toLowerCase().includes(' where ')) {
                         sql = currentSql + ` AND ${excludeClause}`;
