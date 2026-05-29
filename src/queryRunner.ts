@@ -161,9 +161,12 @@ export class QueryRunner {
             throw new Error('Not connected to database');
         }
 
+        const { alwaysQuote } = this.getSelectOptions();
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
+
+            const tableRef = `${this.formatIdentifier(schema, alwaysQuote)}.${this.formatIdentifier(table, alwaysQuote)}`;
 
             // Process updates
             for (const update of changes.updates) {
@@ -172,20 +175,20 @@ export class QueryRunner {
                 let paramIndex = 1;
 
                 for (const [col, val] of Object.entries(update.changes)) {
-                    setClauses.push(`"${col}" = $${paramIndex}`);
+                    setClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
                     values.push(val);
                     paramIndex++;
                 }
 
                 const whereClauses: string[] = [];
                 for (const [col, val] of Object.entries(update.primaryKey)) {
-                    whereClauses.push(`"${col}" = $${paramIndex}`);
+                    whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
                     values.push(val);
                     paramIndex++;
                 }
 
                 await client.query(
-                    `UPDATE "${schema}"."${table}" SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')}`,
+                    `UPDATE ${tableRef} SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')}`,
                     values
                 );
             }
@@ -199,7 +202,7 @@ export class QueryRunner {
                 const placeholders = columns.map((_, i) => `$${i + 1}`);
 
                 await client.query(
-                    `INSERT INTO "${schema}"."${table}" (${columns.map(c => `"${c}"`).join(', ')}) VALUES (${placeholders.join(', ')})`,
+                    `INSERT INTO ${tableRef} (${columns.map(c => this.formatIdentifier(c, alwaysQuote)).join(', ')}) VALUES (${placeholders.join(', ')})`,
                     values
                 );
             }
@@ -211,13 +214,13 @@ export class QueryRunner {
                 let paramIndex = 1;
 
                 for (const [col, val] of Object.entries(del)) {
-                    whereClauses.push(`"${col}" = $${paramIndex}`);
+                    whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
                     values.push(val);
                     paramIndex++;
                 }
 
                 await client.query(
-                    `DELETE FROM "${schema}"."${table}" WHERE ${whereClauses.join(' AND ')}`,
+                    `DELETE FROM ${tableRef} WHERE ${whereClauses.join(' AND ')}`,
                     values
                 );
             }
@@ -241,22 +244,24 @@ export class QueryRunner {
     }
 
     generateSQL(schema: string, table: string, changes: ChangeSet): string {
+        const { alwaysQuote } = this.getSelectOptions();
+        const tableRef = `${this.formatIdentifier(schema, alwaysQuote)}.${this.formatIdentifier(table, alwaysQuote)}`;
         const statements: string[] = [];
 
         // Updates
         for (const update of changes.updates) {
             const setClauses: string[] = [];
             for (const [col, val] of Object.entries(update.changes)) {
-                setClauses.push(`"${col}" = ${this.formatValue(val)}`);
+                setClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
             }
 
             const whereClauses: string[] = [];
             for (const [col, val] of Object.entries(update.primaryKey)) {
-                whereClauses.push(`"${col}" = ${this.formatValue(val)}`);
+                whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
             }
 
             statements.push(
-                `UPDATE "${schema}"."${table}" SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')};`
+                `UPDATE ${tableRef} SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')};`
             );
         }
 
@@ -267,7 +272,7 @@ export class QueryRunner {
 
             const values = columns.map(c => this.formatValue(insert[c]));
             statements.push(
-                `INSERT INTO "${schema}"."${table}" (${columns.map(c => `"${c}"`).join(', ')}) VALUES (${values.join(', ')});`
+                `INSERT INTO ${tableRef} (${columns.map(c => this.formatIdentifier(c, alwaysQuote)).join(', ')}) VALUES (${values.join(', ')});`
             );
         }
 
@@ -275,10 +280,10 @@ export class QueryRunner {
         for (const del of changes.deletes) {
             const whereClauses: string[] = [];
             for (const [col, val] of Object.entries(del)) {
-                whereClauses.push(`"${col}" = ${this.formatValue(val)}`);
+                whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
             }
             statements.push(
-                `DELETE FROM "${schema}"."${table}" WHERE ${whereClauses.join(' AND ')};`
+                `DELETE FROM ${tableRef} WHERE ${whereClauses.join(' AND ')};`
             );
         }
 
