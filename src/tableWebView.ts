@@ -158,9 +158,21 @@ export class TableWebViewManager {
                     }
                     case 'runCustomQuery': {
                         const result = await queryRunner.executeSQL(message.sql);
+                        // Resolve field OIDs to type names
+                        const oids = result.fields.map((f: any) => f.dataTypeID).filter((id: number) => id > 0);
+                        let typeMap: Record<number, string> = {};
+                        if (oids.length > 0) {
+                            const typeRows = await this.connectionManager.query(
+                                `SELECT oid, typname FROM pg_type WHERE oid = ANY($1)`,
+                                [oids]
+                            );
+                            for (const row of typeRows.rows) {
+                                typeMap[row.oid] = row.typname;
+                            }
+                        }
                         const cols = result.fields.map((f: any) => ({
                             name: f.name,
-                            dataType: '',
+                            dataType: typeMap[f.dataTypeID] || '',
                             isNullable: true,
                             columnDefault: null
                         }));
