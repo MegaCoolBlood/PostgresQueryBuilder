@@ -109,6 +109,11 @@
           "type": "boolean",
           "default": false,
           "description": "Always quote identifiers in generated SELECT statements"
+        },
+        "postgresQueryBuilder.thousandSeparator": {
+          "type": "string",
+          "default": " ",
+          "description": "Thousand separator for displaying numbers (e.g. ' ' for 9 999 999,99)"
         }
       }
     }

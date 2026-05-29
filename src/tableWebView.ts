@@ -48,6 +48,7 @@ export class TableWebViewManager {
 
         // Send initial info immediately so the webview can show query + loading state
         const alwaysQuote = vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false);
+        const thousandSeparator = vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('thousandSeparator', ' ');
         let tableReference = `${schema}.${table}`;
         try {
             const initQueryRunner = new QueryRunner(this.connectionManager);
@@ -61,7 +62,8 @@ export class TableWebViewManager {
             schema: schema,
             table: table,
             alwaysQuote: alwaysQuote,
-            tableReference: tableReference
+            tableReference: tableReference,
+            thousandSeparator: thousandSeparator
         });
 
         // Handle messages from webview

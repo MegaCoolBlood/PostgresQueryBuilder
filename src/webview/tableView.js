@@ -12,6 +12,7 @@
     let table = '';
     let tableReference = '';
     let alwaysQuote = false;
+    let thousandSeparator = ' ';
     let totalCount = 0;
     let currentOffset = 0;
     const PAGE_SIZE = 50;
@@ -147,6 +148,7 @@
         table = msg.table;
         tableReference = msg.tableReference || '';
         alwaysQuote = Boolean(msg.alwaysQuote);
+        if (msg.thousandSeparator !== undefined) { thousandSeparator = msg.thousandSeparator; }
         tableName.textContent = `${schema}.${table}`;
         queryInput.value = `SELECT * FROM ${getDefaultTableReference()}`;
         // Request query history for this table
@@ -289,6 +291,28 @@
         }
     }
 
+    function formatNumberDisplay(value) {
+        if (value === null || value === undefined) return null;
+        const num = Number(value);
+        if (isNaN(num)) return String(value);
+        // Split into integer and decimal parts
+        const parts = String(value).split('.');
+        const intPart = parts[0].replace(/^-/, '');
+        const sign = num < 0 ? '-' : '';
+        // Add thousand separator
+        let formatted = '';
+        for (let i = 0; i < intPart.length; i++) {
+            if (i > 0 && (intPart.length - i) % 3 === 0) {
+                formatted += thousandSeparator;
+            }
+            formatted += intPart[i];
+        }
+        if (parts.length > 1) {
+            formatted += ',' + parts[1];
+        }
+        return sign + formatted;
+    }
+
     function renderTable() {
         renderHeader();
         renderBody();
@@ -332,11 +356,13 @@
 
                 if (mode === 'between') {
                     const rangeVal = (typeof val === 'object' && val !== null) ? val : { from: '', to: '' };
-                    html += `<input class="filter-input filter-input-range" type="${inputType}" data-col="${escapeAttr(col.name)}" data-range="from" placeholder="From" value="${escapeAttr(rangeVal.from || '')}"${inputType === 'number' ? ' step="any"' : ''}>`;
-                    html += `<input class="filter-input filter-input-range" type="${inputType}" data-col="${escapeAttr(col.name)}" data-range="to" placeholder="To" value="${escapeAttr(rangeVal.to || '')}"${inputType === 'number' ? ' step="any"' : ''}>`;
+                    const langAttr = (filterType === 'date') ? ' lang="en-GB"' : '';
+                    html += `<input class="filter-input filter-input-range" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" data-range="from" placeholder="From" value="${escapeAttr(rangeVal.from || '')}"${inputType === 'number' ? ' step="any"' : ''}>`;
+                    html += `<input class="filter-input filter-input-range" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" data-range="to" placeholder="To" value="${escapeAttr(rangeVal.to || '')}"${inputType === 'number' ? ' step="any"' : ''}>`;
                 } else {
                     const singleVal = (typeof val === 'string') ? val : '';
-                    html += `<input class="filter-input" type="${inputType}" data-col="${escapeAttr(col.name)}" placeholder="Filter..." value="${escapeAttr(singleVal)}"${inputType === 'number' ? ' step="any"' : ''}>`;
+                    const langAttr = (filterType === 'date') ? ' lang="en-GB"' : '';
+                    html += `<input class="filter-input" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" placeholder="Filter..." value="${escapeAttr(singleVal)}"${inputType === 'number' ? ' step="any"' : ''}>`;
                 }
             } else {
                 // Text filter (ILIKE)
@@ -393,13 +419,20 @@
         tableHead.querySelectorAll('.filter-mode-select').forEach(select => {
             select.addEventListener('change', (e) => {
                 const col = e.target.getAttribute('data-col');
-                filterModes[col] = e.target.value;
-                // Reset filter value for this column
-                if (e.target.value === 'between') {
-                    filters[col] = { from: '', to: '' };
-                } else {
-                    filters[col] = '';
+                const oldMode = filterModes[col] || 'equals';
+                const newMode = e.target.value;
+                filterModes[col] = newMode;
+
+                // Preserve value when switching between single-value modes
+                if (newMode === 'between' && oldMode !== 'between') {
+                    const oldVal = (typeof filters[col] === 'string') ? filters[col] : '';
+                    filters[col] = { from: oldVal, to: '' };
+                } else if (newMode !== 'between' && oldMode === 'between') {
+                    const oldRange = (typeof filters[col] === 'object' && filters[col] !== null) ? filters[col] : { from: '' };
+                    filters[col] = oldRange.from || '';
                 }
+                // Otherwise keep filters[col] as-is
+
                 delete exactFilters[col];
                 renderHeader();
             });
@@ -680,7 +713,11 @@
                 const currentVal = modifiedCells.has(modKey) ? modifiedCells.get(modKey) : originalVal;
                 const isModifiedCell = modifiedCells.has(modKey);
                 const cellClass = isModifiedCell ? 'cell-modified' : '';
-                const displayVal = currentVal === null ? '<span class="null-value">NULL</span>' : escapeHtml(String(currentVal));
+                const displayVal = currentVal === null ? '<span class="null-value">NULL</span>' : (
+                    getColumnFilterType(col.dataType) === 'numeric'
+                        ? escapeHtml(formatNumberDisplay(currentVal))
+                        : escapeHtml(String(currentVal))
+                );
 
                 const fk = foreignKeys.find(f => f.column === col.name);
                 const fkBtn = (fk && currentVal !== null && currentVal !== undefined)
@@ -766,6 +803,20 @@
         // Read only text nodes, excluding FK button content
         let newValue = getCellTextContent(td);
 
+        // Strip thousand separators and normalize decimal comma for numeric columns
+        const colMeta = columns.find(c => c.name === colName);
+        if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric' && newValue !== '' && newValue !== null) {
+            // Remove thousand separators, replace comma decimal with dot
+            let cleaned = newValue;
+            if (thousandSeparator) {
+                cleaned = cleaned.split(thousandSeparator).join('');
+            }
+            cleaned = cleaned.replace(/,/g, '.');
+            if (!isNaN(Number(cleaned))) {
+                newValue = cleaned;
+            }
+        }
+
         if (newValue === '' && original === null) {
             newValue = null;
         }
@@ -778,6 +829,17 @@
         } else {
             modifiedCells.set(modKey, newValue === '' ? null : newValue);
             td.classList.add('cell-modified');
+        }
+
+        // Re-format display for numeric columns
+        if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric') {
+            const displayValue = modifiedCells.has(modKey) ? modifiedCells.get(modKey) : (original === null ? null : original);
+            if (displayValue !== null) {
+                // Preserve FK button if present
+                const fkBtn = td.querySelector('.fk-btn');
+                td.textContent = formatNumberDisplay(displayValue);
+                if (fkBtn) { td.appendChild(fkBtn); }
+            }
         }
 
         updateChangeIndicator();
