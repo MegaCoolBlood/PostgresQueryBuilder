@@ -493,21 +493,36 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 // Between mode
                 const fromRaw = val.from ? normalizeFilterInputValue(val.from, filterType, thousandSeparator) : '';
                 const toRaw = val.to ? normalizeFilterInputValue(val.to, filterType, thousandSeparator) : '';
-                const from = String(fromRaw).replace(/'/g, "''");
-                const to = String(toRaw).replace(/'/g, "''");
-                if (from && to) {
-                    whereClauses.push(filterType === 'numeric' ? `${fmtCol} BETWEEN ${from} AND ${to}` : `${fmtCol} BETWEEN '${from}' AND '${to}'`);
-                } else if (from) {
-                    whereClauses.push(filterType === 'numeric' ? `${fmtCol} >= ${from}` : `${fmtCol} >= '${from}'`);
-                } else if (to) {
-                    whereClauses.push(filterType === 'numeric' ? `${fmtCol} <= ${to}` : `${fmtCol} <= '${to}'`);
+                if (filterType === 'numeric') {
+                    const fromNum = fromRaw !== '' ? Number(fromRaw) : null;
+                    const toNum = toRaw !== '' ? Number(toRaw) : null;
+                    const from = fromNum !== null && !isNaN(fromNum) ? String(fromNum) : '';
+                    const to = toNum !== null && !isNaN(toNum) ? String(toNum) : '';
+                    if (from && to) {
+                        whereClauses.push(`${fmtCol} BETWEEN ${from} AND ${to}`);
+                    } else if (from) {
+                        whereClauses.push(`${fmtCol} >= ${from}`);
+                    } else if (to) {
+                        whereClauses.push(`${fmtCol} <= ${to}`);
+                    }
+                } else {
+                    const from = String(fromRaw).replace(/'/g, "''");
+                    const to = String(toRaw).replace(/'/g, "''");
+                    if (from && to) {
+                        whereClauses.push(`${fmtCol} BETWEEN '${from}' AND '${to}'`);
+                    } else if (from) {
+                        whereClauses.push(`${fmtCol} >= '${from}'`);
+                    } else if (to) {
+                        whereClauses.push(`${fmtCol} <= '${to}'`);
+                    }
                 }
             } else if (filterType === 'numeric') {
                 // Numeric with operator — no cast
                 const normalized = normalizeFilterInputValue(val, filterType, thousandSeparator);
-                const escaped = String(normalized).replace(/'/g, "''");
+                const numericValue = Number(normalized);
+                if (isNaN(numericValue)) continue;
                 const op = getFilterOperator(col);
-                whereClauses.push(`${fmtCol} ${op} ${escaped}`);
+                whereClauses.push(`${fmtCol} ${op} ${numericValue}`);
             } else if (filterType === 'date') {
                 // Date/timestamp with operator — no cast
                 const escaped = String(val).replace(/'/g, "''");
@@ -667,14 +682,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 if (filterType === 'numeric') {
                     const fromNum = from ? Number(normalizeFilterInputValue(from, 'numeric', thousandSeparator)) : null;
                     const toNum = to ? Number(normalizeFilterInputValue(to, 'numeric', thousandSeparator)) : null;
+                    if ((fromNum !== null && isNaN(fromNum)) || (toNum !== null && isNaN(toNum))) {
+                        continue;
+                    }
                     rows = rows.filter(row => {
                         const cellVal = Number(row[col]);
                         if (isNaN(cellVal)) return false;
-                        if (fromNum !== null && isNaN(fromNum)) return false;
-                        if (toNum !== null && isNaN(toNum)) return false;
                         if (fromNum !== null && toNum !== null) return cellVal >= fromNum && cellVal <= toNum;
                         if (fromNum !== null) return cellVal >= fromNum;
-                        return toNum !== null ? cellVal <= toNum : true;
+                        return cellVal <= toNum;
                     });
                 } else {
                     rows = rows.filter(row => {
