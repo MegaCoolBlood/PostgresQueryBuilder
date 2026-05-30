@@ -1,3 +1,53 @@
+const DEFAULT_THOUSAND_SEPARATOR = ' ';
+
+function normalizeNumericInput(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
+    if (value === null || value === undefined) return value;
+    const str = String(value).trim();
+    if (str === '') return str;
+    let cleaned = str;
+    if (thousandSeparator) {
+        cleaned = cleaned.split(thousandSeparator).join('');
+    }
+    cleaned = cleaned.replace(/,/g, '.');
+    if (!isNaN(Number(cleaned))) {
+        return cleaned;
+    }
+    return str;
+}
+
+function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
+    if (value === null || value === undefined) return null;
+    const num = Number(value);
+    if (isNaN(num)) return String(value);
+    // Split into integer and decimal parts
+    const parts = String(value).split('.');
+    const intPart = parts[0].replace(/^-/, '');
+    const sign = num < 0 ? '-' : '';
+    // Add thousand separator
+    let formatted = '';
+    for (let i = 0; i < intPart.length; i++) {
+        if (i > 0 && (intPart.length - i) % 3 === 0) {
+            formatted += thousandSeparator;
+        }
+        formatted += intPart[i];
+    }
+    if (parts.length > 1) {
+        formatted += ',' + parts[1];
+    }
+    return sign + formatted;
+}
+
+function formatExactMatchValue(value, filterType, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
+    if (filterType === 'numeric') {
+        const normalized = normalizeNumericInput(value, thousandSeparator);
+        const escaped = String(normalized).replace(/'/g, "''");
+        return `'${escaped}'`;
+    }
+    const escaped = String(value).replace(/'/g, "''");
+    return `'${escaped}'`;
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 (function() {
     const vscode = acquireVsCodeApi();
 
@@ -291,28 +341,6 @@
         }
     }
 
-    function formatNumberDisplay(value) {
-        if (value === null || value === undefined) return null;
-        const num = Number(value);
-        if (isNaN(num)) return String(value);
-        // Split into integer and decimal parts
-        const parts = String(value).split('.');
-        const intPart = parts[0].replace(/^-/, '');
-        const sign = num < 0 ? '-' : '';
-        // Add thousand separator
-        let formatted = '';
-        for (let i = 0; i < intPart.length; i++) {
-            if (i > 0 && (intPart.length - i) % 3 === 0) {
-                formatted += thousandSeparator;
-            }
-            formatted += intPart[i];
-        }
-        if (parts.length > 1) {
-            formatted += ',' + parts[1];
-        }
-        return sign + formatted;
-    }
-
     function renderTable() {
         renderHeader();
         renderBody();
@@ -451,8 +479,8 @@
 
             if (exactFilters[col]) {
                 // Exact match for FK navigation — no cast
-                const escaped = String(val).replace(/'/g, "''");
-                whereClauses.push(`${fmtCol} = '${escaped}'`);
+                const formatted = formatExactMatchValue(val, filterType, thousandSeparator);
+                whereClauses.push(`${fmtCol} = ${formatted}`);
             } else if (typeof val === 'object' && val !== null && val.from !== undefined) {
                 // Between mode
                 const from = val.from ? val.from.replace(/'/g, "''") : '';
@@ -466,7 +494,8 @@
                 }
             } else if (filterType === 'numeric') {
                 // Numeric with operator — no cast
-                const escaped = String(val).replace(/'/g, "''");
+                const normalized = normalizeNumericInput(val, thousandSeparator);
+                const escaped = String(normalized).replace(/'/g, "''");
                 const op = getFilterOperator(col);
                 whereClauses.push(`${fmtCol} ${op} ${escaped}`);
             } else if (filterType === 'date') {
@@ -715,7 +744,7 @@
                 const cellClass = isModifiedCell ? 'cell-modified' : '';
                 const displayVal = currentVal === null ? '<span class="null-value">NULL</span>' : (
                     getColumnFilterType(col.dataType) === 'numeric'
-                        ? escapeHtml(formatNumberDisplay(currentVal))
+                        ? escapeHtml(formatNumberDisplay(currentVal, thousandSeparator))
                         : escapeHtml(String(currentVal))
                 );
 
@@ -806,15 +835,7 @@
         // Strip thousand separators and normalize decimal comma for numeric columns
         const colMeta = columns.find(c => c.name === colName);
         if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric' && newValue !== '' && newValue !== null) {
-            // Remove thousand separators, replace comma decimal with dot
-            let cleaned = newValue;
-            if (thousandSeparator) {
-                cleaned = cleaned.split(thousandSeparator).join('');
-            }
-            cleaned = cleaned.replace(/,/g, '.');
-            if (!isNaN(Number(cleaned))) {
-                newValue = cleaned;
-            }
+            newValue = normalizeNumericInput(newValue, thousandSeparator);
         }
 
         if (newValue === '' && original === null) {
@@ -837,7 +858,7 @@
             if (displayValue !== null) {
                 // Preserve FK button if present
                 const fkBtn = td.querySelector('.fk-btn');
-                td.textContent = formatNumberDisplay(displayValue);
+                td.textContent = formatNumberDisplay(displayValue, thousandSeparator);
                 if (fkBtn) { td.appendChild(fkBtn); }
             }
         }
@@ -849,7 +870,12 @@
         const td = e.target;
         const iIdx = parseInt(td.getAttribute('data-insert'));
         const colName = td.getAttribute('data-col');
-        insertedRows[iIdx][colName] = td.textContent.trim() || '';
+        let newValue = td.textContent.trim() || '';
+        const colMeta = columns.find(c => c.name === colName);
+        if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric' && newValue !== '') {
+            newValue = normalizeNumericInput(newValue, thousandSeparator);
+        }
+        insertedRows[iIdx][colName] = newValue;
         updateChangeIndicator();
     }
 
@@ -857,7 +883,12 @@
         const td = e.target;
         const dIdx = parseInt(td.getAttribute('data-dup'));
         const colName = td.getAttribute('data-col');
-        duplicatedRows[dIdx][colName] = td.textContent.trim() || '';
+        let newValue = td.textContent.trim() || '';
+        const colMeta = columns.find(c => c.name === colName);
+        if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric' && newValue !== '') {
+            newValue = normalizeNumericInput(newValue, thousandSeparator);
+        }
+        duplicatedRows[dIdx][colName] = newValue;
         updateChangeIndicator();
     }
 
@@ -1091,3 +1122,12 @@
         return String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 })();
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        normalizeNumericInput,
+        formatNumberDisplay,
+        formatExactMatchValue
+    };
+}
