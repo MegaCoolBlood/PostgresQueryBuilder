@@ -43,6 +43,14 @@ function formatExactMatchValue(value, filterType, thousandSeparator = DEFAULT_TH
         const escaped = String(normalized).replace(/'/g, "''");
         return `'${escaped}'`;
     }
+
+    function normalizeFilterInputValue(value, filterType, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
+        if (value === null || value === undefined) return value;
+        if (filterType === 'numeric') {
+            return normalizeNumericInput(value, thousandSeparator);
+        }
+        return String(value);
+    }
     const escaped = String(value).replace(/'/g, "''");
     return `'${escaped}'`;
 }
@@ -325,7 +333,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (dt.includes('timestamp')) return 'datetime-local';
             return 'date';
         }
-        if (filterType === 'numeric') return 'number';
+        if (filterType === 'numeric') return 'text';
         return 'text';
     }
 
@@ -483,18 +491,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 whereClauses.push(`${fmtCol} = ${formatted}`);
             } else if (typeof val === 'object' && val !== null && val.from !== undefined) {
                 // Between mode
-                const from = val.from ? val.from.replace(/'/g, "''") : '';
-                const to = val.to ? val.to.replace(/'/g, "''") : '';
+                const fromRaw = val.from ? normalizeFilterInputValue(val.from, filterType, thousandSeparator) : '';
+                const toRaw = val.to ? normalizeFilterInputValue(val.to, filterType, thousandSeparator) : '';
+                const from = String(fromRaw).replace(/'/g, "''");
+                const to = String(toRaw).replace(/'/g, "''");
                 if (from && to) {
-                    whereClauses.push(`${fmtCol} BETWEEN '${from}' AND '${to}'`);
+                    whereClauses.push(filterType === 'numeric' ? `${fmtCol} BETWEEN ${from} AND ${to}` : `${fmtCol} BETWEEN '${from}' AND '${to}'`);
                 } else if (from) {
-                    whereClauses.push(`${fmtCol} >= '${from}'`);
+                    whereClauses.push(filterType === 'numeric' ? `${fmtCol} >= ${from}` : `${fmtCol} >= '${from}'`);
                 } else if (to) {
-                    whereClauses.push(`${fmtCol} <= '${to}'`);
+                    whereClauses.push(filterType === 'numeric' ? `${fmtCol} <= ${to}` : `${fmtCol} <= '${to}'`);
                 }
             } else if (filterType === 'numeric') {
                 // Numeric with operator — no cast
-                const normalized = normalizeNumericInput(val, thousandSeparator);
+                const normalized = normalizeFilterInputValue(val, filterType, thousandSeparator);
                 const escaped = String(normalized).replace(/'/g, "''");
                 const op = getFilterOperator(col);
                 whereClauses.push(`${fmtCol} ${op} ${escaped}`);
@@ -646,24 +656,38 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // Apply filters
         for (const [col, filterVal] of Object.entries(filters)) {
             if (!filterVal) continue;
+            const colMeta = columns.find(c => c.name === col);
+            const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
 
             if (typeof filterVal === 'object' && filterVal !== null && filterVal.from !== undefined) {
                 // Between mode — filter locally by range
                 const from = filterVal.from;
                 const to = filterVal.to;
                 if (!from && !to) continue;
-                rows = rows.filter(row => {
-                    const cellVal = row[col];
-                    if (cellVal === null || cellVal === undefined) return false;
-                    const val = String(cellVal);
-                    if (from && to) return val >= from && val <= to;
-                    if (from) return val >= from;
-                    return val <= to;
-                });
+                if (filterType === 'numeric') {
+                    const fromNum = from ? Number(normalizeFilterInputValue(from, 'numeric', thousandSeparator)) : null;
+                    const toNum = to ? Number(normalizeFilterInputValue(to, 'numeric', thousandSeparator)) : null;
+                    rows = rows.filter(row => {
+                        const cellVal = Number(row[col]);
+                        if (isNaN(cellVal)) return false;
+                        if (fromNum !== null && isNaN(fromNum)) return false;
+                        if (toNum !== null && isNaN(toNum)) return false;
+                        if (fromNum !== null && toNum !== null) return cellVal >= fromNum && cellVal <= toNum;
+                        if (fromNum !== null) return cellVal >= fromNum;
+                        return toNum !== null ? cellVal <= toNum : true;
+                    });
+                } else {
+                    rows = rows.filter(row => {
+                        const cellVal = row[col];
+                        if (cellVal === null || cellVal === undefined) return false;
+                        const val = String(cellVal);
+                        if (from && to) return val >= from && val <= to;
+                        if (from) return val >= from;
+                        return val <= to;
+                    });
+                }
             } else {
                 const mode = filterModes[col];
-                const colMeta = columns.find(c => c.name === col);
-                const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
 
                 if ((filterType === 'numeric' || filterType === 'date') && mode && mode !== 'equals') {
                     // Comparison operator mode
@@ -671,7 +695,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                         const cellVal = row[col];
                         if (cellVal === null || cellVal === undefined) return false;
                         const a = filterType === 'numeric' ? Number(cellVal) : String(cellVal);
-                        const b = filterType === 'numeric' ? Number(filterVal) : String(filterVal);
+                        const normalizedFilterVal = normalizeFilterInputValue(filterVal, filterType, thousandSeparator);
+                        const b = filterType === 'numeric' ? Number(normalizedFilterVal) : String(normalizedFilterVal);
                         switch (mode) {
                             case 'not_equals': return a !== b;
                             case 'gt': return a > b;
@@ -1128,6 +1153,7 @@ if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         normalizeNumericInput,
         formatNumberDisplay,
-        formatExactMatchValue
+        formatExactMatchValue,
+        normalizeFilterInputValue
     };
 }
