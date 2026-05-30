@@ -43,16 +43,16 @@ function formatExactMatchValue(value, filterType, thousandSeparator = DEFAULT_TH
         const escaped = String(normalized).replace(/'/g, "''");
         return `'${escaped}'`;
     }
-
-    function normalizeFilterInputValue(value, filterType, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
-        if (value === null || value === undefined) return value;
-        if (filterType === 'numeric') {
-            return normalizeNumericInput(value, thousandSeparator);
-        }
-        return String(value);
-    }
     const escaped = String(value).replace(/'/g, "''");
     return `'${escaped}'`;
+}
+
+function normalizeFilterInputValue(value, filterType, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
+    if (value === null || value === undefined) return value;
+    if (filterType === 'numeric') {
+        return normalizeNumericInput(value, thousandSeparator);
+    }
+    return String(value);
 }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
