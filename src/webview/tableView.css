@@ -265,7 +265,6 @@ th.sorted-desc::after {
 
 .filter-input {
     width: 100%;
-    min-width: 70px;
     background: var(--vscode-input-background);
     color: var(--vscode-input-foreground);
     border: 1px solid var(--vscode-input-border);
