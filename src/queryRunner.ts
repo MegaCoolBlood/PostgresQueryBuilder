@@ -1,5 +1,4 @@
 import { ConnectionManager } from './connectionManager';
-import * as vscode from 'vscode';
 
 const POSTGRES_RESERVED_KEYWORDS = new Set([
     'all', 'analyse', 'analyze', 'and', 'any', 'array', 'as', 'asc', 'asymmetric',
@@ -45,10 +44,16 @@ export interface ReferencingTableInfo {
 }
 
 export class QueryRunner {
+    private static vscodeModule: typeof import('vscode') | undefined;
     private connectionManager: ConnectionManager;
+    private selectOptionsProvider: () => { alwaysQualifySchema: boolean; alwaysQuote: boolean };
 
-    constructor(connectionManager: ConnectionManager) {
+    constructor(
+        connectionManager: ConnectionManager,
+        selectOptionsProvider?: () => { alwaysQualifySchema: boolean; alwaysQuote: boolean }
+    ) {
         this.connectionManager = connectionManager;
+        this.selectOptionsProvider = selectOptionsProvider ?? this.getDefaultSelectOptions;
     }
 
     async fetchRows(schema: string, table: string, offset: number, limit: number): Promise<any[]> {
@@ -305,6 +310,15 @@ export class QueryRunner {
     }
 
     private getSelectOptions(): { alwaysQualifySchema: boolean; alwaysQuote: boolean } {
+        return this.selectOptionsProvider();
+    }
+
+    private getDefaultSelectOptions(): { alwaysQualifySchema: boolean; alwaysQuote: boolean } {
+        if (!QueryRunner.vscodeModule) {
+            QueryRunner.vscodeModule = require('vscode') as typeof import('vscode');
+        }
+
+        const vscode = QueryRunner.vscodeModule;
         const config = vscode.workspace.getConfiguration('postgresQueryBuilder');
         return {
             alwaysQualifySchema: config.get<boolean>('alwaysQualifySchema', false),

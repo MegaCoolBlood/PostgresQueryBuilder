@@ -1,3 +1,61 @@
+const DEFAULT_THOUSAND_SEPARATOR = ' ';
+
+function normalizeNumericInput(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
+    if (value === null || value === undefined) return value;
+    const str = String(value).trim();
+    if (str === '') return str;
+    let cleaned = str;
+    if (thousandSeparator) {
+        cleaned = cleaned.split(thousandSeparator).join('');
+    }
+    cleaned = cleaned.replace(/,/g, '.');
+    if (!isNaN(Number(cleaned))) {
+        return cleaned;
+    }
+    return str;
+}
+
+function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
+    if (value === null || value === undefined) return null;
+    const num = Number(value);
+    if (isNaN(num)) return String(value);
+    // Split into integer and decimal parts
+    const parts = String(value).split('.');
+    const intPart = parts[0].replace(/^-/, '');
+    const sign = num < 0 ? '-' : '';
+    // Add thousand separator
+    let formatted = '';
+    for (let i = 0; i < intPart.length; i++) {
+        if (i > 0 && (intPart.length - i) % 3 === 0) {
+            formatted += thousandSeparator;
+        }
+        formatted += intPart[i];
+    }
+    if (parts.length > 1) {
+        formatted += ',' + parts[1];
+    }
+    return sign + formatted;
+}
+
+function formatExactMatchValue(value, filterType, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
+    if (filterType === 'numeric') {
+        const normalized = normalizeNumericInput(value, thousandSeparator);
+        const escaped = String(normalized).replace(/'/g, "''");
+        return `'${escaped}'`;
+    }
+    const escaped = String(value).replace(/'/g, "''");
+    return `'${escaped}'`;
+}
+
+function normalizeFilterInputValue(value, filterType, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
+    if (value === null || value === undefined) return value;
+    if (filterType === 'numeric') {
+        return normalizeNumericInput(value, thousandSeparator);
+    }
+    return String(value);
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 (function() {
     const vscode = acquireVsCodeApi();
 
@@ -275,7 +333,7 @@
             if (dt.includes('timestamp')) return 'datetime-local';
             return 'date';
         }
-        if (filterType === 'numeric') return 'number';
+        if (filterType === 'numeric') return 'text';
         return 'text';
     }
 
@@ -289,28 +347,6 @@
             case 'lte': return '<=';
             default: return '=';
         }
-    }
-
-    function formatNumberDisplay(value) {
-        if (value === null || value === undefined) return null;
-        const num = Number(value);
-        if (isNaN(num)) return String(value);
-        // Split into integer and decimal parts
-        const parts = String(value).split('.');
-        const intPart = parts[0].replace(/^-/, '');
-        const sign = num < 0 ? '-' : '';
-        // Add thousand separator
-        let formatted = '';
-        for (let i = 0; i < intPart.length; i++) {
-            if (i > 0 && (intPart.length - i) % 3 === 0) {
-                formatted += thousandSeparator;
-            }
-            formatted += intPart[i];
-        }
-        if (parts.length > 1) {
-            formatted += ',' + parts[1];
-        }
-        return sign + formatted;
     }
 
     function renderTable() {
@@ -451,24 +487,42 @@
 
             if (exactFilters[col]) {
                 // Exact match for FK navigation — no cast
-                const escaped = String(val).replace(/'/g, "''");
-                whereClauses.push(`${fmtCol} = '${escaped}'`);
+                const formatted = formatExactMatchValue(val, filterType, thousandSeparator);
+                whereClauses.push(`${fmtCol} = ${formatted}`);
             } else if (typeof val === 'object' && val !== null && val.from !== undefined) {
                 // Between mode
-                const from = val.from ? val.from.replace(/'/g, "''") : '';
-                const to = val.to ? val.to.replace(/'/g, "''") : '';
-                if (from && to) {
-                    whereClauses.push(`${fmtCol} BETWEEN '${from}' AND '${to}'`);
-                } else if (from) {
-                    whereClauses.push(`${fmtCol} >= '${from}'`);
-                } else if (to) {
-                    whereClauses.push(`${fmtCol} <= '${to}'`);
+                const fromRaw = val.from ? normalizeFilterInputValue(val.from, filterType, thousandSeparator) : '';
+                const toRaw = val.to ? normalizeFilterInputValue(val.to, filterType, thousandSeparator) : '';
+                if (filterType === 'numeric') {
+                    const fromNum = fromRaw !== '' ? Number(fromRaw) : null;
+                    const toNum = toRaw !== '' ? Number(toRaw) : null;
+                    const from = fromNum !== null && !isNaN(fromNum) ? String(fromNum) : '';
+                    const to = toNum !== null && !isNaN(toNum) ? String(toNum) : '';
+                    if (from && to) {
+                        whereClauses.push(`${fmtCol} BETWEEN ${from} AND ${to}`);
+                    } else if (from) {
+                        whereClauses.push(`${fmtCol} >= ${from}`);
+                    } else if (to) {
+                        whereClauses.push(`${fmtCol} <= ${to}`);
+                    }
+                } else {
+                    const from = String(fromRaw).replace(/'/g, "''");
+                    const to = String(toRaw).replace(/'/g, "''");
+                    if (from && to) {
+                        whereClauses.push(`${fmtCol} BETWEEN '${from}' AND '${to}'`);
+                    } else if (from) {
+                        whereClauses.push(`${fmtCol} >= '${from}'`);
+                    } else if (to) {
+                        whereClauses.push(`${fmtCol} <= '${to}'`);
+                    }
                 }
             } else if (filterType === 'numeric') {
                 // Numeric with operator — no cast
-                const escaped = String(val).replace(/'/g, "''");
+                const normalized = normalizeFilterInputValue(val, filterType, thousandSeparator);
+                const numericValue = Number(normalized);
+                if (isNaN(numericValue)) continue;
                 const op = getFilterOperator(col);
-                whereClauses.push(`${fmtCol} ${op} ${escaped}`);
+                whereClauses.push(`${fmtCol} ${op} ${numericValue}`);
             } else if (filterType === 'date') {
                 // Date/timestamp with operator — no cast
                 const escaped = String(val).replace(/'/g, "''");
@@ -617,24 +671,39 @@
         // Apply filters
         for (const [col, filterVal] of Object.entries(filters)) {
             if (!filterVal) continue;
+            const colMeta = columns.find(c => c.name === col);
+            const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
 
             if (typeof filterVal === 'object' && filterVal !== null && filterVal.from !== undefined) {
                 // Between mode — filter locally by range
                 const from = filterVal.from;
                 const to = filterVal.to;
                 if (!from && !to) continue;
-                rows = rows.filter(row => {
-                    const cellVal = row[col];
-                    if (cellVal === null || cellVal === undefined) return false;
-                    const val = String(cellVal);
-                    if (from && to) return val >= from && val <= to;
-                    if (from) return val >= from;
-                    return val <= to;
-                });
+                if (filterType === 'numeric') {
+                    const fromNum = from ? Number(normalizeFilterInputValue(from, 'numeric', thousandSeparator)) : null;
+                    const toNum = to ? Number(normalizeFilterInputValue(to, 'numeric', thousandSeparator)) : null;
+                    if ((fromNum !== null && isNaN(fromNum)) || (toNum !== null && isNaN(toNum))) {
+                        continue;
+                    }
+                    rows = rows.filter(row => {
+                        const cellVal = Number(row[col]);
+                        if (isNaN(cellVal)) return false;
+                        if (fromNum !== null && toNum !== null) return cellVal >= fromNum && cellVal <= toNum;
+                        if (fromNum !== null) return cellVal >= fromNum;
+                        return cellVal <= toNum;
+                    });
+                } else {
+                    rows = rows.filter(row => {
+                        const cellVal = row[col];
+                        if (cellVal === null || cellVal === undefined) return false;
+                        const val = String(cellVal);
+                        if (from && to) return val >= from && val <= to;
+                        if (from) return val >= from;
+                        return val <= to;
+                    });
+                }
             } else {
                 const mode = filterModes[col];
-                const colMeta = columns.find(c => c.name === col);
-                const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
 
                 if ((filterType === 'numeric' || filterType === 'date') && mode && mode !== 'equals') {
                     // Comparison operator mode
@@ -642,7 +711,8 @@
                         const cellVal = row[col];
                         if (cellVal === null || cellVal === undefined) return false;
                         const a = filterType === 'numeric' ? Number(cellVal) : String(cellVal);
-                        const b = filterType === 'numeric' ? Number(filterVal) : String(filterVal);
+                        const normalizedFilterVal = normalizeFilterInputValue(filterVal, filterType, thousandSeparator);
+                        const b = filterType === 'numeric' ? Number(normalizedFilterVal) : String(normalizedFilterVal);
                         switch (mode) {
                             case 'not_equals': return a !== b;
                             case 'gt': return a > b;
@@ -715,7 +785,7 @@
                 const cellClass = isModifiedCell ? 'cell-modified' : '';
                 const displayVal = currentVal === null ? '<span class="null-value">NULL</span>' : (
                     getColumnFilterType(col.dataType) === 'numeric'
-                        ? escapeHtml(formatNumberDisplay(currentVal))
+                        ? escapeHtml(formatNumberDisplay(currentVal, thousandSeparator))
                         : escapeHtml(String(currentVal))
                 );
 
@@ -806,15 +876,7 @@
         // Strip thousand separators and normalize decimal comma for numeric columns
         const colMeta = columns.find(c => c.name === colName);
         if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric' && newValue !== '' && newValue !== null) {
-            // Remove thousand separators, replace comma decimal with dot
-            let cleaned = newValue;
-            if (thousandSeparator) {
-                cleaned = cleaned.split(thousandSeparator).join('');
-            }
-            cleaned = cleaned.replace(/,/g, '.');
-            if (!isNaN(Number(cleaned))) {
-                newValue = cleaned;
-            }
+            newValue = normalizeNumericInput(newValue, thousandSeparator);
         }
 
         if (newValue === '' && original === null) {
@@ -837,7 +899,7 @@
             if (displayValue !== null) {
                 // Preserve FK button if present
                 const fkBtn = td.querySelector('.fk-btn');
-                td.textContent = formatNumberDisplay(displayValue);
+                td.textContent = formatNumberDisplay(displayValue, thousandSeparator);
                 if (fkBtn) { td.appendChild(fkBtn); }
             }
         }
@@ -849,7 +911,12 @@
         const td = e.target;
         const iIdx = parseInt(td.getAttribute('data-insert'));
         const colName = td.getAttribute('data-col');
-        insertedRows[iIdx][colName] = td.textContent.trim() || '';
+        let newValue = td.textContent.trim() || '';
+        const colMeta = columns.find(c => c.name === colName);
+        if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric' && newValue !== '') {
+            newValue = normalizeNumericInput(newValue, thousandSeparator);
+        }
+        insertedRows[iIdx][colName] = newValue;
         updateChangeIndicator();
     }
 
@@ -857,7 +924,12 @@
         const td = e.target;
         const dIdx = parseInt(td.getAttribute('data-dup'));
         const colName = td.getAttribute('data-col');
-        duplicatedRows[dIdx][colName] = td.textContent.trim() || '';
+        let newValue = td.textContent.trim() || '';
+        const colMeta = columns.find(c => c.name === colName);
+        if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric' && newValue !== '') {
+            newValue = normalizeNumericInput(newValue, thousandSeparator);
+        }
+        duplicatedRows[dIdx][colName] = newValue;
         updateChangeIndicator();
     }
 
@@ -1091,3 +1163,13 @@
         return String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 })();
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        normalizeNumericInput,
+        formatNumberDisplay,
+        formatExactMatchValue,
+        normalizeFilterInputValue
+    };
+}
