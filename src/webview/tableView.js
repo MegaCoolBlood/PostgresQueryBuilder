@@ -343,6 +343,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return 'text';
     }
 
+    function getMaxFormattedWidth(colName) {
+        let maxLen = 5; // minimum width in characters
+        for (const row of allRows) {
+            const val = row[colName];
+            if (val === null || val === undefined) continue;
+            const formatted = formatNumberDisplay(val, thousandSeparator);
+            if (formatted && formatted.length > maxLen) {
+                maxLen = formatted.length;
+            }
+        }
+        return maxLen;
+    }
+
     function getFilterOperator(col) {
         const mode = filterModes[col] || 'equals';
         switch (mode) {
@@ -396,15 +409,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 html += `<option value="between"${mode === 'between' ? ' selected' : ''}>Between</option>`;
                 html += `</select>`;
 
+                // Compute width style for numeric columns
+                const numWidthStyle = (filterType === 'numeric') ? ` style="width:${getMaxFormattedWidth(col.name) + 2}ch"` : '';
+
                 if (mode === 'between') {
                     const rangeVal = (typeof val === 'object' && val !== null) ? val : { from: '', to: '' };
                     const langAttr = (filterType === 'date') ? ' lang="en-GB"' : '';
-                    html += `<input class="filter-input filter-input-range" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" data-range="from" placeholder="From" value="${escapeAttr(rangeVal.from || '')}"${inputType === 'number' ? ' step="any"' : ''}>`;
-                    html += `<input class="filter-input filter-input-range" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" data-range="to" placeholder="To" value="${escapeAttr(rangeVal.to || '')}"${inputType === 'number' ? ' step="any"' : ''}>`;
+                    const fromDisplay = (filterType === 'numeric' && rangeVal.from) ? escapeAttr(formatNumberDisplay(rangeVal.from, thousandSeparator) || rangeVal.from) : escapeAttr(rangeVal.from || '');
+                    const toDisplay = (filterType === 'numeric' && rangeVal.to) ? escapeAttr(formatNumberDisplay(rangeVal.to, thousandSeparator) || rangeVal.to) : escapeAttr(rangeVal.to || '');
+                    html += `<input class="filter-input filter-input-range" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" data-range="from" placeholder="From" value="${fromDisplay}"${numWidthStyle}${inputType === 'number' ? ' step="any"' : ''}>`;
+                    html += `<input class="filter-input filter-input-range" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" data-range="to" placeholder="To" value="${toDisplay}"${numWidthStyle}${inputType === 'number' ? ' step="any"' : ''}>`;
                 } else {
                     const singleVal = (typeof val === 'string') ? val : '';
                     const langAttr = (filterType === 'date') ? ' lang="en-GB"' : '';
-                    html += `<input class="filter-input" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" placeholder="Filter..." value="${escapeAttr(singleVal)}"${inputType === 'number' ? ' step="any"' : ''}>`;
+                    const displayVal = (filterType === 'numeric' && singleVal) ? escapeAttr(formatNumberDisplay(singleVal, thousandSeparator) || singleVal) : escapeAttr(singleVal);
+                    html += `<input class="filter-input" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" placeholder="Filter..." value="${displayVal}"${numWidthStyle}${inputType === 'number' ? ' step="any"' : ''}>`;
                 }
             } else {
                 // Text filter (ILIKE)
@@ -434,19 +453,47 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         // Attach filter listeners
         tableHead.querySelectorAll('.filter-input').forEach(input => {
+            const col = input.getAttribute('data-col');
+            const colMeta = columns.find(c => c.name === col);
+            const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
+
             input.addEventListener('input', (e) => {
-                const col = e.target.getAttribute('data-col');
                 const range = e.target.getAttribute('data-range');
                 delete exactFilters[col]; // Manual input = not exact
 
-                if (range) {
-                    // Between mode - store as object
-                    if (typeof filters[col] !== 'object' || filters[col] === null) {
-                        filters[col] = { from: '', to: '' };
+                // For numeric inputs: live-format with thousand separators
+                if (filterType === 'numeric') {
+                    const cursorPos = e.target.selectionStart;
+                    const oldVal = e.target.value;
+                    const normalized = normalizeNumericInput(oldVal, thousandSeparator);
+                    const formatted = (normalized && normalized !== '') ? (formatNumberDisplay(normalized, thousandSeparator) || oldVal) : oldVal;
+                    if (formatted !== oldVal) {
+                        // Count separators before cursor in old and new value to adjust position
+                        const sepsBefore = (oldVal.substring(0, cursorPos).match(new RegExp(thousandSeparator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+                        const sepsInNew = (formatted.substring(0, cursorPos + (formatted.length - oldVal.length)).match(new RegExp(thousandSeparator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+                        e.target.value = formatted;
+                        const newCursor = cursorPos + (sepsInNew - sepsBefore);
+                        e.target.setSelectionRange(newCursor, newCursor);
                     }
-                    filters[col][range] = e.target.value;
+                    // Store the normalized (raw) value in filters
+                    if (range) {
+                        if (typeof filters[col] !== 'object' || filters[col] === null) {
+                            filters[col] = { from: '', to: '' };
+                        }
+                        filters[col][range] = normalized;
+                    } else {
+                        filters[col] = normalized;
+                    }
                 } else {
-                    filters[col] = e.target.value;
+                    if (range) {
+                        // Between mode - store as object
+                        if (typeof filters[col] !== 'object' || filters[col] === null) {
+                            filters[col] = { from: '', to: '' };
+                        }
+                        filters[col][range] = e.target.value;
+                    } else {
+                        filters[col] = e.target.value;
+                    }
                 }
                 renderBody();
             });
