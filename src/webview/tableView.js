@@ -57,6 +57,33 @@ function normalizeFilterInputValue(value, filterType, thousandSeparator = DEFAUL
     return String(value);
 }
 
+/**
+ * Core live-formatting logic for numeric values.
+ * Takes current text, cursor position (as digit count before cursor), and thousand separator.
+ * Returns { formatted, normalized, newCursor } or null if no formatting needed.
+ */
+function liveFormatNumeric(text, digitCursorPos, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
+    if (!text || text === '') return null;
+    const normalized = normalizeNumericInput(text, thousandSeparator);
+    if (!normalized || isNaN(Number(normalized))) return null;
+    const formatted = formatNumberDisplay(normalized, thousandSeparator);
+    if (formatted === null || formatted === text) return null;
+
+    // Compute new cursor offset by counting digits in formatted string
+    let charCount = 0;
+    let newCursor = formatted.length;
+    for (let i = 0; i < formatted.length; i++) {
+        if (formatted[i] !== thousandSeparator) {
+            charCount++;
+        }
+        if (charCount >= digitCursorPos) {
+            newCursor = i + 1;
+            break;
+        }
+    }
+    return { formatted, normalized, newCursor };
+}
+
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 (function() {
     const vscode = acquireVsCodeApi();
@@ -465,17 +492,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 if (filterType === 'numeric') {
                     const cursorPos = e.target.selectionStart;
                     const oldVal = e.target.value;
-                    const normalized = normalizeNumericInput(oldVal, thousandSeparator);
-                    const formatted = (normalized && normalized !== '') ? (formatNumberDisplay(normalized, thousandSeparator) || oldVal) : oldVal;
-                    if (formatted !== oldVal) {
-                        // Count separators before cursor in old and new value to adjust position
-                        const sepsBefore = (oldVal.substring(0, cursorPos).match(new RegExp(thousandSeparator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-                        const sepsInNew = (formatted.substring(0, cursorPos + (formatted.length - oldVal.length)).match(new RegExp(thousandSeparator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-                        e.target.value = formatted;
-                        const newCursor = cursorPos + (sepsInNew - sepsBefore);
-                        e.target.setSelectionRange(newCursor, newCursor);
+                    // Count digits (non-separator chars) before cursor
+                    const digitsBefore = oldVal.substring(0, cursorPos).split(thousandSeparator).join('').length;
+                    const result = liveFormatNumeric(oldVal, digitsBefore, thousandSeparator);
+                    if (result) {
+                        e.target.value = result.formatted;
+                        e.target.setSelectionRange(result.newCursor, result.newCursor);
                     }
                     // Store the normalized (raw) value in filters
+                    const normalized = result ? result.normalized : normalizeNumericInput(oldVal, thousandSeparator);
                     if (range) {
                         if (typeof filters[col] !== 'object' || filters[col] === null) {
                             filters[col] = { from: '', to: '' };
@@ -876,19 +901,57 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         tableBody.innerHTML = html;
 
+        // Live formatting for numeric cells during editing
+        function handleNumericCellInput(td) {
+            const colName = td.getAttribute('data-col');
+            const colMeta = columns.find(c => c.name === colName);
+            if (!colMeta || getColumnFilterType(colMeta.dataType) !== 'numeric') return;
+
+            const text = getCellTextContent(td);
+
+            // Get cursor position as digit count
+            const sel = window.getSelection();
+            let digitsBefore = 0;
+            if (sel && sel.rangeCount > 0) {
+                const range = sel.getRangeAt(0);
+                const beforeCursor = text.substring(0, range.startOffset);
+                digitsBefore = beforeCursor.split(thousandSeparator).join('').length;
+            }
+
+            const result = liveFormatNumeric(text, digitsBefore, thousandSeparator);
+            if (!result) return;
+
+            // Update cell content
+            const fkBtn = td.querySelector('.fk-btn');
+            td.textContent = result.formatted;
+            if (fkBtn) { td.appendChild(fkBtn); }
+
+            // Restore cursor position
+            if (sel && td.firstChild) {
+                const newRange = document.createRange();
+                newRange.setStart(td.firstChild, Math.min(result.newCursor, result.formatted.length));
+                newRange.collapse(true);
+                sel.removeAllRanges();
+                sel.addRange(newRange);
+            }
+        }
+
         // Attach blur listeners for editable cells (existing rows)
         tableBody.querySelectorAll('td[data-row][contenteditable="true"]').forEach(td => {
             td.addEventListener('blur', handleCellEdit);
+            td.addEventListener('input', () => handleNumericCellInput(td));
         });
 
         // Attach blur listeners for inserted rows
         tableBody.querySelectorAll('td[data-insert][contenteditable="true"]').forEach(td => {
             td.addEventListener('blur', handleInsertCellEdit);
+            td.addEventListener('input', () => handleNumericCellInput(td));
         });
 
         // Attach blur listeners for duplicated rows
         tableBody.querySelectorAll('td[data-dup][contenteditable="true"]').forEach(td => {
             td.addEventListener('blur', handleDupCellEdit);
+            td.addEventListener('input', () => handleNumericCellInput(td));
         });
 
         // Attach FK button listeners
@@ -1397,6 +1460,7 @@ if (typeof module !== 'undefined' && module.exports) {
         formatNumberDisplay,
         formatExactMatchValue,
         normalizeFilterInputValue,
-        escapeSqlString
+        escapeSqlString,
+        liveFormatNumeric
     };
 }

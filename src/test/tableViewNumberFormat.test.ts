@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric } = require(
     path.join(__dirname, '../../src/webview/tableView.js')
 );
 
@@ -76,6 +76,163 @@ test('normalizeFilterInputValue returns string for text type', () => {
 test('normalizeFilterInputValue returns null/undefined unchanged', () => {
     assert.equal(normalizeFilterInputValue(null, 'numeric', ' '), null);
     assert.equal(normalizeFilterInputValue(undefined, 'text', ' '), undefined);
+});
+
+// Tests for live formatting (normalize then format round-trip)
+test('live formatting: raw integer input gets thousand separators', () => {
+    const input = '1234567';
+    const normalized = normalizeNumericInput(input, ' ');
+    const formatted = formatNumberDisplay(normalized, ' ');
+    assert.equal(formatted, '1 234 567');
+});
+
+test('live formatting: raw decimal input gets thousand separators and comma', () => {
+    const input = '1234567.89';
+    const normalized = normalizeNumericInput(input, ' ');
+    const formatted = formatNumberDisplay(normalized, ' ');
+    assert.equal(formatted, '1 234 567,89');
+});
+
+test('live formatting: already formatted input stays stable (idempotent)', () => {
+    const input = '1 234 567,89';
+    const normalized = normalizeNumericInput(input, ' ');
+    assert.equal(normalized, '1234567.89');
+    const formatted = formatNumberDisplay(normalized, ' ');
+    assert.equal(formatted, '1 234 567,89');
+    // Second round-trip should produce same result
+    const normalized2 = normalizeNumericInput(formatted, ' ');
+    const formatted2 = formatNumberDisplay(normalized2, ' ');
+    assert.equal(formatted2, '1 234 567,89');
+});
+
+test('live formatting: negative number gets formatted correctly', () => {
+    const input = '-98765';
+    const normalized = normalizeNumericInput(input, ' ');
+    const formatted = formatNumberDisplay(normalized, ' ');
+    assert.equal(formatted, '-98 765');
+});
+
+test('live formatting: small number (no separators needed)', () => {
+    const input = '999';
+    const normalized = normalizeNumericInput(input, ' ');
+    const formatted = formatNumberDisplay(normalized, ' ');
+    assert.equal(formatted, '999');
+});
+
+test('live formatting: number with decimal comma input', () => {
+    const input = '12345,67';
+    const normalized = normalizeNumericInput(input, ' ');
+    assert.equal(normalized, '12345.67');
+    const formatted = formatNumberDisplay(normalized, ' ');
+    assert.equal(formatted, '12 345,67');
+});
+
+test('live formatting: partial input (just digits being typed) stays numeric', () => {
+    // Simulate typing "1", "12", "123", "1234"
+    assert.equal(formatNumberDisplay(normalizeNumericInput('1', ' '), ' '), '1');
+    assert.equal(formatNumberDisplay(normalizeNumericInput('12', ' '), ' '), '12');
+    assert.equal(formatNumberDisplay(normalizeNumericInput('123', ' '), ' '), '123');
+    assert.equal(formatNumberDisplay(normalizeNumericInput('1234', ' '), ' '), '1 234');
+    assert.equal(formatNumberDisplay(normalizeNumericInput('12345', ' '), ' '), '12 345');
+    assert.equal(formatNumberDisplay(normalizeNumericInput('123456', ' '), ' '), '123 456');
+    assert.equal(formatNumberDisplay(normalizeNumericInput('1234567', ' '), ' '), '1 234 567');
+});
+
+test('live formatting: non-numeric input is returned unchanged', () => {
+    const input = 'abc';
+    const normalized = normalizeNumericInput(input, ' ');
+    assert.equal(normalized, 'abc'); // not a number, returned as-is
+    const formatted = formatNumberDisplay(normalized, ' ');
+    assert.equal(formatted, 'abc'); // formatNumberDisplay returns string for NaN
+});
+
+test('live formatting: empty input stays empty', () => {
+    const input = '';
+    const normalized = normalizeNumericInput(input, ' ');
+    assert.equal(normalized, '');
+});
+
+// Tests for liveFormatNumeric
+test('liveFormatNumeric: returns null for empty input', () => {
+    assert.equal(liveFormatNumeric('', 0, ' '), null);
+    assert.equal(liveFormatNumeric(null, 0, ' '), null);
+});
+
+test('liveFormatNumeric: returns null for non-numeric input', () => {
+    assert.equal(liveFormatNumeric('abc', 0, ' '), null);
+    assert.equal(liveFormatNumeric('12a34', 2, ' '), null);
+});
+
+test('liveFormatNumeric: returns null when already formatted (no change needed)', () => {
+    // '1 234' is already formatted, so no change needed
+    assert.equal(liveFormatNumeric('1 234', 3, ' '), null);
+});
+
+test('liveFormatNumeric: formats unformatted number and returns correct cursor', () => {
+    // Typing '1234' with cursor at end (4 digits in)
+    const result = liveFormatNumeric('1234', 4, ' ');
+    assert.notEqual(result, null);
+    assert.equal(result!.formatted, '1 234');
+    assert.equal(result!.normalized, '1234');
+    assert.equal(result!.newCursor, 5); // cursor after '4' in '1 234'
+});
+
+test('liveFormatNumeric: cursor in middle of number', () => {
+    // Typing '1234567' with cursor after '4' (4 digits in)
+    const result = liveFormatNumeric('1234567', 4, ' ');
+    assert.notEqual(result, null);
+    assert.equal(result!.formatted, '1 234 567');
+    assert.equal(result!.newCursor, 5); // after '4' in '1 234 567'
+});
+
+test('liveFormatNumeric: cursor at start', () => {
+    const result = liveFormatNumeric('1234', 0, ' ');
+    assert.notEqual(result, null);
+    assert.equal(result!.formatted, '1 234');
+    assert.equal(result!.newCursor, 1); // 0 digits before cursor, lands after first char
+});
+
+test('liveFormatNumeric: cursor after first digit', () => {
+    const result = liveFormatNumeric('1234', 1, ' ');
+    assert.notEqual(result, null);
+    assert.equal(result!.formatted, '1 234');
+    assert.equal(result!.newCursor, 1); // after '1' in '1 234'
+});
+
+test('liveFormatNumeric: handles negative numbers', () => {
+    const result = liveFormatNumeric('-1234', 5, ' ');
+    assert.notEqual(result, null);
+    assert.equal(result!.formatted, '-1 234');
+    assert.equal(result!.newCursor, 6);
+});
+
+test('liveFormatNumeric: handles decimal numbers', () => {
+    const result = liveFormatNumeric('1234.5', 6, ' ');
+    assert.notEqual(result, null);
+    assert.equal(result!.formatted, '1 234,5');
+    assert.equal(result!.newCursor, 7);
+});
+
+test('liveFormatNumeric: handles number with decimal comma input', () => {
+    const result = liveFormatNumeric('1234,5', 6, ' ');
+    assert.notEqual(result, null);
+    assert.equal(result!.formatted, '1 234,5');
+    assert.equal(result!.normalized, '1234.5');
+    assert.equal(result!.newCursor, 7);
+});
+
+test('liveFormatNumeric: small number returns null (no formatting needed)', () => {
+    // '999' formatted is still '999', so no change
+    assert.equal(liveFormatNumeric('999', 3, ' '), null);
+});
+
+test('liveFormatNumeric: large number cursor tracking', () => {
+    // User typed '12345678' with cursor after '5' (5 digits in)
+    const result = liveFormatNumeric('12345678', 5, ' ');
+    assert.notEqual(result, null);
+    assert.equal(result!.formatted, '12 345 678');
+    // '5' is at index 5 in '12 345 678', cursor should be at 6
+    assert.equal(result!.newCursor, 6);
 });
 
 test('escapeSqlString escapes single quotes', () => {
