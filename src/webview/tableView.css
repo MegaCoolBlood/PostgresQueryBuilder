@@ -543,3 +543,179 @@ td[contenteditable="true"]:focus {
     font-weight: 600;
     color: var(--vscode-descriptionForeground);
 }
+
+/* Custom Column Mapping Dialog */
+.mapping-dialog {
+    max-width: 550px;
+}
+
+.mapping-dialog-content {
+    padding: 14px;
+    overflow-y: auto;
+    flex: 1;
+    max-height: 65vh;
+}
+
+.mapping-fieldset {
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 4px;
+    padding: 10px 12px;
+    margin: 10px 0;
+}
+
+.mapping-fieldset legend {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--vscode-descriptionForeground);
+    padding: 0 4px;
+}
+
+.mapping-hint {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    margin: 4px 0 8px 0;
+}
+
+.mapping-condition-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.mapping-condition-row input,
+.mapping-condition-row select {
+    padding: 3px 6px;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    border-radius: 2px;
+    font-size: 12px;
+}
+
+.mapping-condition-row input {
+    flex: 1;
+}
+
+.mapping-condition-row select {
+    width: 60px;
+}
+
+.mapping-condition-row .btn-remove-condition {
+    background: none;
+    border: none;
+    color: var(--vscode-errorForeground);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0 4px;
+}
+
+.btn-sm {
+    font-size: 11px;
+    padding: 2px 8px;
+}
+
+.mappings-list {
+    max-height: 50vh;
+    overflow-y: auto;
+}
+
+.mapping-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 3px;
+    margin-bottom: 6px;
+    background: var(--vscode-input-background);
+}
+
+.mapping-item-info {
+    flex: 1;
+    font-size: 12px;
+}
+
+.mapping-item-label {
+    font-weight: 600;
+}
+
+.mapping-item-detail {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    margin-top: 2px;
+}
+
+.mapping-item-badges {
+    display: flex;
+    gap: 4px;
+    margin-top: 3px;
+}
+
+.mapping-badge {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--vscode-badge-background);
+    color: var(--vscode-badge-foreground);
+}
+
+.mapping-item-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.custom-fk-btn {
+    background: none;
+    border: 1px solid var(--vscode-button-background);
+    color: var(--vscode-button-background);
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 3px;
+    line-height: 1.4;
+    margin-left: 3px;
+}
+
+/* Typeahead dropdown */
+.typeahead-wrapper {
+    flex: 1;
+    position: relative;
+    display: flex;
+}
+
+.typeahead-wrapper input {
+    flex: 1;
+    padding: 4px 8px;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    border-radius: 2px;
+    font-size: 12px;
+}
+
+.typeahead-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 2000;
+    background: var(--vscode-editorWidget-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 3px;
+    max-height: 180px;
+    overflow-y: auto;
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.3);
+}
+
+.typeahead-item {
+    padding: 5px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--vscode-foreground);
+}
+
+.typeahead-item:hover {
+    background: var(--vscode-list-hoverBackground);
+}

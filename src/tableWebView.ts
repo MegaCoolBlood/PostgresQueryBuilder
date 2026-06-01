@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
 import { QueryRunner } from './queryRunner';
 import { ExportService } from './exportService';
+import { ColumnMappingManager } from './columnMappingManager';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -11,11 +12,13 @@ export class TableWebViewManager {
     private context: vscode.ExtensionContext;
     private connectionManager: ConnectionManager;
     private exportService: ExportService;
+    private columnMappingManager: ColumnMappingManager;
 
     constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager) {
         this.context = context;
         this.connectionManager = connectionManager;
         this.exportService = new ExportService(context);
+        this.columnMappingManager = new ColumnMappingManager(context);
     }
 
     async openTableView(schema: string, table: string): Promise<void> {
@@ -134,6 +137,13 @@ export class TableWebViewManager {
                             });
                         }).catch(err => console.warn(`Failed to load referencing tables: ${err.message}`));
 
+                        // Send custom column mappings
+                        const customMappings = this.columnMappingManager.getMappingsForTable(schema, table);
+                        panel.webview.postMessage({
+                            command: 'customMappingsLoaded',
+                            mappings: customMappings
+                        });
+
                         break;
                     }
                     case 'previewSQL': {
@@ -209,6 +219,69 @@ export class TableWebViewManager {
                         const fkColumn = message.refColumn;
                         const fkValue = message.value;
                         await this.openTableViewWithFilter(fkSchema, fkTable, fkColumn, fkValue);
+                        break;
+                    }
+                    case 'addCustomMapping': {
+                        this.columnMappingManager.addMapping(message.mapping);
+                        const mappings = this.columnMappingManager.getMappingsForTable(schema, table);
+                        panel.webview.postMessage({
+                            command: 'customMappingsLoaded',
+                            mappings: mappings
+                        });
+                        break;
+                    }
+                    case 'updateCustomMapping': {
+                        this.columnMappingManager.updateMapping(message.mappingId, message.mapping);
+                        const mappingsAfterUpdate = this.columnMappingManager.getMappingsForTable(schema, table);
+                        panel.webview.postMessage({
+                            command: 'customMappingsLoaded',
+                            mappings: mappingsAfterUpdate
+                        });
+                        break;
+                    }
+                    case 'deleteCustomMapping': {
+                        this.columnMappingManager.deleteMapping(message.mappingId);
+                        const mappingsAfterDelete = this.columnMappingManager.getMappingsForTable(schema, table);
+                        panel.webview.postMessage({
+                            command: 'customMappingsLoaded',
+                            mappings: mappingsAfterDelete
+                        });
+                        break;
+                    }
+                    case 'getTablesForTypeahead': {
+                        try {
+                            const tables = await this.connectionManager.queryMetadata(
+                                `SELECT table_schema, table_name FROM information_schema.tables
+                                 WHERE table_type IN ('BASE TABLE', 'FOREIGN')
+                                   AND table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                                 ORDER BY table_schema, table_name`
+                            );
+                            panel.webview.postMessage({
+                                command: 'tablesForTypeahead',
+                                tables: tables.map((r: any) => ({ schema: r.table_schema, table: r.table_name }))
+                            });
+                        } catch (err: any) {
+                            console.warn(`Failed to load tables for typeahead: ${err.message}`);
+                        }
+                        break;
+                    }
+                    case 'getColumnsForTypeahead': {
+                        try {
+                            const cols = await this.connectionManager.queryMetadata(
+                                `SELECT column_name FROM information_schema.columns
+                                 WHERE table_schema = $1 AND table_name = $2
+                                 ORDER BY ordinal_position`,
+                                [message.schema, message.table]
+                            );
+                            panel.webview.postMessage({
+                                command: 'columnsForTypeahead',
+                                columns: cols.map((r: any) => r.column_name),
+                                forSchema: message.schema,
+                                forTable: message.table
+                            });
+                        } catch (err: any) {
+                            console.warn(`Failed to load columns for typeahead: ${err.message}`);
+                        }
                         break;
                     }
                     case 'browseExportLocation': {

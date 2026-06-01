@@ -66,6 +66,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let primaryKeys = [];
     let foreignKeys = []; // [{column, refSchema, refTable, refColumn}]
     let referencingTables = []; // [{fkSchema, fkTable, fkColumn, localColumn}]
+    let customMappings = []; // [{id, sourceColumn, targetSchema, targetTable, targetColumn, conditions, isDefault, label}]
     let allRows = [];
     let displayedRows = [];
     let schema = '';
@@ -180,6 +181,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'referencingTablesLoaded':
                 handleReferencingTablesLoaded(msg);
                 break;
+            case 'customMappingsLoaded':
+                handleCustomMappingsLoaded(msg);
+                break;
+            case 'tablesForTypeahead':
+                handleTablesForTypeahead(msg);
+                break;
+            case 'columnsForTypeahead':
+                handleColumnsForTypeahead(msg);
+                break;
 
             case 'queryResult':
                 handleQueryResult(msg);
@@ -265,6 +275,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         referencingTables = msg.referencingTables || [];
         refsLoaded = true;
         checkMetaComplete();
+        renderBody();
+    }
+
+    function handleCustomMappingsLoaded(msg) {
+        customMappings = msg.mappings || [];
         renderBody();
     }
 
@@ -640,6 +655,46 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             });
         }
 
+        // 5. Custom column mappings
+        const rowIdx2 = rowIdx !== null ? parseInt(rowIdx) : null;
+        const rowData = rowIdx2 !== null ? allRows[rowIdx2] : {};
+        const applicableMappings = customMappings.filter(m =>
+            m.sourceColumn === colName && evaluateMappingConditions(m, rowData)
+        );
+        if (applicableMappings.length > 0 && cellValue !== null && cellValue !== undefined) {
+            items.push({ separator: true });
+            applicableMappings.forEach(mapping => {
+                const label = mapping.label || `${mapping.targetSchema}.${mapping.targetTable}.${mapping.targetColumn}`;
+                items.push({
+                    label: `Jump to ${label}`,
+                    action: () => {
+                        vscode.postMessage({
+                            command: 'openForeignKey',
+                            refSchema: mapping.targetSchema,
+                            refTable: mapping.targetTable,
+                            refColumn: mapping.targetColumn,
+                            value: String(cellValue)
+                        });
+                    }
+                });
+            });
+        }
+
+        // 6. Create/Manage custom mapping
+        items.push({ separator: true });
+        items.push({
+            label: 'Create Custom Mapping...',
+            action: () => {
+                openMappingDialog(colName);
+            }
+        });
+        items.push({
+            label: 'Manage Mappings...',
+            action: () => {
+                openManageMappingsDialog();
+            }
+        });
+
         if (items.length === 0) return;
 
         // Render menu
@@ -796,9 +851,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 );
 
                 const fk = foreignKeys.find(f => f.column === col.name);
-                const fkBtn = (fk && currentVal !== null && currentVal !== undefined)
-                    ? `<button contenteditable="false" class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(String(currentVal))}" title="Open ${fk.refSchema}.${fk.refTable}">&#8599;</button>`
-                    : '';
+                const defaultCustomMapping = customMappings.find(m => m.isDefault && m.sourceColumn === col.name && evaluateMappingConditions(m, allRows[idx]));
+                let fkBtn = '';
+                if (defaultCustomMapping && currentVal !== null && currentVal !== undefined) {
+                    // Custom mapping overrides or supplements FK button
+                    fkBtn = `<button contenteditable="false" class="fk-btn custom-fk-btn" data-ref-schema="${escapeAttr(defaultCustomMapping.targetSchema)}" data-ref-table="${escapeAttr(defaultCustomMapping.targetTable)}" data-ref-column="${escapeAttr(defaultCustomMapping.targetColumn)}" data-value="${escapeAttr(String(currentVal))}" title="${escapeAttr(defaultCustomMapping.label || defaultCustomMapping.targetSchema + '.' + defaultCustomMapping.targetTable)}">&#8599;</button>`;
+                } else if (fk && currentVal !== null && currentVal !== undefined) {
+                    fkBtn = `<button contenteditable="false" class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(String(currentVal))}" title="Open ${fk.refSchema}.${fk.refTable}">&#8599;</button>`;
+                }
 
                 html += `<td class="${cellClass}" contenteditable="${!isDeleted}" data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : String(originalVal))}">${displayVal}${fkBtn}</td>`;
             });
@@ -1340,6 +1400,423 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function escapeAttr(text) {
         if (text === null || text === undefined) return '';
         return String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // ===== Custom Column Mapping Logic =====
+
+    function evaluateMappingConditions(mapping, rowData) {
+        if (!mapping.conditions || mapping.conditions.length === 0) return true;
+        if (!rowData) return false;
+        return mapping.conditions.every(cond => {
+            const cellValue = rowData[cond.column];
+            if (cellValue === null || cellValue === undefined) return false;
+            const strVal = String(cellValue);
+            switch (cond.operator) {
+                case '=': return strVal === cond.value;
+                case '!=': return strVal !== cond.value;
+                case '>': return strVal > cond.value;
+                case '<': return strVal < cond.value;
+                case '>=': return strVal >= cond.value;
+                case '<=': return strVal <= cond.value;
+                case 'LIKE': return strVal.includes(cond.value);
+                case 'ILIKE': return strVal.toLowerCase().includes(cond.value.toLowerCase());
+                default: return strVal === cond.value;
+            }
+        });
+    }
+
+    // Mapping dialog DOM refs
+    const mappingDialogOverlay = document.getElementById('mappingDialogOverlay');
+    const mappingDialogTitle = document.getElementById('mappingDialogTitle');
+    const mappingDialogClose = document.getElementById('mappingDialogClose');
+    const mappingDialogSave = document.getElementById('mappingDialogSave');
+    const mappingDialogDelete = document.getElementById('mappingDialogDelete');
+    const mappingDialogCancel = document.getElementById('mappingDialogCancel');
+    const mappingLabel = document.getElementById('mappingLabel');
+    const mappingSourceSchema = document.getElementById('mappingSourceSchema');
+    const mappingSourceTable = document.getElementById('mappingSourceTable');
+    const mappingSourceColumn = document.getElementById('mappingSourceColumn');
+    const mappingTargetSchema = document.getElementById('mappingTargetSchema');
+    const mappingTargetTable = document.getElementById('mappingTargetTable');
+    const mappingTargetColumn = document.getElementById('mappingTargetColumn');
+    const mappingConditions = document.getElementById('mappingConditions');
+    const mappingAddCondition = document.getElementById('mappingAddCondition');
+    const mappingIsDefault = document.getElementById('mappingIsDefault');
+
+    // Manage mappings dialog DOM refs
+    const manageMappingsOverlay = document.getElementById('manageMappingsOverlay');
+    const manageMappingsClose = document.getElementById('manageMappingsClose');
+    const manageMappingsCloseBtn = document.getElementById('manageMappingsCloseBtn');
+    const manageMappingsAdd = document.getElementById('manageMappingsAdd');
+    const mappingsList = document.getElementById('mappingsList');
+    const noMappingsMsg = document.getElementById('noMappingsMsg');
+
+    let editingMappingId = null;
+    let typeaheadTables = []; // [{schema, table}]
+    let typeaheadColumns = []; // column names for currently selected target table
+
+    function handleTablesForTypeahead(msg) {
+        typeaheadTables = msg.tables || [];
+        updateTableTypeahead();
+    }
+
+    function handleColumnsForTypeahead(msg) {
+        typeaheadColumns = msg.columns || [];
+        updateColumnTypeahead();
+    }
+
+    function requestTablesForTypeahead() {
+        vscode.postMessage({ command: 'getTablesForTypeahead' });
+    }
+
+    function requestColumnsForTypeahead(targetSchema, targetTable) {
+        if (!targetSchema || !targetTable) {
+            typeaheadColumns = [];
+            updateColumnTypeahead();
+            return;
+        }
+        vscode.postMessage({ command: 'getColumnsForTypeahead', schema: targetSchema, table: targetTable });
+    }
+
+    function setupTypeahead(input, getSuggestions, onSelect) {
+        const wrapper = input.closest('.typeahead-wrapper') || input.parentElement;
+        let dropdown = wrapper.querySelector('.typeahead-dropdown');
+        if (!dropdown) {
+            dropdown = document.createElement('div');
+            dropdown.className = 'typeahead-dropdown';
+            wrapper.appendChild(dropdown);
+        }
+
+        function showSuggestions() {
+            const val = input.value.toLowerCase().trim();
+            const suggestions = getSuggestions(val);
+            if (suggestions.length === 0 || (suggestions.length === 1 && suggestions[0].value.toLowerCase() === val)) {
+                dropdown.style.display = 'none';
+                return;
+            }
+            let html = '';
+            suggestions.slice(0, 20).forEach(s => {
+                html += `<div class="typeahead-item" data-value="${escapeAttr(s.value)}">${escapeHtml(s.label)}</div>`;
+            });
+            dropdown.innerHTML = html;
+            dropdown.style.display = 'block';
+
+            dropdown.querySelectorAll('.typeahead-item').forEach(item => {
+                item.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
+                    const value = item.getAttribute('data-value');
+                    input.value = value;
+                    dropdown.style.display = 'none';
+                    suppressNext = true;
+                    if (onSelect) onSelect(value);
+                });
+            });
+        }
+
+        let suppressNext = false;
+        input.addEventListener('input', () => {
+            if (suppressNext) { suppressNext = false; return; }
+            showSuggestions();
+        });
+        input.addEventListener('focus', () => {
+            if (suppressNext) { suppressNext = false; return; }
+            showSuggestions();
+        });
+        input.addEventListener('blur', () => {
+            setTimeout(() => { dropdown.style.display = 'none'; }, 150);
+        });
+    }
+
+    function getUniqueSchemas() {
+        const schemas = new Set(typeaheadTables.map(t => t.schema));
+        return [...schemas].sort();
+    }
+
+    function updateTableTypeahead() {
+        // Re-trigger suggestions if dialog is open
+        if (mappingDialogOverlay.style.display === 'flex') {
+            mappingTargetTable.dispatchEvent(new Event('focus'));
+        }
+    }
+
+    function updateColumnTypeahead() {
+        if (mappingDialogOverlay.style.display === 'flex') {
+            mappingTargetColumn.dispatchEvent(new Event('focus'));
+        }
+    }
+
+    // Event listeners for mapping dialog
+    mappingDialogClose.addEventListener('click', closeMappingDialog);
+    mappingDialogCancel.addEventListener('click', closeMappingDialog);
+    mappingDialogSave.addEventListener('click', saveMappingFromDialog);
+    mappingDialogDelete.addEventListener('click', deleteCurrentMapping);
+    mappingAddCondition.addEventListener('click', addConditionRow);
+
+    // Event listeners for manage mappings dialog
+    manageMappingsClose.addEventListener('click', closeManageMappingsDialog);
+    manageMappingsCloseBtn.addEventListener('click', closeManageMappingsDialog);
+    manageMappingsAdd.addEventListener('click', () => {
+        closeManageMappingsDialog();
+        openMappingDialog(null);
+    });
+
+    // Setup typeahead on target schema field
+    setupTypeahead(mappingTargetSchema, (val) => {
+        const schemas = getUniqueSchemas();
+        return schemas
+            .filter(s => s.toLowerCase().includes(val))
+            .map(s => ({ value: s, label: s }));
+    }, (selectedSchema) => {
+        // When schema changes, clear table and column
+        mappingTargetTable.value = '';
+        mappingTargetColumn.value = '';
+        typeaheadColumns = [];
+    });
+
+    // Setup typeahead on target table field
+    setupTypeahead(mappingTargetTable, (val) => {
+        const selectedSchema = mappingTargetSchema.value.trim().toLowerCase();
+        return typeaheadTables
+            .filter(t => {
+                const matchesSchema = !selectedSchema || t.schema.toLowerCase() === selectedSchema;
+                const matchesTable = t.table.toLowerCase().includes(val);
+                return matchesSchema && matchesTable;
+            })
+            .map(t => ({
+                value: t.table,
+                label: selectedSchema ? t.table : `${t.schema}.${t.table}`
+            }));
+    }, (selectedTable) => {
+        // Auto-fill schema if not set
+        if (!mappingTargetSchema.value.trim()) {
+            const match = typeaheadTables.find(t => t.table === selectedTable);
+            if (match) {
+                mappingTargetSchema.value = match.schema;
+            }
+        }
+        // Request columns for the selected table
+        const targetSchema = mappingTargetSchema.value.trim();
+        requestColumnsForTypeahead(targetSchema, selectedTable);
+    });
+
+    // Setup typeahead on target column field
+    setupTypeahead(mappingTargetColumn, (val) => {
+        return typeaheadColumns
+            .filter(c => c.toLowerCase().includes(val))
+            .map(c => ({ value: c, label: c }));
+    }, null);
+
+    // When table input loses focus, also request columns
+    mappingTargetTable.addEventListener('change', () => {
+        const targetSchema = mappingTargetSchema.value.trim() || schema;
+        const targetTable = mappingTargetTable.value.trim();
+        if (targetTable) {
+            requestColumnsForTypeahead(targetSchema, targetTable);
+        }
+    });
+
+    function openMappingDialog(preselectedColumn, existingMapping) {
+        editingMappingId = existingMapping ? existingMapping.id : null;
+        mappingDialogTitle.textContent = existingMapping ? 'Edit Custom Column Mapping' : 'Create Custom Column Mapping';
+        mappingDialogDelete.style.display = existingMapping ? 'inline-block' : 'none';
+
+        // Populate source fields
+        mappingSourceSchema.value = schema;
+        mappingSourceTable.value = table;
+
+        // Populate source column dropdown
+        let colHtml = '';
+        columns.forEach(col => {
+            const selected = (existingMapping && existingMapping.sourceColumn === col.name) ||
+                             (!existingMapping && col.name === preselectedColumn);
+            colHtml += `<option value="${escapeAttr(col.name)}"${selected ? ' selected' : ''}>${escapeHtml(col.name)}</option>`;
+        });
+        mappingSourceColumn.innerHTML = colHtml;
+
+        // Populate target fields
+        mappingTargetSchema.value = existingMapping ? existingMapping.targetSchema : schema;
+        mappingTargetTable.value = existingMapping ? existingMapping.targetTable : '';
+        mappingTargetColumn.value = existingMapping ? existingMapping.targetColumn : '';
+        mappingLabel.value = existingMapping ? (existingMapping.label || '') : '';
+        mappingIsDefault.checked = existingMapping ? existingMapping.isDefault : false;
+
+        // Populate conditions
+        mappingConditions.innerHTML = '';
+        if (existingMapping && existingMapping.conditions && existingMapping.conditions.length > 0) {
+            existingMapping.conditions.forEach(cond => {
+                addConditionRow(null, cond);
+            });
+        }
+
+        // Request tables for typeahead
+        requestTablesForTypeahead();
+
+        // If existing mapping has a target table, load its columns
+        if (existingMapping && existingMapping.targetSchema && existingMapping.targetTable) {
+            requestColumnsForTypeahead(existingMapping.targetSchema, existingMapping.targetTable);
+        } else {
+            typeaheadColumns = [];
+        }
+
+        mappingDialogOverlay.style.display = 'flex';
+    }
+
+    function closeMappingDialog() {
+        mappingDialogOverlay.style.display = 'none';
+        editingMappingId = null;
+    }
+
+    function addConditionRow(e, existing) {
+        const row = document.createElement('div');
+        row.className = 'mapping-condition-row';
+
+        // Column selector from current table columns
+        let colOpts = '';
+        columns.forEach(col => {
+            const selected = existing && existing.column === col.name;
+            colOpts += `<option value="${escapeAttr(col.name)}"${selected ? ' selected' : ''}>${escapeHtml(col.name)}</option>`;
+        });
+
+        const operatorVal = existing ? existing.operator : '=';
+        const valueVal = existing ? existing.value : '';
+
+        row.innerHTML = `
+            <select class="condition-column">${colOpts}</select>
+            <select class="condition-operator">
+                <option value="="${operatorVal === '=' ? ' selected' : ''}>=</option>
+                <option value="!="${operatorVal === '!=' ? ' selected' : ''}>!=</option>
+                <option value=">"${operatorVal === '>' ? ' selected' : ''}>&gt;</option>
+                <option value="<"${operatorVal === '<' ? ' selected' : ''}>&lt;</option>
+                <option value=">="${operatorVal === '>=' ? ' selected' : ''}>&gt;=</option>
+                <option value="<="${operatorVal === '<=' ? ' selected' : ''}>&lt;=</option>
+                <option value="LIKE"${operatorVal === 'LIKE' ? ' selected' : ''}>LIKE</option>
+                <option value="ILIKE"${operatorVal === 'ILIKE' ? ' selected' : ''}>ILIKE</option>
+            </select>
+            <input type="text" class="condition-value" placeholder="value" value="${escapeAttr(valueVal)}" />
+            <button class="btn-remove-condition" title="Remove condition">&times;</button>
+        `;
+
+        row.querySelector('.btn-remove-condition').addEventListener('click', () => {
+            row.remove();
+        });
+
+        mappingConditions.appendChild(row);
+    }
+
+    function gatherMappingFromDialog() {
+        const conditions = [];
+        mappingConditions.querySelectorAll('.mapping-condition-row').forEach(row => {
+            const col = row.querySelector('.condition-column').value;
+            const op = row.querySelector('.condition-operator').value;
+            const val = row.querySelector('.condition-value').value;
+            if (col && val !== '') {
+                conditions.push({ column: col, operator: op, value: val });
+            }
+        });
+
+        return {
+            sourceSchema: mappingSourceSchema.value.trim(),
+            sourceTable: mappingSourceTable.value.trim(),
+            sourceColumn: mappingSourceColumn.value,
+            targetSchema: mappingTargetSchema.value.trim(),
+            targetTable: mappingTargetTable.value.trim(),
+            targetColumn: mappingTargetColumn.value.trim(),
+            conditions: conditions,
+            isDefault: mappingIsDefault.checked,
+            label: mappingLabel.value.trim() || undefined
+        };
+    }
+
+    function saveMappingFromDialog() {
+        const data = gatherMappingFromDialog();
+        if (!data.targetTable || !data.targetColumn) {
+            alert('Target table and column are required.');
+            return;
+        }
+        if (!data.targetSchema) {
+            data.targetSchema = 'public';
+        }
+
+        vscode.postMessage({
+            command: editingMappingId ? 'updateCustomMapping' : 'addCustomMapping',
+            mappingId: editingMappingId,
+            mapping: data
+        });
+        closeMappingDialog();
+    }
+
+    function deleteCurrentMapping() {
+        if (!editingMappingId) return;
+        if (!confirm('Delete this custom mapping?')) return;
+        vscode.postMessage({
+            command: 'deleteCustomMapping',
+            mappingId: editingMappingId
+        });
+        closeMappingDialog();
+    }
+
+    function openManageMappingsDialog() {
+        renderMappingsList();
+        manageMappingsOverlay.style.display = 'flex';
+    }
+
+    function closeManageMappingsDialog() {
+        manageMappingsOverlay.style.display = 'none';
+    }
+
+    function renderMappingsList() {
+        if (customMappings.length === 0) {
+            mappingsList.innerHTML = '';
+            noMappingsMsg.style.display = 'block';
+            return;
+        }
+        noMappingsMsg.style.display = 'none';
+
+        let html = '';
+        customMappings.forEach(mapping => {
+            const label = mapping.label || `${mapping.sourceColumn} → ${mapping.targetSchema}.${mapping.targetTable}.${mapping.targetColumn}`;
+            const detail = `${mapping.sourceColumn} → ${mapping.targetSchema}.${mapping.targetTable}.${mapping.targetColumn}`;
+            let badges = '';
+            if (mapping.isDefault) {
+                badges += '<span class="mapping-badge">Default</span>';
+            }
+            if (mapping.conditions && mapping.conditions.length > 0) {
+                const condStr = mapping.conditions.map(c => `${c.column} ${c.operator} '${c.value}'`).join(', ');
+                badges += `<span class="mapping-badge">IF ${condStr}</span>`;
+            }
+            html += `<div class="mapping-item" data-mapping-id="${escapeAttr(mapping.id)}">
+                <div class="mapping-item-info">
+                    <div class="mapping-item-label">${escapeHtml(label)}</div>
+                    <div class="mapping-item-detail">${escapeHtml(detail)}</div>
+                    ${badges ? '<div class="mapping-item-badges">' + badges + '</div>' : ''}
+                </div>
+                <div class="mapping-item-actions">
+                    <button class="btn btn-default btn-sm mapping-edit-btn">Edit</button>
+                    <button class="btn btn-danger btn-sm mapping-delete-btn">Delete</button>
+                </div>
+            </div>`;
+        });
+        mappingsList.innerHTML = html;
+
+        // Attach event listeners
+        mappingsList.querySelectorAll('.mapping-edit-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = btn.closest('.mapping-item').getAttribute('data-mapping-id');
+                const mapping = customMappings.find(m => m.id === id);
+                if (mapping) {
+                    closeManageMappingsDialog();
+                    openMappingDialog(mapping.sourceColumn, mapping);
+                }
+            });
+        });
+        mappingsList.querySelectorAll('.mapping-delete-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = btn.closest('.mapping-item').getAttribute('data-mapping-id');
+                if (confirm('Delete this custom mapping?')) {
+                    vscode.postMessage({ command: 'deleteCustomMapping', mappingId: id });
+                }
+            });
+        });
     }
 })();
 }

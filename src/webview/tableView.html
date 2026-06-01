@@ -178,6 +178,83 @@
             </div>
         </div>
     </div>
+    <!-- Custom Column Mapping Dialog -->
+    <div class="sql-dialog-overlay" id="mappingDialogOverlay" style="display:none;">
+        <div class="sql-dialog mapping-dialog">
+            <div class="sql-dialog-header">
+                <span id="mappingDialogTitle">Create Custom Column Mapping</span>
+                <button class="sql-dialog-close" id="mappingDialogClose">&times;</button>
+            </div>
+            <div class="mapping-dialog-content">
+                <div class="export-field">
+                    <label for="mappingLabel">Label (optional):</label>
+                    <input type="text" id="mappingLabel" placeholder="e.g. Item to Car" />
+                </div>
+                <fieldset class="mapping-fieldset">
+                    <legend>Source (this table)</legend>
+                    <div class="export-field">
+                        <label for="mappingSourceSchema">Schema:</label>
+                        <input type="text" id="mappingSourceSchema" readonly />
+                    </div>
+                    <div class="export-field">
+                        <label for="mappingSourceTable">Table:</label>
+                        <input type="text" id="mappingSourceTable" readonly />
+                    </div>
+                    <div class="export-field">
+                        <label for="mappingSourceColumn">Column:</label>
+                        <select id="mappingSourceColumn"></select>
+                    </div>
+                </fieldset>
+                <fieldset class="mapping-fieldset">
+                    <legend>Target (jump to)</legend>
+                    <div class="export-field">
+                        <label for="mappingTargetSchema">Schema:</label>
+                        <span class="typeahead-wrapper"><input type="text" id="mappingTargetSchema" placeholder="public" autocomplete="off" /></span>
+                    </div>
+                    <div class="export-field">
+                        <label for="mappingTargetTable">Table:</label>
+                        <span class="typeahead-wrapper"><input type="text" id="mappingTargetTable" placeholder="cars" autocomplete="off" /></span>
+                    </div>
+                    <div class="export-field">
+                        <label for="mappingTargetColumn">Column:</label>
+                        <span class="typeahead-wrapper"><input type="text" id="mappingTargetColumn" placeholder="id" autocomplete="off" /></span>
+                    </div>
+                </fieldset>
+                <fieldset class="mapping-fieldset">
+                    <legend>Conditions (optional)</legend>
+                    <p class="mapping-hint">Only apply this mapping when these conditions are met on the current row.</p>
+                    <div id="mappingConditions"></div>
+                    <button class="btn btn-default btn-sm" id="mappingAddCondition">+ Add Condition</button>
+                </fieldset>
+                <div class="export-field-checkbox">
+                    <input type="checkbox" id="mappingIsDefault" />
+                    <label for="mappingIsDefault">Set as default (show FK button in cell)</label>
+                </div>
+            </div>
+            <div class="sql-dialog-footer">
+                <button class="btn btn-success" id="mappingDialogSave">Save Mapping</button>
+                <button class="btn btn-danger" id="mappingDialogDelete" style="display:none;">Delete</button>
+                <button class="btn btn-default" id="mappingDialogCancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+    <!-- Manage Mappings Dialog -->
+    <div class="sql-dialog-overlay" id="manageMappingsOverlay" style="display:none;">
+        <div class="sql-dialog mapping-dialog">
+            <div class="sql-dialog-header">
+                <span>Custom Column Mappings</span>
+                <button class="sql-dialog-close" id="manageMappingsClose">&times;</button>
+            </div>
+            <div class="mapping-dialog-content">
+                <div id="mappingsList" class="mappings-list"></div>
+                <p id="noMappingsMsg" class="mapping-hint" style="display:none;">No custom mappings defined for this table.</p>
+            </div>
+            <div class="sql-dialog-footer">
+                <button class="btn btn-primary" id="manageMappingsAdd">+ New Mapping</button>
+                <button class="btn btn-default" id="manageMappingsCloseBtn">Close</button>
+            </div>
+        </div>
+    </div>
     <script>/* JS_PLACEHOLDER */</script>
 </body>
 </html>
