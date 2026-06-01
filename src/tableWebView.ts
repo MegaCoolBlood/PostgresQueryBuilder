@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
 import { QueryRunner } from './queryRunner';
+import { ExportService } from './exportService';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -9,10 +10,12 @@ export class TableWebViewManager {
     private pendingFilters: Map<string, { column: string; value: string }> = new Map();
     private context: vscode.ExtensionContext;
     private connectionManager: ConnectionManager;
+    private exportService: ExportService;
 
     constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager) {
         this.context = context;
         this.connectionManager = connectionManager;
+        this.exportService = new ExportService(context);
     }
 
     async openTableView(schema: string, table: string): Promise<void> {
@@ -206,6 +209,89 @@ export class TableWebViewManager {
                         const fkColumn = message.refColumn;
                         const fkValue = message.value;
                         await this.openTableViewWithFilter(fkSchema, fkTable, fkColumn, fkValue);
+                        break;
+                    }
+                    case 'browseExportLocation': {
+                        const folderUri = await vscode.window.showOpenDialog({
+                            canSelectFiles: false,
+                            canSelectFolders: true,
+                            canSelectMany: false,
+                            openLabel: 'Select Export Folder'
+                        });
+                        if (folderUri && folderUri.length > 0) {
+                            panel.webview.postMessage({
+                                command: 'exportLocationSelected',
+                                path: folderUri[0].fsPath
+                            });
+                        }
+                        break;
+                    }
+                    case 'getExportDefaults': {
+                        const defaults = this.exportService.getDefaults();
+                        panel.webview.postMessage({
+                            command: 'exportDefaultsLoaded',
+                            defaults: defaults
+                        });
+                        break;
+                    }
+                    case 'saveExportDefaults': {
+                        this.exportService.saveDefaults(message.format, message.options);
+                        if (message.saveLocation) {
+                            this.exportService.saveSaveLocation(message.saveLocation);
+                        }
+                        vscode.window.showInformationMessage(`Export defaults saved for ${message.format.toUpperCase()}`);
+                        break;
+                    }
+                    case 'exportData': {
+                        const opts = message.options;
+                        const extensions: Record<string, string> = { csv: '.csv', json: '.json', xml: '.xml', insert: '.sql', excel: '.xlsx' };
+                        const ext = extensions[opts.format] || '';
+                        const filterMap: Record<string, { [key: string]: string[] }> = {
+                            csv: { 'CSV Files': ['csv'] },
+                            json: { 'JSON Files': ['json'] },
+                            xml: { 'XML Files': ['xml'] },
+                            insert: { 'SQL Files': ['sql'] },
+                            excel: { 'Excel Files': ['xlsx'] }
+                        };
+
+                        // Determine default directory from saved location or workspace
+                        const savedLocation = opts.saveLocation || this.exportService.getSaveLocation();
+                        const defaultDir = savedLocation || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+
+                        const uri = await vscode.window.showSaveDialog({
+                            defaultUri: vscode.Uri.file(path.join(defaultDir, opts.filename)),
+                            filters: filterMap[opts.format] || {}
+                        });
+
+                        if (!uri) break;
+
+                        try {
+                            // Fetch ALL rows from database (not limited by page size)
+                            let exportRows: any[];
+                            if (message.sql) {
+                                // Strip any existing LIMIT/OFFSET from the query for full export
+                                let sql = message.sql.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$/i, '');
+                                const result = await queryRunner.executeSQL(sql);
+                                exportRows = result.rows;
+                            } else {
+                                // Fallback: fetch all from table
+                                const totalCount = await queryRunner.getRowCount(schema, table);
+                                exportRows = await queryRunner.fetchRows(schema, table, 0, totalCount);
+                            }
+
+                            await this.exportService.exportData(
+                                exportRows,
+                                message.columns,
+                                { ...opts, filePath: uri.fsPath }
+                            );
+                            panel.webview.postMessage({
+                                command: 'exportSuccess',
+                                filePath: uri.fsPath
+                            });
+                            vscode.window.showInformationMessage(`Exported ${exportRows.length} rows to ${path.basename(uri.fsPath)}`);
+                        } catch (exportErr: any) {
+                            vscode.window.showErrorMessage(`Export failed: ${exportErr.message}`);
+                        }
                         break;
                     }
                 }

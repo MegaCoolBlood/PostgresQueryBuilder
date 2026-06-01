@@ -196,6 +196,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'applyFilter':
                 handleApplyFilter(msg);
                 break;
+            case 'exportDefaultsLoaded':
+                applyExportDefaults(msg.defaults);
+                break;
+            case 'exportSuccess':
+                changeCount.textContent = `Exported to ${msg.filePath}`;
+                setTimeout(() => { updateChangeIndicator(); }, 3000);
+                break;
+            case 'exportLocationSelected':
+                if (msg.path) {
+                    document.getElementById('exportSaveLocation').value = msg.path;
+                }
+                break;
             case 'error':
                 showError(msg.text);
                 break;
@@ -1106,6 +1118,178 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             changeCount.style.color = '';
             updateChangeIndicator();
         }, 5000);
+    }
+
+    // ===== Export Dialog Logic =====
+    const exportBtn = document.getElementById('exportBtn');
+    const exportDialogOverlay = document.getElementById('exportDialogOverlay');
+    const exportDialogClose = document.getElementById('exportDialogClose');
+    const exportFormat = document.getElementById('exportFormat');
+    const exportFilename = document.getElementById('exportFilename');
+    const exportExecute = document.getElementById('exportExecute');
+    const exportCancel = document.getElementById('exportCancel');
+    const exportSaveDefault = document.getElementById('exportSaveDefault');
+
+    const exportOptGroups = {
+        csv: document.getElementById('exportOptsCsv'),
+        json: document.getElementById('exportOptsJson'),
+        xml: document.getElementById('exportOptsXml'),
+        insert: document.getElementById('exportOptsInsert'),
+        excel: document.getElementById('exportOptsExcel')
+    };
+
+    let exportDefaults = {};
+
+    const csvSeparatorSelect = document.getElementById('csvSeparator');
+    const csvCustomSeparatorField = document.getElementById('csvCustomSeparatorField');
+    const exportSaveLocation = document.getElementById('exportSaveLocation');
+
+    exportBtn.addEventListener('click', openExportDialog);
+    exportDialogClose.addEventListener('click', closeExportDialog);
+    exportCancel.addEventListener('click', closeExportDialog);
+    exportExecute.addEventListener('click', executeExport);
+    exportSaveDefault.addEventListener('click', saveExportDefault);
+    exportFormat.addEventListener('change', onExportFormatChange);
+    csvSeparatorSelect.addEventListener('change', () => {
+        csvCustomSeparatorField.style.display = csvSeparatorSelect.value === '__custom__' ? 'flex' : 'none';
+    });
+    document.getElementById('exportBrowseLocation').addEventListener('click', () => {
+        vscode.postMessage({ command: 'browseExportLocation' });
+    });
+
+    function openExportDialog() {
+        // Request defaults from extension
+        vscode.postMessage({ command: 'getExportDefaults' });
+        // Set default filename based on table
+        exportFilename.value = table || 'export';
+        // Set insert table name default
+        const insertTableName = document.getElementById('insertTableName');
+        if (insertTableName) {
+            insertTableName.value = getDefaultTableReference();
+        }
+        onExportFormatChange();
+        exportDialogOverlay.style.display = 'flex';
+    }
+
+    function closeExportDialog() {
+        exportDialogOverlay.style.display = 'none';
+    }
+
+    function onExportFormatChange() {
+        const fmt = exportFormat.value;
+        Object.keys(exportOptGroups).forEach(key => {
+            exportOptGroups[key].style.display = key === fmt ? 'block' : 'none';
+        });
+        // Update filename extension hint
+        const extensions = { csv: '.csv', json: '.json', xml: '.xml', insert: '.sql', excel: '.xlsx' };
+        const base = exportFilename.value.replace(/\.(csv|json|xml|sql|xlsx)$/, '');
+        exportFilename.value = base;
+        exportFilename.placeholder = `filename (${extensions[fmt]})`;
+    }
+
+    function applyExportDefaults(defaults) {
+        exportDefaults = defaults || {};
+        // Apply save location if stored
+        if (exportDefaults._saveLocation) {
+            exportSaveLocation.value = exportDefaults._saveLocation;
+        }
+        const fmt = exportFormat.value;
+        const defs = exportDefaults[fmt];
+        if (!defs) return;
+
+        if (fmt === 'csv') {
+            if (defs.csvSeparator) {
+                // Check if the separator matches a preset
+                const presets = [',', ';', '\t', '|'];
+                if (presets.includes(defs.csvSeparator)) {
+                    csvSeparatorSelect.value = defs.csvSeparator;
+                    csvCustomSeparatorField.style.display = 'none';
+                } else {
+                    csvSeparatorSelect.value = '__custom__';
+                    document.getElementById('csvCustomSeparator').value = defs.csvSeparator;
+                    csvCustomSeparatorField.style.display = 'flex';
+                }
+            }
+            if (defs.csvIncludeHeaders !== undefined) document.getElementById('csvIncludeHeaders').checked = defs.csvIncludeHeaders;
+            if (defs.csvQuoteStrings !== undefined) document.getElementById('csvQuoteStrings').checked = defs.csvQuoteStrings;
+            if (defs.csvLineEnding) document.getElementById('csvLineEnding').value = defs.csvLineEnding;
+        } else if (fmt === 'json') {
+            if (defs.jsonPretty !== undefined) document.getElementById('jsonPretty').checked = defs.jsonPretty;
+            if (defs.jsonArrayWrapper !== undefined) document.getElementById('jsonArrayWrapper').checked = defs.jsonArrayWrapper;
+        } else if (fmt === 'xml') {
+            if (defs.xmlRootElement) document.getElementById('xmlRootElement').value = defs.xmlRootElement;
+            if (defs.xmlRowElement) document.getElementById('xmlRowElement').value = defs.xmlRowElement;
+        } else if (fmt === 'insert') {
+            if (defs.insertBatchSize) document.getElementById('insertBatchSize').value = defs.insertBatchSize;
+        } else if (fmt === 'excel') {
+            if (defs.excelIncludeHeaders !== undefined) document.getElementById('excelIncludeHeaders').checked = defs.excelIncludeHeaders;
+            if (defs.excelSheetName) document.getElementById('excelSheetName').value = defs.excelSheetName;
+            if (defs.excelIncludeSqlSheet !== undefined) document.getElementById('excelIncludeSqlSheet').checked = defs.excelIncludeSqlSheet;
+        }
+    }
+
+    function gatherExportOptions() {
+        const fmt = exportFormat.value;
+        const filename = exportFilename.value.trim() || 'export';
+        const extensions = { csv: '.csv', json: '.json', xml: '.xml', insert: '.sql', excel: '.xlsx' };
+        const ext = extensions[fmt];
+        const fullFilename = filename.endsWith(ext) ? filename : filename + ext;
+
+        const opts = {
+            format: fmt,
+            filename: fullFilename
+        };
+
+        if (fmt === 'csv') {
+            const sepVal = csvSeparatorSelect.value;
+            opts.csvSeparator = sepVal === '__custom__' ? (document.getElementById('csvCustomSeparator').value || ',') : sepVal;
+            opts.csvIncludeHeaders = document.getElementById('csvIncludeHeaders').checked;
+            opts.csvQuoteStrings = document.getElementById('csvQuoteStrings').checked;
+            opts.csvLineEnding = document.getElementById('csvLineEnding').value;
+        } else if (fmt === 'json') {
+            opts.jsonPretty = document.getElementById('jsonPretty').checked;
+            opts.jsonArrayWrapper = document.getElementById('jsonArrayWrapper').checked;
+        } else if (fmt === 'xml') {
+            opts.xmlRootElement = document.getElementById('xmlRootElement').value || 'data';
+            opts.xmlRowElement = document.getElementById('xmlRowElement').value || 'row';
+        } else if (fmt === 'insert') {
+            opts.insertTableName = document.getElementById('insertTableName').value || getDefaultTableReference();
+            opts.insertBatchSize = parseInt(document.getElementById('insertBatchSize').value) || 1;
+        } else if (fmt === 'excel') {
+            opts.excelIncludeHeaders = document.getElementById('excelIncludeHeaders').checked;
+            opts.excelSheetName = document.getElementById('excelSheetName').value || 'Data';
+            opts.excelIncludeSqlSheet = document.getElementById('excelIncludeSqlSheet').checked;
+            opts.excelSqlStatement = queryInput.value;
+        }
+
+        return opts;
+    }
+
+    function executeExport() {
+        const opts = gatherExportOptions();
+        opts.saveLocation = exportSaveLocation.value.trim() || '';
+        // Send the current SQL query so backend can fetch ALL rows (not limited to page)
+        const currentSql = queryInput.value.trim();
+        vscode.postMessage({
+            command: 'exportData',
+            options: opts,
+            sql: currentSql,
+            schema: schema,
+            table: table,
+            columns: columns
+        });
+        closeExportDialog();
+    }
+
+    function saveExportDefault() {
+        const opts = gatherExportOptions();
+        const saveLocation = exportSaveLocation.value.trim();
+        vscode.postMessage({
+            command: 'saveExportDefaults',
+            format: opts.format,
+            options: opts,
+            saveLocation: saveLocation
+        });
     }
 
     // Utility

@@ -482,3 +482,64 @@ td[contenteditable="true"]:focus {
     padding: 10px 14px;
     border-top: 1px solid var(--vscode-panel-border);
 }
+
+/* Export Dialog */
+.export-dialog {
+    max-width: 500px;
+}
+
+.export-dialog-content {
+    padding: 14px;
+    overflow-y: auto;
+    flex: 1;
+    max-height: 60vh;
+}
+
+.export-field {
+    display: flex;
+    align-items: center;
+    margin-bottom: 10px;
+    gap: 8px;
+}
+
+.export-field label {
+    min-width: 140px;
+    font-size: 12px;
+}
+
+.export-field input[type="text"],
+.export-field input[type="number"],
+.export-field select {
+    flex: 1;
+    padding: 4px 8px;
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    border-radius: 2px;
+    font-size: 12px;
+}
+
+.export-field-checkbox {
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+    gap: 6px;
+}
+
+.export-field-checkbox label {
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.export-options-group {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--vscode-panel-border);
+}
+
+.export-options-group h4 {
+    margin: 0 0 10px 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--vscode-descriptionForeground);
+}

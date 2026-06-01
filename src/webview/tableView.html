@@ -19,6 +19,7 @@
                 <button class="btn btn-primary" id="insertRowBtn" title="Insert new row">+ Insert Row</button>
                 <button class="btn btn-success" id="commitBtn" title="Save all changes" disabled>Save</button>
                 <button class="btn btn-warning" id="discardBtn" title="Discard all changes" disabled>Discard Changes</button>
+                <button class="btn btn-default" id="exportBtn" title="Export data">Export</button>
                 <button class="btn btn-default" id="loadMoreBtn" title="Load more rows">Load More</button>
             </div>
         </div>
@@ -53,6 +54,126 @@
                 <div class="sql-dialog-footer">
                     <button class="btn btn-success" id="sqlDialogExecute">Execute</button>
                     <button class="btn btn-default" id="sqlDialogCancel">Cancel</button>
+                </div>
+            </div>
+        </div>
+        <!-- Export Dialog -->
+        <div class="sql-dialog-overlay" id="exportDialogOverlay" style="display:none;">
+            <div class="sql-dialog export-dialog">
+                <div class="sql-dialog-header">
+                    <span>Export Data</span>
+                    <button class="sql-dialog-close" id="exportDialogClose">&times;</button>
+                </div>
+                <div class="export-dialog-content">
+                    <div class="export-field">
+                        <label for="exportFormat">Format:</label>
+                        <select id="exportFormat">
+                            <option value="csv">CSV</option>
+                            <option value="json">JSON</option>
+                            <option value="xml">XML</option>
+                            <option value="insert">INSERT Statements</option>
+                            <option value="excel">Excel (.xlsx)</option>
+                        </select>
+                    </div>
+                    <div class="export-field">
+                        <label for="exportFilename">Filename:</label>
+                        <input type="text" id="exportFilename" placeholder="export" />
+                    </div>
+                    <div class="export-field">
+                        <label for="exportSaveLocation">Save location:</label>
+                        <input type="text" id="exportSaveLocation" placeholder="(will prompt on export)" />
+                        <button class="btn btn-default" id="exportBrowseLocation" title="Browse for folder">Browse</button>
+                    </div>
+                    <!-- CSV Options -->
+                    <div class="export-options-group" id="exportOptsCsv">
+                        <h4>CSV Options</h4>
+                        <div class="export-field">
+                            <label for="csvSeparator">Column separator:</label>
+                            <select id="csvSeparator">
+                                <option value=",">Comma (,)</option>
+                                <option value=";">Semicolon (;)</option>
+                                <option value="\t">Tab</option>
+                                <option value="|">Pipe (|)</option>
+                                <option value="__custom__">Custom...</option>
+                            </select>
+                        </div>
+                        <div class="export-field" id="csvCustomSeparatorField" style="display:none;">
+                            <label for="csvCustomSeparator">Custom separator:</label>
+                            <input type="text" id="csvCustomSeparator" maxlength="5" placeholder="e.g. :: or ~" />
+                        </div>
+                        <div class="export-field-checkbox">
+                            <input type="checkbox" id="csvIncludeHeaders" checked />
+                            <label for="csvIncludeHeaders">Include column headers</label>
+                        </div>
+                        <div class="export-field-checkbox">
+                            <input type="checkbox" id="csvQuoteStrings" checked />
+                            <label for="csvQuoteStrings">Quote strings containing separators</label>
+                        </div>
+                        <div class="export-field">
+                            <label for="csvLineEnding">Line ending:</label>
+                            <select id="csvLineEnding">
+                                <option value="crlf">Windows (CRLF)</option>
+                                <option value="lf">Unix (LF)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <!-- JSON Options -->
+                    <div class="export-options-group" id="exportOptsJson" style="display:none;">
+                        <h4>JSON Options</h4>
+                        <div class="export-field-checkbox">
+                            <input type="checkbox" id="jsonPretty" checked />
+                            <label for="jsonPretty">Pretty print (indented)</label>
+                        </div>
+                        <div class="export-field-checkbox">
+                            <input type="checkbox" id="jsonArrayWrapper" checked />
+                            <label for="jsonArrayWrapper">Wrap in array</label>
+                        </div>
+                    </div>
+                    <!-- XML Options -->
+                    <div class="export-options-group" id="exportOptsXml" style="display:none;">
+                        <h4>XML Options</h4>
+                        <div class="export-field">
+                            <label for="xmlRootElement">Root element name:</label>
+                            <input type="text" id="xmlRootElement" value="data" />
+                        </div>
+                        <div class="export-field">
+                            <label for="xmlRowElement">Row element name:</label>
+                            <input type="text" id="xmlRowElement" value="row" />
+                        </div>
+                    </div>
+                    <!-- INSERT Options -->
+                    <div class="export-options-group" id="exportOptsInsert" style="display:none;">
+                        <h4>INSERT Statement Options</h4>
+                        <div class="export-field">
+                            <label for="insertTableName">Table name:</label>
+                            <input type="text" id="insertTableName" placeholder="schema.table" />
+                        </div>
+                        <div class="export-field">
+                            <label for="insertBatchSize">Rows per INSERT:</label>
+                            <input type="number" id="insertBatchSize" value="1" min="1" max="1000" />
+                        </div>
+                    </div>
+                    <!-- Excel Options -->
+                    <div class="export-options-group" id="exportOptsExcel" style="display:none;">
+                        <h4>Excel Options</h4>
+                        <div class="export-field-checkbox">
+                            <input type="checkbox" id="excelIncludeHeaders" checked />
+                            <label for="excelIncludeHeaders">Include column headers</label>
+                        </div>
+                        <div class="export-field">
+                            <label for="excelSheetName">Sheet name:</label>
+                            <input type="text" id="excelSheetName" value="Data" />
+                        </div>
+                        <div class="export-field-checkbox">
+                            <input type="checkbox" id="excelIncludeSqlSheet" />
+                            <label for="excelIncludeSqlSheet">Add SQL statement to second sheet</label>
+                        </div>
+                    </div>
+                </div>
+                <div class="sql-dialog-footer">
+                    <button class="btn btn-default" id="exportSaveDefault" title="Save current settings as default for this format">Save as Default</button>
+                    <button class="btn btn-success" id="exportExecute">Export</button>
+                    <button class="btn btn-default" id="exportCancel">Cancel</button>
                 </div>
             </div>
         </div>
