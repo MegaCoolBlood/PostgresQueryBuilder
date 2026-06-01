@@ -25,3 +25,55 @@ test('normalizeFilterInputValue normalizes localized numeric filter input', () =
     assert.equal(normalizeFilterInputValue('12 345,67', 'numeric', ' '), '12345.67');
     assert.equal(normalizeFilterInputValue('-9 999', 'numeric', ' '), '-9999');
 });
+
+test('normalizeNumericInput returns null/undefined unchanged', () => {
+    assert.equal(normalizeNumericInput(null, ' '), null);
+    assert.equal(normalizeNumericInput(undefined, ' '), undefined);
+});
+
+test('normalizeNumericInput returns empty string unchanged', () => {
+    assert.equal(normalizeNumericInput('', ' '), '');
+    assert.equal(normalizeNumericInput('   ', ' '), '');
+});
+
+test('normalizeNumericInput returns original for non-numeric input', () => {
+    assert.equal(normalizeNumericInput('abc', ' '), 'abc');
+    assert.equal(normalizeNumericInput('12a34', ' '), '12a34');
+});
+
+test('formatNumberDisplay returns null for null/undefined', () => {
+    assert.equal(formatNumberDisplay(null, ' '), null);
+    assert.equal(formatNumberDisplay(undefined, ' '), null);
+});
+
+test('formatNumberDisplay handles zero correctly', () => {
+    assert.equal(formatNumberDisplay(0, ' '), '0');
+    assert.equal(formatNumberDisplay(-0, ' '), '0');
+});
+
+test('formatNumberDisplay returns string for non-numeric value', () => {
+    assert.equal(formatNumberDisplay('abc', ' '), 'abc');
+});
+
+test('formatNumberDisplay handles integer without decimals', () => {
+    assert.equal(formatNumberDisplay(1000, ' '), '1 000');
+    assert.equal(formatNumberDisplay(999, ' '), '999');
+});
+
+test('formatExactMatchValue escapes single quotes in text type', () => {
+    assert.equal(formatExactMatchValue("it's a test", 'text', ' '), "'it''s a test'");
+});
+
+test('formatExactMatchValue handles null-like numeric string', () => {
+    assert.equal(formatExactMatchValue('0', 'numeric', ' '), "'0'");
+});
+
+test('normalizeFilterInputValue returns string for text type', () => {
+    assert.equal(normalizeFilterInputValue('hello', 'text', ' '), 'hello');
+    assert.equal(normalizeFilterInputValue(123, 'text', ' '), '123');
+});
+
+test('normalizeFilterInputValue returns null/undefined unchanged', () => {
+    assert.equal(normalizeFilterInputValue(null, 'numeric', ' '), null);
+    assert.equal(normalizeFilterInputValue(undefined, 'text', ' '), undefined);
+});

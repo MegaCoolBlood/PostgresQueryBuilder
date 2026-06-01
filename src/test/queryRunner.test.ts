@@ -255,3 +255,143 @@ test('commitChanges rolls back and releases client when a statement fails', asyn
     assert.deepEqual(statements, ['BEGIN', 'UPDATE public.users SET name = $1 WHERE id = $2', 'ROLLBACK']);
     assert.equal(client.releaseCalled, true);
 });
+
+test('generateSQL formats NULL values correctly', () => {
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false }
+    });
+
+    const sql = runner.generateSQL('public', 'users', {
+        updates: [{ primaryKey: { id: 1 }, changes: { name: null, score: undefined } }],
+        inserts: [],
+        deletes: []
+    });
+
+    assert.equal(sql, "UPDATE public.users SET name = NULL, score = NULL WHERE id = 1;");
+});
+
+test('generateSQL skips inserts where all fields are empty or null', () => {
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false }
+    });
+
+    const sql = runner.generateSQL('public', 'users', {
+        updates: [],
+        inserts: [{ name: '', age: null }],
+        deletes: []
+    });
+
+    assert.equal(sql, '');
+});
+
+test('formatIdentifier quotes identifiers with uppercase letters', () => {
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false }
+    });
+
+    const sql = runner.generateSQL('public', 'Users', {
+        updates: [],
+        inserts: [{ UserId: 1 }],
+        deletes: []
+    });
+
+    assert.equal(sql, 'INSERT INTO public."Users" ("UserId") VALUES (1);');
+});
+
+test('formatIdentifier escapes double quotes in identifiers', () => {
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: false, alwaysQuote: true }
+    });
+
+    const sql = runner.generateSQL('public', 'ta"ble', {
+        updates: [],
+        inserts: [],
+        deletes: [{ id: 1 }]
+    });
+
+    assert.equal(sql, 'DELETE FROM "public"."ta""ble" WHERE "id" = 1;');
+});
+
+test('getSelectTableReference always qualifies when alwaysQualifySchema is true', async () => {
+    const { runner, queryCalls } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        queryHandler: (sql: string) => {
+            if (sql.includes('SELECT *')) {
+                return { rows: [{ id: 1 }] };
+            }
+            throw new Error(`Unexpected query: ${sql}`);
+        }
+    });
+
+    await runner.fetchRows('public', 'users', 0, 10);
+
+    // Should NOT call current_schemas since alwaysQualifySchema is true
+    assert.equal(queryCalls.length, 1);
+    assert.equal(queryCalls[0].sql, 'SELECT * FROM public.users LIMIT $1 OFFSET $2');
+});
+
+test('fetchRows with alwaysQuote quotes identifiers', async () => {
+    const { runner, queryCalls } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: true },
+        queryHandler: (sql: string) => {
+            if (sql.includes('SELECT *')) {
+                return { rows: [] };
+            }
+            throw new Error(`Unexpected query: ${sql}`);
+        }
+    });
+
+    await runner.fetchRows('public', 'users', 0, 10);
+
+    assert.equal(queryCalls[0].sql, 'SELECT * FROM "public"."users" LIMIT $1 OFFSET $2');
+});
+
+test('commitChanges passes null values as parameters', async () => {
+    const statements: Array<{ sql: string; params?: any[] }> = [];
+    const client = {
+        query: async (sql: string, params?: any[]) => {
+            statements.push({ sql, params });
+            return {};
+        },
+        release() {}
+    };
+
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        pool: { connect: async () => client }
+    });
+
+    await runner.commitChanges('public', 'users', {
+        updates: [{ primaryKey: { id: 1 }, changes: { name: null } }],
+        inserts: [],
+        deletes: []
+    });
+
+    assert.equal(statements[1].sql, 'UPDATE public.users SET name = $1 WHERE id = $2');
+    assert.deepEqual(statements[1].params, [null, 1]);
+});
+
+test('commitChanges with alwaysQuote quotes all identifiers', async () => {
+    const statements: Array<{ sql: string; params?: any[] }> = [];
+    const client = {
+        query: async (sql: string, params?: any[]) => {
+            statements.push({ sql, params });
+            return {};
+        },
+        release() {}
+    };
+
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: true },
+        pool: { connect: async () => client }
+    });
+
+    await runner.commitChanges('public', 'users', {
+        updates: [],
+        inserts: [{ id: 5, name: 'Test' }],
+        deletes: []
+    });
+
+    assert.equal(statements[1].sql, 'INSERT INTO "public"."users" ("id", "name") VALUES ($1, $2)');
+    assert.deepEqual(statements[1].params, [5, 'Test']);
+});
