@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString } = require(
     path.join(__dirname, '../../src/webview/tableView.js')
 );
 
@@ -76,4 +76,10 @@ test('normalizeFilterInputValue returns string for text type', () => {
 test('normalizeFilterInputValue returns null/undefined unchanged', () => {
     assert.equal(normalizeFilterInputValue(null, 'numeric', ' '), null);
     assert.equal(normalizeFilterInputValue(undefined, 'text', ' '), undefined);
+});
+
+test('escapeSqlString escapes single quotes', () => {
+    assert.equal(escapeSqlString("O'Reilly"), "O''Reilly");
+    assert.equal(escapeSqlString("it's a 'test'"), "it''s a ''test''");
+    assert.equal(escapeSqlString('no quotes'), 'no quotes');
 });

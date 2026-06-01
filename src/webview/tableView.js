@@ -1,5 +1,9 @@
 const DEFAULT_THOUSAND_SEPARATOR = ' ';
 
+function escapeSqlString(value) {
+    return String(value).replace(/'/g, "''");
+}
+
 function normalizeNumericInput(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (value === null || value === undefined) return value;
     const str = String(value).trim();
@@ -40,11 +44,9 @@ function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARAT
 function formatExactMatchValue(value, filterType, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (filterType === 'numeric') {
         const normalized = normalizeNumericInput(value, thousandSeparator);
-        const escaped = String(normalized).replace(/'/g, "''");
-        return `'${escaped}'`;
+        return `'${escapeSqlString(normalized)}'`;
     }
-    const escaped = String(value).replace(/'/g, "''");
-    return `'${escaped}'`;
+    return `'${escapeSqlString(value)}'`;
 }
 
 function normalizeFilterInputValue(value, filterType, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
@@ -74,6 +76,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let totalCount = 0;
     let currentOffset = 0;
     const PAGE_SIZE = 50;
+    // NOTE: Keep in sync with POSTGRES_RESERVED_KEYWORDS in src/queryRunner.ts
     const POSTGRES_RESERVED_KEYWORDS = new Set([
         'all', 'analyse', 'analyze', 'and', 'any', 'array', 'as', 'asc', 'asymmetric',
         'authorization', 'between', 'binary', 'both', 'case', 'cast', 'check', 'collate',
@@ -177,9 +180,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'referencingTablesLoaded':
                 handleReferencingTablesLoaded(msg);
                 break;
-            case 'metadataLoaded':
-                handleMetadataLoaded(msg);
-                break;
+
             case 'queryResult':
                 handleQueryResult(msg);
                 break;
@@ -232,13 +233,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         dataLoading.classList.add('hidden');
         updateRowCount();
         renderTable();
-    }
-
-    function handleMetadataLoaded(msg) {
-        foreignKeys = msg.foreignKeys || [];
-        referencingTables = msg.referencingTables || [];
-        metaLoading.classList.add('hidden');
-        renderBody();
     }
 
     let fkLoaded = false;
@@ -506,8 +500,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                         whereClauses.push(`${fmtCol} <= ${to}`);
                     }
                 } else {
-                    const from = String(fromRaw).replace(/'/g, "''");
-                    const to = String(toRaw).replace(/'/g, "''");
+                    const from = escapeSqlString(fromRaw);
+                    const to = escapeSqlString(toRaw);
                     if (from && to) {
                         whereClauses.push(`${fmtCol} BETWEEN '${from}' AND '${to}'`);
                     } else if (from) {
@@ -525,12 +519,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 whereClauses.push(`${fmtCol} ${op} ${numericValue}`);
             } else if (filterType === 'date') {
                 // Date/timestamp with operator — no cast
-                const escaped = String(val).replace(/'/g, "''");
+                const escaped = escapeSqlString(val);
                 const op = getFilterOperator(col);
                 whereClauses.push(`${fmtCol} ${op} '${escaped}'`);
             } else {
                 // Text ILIKE — no cast needed for text types
-                const escaped = String(val).replace(/'/g, "''");
+                const escaped = escapeSqlString(val);
                 whereClauses.push(`${fmtCol}::text ILIKE '%${escaped}%'`);
             }
         }
@@ -573,7 +567,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 label: 'Exclude this Value from Query',
                 action: () => {
                     if (!schema || !table) return;
-                    const escaped = String(cellValue).replace(/'/g, "''");
+                    const escaped = escapeSqlString(cellValue);
                     const currentSql = queryInput.value.trim();
                     const fmtCol = formatIdentifier(colName);
                     const colMeta = columns.find(c => c.name === colName);
@@ -1140,6 +1134,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return `${formatIdentifier(schema)}.${formattedTable}`;
     }
 
+    // NOTE: Keep in sync with formatIdentifier/needsQuoting in src/queryRunner.ts
     function formatIdentifier(identifier) {
         if (alwaysQuote || needsQuoting(identifier)) {
             return `"${String(identifier).replace(/"/g, '""')}"`;
@@ -1170,6 +1165,7 @@ if (typeof module !== 'undefined' && module.exports) {
         normalizeNumericInput,
         formatNumberDisplay,
         formatExactMatchValue,
-        normalizeFilterInputValue
+        normalizeFilterInputValue,
+        escapeSqlString
     };
 }

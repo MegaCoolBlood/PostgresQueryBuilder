@@ -1,5 +1,6 @@
 import { ConnectionManager } from './connectionManager';
 
+// NOTE: Keep in sync with POSTGRES_RESERVED_KEYWORDS in src/webview/tableView.js
 const POSTGRES_RESERVED_KEYWORDS = new Set([
     'all', 'analyse', 'analyze', 'and', 'any', 'array', 'as', 'asc', 'asymmetric',
     'authorization', 'between', 'binary', 'both', 'case', 'cast', 'check', 'collate',
