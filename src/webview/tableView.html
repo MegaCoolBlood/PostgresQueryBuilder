@@ -267,6 +267,24 @@
             </div>
         </div>
     </div>
+    <!-- Single Record View Dialog -->
+    <div class="sql-dialog-overlay" id="recordDialogOverlay" style="display:none;">
+        <div class="sql-dialog record-dialog">
+            <div class="sql-dialog-header">
+                <span>Record <span id="recordDialogIndex"></span> &mdash; <span id="recordDialogTitle"></span></span>
+                <div class="record-dialog-nav">
+                    <button class="btn btn-default btn-sm" id="recordDialogPrev" title="Previous record (Alt+&larr;)">&larr; Prev</button>
+                    <button class="btn btn-default btn-sm" id="recordDialogNext" title="Next record (Alt+&rarr;)">Next &rarr;</button>
+                    <button class="sql-dialog-close" id="recordDialogClose">&times;</button>
+                </div>
+            </div>
+            <div class="record-dialog-body" id="recordDialogBody"></div>
+            <div class="sql-dialog-footer">
+                <span class="record-dialog-status" id="recordDialogStatus"></span>
+                <button class="btn btn-default" id="recordDialogCloseBtn">Close</button>
+            </div>
+        </div>
+    </div>
     <script>/* JS_PLACEHOLDER */</script>
 </body>
 </html>

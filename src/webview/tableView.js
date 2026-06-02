@@ -1017,6 +1017,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         const items = [];
 
+        // 0. View full record (only for existing rows)
+        if (rowIdx !== null) {
+            items.push({
+                label: 'View Full Record...',
+                action: () => {
+                    openRecordDialog(parseInt(rowIdx));
+                }
+            });
+            items.push({ separator: true });
+        }
+
         // 1. Add as exact match
         if (cellValue !== null && cellValue !== undefined) {
             items.push({
@@ -1402,9 +1413,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             html += `<td class="row-num-cell">${rowNum}</td>`;
             html += `<td class="actions-cell">`;
             if (!isDeleted) {
+                html += `<button class="btn-view-record" onclick="openRecordDialog(${idx})" title="View full record">&#128065;</button>`;
                 html += `<button class="btn btn-duplicate" onclick="duplicateRow(${idx})">⧉</button>`;
                 html += `<button class="btn btn-danger" onclick="deleteRow(${idx})">✕</button>`;
             } else {
+                html += `<button class="btn-view-record" onclick="openRecordDialog(${idx})" title="View full record">&#128065;</button>`;
                 html += `<button class="btn btn-default" onclick="undeleteRow(${idx})" style="padding:2px 6px;font-size:11px">↩</button>`;
             }
             html += `</td>`;
@@ -2238,6 +2251,257 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         closeManageMappingsDialog();
         openMappingDialog(null);
     });
+
+    // -------- Single Record View Dialog --------
+    const recordDialogOverlay = document.getElementById('recordDialogOverlay');
+    const recordDialogClose = document.getElementById('recordDialogClose');
+    const recordDialogCloseBtn = document.getElementById('recordDialogCloseBtn');
+    const recordDialogPrev = document.getElementById('recordDialogPrev');
+    const recordDialogNext = document.getElementById('recordDialogNext');
+    const recordDialogBody = document.getElementById('recordDialogBody');
+    const recordDialogIndex = document.getElementById('recordDialogIndex');
+    const recordDialogTitle = document.getElementById('recordDialogTitle');
+    const recordDialogStatus = document.getElementById('recordDialogStatus');
+
+    // Index into allRows for the record currently shown (-1 = closed)
+    let recordDialogRowIdx = -1;
+
+    function openRecordDialog(rowIdx) {
+        if (rowIdx == null || rowIdx < 0 || !allRows[rowIdx]) return;
+        recordDialogRowIdx = rowIdx;
+        renderRecordDialog();
+        recordDialogOverlay.style.display = 'flex';
+    }
+
+    function closeRecordDialog() {
+        recordDialogOverlay.style.display = 'none';
+        recordDialogRowIdx = -1;
+    }
+
+    function getDisplayedRowIndices() {
+        // Returns array of original row indices in current display order
+        if (Array.isArray(displayedRows) && displayedRows.length > 0) {
+            return displayedRows.map(r => r._originalIndex);
+        }
+        return allRows.map((_, i) => i);
+    }
+
+    function navigateRecord(delta) {
+        const order = getDisplayedRowIndices();
+        const pos = order.indexOf(recordDialogRowIdx);
+        if (pos < 0) return;
+        const nextPos = pos + delta;
+        if (nextPos < 0 || nextPos >= order.length) return;
+        recordDialogRowIdx = order[nextPos];
+        renderRecordDialog();
+        // Scroll body to top for new record
+        recordDialogBody.scrollTop = 0;
+    }
+
+    function renderRecordDialog() {
+        const idx = recordDialogRowIdx;
+        if (idx < 0 || !allRows[idx]) { closeRecordDialog(); return; }
+
+        const order = getDisplayedRowIndices();
+        const pos = order.indexOf(idx);
+        recordDialogIndex.textContent = (pos >= 0 ? (pos + 1) : '?') + ' / ' + order.length;
+        recordDialogTitle.textContent = (schema && table) ? (schema + '.' + table) : '';
+        recordDialogPrev.disabled = pos <= 0;
+        recordDialogNext.disabled = pos < 0 || pos >= order.length - 1;
+
+        const isDeleted = deletedRows.has(idx);
+        const rowData = allRows[idx];
+        let html = '';
+
+        columns.forEach(col => {
+            const modKey = idx + ':' + col.name;
+            const isModified = modifiedCells.has(modKey);
+            const originalVal = rowData[col.name];
+            const currentVal = isModified ? modifiedCells.get(modKey) : originalVal;
+            const isNull = currentVal === null || currentVal === undefined;
+
+            const isPk = primaryKeys.includes(col.name);
+            const fk = foreignKeys.find(f => f.column === col.name);
+            const defaultMapping = customMappings.find(m =>
+                m.isDefault && m.sourceColumn === col.name && evaluateMappingConditions(m, rowData)
+            );
+
+            let labelBadges = '';
+            if (isPk) labelBadges += '<span class="record-label-pk" title="Primary Key">PK</span>';
+            if (fk) labelBadges += '<span class="record-label-fk" title="Foreign Key &rarr; ' + escapeAttr(fk.refSchema + '.' + fk.refTable + '.' + fk.refColumn) + '">FK</span>';
+
+            const dataType = col.dataType || '';
+            const filterType = getColumnFilterType(dataType);
+
+            // Display value: numeric columns get thousand separator format
+            let displayVal;
+            if (isNull) {
+                displayVal = '';
+            } else if (filterType === 'numeric') {
+                displayVal = formatNumberDisplay(currentVal, thousandSeparator);
+            } else {
+                displayVal = String(currentVal);
+            }
+
+            const lineCount = isNull ? 1 : Math.min(15, Math.max(1, displayVal.split('\n').length));
+            const charInfo = isNull ? '(NULL)' : (displayVal.length + ' chars');
+
+            const editableAttr = isDeleted ? 'readonly' : '';
+            const valueClass = 'record-value' + (isNull ? ' is-null' : '');
+            const rowClass = 'record-row' + (isModified ? ' record-row-modified' : '');
+
+            // Actions for this row
+            let actions = '';
+            if (defaultMapping && !isNull) {
+                actions += '<button class="btn btn-default btn-sm record-fk-btn"' +
+                    ' data-ref-schema="' + escapeAttr(defaultMapping.targetSchema) + '"' +
+                    ' data-ref-table="' + escapeAttr(defaultMapping.targetTable) + '"' +
+                    ' data-ref-column="' + escapeAttr(defaultMapping.targetColumn) + '"' +
+                    ' data-value="' + escapeAttr(String(currentVal)) + '"' +
+                    ' title="' + escapeAttr(defaultMapping.label || (defaultMapping.targetSchema + '.' + defaultMapping.targetTable)) + '"' +
+                    '>&#8599; Jump</button>';
+            } else if (fk && !isNull) {
+                actions += '<button class="btn btn-default btn-sm record-fk-btn"' +
+                    ' data-ref-schema="' + escapeAttr(fk.refSchema) + '"' +
+                    ' data-ref-table="' + escapeAttr(fk.refTable) + '"' +
+                    ' data-ref-column="' + escapeAttr(fk.refColumn) + '"' +
+                    ' data-value="' + escapeAttr(String(currentVal)) + '"' +
+                    ' title="Open ' + escapeAttr(fk.refSchema + '.' + fk.refTable) + '"' +
+                    '>&#8599; Open</button>';
+            }
+            if (isModified) {
+                actions += '<button class="btn btn-default btn-sm record-reset-btn" title="Reset to original">&#8634; Reset</button>';
+            }
+
+            html += '<div class="' + rowClass + '" data-col="' + escapeAttr(col.name) + '">' +
+                '<div class="record-label">' + labelBadges + escapeHtml(col.name) +
+                    '<span class="record-label-type">' + escapeHtml(dataType) + '</span>' +
+                '</div>' +
+                '<div class="record-value-wrapper">' +
+                    '<textarea class="' + valueClass + '" rows="' + lineCount + '" ' + editableAttr +
+                        ' placeholder="NULL">' + escapeHtml(displayVal) + '</textarea>' +
+                    '<div class="record-value-meta">' +
+                        '<span class="record-value-info">' + charInfo + (isModified ? ' &middot; modified' : '') + '</span>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="record-row-actions">' + actions + '</div>' +
+            '</div>';
+        });
+
+        recordDialogBody.innerHTML = html;
+
+        // Status line
+        const parts = [];
+        if (isDeleted) parts.push('row marked for deletion (read-only)');
+        if (Array.from(modifiedCells.keys()).some(k => k.startsWith(idx + ':'))) {
+            const count = Array.from(modifiedCells.keys()).filter(k => k.startsWith(idx + ':')).length;
+            parts.push(count + ' field' + (count === 1 ? '' : 's') + ' modified');
+        }
+        recordDialogStatus.textContent = parts.join(' \u2014 ');
+
+        // Wire up textareas
+        recordDialogBody.querySelectorAll('.record-row').forEach(rowEl => {
+            const colName = rowEl.getAttribute('data-col');
+            const textarea = rowEl.querySelector('.record-value');
+            if (!textarea) return;
+
+            textarea.addEventListener('focus', () => {
+                textarea.classList.remove('is-null');
+            });
+
+            textarea.addEventListener('input', () => {
+                // Auto-grow as user types
+                textarea.style.height = 'auto';
+                textarea.style.height = Math.min(400, textarea.scrollHeight) + 'px';
+            });
+
+            textarea.addEventListener('blur', () => {
+                applyRecordEdit(idx, colName, textarea.value);
+                // Re-render to refresh modified badges, reset buttons, displayed value
+                renderRecordDialog();
+                // Update underlying table view
+                renderBody();
+            });
+
+            // Reset button
+            const resetBtn = rowEl.querySelector('.record-reset-btn');
+            if (resetBtn) {
+                resetBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    modifiedCells.delete(idx + ':' + colName);
+                    renderRecordDialog();
+                    renderBody();
+                    updateChangeIndicator();
+                });
+            }
+
+            // FK button
+            const fkBtn = rowEl.querySelector('.record-fk-btn');
+            if (fkBtn) {
+                fkBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    vscode.postMessage({
+                        command: 'openForeignKey',
+                        refSchema: fkBtn.getAttribute('data-ref-schema'),
+                        refTable: fkBtn.getAttribute('data-ref-table'),
+                        refColumn: fkBtn.getAttribute('data-ref-column'),
+                        value: fkBtn.getAttribute('data-value')
+                    });
+                });
+            }
+        });
+    }
+
+    // Mirrors handleCellEdit: writes to modifiedCells / clears it if equal to original
+    function applyRecordEdit(rowIdx, colName, rawText) {
+        if (deletedRows.has(rowIdx)) return;
+        const originalVal = allRows[rowIdx][colName];
+        const colMeta = columns.find(c => c.name === colName);
+        let newValue = (rawText == null) ? '' : String(rawText).trim();
+
+        // Strip thousand separators / normalize decimal for numeric columns
+        if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric' && newValue !== '') {
+            newValue = normalizeNumericInput(newValue, thousandSeparator);
+        }
+
+        // Empty -> NULL
+        const finalValue = newValue === '' ? null : newValue;
+
+        // Compare against original, accounting for stringification
+        const originalStr = (originalVal === null || originalVal === undefined) ? null : String(originalVal);
+        const finalStr = finalValue === null ? null : String(finalValue);
+
+        const modKey = rowIdx + ':' + colName;
+        if (finalStr === originalStr) {
+            modifiedCells.delete(modKey);
+        } else {
+            modifiedCells.set(modKey, finalValue);
+        }
+        updateChangeIndicator();
+    }
+
+    // Wire dialog buttons
+    recordDialogClose.addEventListener('click', closeRecordDialog);
+    recordDialogCloseBtn.addEventListener('click', closeRecordDialog);
+    recordDialogPrev.addEventListener('click', () => navigateRecord(-1));
+    recordDialogNext.addEventListener('click', () => navigateRecord(1));
+
+    recordDialogOverlay.addEventListener('click', (e) => {
+        if (e.target === recordDialogOverlay) closeRecordDialog();
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (recordDialogOverlay.style.display !== 'flex') return;
+        // Don't hijack typing inside the textareas
+        const inField = document.activeElement && document.activeElement.tagName === 'TEXTAREA';
+        if (e.key === 'Escape') { e.preventDefault(); closeRecordDialog(); return; }
+        if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); navigateRecord(-1); return; }
+        if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); navigateRecord(1); return; }
+        if (!inField && e.key === 'ArrowLeft') { e.preventDefault(); navigateRecord(-1); return; }
+        if (!inField && e.key === 'ArrowRight') { e.preventDefault(); navigateRecord(1); return; }
+    });
+
+    window.openRecordDialog = openRecordDialog;
 
     // Setup typeahead on target schema field
     setupTypeahead(mappingTargetSchema, (val) => {
