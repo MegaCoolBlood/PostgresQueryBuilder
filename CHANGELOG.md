@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- `TIMESTAMP WITHOUT TIME ZONE`-Werte werden jetzt 1:1 so angezeigt, wie sie in der Datenbank gespeichert sind. Bisher wurden diese Werte vom Postgres-Treiber als lokale Zeit interpretiert und beim Anzeigen in die Browser-Zeitzone (UTC) umgerechnet, sodass der dargestellte Zeitpunkt vom gespeicherten Wert abweichen konnte. Die Werte werden nun unverändert als Zeichenkette übernommen.
+- Die Tabellensuche unterstützt jetzt mehrere durch Leerzeichen getrennte Suchbegriffe. Jeder Begriff wird einzeln gegen den qualifizierten Namen `schema.table` geprüft; Tabellen und Schemata mit den meisten Treffern werden oben in der Liste angezeigt.
+
 ## 0.2.0
 
 - Lange Kontextmenüs in der Tabellenansicht sind jetzt scrollbar und werden innerhalb des Viewports positioniert (öffnen bei Bedarf nach oben).

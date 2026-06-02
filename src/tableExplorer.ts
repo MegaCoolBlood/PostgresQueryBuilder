@@ -20,6 +20,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
 
     private connectionManager: ConnectionManager;
     private _filterText = '';
+    private _filterTerms: string[] = [];
 
     constructor(connectionManager: ConnectionManager) {
         this.connectionManager = connectionManager;
@@ -27,7 +28,21 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
 
     setFilter(filterText: string): void {
         this._filterText = filterText.toLowerCase();
+        this._filterTerms = this._filterText
+            .split(/\s+/)
+            .map(t => t.trim())
+            .filter(t => t.length > 0);
         this._onDidChangeTreeData.fire();
+    }
+
+    private scoreString(s: string): number {
+        if (this._filterTerms.length === 0) return 0;
+        const lower = s.toLowerCase();
+        let score = 0;
+        for (const term of this._filterTerms) {
+            if (lower.includes(term)) score++;
+        }
+        return score;
     }
 
     refresh(): void {
@@ -85,17 +100,12 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                     schema: row.schema_name
                 }));
 
-                if (this._filterText) {
-                    // If filter contains a dot, match schema prefix
-                    const dotIndex = this._filterText.indexOf('.');
-                    if (dotIndex > 0) {
-                        const schemaFilter = this._filterText.substring(0, dotIndex);
-                        return schemas.filter((s: SchemaNode) =>
-                            s.schema.toLowerCase().includes(schemaFilter)
-                        );
-                    }
-                    // Otherwise show all schemas that have matching tables
-                    const filtered: SchemaNode[] = [];
+                if (this._filterTerms.length > 0) {
+                    // Score each schema by the best-matching table inside it.
+                    // A table's score = number of filter terms (whitespace-separated)
+                    // found as substrings in its qualified name "schema.table".
+                    // Schemas with score > 0 are kept and sorted by score desc.
+                    const scored: Array<{ schema: SchemaNode; score: number }> = [];
                     for (const schema of schemas) {
                         const rows = await this.connectionManager.queryMetadata(
                             `SELECT table_name FROM information_schema.tables
@@ -103,15 +113,17 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                              ORDER BY table_name`,
                             [schema.schema]
                         );
-                        const hasMatch = rows.some((row: any) =>
-                            row.table_name.toLowerCase().includes(this._filterText) ||
-                            schema.schema.toLowerCase().includes(this._filterText)
-                        );
-                        if (hasMatch) {
-                            filtered.push(schema);
+                        let best = this.scoreString(schema.schema);
+                        for (const row of rows) {
+                            const s = this.scoreString(`${schema.schema}.${row.table_name}`);
+                            if (s > best) best = s;
+                        }
+                        if (best > 0) {
+                            scored.push({ schema, score: best });
                         }
                     }
-                    return filtered;
+                    scored.sort((a, b) => b.score - a.score);
+                    return scored.map(s => s.schema);
                 }
 
                 return schemas;
@@ -129,17 +141,12 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                     table: row.table_name
                 }));
 
-                if (this._filterText) {
-                    const dotIndex = this._filterText.indexOf('.');
-                    const tableFilter = dotIndex > 0
-                        ? this._filterText.substring(dotIndex + 1)
-                        : this._filterText;
-
-                    if (tableFilter) {
-                        tables = tables.filter((t: TableNode) =>
-                            t.table.toLowerCase().includes(tableFilter)
-                        );
-                    }
+                if (this._filterTerms.length > 0) {
+                    const scored = tables
+                        .map((t: TableNode) => ({ t, score: this.scoreString(`${t.schema}.${t.table}`) }))
+                        .filter((x: { t: TableNode; score: number }) => x.score > 0)
+                        .sort((a: { score: number }, b: { score: number }) => b.score - a.score);
+                    tables = scored.map((x: { t: TableNode }) => x.t);
                 }
 
                 return tables;

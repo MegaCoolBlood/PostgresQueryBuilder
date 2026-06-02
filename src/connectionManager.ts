@@ -3,10 +3,17 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as dns from 'dns';
 import { promisify } from 'util';
-import { Pool, PoolConfig } from 'pg';
+import { Pool, PoolConfig, types as pgTypes } from 'pg';
 import { createHash } from 'crypto';
 
 const dnsLookup = promisify(dns.lookup);
+
+// PostgreSQL OID 1114 = TIMESTAMP WITHOUT TIME ZONE.
+// By default, node-postgres parses these as JS Date objects using the local timezone,
+// which then get serialized to UTC ISO strings — causing the displayed value to shift
+// from what is actually stored in the database. We override the parser to return the
+// raw string from the server so the value is shown 1:1 as stored.
+pgTypes.setTypeParser(1114, (val: string) => val);
 
 export interface ConnectionConfig {
     name: string;

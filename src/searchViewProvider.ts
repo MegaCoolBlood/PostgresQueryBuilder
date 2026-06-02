@@ -118,9 +118,9 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
         <button id="manageMappingsBtn" class="secondary" title="Open the manager for all custom column mappings (bulk share/move/delete)">Manage All Mappings...</button>
     </div>
     <div class="search-container">
-        <input type="text" id="searchInput" placeholder="Filter tables... (e.g. schema.table)" />
+        <input type="text" id="searchInput" placeholder="Filter tables... (e.g. schema.table or multiple terms)" />
     </div>
-    <div class="hint">Teilqualifiziert: schema.table oder nur table</div>
+    <div class="hint">Mehrere mit Leerzeichen getrennte Begriffe: Treffer mit den meisten Übereinstimmungen oben</div>
     <script>
         const vscode = acquireVsCodeApi();
         const input = document.getElementById('searchInput');
