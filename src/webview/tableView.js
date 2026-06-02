@@ -780,10 +780,36 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
         contextMenuItems.innerHTML = html;
 
-        // Position
-        contextMenu.style.left = e.clientX + 'px';
-        contextMenu.style.top = e.clientY + 'px';
+        // Show first (offscreen) to measure size, then clamp into viewport
+        contextMenu.style.visibility = 'hidden';
+        contextMenu.style.left = '0px';
+        contextMenu.style.top = '0px';
+        contextMenu.style.maxHeight = '';
         contextMenu.style.display = 'block';
+
+        const margin = 8;
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const menuWidth = contextMenu.offsetWidth;
+
+        // Decide whether to open above or below the cursor
+        const spaceBelow = vh - e.clientY - margin;
+        const spaceAbove = e.clientY - margin;
+        const openUpwards = spaceBelow < 120 && spaceAbove > spaceBelow;
+        const availableHeight = Math.max(80, openUpwards ? spaceAbove : spaceBelow);
+        contextMenu.style.maxHeight = availableHeight + 'px';
+
+        const menuHeight = contextMenu.offsetHeight;
+        let left = e.clientX;
+        let top = openUpwards ? e.clientY - menuHeight : e.clientY;
+        if (left + menuWidth + margin > vw) left = Math.max(margin, vw - menuWidth - margin);
+        if (top + menuHeight + margin > vh) top = Math.max(margin, vh - menuHeight - margin);
+        if (top < margin) top = margin;
+        if (left < margin) left = margin;
+
+        contextMenu.style.left = left + 'px';
+        contextMenu.style.top = top + 'px';
+        contextMenu.style.visibility = '';
 
         // Attach click handlers
         contextMenuItems.querySelectorAll('li[data-action-idx]').forEach(li => {

@@ -411,6 +411,10 @@ td.has-fk-btn > .fk-btn {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
     min-width: 200px;
     padding: 4px 0;
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
 }
 
 .context-menu ul {
