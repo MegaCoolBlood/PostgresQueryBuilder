@@ -927,12 +927,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 let fkBtn = '';
                 if (defaultCustomMapping && currentVal !== null && currentVal !== undefined) {
                     // Custom mapping overrides or supplements FK button
-                    fkBtn = `<button contenteditable="false" class="fk-btn custom-fk-btn" data-ref-schema="${escapeAttr(defaultCustomMapping.targetSchema)}" data-ref-table="${escapeAttr(defaultCustomMapping.targetTable)}" data-ref-column="${escapeAttr(defaultCustomMapping.targetColumn)}" data-value="${escapeAttr(String(currentVal))}" title="${escapeAttr(defaultCustomMapping.label || defaultCustomMapping.targetSchema + '.' + defaultCustomMapping.targetTable)}">&#8599;</button>`;
+                    fkBtn = `<button class="fk-btn custom-fk-btn" data-ref-schema="${escapeAttr(defaultCustomMapping.targetSchema)}" data-ref-table="${escapeAttr(defaultCustomMapping.targetTable)}" data-ref-column="${escapeAttr(defaultCustomMapping.targetColumn)}" data-value="${escapeAttr(String(currentVal))}" title="${escapeAttr(defaultCustomMapping.label || defaultCustomMapping.targetSchema + '.' + defaultCustomMapping.targetTable)}">&#8599;</button>`;
                 } else if (fk && currentVal !== null && currentVal !== undefined) {
-                    fkBtn = `<button contenteditable="false" class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(String(currentVal))}" title="Open ${fk.refSchema}.${fk.refTable}">&#8599;</button>`;
+                    fkBtn = `<button class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(String(currentVal))}" title="Open ${fk.refSchema}.${fk.refTable}">&#8599;</button>`;
                 }
-
-                html += `<td class="${cellClass}" contenteditable="${!isDeleted}" data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : String(originalVal))}">${displayVal}${fkBtn}</td>`;
+                const editableAttr = !isDeleted ? 'true' : 'false';
+                const cellExtraClass = fkBtn ? ' has-fk-btn' : '';
+                html += `<td class="${cellClass}${cellExtraClass}" data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : String(originalVal))}"><span class="cell-content" contenteditable="${editableAttr}">${displayVal}</span>${fkBtn}</td>`;
             });
             html += '</tr>';
         });
@@ -961,13 +962,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         tableBody.innerHTML = html;
 
-        // Live formatting for numeric cells during editing
-        function handleNumericCellInput(td) {
+        // Live formatting for numeric cells during editing.
+        // `editable` is the contenteditable element (a .cell-content span for existing rows,
+        // or the td itself for inserted/duplicated rows).
+        function handleNumericCellInput(editable) {
+            const td = editable.closest('td');
+            if (!td) return;
             const colName = td.getAttribute('data-col');
             const colMeta = columns.find(c => c.name === colName);
             if (!colMeta || getColumnFilterType(colMeta.dataType) !== 'numeric') return;
 
-            const text = getCellTextContent(td);
+            const text = editable.textContent;
 
             // Get cursor position as digit count
             const sel = window.getSelection();
@@ -981,25 +986,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const result = liveFormatNumeric(text, digitsBefore, thousandSeparator);
             if (!result) return;
 
-            // Update cell content
-            const fkBtn = td.querySelector('.fk-btn');
-            td.textContent = result.formatted;
-            if (fkBtn) { td.appendChild(fkBtn); }
+            editable.textContent = result.formatted;
 
             // Restore cursor position
-            if (sel && td.firstChild) {
+            if (sel && editable.firstChild) {
                 const newRange = document.createRange();
-                newRange.setStart(td.firstChild, Math.min(result.newCursor, result.formatted.length));
+                newRange.setStart(editable.firstChild, Math.min(result.newCursor, result.formatted.length));
                 newRange.collapse(true);
                 sel.removeAllRanges();
                 sel.addRange(newRange);
             }
         }
 
-        // Attach blur listeners for editable cells (existing rows)
-        tableBody.querySelectorAll('td[data-row][contenteditable="true"]').forEach(td => {
-            td.addEventListener('blur', handleCellEdit);
-            td.addEventListener('input', () => handleNumericCellInput(td));
+        // Attach blur/input listeners for editable cell-content spans (existing rows)
+        tableBody.querySelectorAll('td[data-row] .cell-content[contenteditable="true"]').forEach(span => {
+            span.addEventListener('blur', handleCellEdit);
+            span.addEventListener('input', () => handleNumericCellInput(span));
         });
 
         // Attach blur listeners for inserted rows
@@ -1041,13 +1043,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function handleCellEdit(e) {
-        const td = e.target;
+        const span = e.target;
+        const td = span.closest('td');
+        if (!td) return;
         const rowIdx = parseInt(td.getAttribute('data-row'));
         const colName = td.getAttribute('data-col');
         const originalStr = td.getAttribute('data-original');
         const original = originalStr === '__NULL__' ? null : originalStr;
-        // Read only text nodes, excluding FK button content
-        let newValue = getCellTextContent(td);
+        // Text content of the editable span (FK button is now a sibling)
+        let newValue = span.textContent.trim();
 
         // Strip thousand separators and normalize decimal comma for numeric columns
         const colMeta = columns.find(c => c.name === colName);
@@ -1073,10 +1077,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric') {
             const displayValue = modifiedCells.has(modKey) ? modifiedCells.get(modKey) : (original === null ? null : original);
             if (displayValue !== null) {
-                // Preserve FK button if present
-                const fkBtn = td.querySelector('.fk-btn');
-                td.textContent = formatNumberDisplay(displayValue, thousandSeparator);
-                if (fkBtn) { td.appendChild(fkBtn); }
+                span.textContent = formatNumberDisplay(displayValue, thousandSeparator);
             }
         }
 
