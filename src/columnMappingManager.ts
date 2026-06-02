@@ -17,6 +17,10 @@ export interface CustomColumnMapping {
     conditions: MappingCondition[];
     isDefault: boolean;
     label?: string;
+    /** True when this mapping is a synthesized reverse view of a user-defined mapping. */
+    reversed?: boolean;
+    /** When reversed, the id of the original (forward) mapping for reference. */
+    originalId?: string;
 }
 
 export class ColumnMappingManager {
@@ -33,12 +37,43 @@ export class ColumnMappingManager {
 
     getMappingsForTable(schema: string, table: string): CustomColumnMapping[] {
         const all = this.getAllMappings();
-        return all.filter(m => m.sourceSchema === schema && m.sourceTable === table);
+        const forward = all.filter(m => m.sourceSchema === schema && m.sourceTable === table);
+        const reverse = all
+            .filter(m => m.targetSchema === schema && m.targetTable === table
+                && !(m.sourceSchema === schema && m.sourceTable === table))
+            .map(m => this.reverseMapping(m));
+        return [...forward, ...reverse];
     }
 
     getMappingsForColumn(schema: string, table: string, column: string): CustomColumnMapping[] {
         const all = this.getAllMappings();
-        return all.filter(m => m.sourceSchema === schema && m.sourceTable === table && m.sourceColumn === column);
+        const forward = all.filter(m => m.sourceSchema === schema && m.sourceTable === table && m.sourceColumn === column);
+        const reverse = all
+            .filter(m => m.targetSchema === schema && m.targetTable === table && m.targetColumn === column
+                && !(m.sourceSchema === schema && m.sourceTable === table && m.sourceColumn === column))
+            .map(m => this.reverseMapping(m));
+        return [...forward, ...reverse];
+    }
+
+    private reverseMapping(m: CustomColumnMapping): CustomColumnMapping {
+        return {
+            id: `rev:${m.id}`,
+            sourceSchema: m.targetSchema,
+            sourceTable: m.targetTable,
+            sourceColumn: m.targetColumn,
+            targetSchema: m.sourceSchema,
+            targetTable: m.sourceTable,
+            targetColumn: m.sourceColumn,
+            // Conditions reference columns of the original source row and cannot be
+            // evaluated against the reverse-side row, so they are dropped.
+            conditions: [],
+            // Reverse mappings never act as default FK button to avoid surprises;
+            // users can create an explicit forward mapping if they want that.
+            isDefault: false,
+            label: m.label,
+            reversed: true,
+            originalId: m.id
+        };
     }
 
     addMapping(mapping: Omit<CustomColumnMapping, 'id'>): CustomColumnMapping {

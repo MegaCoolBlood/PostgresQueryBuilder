@@ -834,9 +834,26 @@ td.has-fk-btn > .fk-btn {
     color: var(--vscode-badge-foreground);
 }
 
+.mapping-badge-reverse {
+    background: var(--vscode-editorInfo-foreground, var(--vscode-badge-background));
+    color: var(--vscode-editor-background);
+}
+
+.mapping-item-reverse {
+    opacity: 0.85;
+}
+
+.mapping-item-note {
+    font-size: 11px;
+    font-style: italic;
+    color: var(--vscode-descriptionForeground);
+    align-self: center;
+}
+
 .mapping-item-actions {
     display: flex;
     gap: 4px;
+    align-items: center;
 }
 
 .custom-fk-btn {

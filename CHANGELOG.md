@@ -11,6 +11,7 @@
 - Neues Panel **Modify History** unter dem Search-Panel: zeigt persistent (bis 500 Einträge) alle ausgeführten ändernden Statements (INSERT/UPDATE/DELETE/MERGE/TRUNCATE/CREATE/DROP/ALTER/GRANT/REVOKE/COMMENT/REFRESH/CALL) aus Tabellen-Commits, der Query-Bar der Datenansicht und dem SQL-Editor. Klick auf einen Eintrag kopiert das SQL, „Clear" leert die Historie.
 - Tabellenansicht zeigt in der Toolbar die Verbindung an, mit der die aktuell sichtbaren Daten geladen wurden (wird bei jedem SELECT-Lauf aktualisiert). Wechselt die aktive Verbindung danach, wird die Anzeige als Warnung markiert.
 - Der „SQL Preview / Execute"-Dialog der Tabellenansicht zeigt jetzt die aktuelle Verbindung und die Verbindung, mit der die Daten geladen wurden. Unterscheiden sich beide, erscheint ein deutlich sichtbarer Warnhinweis, dass die Ausführung gegen die aktive Verbindung läuft.
+- Benutzerdefinierte Spalten-Verknüpfungen (Custom Mappings) werden jetzt in beide Richtungen angezeigt: ein Mapping `A.col → B.col` erscheint auch in der Tabelle `B` als „Jump to A.col (reverse)" im Zellen-Kontextmenü sowie als nur-lesbarer Eintrag mit Badge „Reverse" im Manage-Dialog. Bearbeitet/gelöscht werden Mappings weiterhin nur auf der ursprünglichen Quell-Tabelle.
 
 ## 0.1.0
 

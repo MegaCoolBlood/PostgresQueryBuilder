@@ -1015,7 +1015,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (applicableMappings.length > 0 && cellValue !== null && cellValue !== undefined) {
             items.push({ separator: true });
             applicableMappings.forEach(mapping => {
-                const label = mapping.label || `${mapping.targetSchema}.${mapping.targetTable}.${mapping.targetColumn}`;
+                const baseLabel = mapping.label || `${mapping.targetSchema}.${mapping.targetTable}.${mapping.targetColumn}`;
+                const label = mapping.reversed ? `${baseLabel} (reverse)` : baseLabel;
                 items.push({
                     label: `Jump to ${label}`,
                     action: () => {
@@ -2339,6 +2340,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const label = mapping.label || `${mapping.sourceColumn} → ${mapping.targetSchema}.${mapping.targetTable}.${mapping.targetColumn}`;
             const detail = `${mapping.sourceColumn} → ${mapping.targetSchema}.${mapping.targetTable}.${mapping.targetColumn}`;
             let badges = '';
+            if (mapping.reversed) {
+                badges += '<span class="mapping-badge mapping-badge-reverse" title="Synthesized from a mapping defined on the target table">Reverse</span>';
+            }
             if (mapping.isDefault) {
                 badges += '<span class="mapping-badge">Default</span>';
             }
@@ -2346,15 +2350,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 const condStr = mapping.conditions.map(c => `${c.column} ${c.operator} '${c.value}'`).join(', ');
                 badges += `<span class="mapping-badge">IF ${condStr}</span>`;
             }
-            html += `<div class="mapping-item" data-mapping-id="${escapeAttr(mapping.id)}">
+            const actions = mapping.reversed
+                ? '<span class="mapping-item-note" title="Edit this mapping on the originating table">read-only</span>'
+                : '<button class="btn btn-default btn-sm mapping-edit-btn">Edit</button>' +
+                  '<button class="btn btn-danger btn-sm mapping-delete-btn">Delete</button>';
+            html += `<div class="mapping-item${mapping.reversed ? ' mapping-item-reverse' : ''}" data-mapping-id="${escapeAttr(mapping.id)}">
                 <div class="mapping-item-info">
                     <div class="mapping-item-label">${escapeHtml(label)}</div>
                     <div class="mapping-item-detail">${escapeHtml(detail)}</div>
                     ${badges ? '<div class="mapping-item-badges">' + badges + '</div>' : ''}
                 </div>
                 <div class="mapping-item-actions">
-                    <button class="btn btn-default btn-sm mapping-edit-btn">Edit</button>
-                    <button class="btn btn-danger btn-sm mapping-delete-btn">Delete</button>
+                    ${actions}
                 </div>
             </div>`;
         });
