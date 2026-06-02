@@ -16,12 +16,33 @@ export class TableWebViewManager {
     private columnMappingManager: ColumnMappingManager;
     private modifyHistoryStore?: ModifyHistoryStore;
 
-    constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager, modifyHistoryStore?: ModifyHistoryStore) {
+    constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager, columnMappingManager: ColumnMappingManager, modifyHistoryStore?: ModifyHistoryStore) {
         this.context = context;
         this.connectionManager = connectionManager;
         this.exportService = new ExportService(context);
-        this.columnMappingManager = new ColumnMappingManager(context);
+        this.columnMappingManager = columnMappingManager;
         this.modifyHistoryStore = modifyHistoryStore;
+
+        // Push refreshed mappings to every open panel when the underlying store
+        // changes (e.g. workspace file edit, import, scope move).
+        context.subscriptions.push(
+            this.columnMappingManager.onDidChange(() => this.broadcastMappings())
+        );
+    }
+
+    private broadcastMappings(): void {
+        for (const [key, panel] of this.panels.entries()) {
+            const dot = key.indexOf('.');
+            if (dot < 0) continue;
+            const schema = key.substring(0, dot);
+            const table = key.substring(dot + 1);
+            const mappings = this.columnMappingManager.getMappingsForTable(schema, table);
+            try {
+                panel.webview.postMessage({ command: 'customMappingsLoaded', mappings });
+            } catch {
+                // Panel may be disposed; ignore.
+            }
+        }
     }
 
     async openTableView(schema: string, table: string): Promise<void> {
@@ -255,30 +276,17 @@ export class TableWebViewManager {
                         break;
                     }
                     case 'addCustomMapping': {
-                        this.columnMappingManager.addMapping(message.mapping);
-                        const mappings = this.columnMappingManager.getMappingsForTable(schema, table);
-                        panel.webview.postMessage({
-                            command: 'customMappingsLoaded',
-                            mappings: mappings
-                        });
+                        const scope = message.scope === 'workspace' ? 'workspace' : 'global';
+                        await this.columnMappingManager.addMapping(message.mapping, scope);
+                        // onDidChange will broadcast to all panels.
                         break;
                     }
                     case 'updateCustomMapping': {
-                        this.columnMappingManager.updateMapping(message.mappingId, message.mapping);
-                        const mappingsAfterUpdate = this.columnMappingManager.getMappingsForTable(schema, table);
-                        panel.webview.postMessage({
-                            command: 'customMappingsLoaded',
-                            mappings: mappingsAfterUpdate
-                        });
+                        await this.columnMappingManager.updateMapping(message.mappingId, message.mapping);
                         break;
                     }
                     case 'deleteCustomMapping': {
-                        this.columnMappingManager.deleteMapping(message.mappingId);
-                        const mappingsAfterDelete = this.columnMappingManager.getMappingsForTable(schema, table);
-                        panel.webview.postMessage({
-                            command: 'customMappingsLoaded',
-                            mappings: mappingsAfterDelete
-                        });
+                        await this.columnMappingManager.deleteMapping(message.mappingId);
                         break;
                     }
                     case 'getTablesForTypeahead': {

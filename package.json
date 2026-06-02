@@ -76,6 +76,21 @@
         "command": "postgresQueryBuilder.openSqlEditor",
         "title": "Open SQL Editor",
         "category": "PostgreSQL"
+      },
+      {
+        "command": "postgresQueryBuilder.exportCustomMappings",
+        "title": "Export Custom Column Mappings...",
+        "category": "PostgreSQL"
+      },
+      {
+        "command": "postgresQueryBuilder.importCustomMappings",
+        "title": "Import Custom Column Mappings...",
+        "category": "PostgreSQL"
+      },
+      {
+        "command": "postgresQueryBuilder.openCustomMappingsFile",
+        "title": "Open Workspace Custom Mappings File",
+        "category": "PostgreSQL"
       }
     ],
     "menus": {
@@ -135,6 +150,11 @@
           "type": "string",
           "default": " ",
           "description": "Thousand separator for displaying numbers (e.g. ' ' for 9 999 999,99)"
+        },
+        "postgresQueryBuilder.customMappingsFile": {
+          "type": "string",
+          "default": ".vscode/postgres-query-builder.mappings.json",
+          "description": "Workspace-relative path to the JSON file used to share custom column mappings via git. Mappings stored here are visible to everyone who opens the workspace; personal mappings remain in VS Code global state."
         }
       }
     }

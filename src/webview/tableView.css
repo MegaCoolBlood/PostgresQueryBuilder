@@ -839,6 +839,17 @@ td.has-fk-btn > .fk-btn {
     color: var(--vscode-editor-background);
 }
 
+.mapping-badge-workspace {
+    background: var(--vscode-gitDecoration-addedResourceForeground, #4caf50);
+    color: var(--vscode-editor-background);
+}
+
+.mapping-badge-personal {
+    background: var(--vscode-descriptionForeground);
+    color: var(--vscode-editor-background);
+    opacity: 0.85;
+}
+
 .mapping-item-reverse {
     opacity: 0.85;
 }

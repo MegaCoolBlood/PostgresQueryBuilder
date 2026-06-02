@@ -2005,6 +2005,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const mappingConditions = document.getElementById('mappingConditions');
     const mappingAddCondition = document.getElementById('mappingAddCondition');
     const mappingIsDefault = document.getElementById('mappingIsDefault');
+    const mappingShareWorkspace = document.getElementById('mappingShareWorkspace');
 
     // Manage mappings dialog DOM refs
     const manageMappingsOverlay = document.getElementById('manageMappingsOverlay');
@@ -2202,6 +2203,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         mappingTargetColumn.value = existingMapping ? existingMapping.targetColumn : '';
         mappingLabel.value = existingMapping ? (existingMapping.label || '') : '';
         mappingIsDefault.checked = existingMapping ? existingMapping.isDefault : false;
+        if (mappingShareWorkspace) {
+            mappingShareWorkspace.checked = existingMapping ? (existingMapping.scope === 'workspace') : false;
+        }
 
         // Populate conditions
         mappingConditions.innerHTML = '';
@@ -2299,10 +2303,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!data.targetSchema) {
             data.targetSchema = 'public';
         }
+        const scope = (mappingShareWorkspace && mappingShareWorkspace.checked) ? 'workspace' : 'global';
+        if (editingMappingId) {
+            data.scope = scope;
+        }
 
         vscode.postMessage({
             command: editingMappingId ? 'updateCustomMapping' : 'addCustomMapping',
             mappingId: editingMappingId,
+            scope: scope,
             mapping: data
         });
         closeMappingDialog();
@@ -2342,6 +2351,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             let badges = '';
             if (mapping.reversed) {
                 badges += '<span class="mapping-badge mapping-badge-reverse" title="Synthesized from a mapping defined on the target table">Reverse</span>';
+            }
+            if (mapping.scope === 'workspace') {
+                badges += '<span class="mapping-badge mapping-badge-workspace" title="Shared via the workspace mappings file (committed to git)">Workspace</span>';
+            } else if (mapping.scope === 'global') {
+                badges += '<span class="mapping-badge mapping-badge-personal" title="Personal mapping, stored in VS Code global state only">Personal</span>';
             }
             if (mapping.isDefault) {
                 badges += '<span class="mapping-badge">Default</span>';
