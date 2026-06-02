@@ -105,6 +105,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let currentOffset = 0;
     let lastUsedConnection = '';
     let currentConnection = '';
+    // Custom-query pagination state. When the user runs a custom SQL via the
+    // query bar (or via FK/PK/filter helpers that send runCustomQuery), we keep
+    // the base SQL (with any trailing LIMIT/OFFSET stripped) so Load More can
+    // page through the same query.
+    let customQueryActive = false;
+    let customQueryBase = '';      // SQL without trailing LIMIT/OFFSET clause
+    let customQueryUserPaged = false; // true when the user wrote an explicit LIMIT/OFFSET
+    let customQueryOffset = 0;
+    let customQueryAppendPending = false;
     const PAGE_SIZE = 50;
     // NOTE: Keep in sync with POSTGRES_RESERVED_KEYWORDS in src/queryRunner.ts
     const POSTGRES_RESERVED_KEYWORDS = new Set([
@@ -327,6 +336,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         table = msg.table;
         tableReference = msg.tableReference || '';
         alwaysQuote = Boolean(msg.alwaysQuote);
+        // Standard table view active — not a custom query result.
+        customQueryActive = false;
+        customQueryBase = '';
+        customQueryUserPaged = false;
+        customQueryOffset = 0;
+        customQueryAppendPending = false;
         if (typeof msg.connectionName === 'string') {
             lastUsedConnection = msg.connectionName;
             if (!currentConnection) currentConnection = msg.connectionName;
@@ -373,17 +388,30 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function handleQueryResult(msg) {
-        allRows = msg.rows;
+        const incoming = msg.rows || [];
+        const isAppend = customQueryAppendPending;
+        customQueryAppendPending = false;
+        if (isAppend) {
+            allRows = allRows.concat(incoming);
+        } else {
+            allRows = incoming;
+        }
         columns = msg.columns;
-        totalCount = msg.rows.length;
+        totalCount = allRows.length;
         if (typeof msg.connectionName === 'string') {
             lastUsedConnection = msg.connectionName;
             if (!currentConnection) currentConnection = msg.connectionName;
             updateConnectionDisplay();
         }
         tableName.textContent = `${schema}.${table} (custom query)`;
-        rowCount.textContent = `${msg.rows.length} rows returned`;
-        loadMoreBtn.disabled = true;
+        // Re-enable Load More when this looks like a paged custom query and the
+        // last batch came back full (i.e. there may be more rows).
+        const canPage = customQueryActive && !customQueryUserPaged;
+        const moreLikely = canPage && incoming.length >= PAGE_SIZE;
+        loadMoreBtn.disabled = !moreLikely;
+        rowCount.textContent = canPage
+            ? `${allRows.length} rows loaded` + (moreLikely ? ' (more available)' : '')
+            : `${incoming.length} rows returned`;
         dataLoading.classList.add('hidden');
         renderTable();
     }
@@ -485,17 +513,77 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function runCustomQuery() {
-        let sql = queryInput.value.trim();
-        if (!sql) return;
-        // Save to history
-        vscode.postMessage({ command: 'saveQueryHistory', sql: sql });
-        // Silently add LIMIT and OFFSET if not already present
-        const sqlLower = sql.toLowerCase();
-        if (!sqlLower.includes(' limit ')) {
-            sql += ` LIMIT ${PAGE_SIZE} OFFSET 0`;
-        }
+        const raw = queryInput.value.trim();
+        if (!raw) return;
+        // Save to history (raw, user-entered form)
+        vscode.postMessage({ command: 'saveQueryHistory', sql: raw });
+        const stripped = stripTrailingLimitOffset(raw);
+        customQueryActive = true;
+        customQueryBase = stripped.base;
+        customQueryUserPaged = stripped.hadLimit;
+        customQueryOffset = 0;
+        customQueryAppendPending = false;
+        const sql = customQueryUserPaged
+            ? raw
+            : (customQueryBase + ' LIMIT ' + PAGE_SIZE + ' OFFSET 0');
         dataLoading.classList.remove('hidden');
         vscode.postMessage({ command: 'runCustomQuery', sql });
+    }
+
+    // Detect and strip a trailing LIMIT [n] [OFFSET m] clause that is not
+    // inside parentheses or string literals. Returns { base, hadLimit }.
+    function stripTrailingLimitOffset(sql) {
+        const len = sql.length;
+        let depth = 0;
+        let inSingle = false, inDouble = false, inLineComment = false, inBlockComment = false;
+        const tokens = []; // [{kw, start}] for top-level LIMIT/OFFSET
+        let i = 0;
+        while (i < len) {
+            const ch = sql[i];
+            const next = sql[i + 1];
+            if (inLineComment) { if (ch === '\n') inLineComment = false; i++; continue; }
+            if (inBlockComment) { if (ch === '*' && next === '/') { inBlockComment = false; i += 2; continue; } i++; continue; }
+            if (inSingle) { if (ch === "'") { if (next === "'") { i += 2; continue; } inSingle = false; } i++; continue; }
+            if (inDouble) { if (ch === '"') { if (next === '"') { i += 2; continue; } inDouble = false; } i++; continue; }
+            if (ch === '-' && next === '-') { inLineComment = true; i += 2; continue; }
+            if (ch === '/' && next === '*') { inBlockComment = true; i += 2; continue; }
+            if (ch === "'") { inSingle = true; i++; continue; }
+            if (ch === '"') { inDouble = true; i++; continue; }
+            if (ch === '(') { depth++; i++; continue; }
+            if (ch === ')') { depth--; i++; continue; }
+            if (depth === 0 && /[A-Za-z_]/.test(ch)) {
+                let j = i;
+                while (j < len && /[A-Za-z0-9_]/.test(sql[j])) j++;
+                const word = sql.substring(i, j).toLowerCase();
+                const before = i === 0 ? ' ' : sql[i - 1];
+                if ((word === 'limit' || word === 'offset' || word === 'fetch') && /[\s);]/.test(before)) {
+                    tokens.push({ kw: word, start: i });
+                }
+                i = j;
+                continue;
+            }
+            i++;
+        }
+        if (tokens.length === 0) return { base: sql.replace(/[\s;]+$/, ''), hadLimit: false };
+        // Pick the earliest LIMIT/FETCH token among the trailing run
+        // (allow OFFSET to come before LIMIT too).
+        const trailing = tokens[tokens.length - 1];
+        // Walk back to the first contiguous LIMIT/OFFSET/FETCH that all belong
+        // to the same trailing clause group.
+        let firstIdx = trailing.start;
+        for (let t = tokens.length - 1; t >= 0; t--) {
+            firstIdx = tokens[t].start;
+            if (t === 0) break;
+            const prev = tokens[t - 1];
+            // Only keep walking back if the previous token is also LIMIT/OFFSET
+            // and only whitespace/numbers/parens between them.
+            const between = sql.substring(prev.start, firstIdx);
+            if (!/^\s*(limit|offset|fetch)\b[^A-Za-z_]*$/i.test(between)) break;
+        }
+        return {
+            base: sql.substring(0, firstIdx).replace(/[\s;]+$/, ''),
+            hadLimit: true
+        };
     }
 
     function handleApplyFilter(msg) {
@@ -1579,6 +1667,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function loadMore() {
+        if (customQueryActive && !customQueryUserPaged) {
+            customQueryOffset += PAGE_SIZE;
+            customQueryAppendPending = true;
+            const sql = customQueryBase + ' LIMIT ' + PAGE_SIZE + ' OFFSET ' + customQueryOffset;
+            dataLoading.classList.remove('hidden');
+            vscode.postMessage({ command: 'runCustomQuery', sql });
+            return;
+        }
         currentOffset += PAGE_SIZE;
         vscode.postMessage({ command: 'loadData', offset: currentOffset, limit: PAGE_SIZE });
     }
