@@ -180,6 +180,7 @@
     "deploy:patch": "npm run patch && npm run deploy",
     "deploy:minor": "npm run minor && npm run deploy",
     "deploy:major": "npm run major && npm run deploy",
+    "d": "npm run deploy",
     "d1": "npm run deploy:patch",
     "d2": "npm run deploy:minor",
     "d3": "npm run deploy:major"

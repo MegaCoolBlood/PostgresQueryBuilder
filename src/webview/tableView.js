@@ -135,8 +135,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // Change tracking
     let modifiedCells = new Map(); // "rowIndex:colName" -> newValue
     let deletedRows = new Set();   // rowIndex
-    let insertedRows = [];          // [{col: val, ...}]
-    let duplicatedRows = [];        // [{col: val, ...}]
+    let insertedRows = [];          // [{ row: {col: val, ...}, anchor: number|null }]
+    let duplicatedRows = [];        // [{ row: {col: val, ...}, anchor: number|null }]
+
+    // Index of the currently "selected" existing row (the one most recently
+    // clicked). New / duplicated rows are inserted directly below this row.
+    // null means no row is selected -> new rows appear at the very top.
+    let selectedRowIdx = null;
 
     // Sort state
     let sortColumn = null;
@@ -1399,14 +1404,70 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         let html = '';
         let rowNum = 0;
 
-        // Existing rows
+        // Build a render plan that interleaves inserted/duplicated rows
+        // directly below the existing row they were anchored to. Inserts
+        // with no anchor (selectedRowIdx was null) go at the very top;
+        // inserts whose anchor row is no longer in the displayed set fall
+        // back to the bottom so the user doesn't lose them.
+        const insertsByAnchor = new Map();
+        const topInserts = [];
+        const orphanInserts = [];
+        const displayedIdxSet = new Set(displayedRows.map(r => r._originalIndex));
+        insertedRows.forEach((entry, iIdx) => {
+            const wrapped = { kind: 'insert', iIdx };
+            if (entry.anchor == null) topInserts.push(wrapped);
+            else if (displayedIdxSet.has(entry.anchor)) {
+                if (!insertsByAnchor.has(entry.anchor)) insertsByAnchor.set(entry.anchor, []);
+                insertsByAnchor.get(entry.anchor).push(wrapped);
+            } else orphanInserts.push(wrapped);
+        });
+        duplicatedRows.forEach((entry, dIdx) => {
+            const wrapped = { kind: 'dup', dIdx };
+            if (entry.anchor == null) topInserts.push(wrapped);
+            else if (displayedIdxSet.has(entry.anchor)) {
+                if (!insertsByAnchor.has(entry.anchor)) insertsByAnchor.set(entry.anchor, []);
+                insertsByAnchor.get(entry.anchor).push(wrapped);
+            } else orphanInserts.push(wrapped);
+        });
+
+        function emitInsertRow(w) {
+            rowNum++;
+            if (w.kind === 'insert') {
+                const row = insertedRows[w.iIdx].row;
+                html += `<tr class="row-inserted" data-insert-index="${w.iIdx}">`;
+                html += `<td class="row-num-cell">${rowNum}</td>`;
+                html += `<td class="actions-cell"><button class="btn btn-danger" onclick="removeInsertedRow(${w.iIdx})">✕</button></td>`;
+                columns.forEach(col => {
+                    const val = row[col.name] || '';
+                    html += `<td contenteditable="true" data-insert="${w.iIdx}" data-col="${escapeAttr(col.name)}">${escapeHtml(val)}</td>`;
+                });
+                html += '</tr>';
+            } else {
+                const row = duplicatedRows[w.dIdx].row;
+                html += `<tr class="row-duplicated" data-dup-index="${w.dIdx}">`;
+                html += `<td class="row-num-cell">${rowNum}</td>`;
+                html += `<td class="actions-cell"><button class="btn btn-danger" onclick="removeDuplicatedRow(${w.dIdx})">✕</button></td>`;
+                columns.forEach(col => {
+                    const val = row[col.name] !== null && row[col.name] !== undefined ? String(row[col.name]) : '';
+                    html += `<td contenteditable="true" data-dup="${w.dIdx}" data-col="${escapeAttr(col.name)}">${escapeHtml(val)}</td>`;
+                });
+                html += '</tr>';
+            }
+        }
+
+        // Top inserts (above all existing rows)
+        topInserts.forEach(emitInsertRow);
+
+        // Existing rows, with anchored inserts emitted right after each row
         displayedRows.forEach(row => {
             const idx = row._originalIndex;
             const isDeleted = deletedRows.has(idx);
             const isModified = hasModifications(idx);
+            const isSelected = selectedRowIdx === idx;
             let rowClass = '';
             if (isDeleted) rowClass = 'row-deleted';
             else if (isModified) rowClass = 'row-modified';
+            if (isSelected) rowClass = (rowClass ? rowClass + ' ' : '') + 'row-selected';
 
             rowNum++;
             html += `<tr class="${rowClass}" data-row-index="${idx}">`;
@@ -1448,33 +1509,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 html += `<td class="${cellClass}${cellExtraClass}" data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : String(originalVal))}"><span class="cell-content" contenteditable="${editableAttr}">${displayVal}</span>${fkBtn}</td>`;
             });
             html += '</tr>';
+
+            // Emit any inserts/duplicates anchored to this row
+            const anchored = insertsByAnchor.get(idx);
+            if (anchored) anchored.forEach(emitInsertRow);
         });
 
-        // Inserted rows
-        insertedRows.forEach((row, iIdx) => {
-            rowNum++;
-            html += `<tr class="row-inserted" data-insert-index="${iIdx}">`;
-            html += `<td class="row-num-cell">${rowNum}</td>`;
-            html += `<td class="actions-cell"><button class="btn btn-danger" onclick="removeInsertedRow(${iIdx})">✕</button></td>`;
-            columns.forEach(col => {
-                const val = row[col.name] || '';
-                html += `<td contenteditable="true" data-insert="${iIdx}" data-col="${escapeAttr(col.name)}">${escapeHtml(val)}</td>`;
-            });
-            html += '</tr>';
-        });
-
-        // Duplicated rows
-        duplicatedRows.forEach((row, dIdx) => {
-            rowNum++;
-            html += `<tr class="row-duplicated" data-dup-index="${dIdx}">`;
-            html += `<td class="row-num-cell">${rowNum}</td>`;
-            html += `<td class="actions-cell"><button class="btn btn-danger" onclick="removeDuplicatedRow(${dIdx})">✕</button></td>`;
-            columns.forEach(col => {
-                const val = row[col.name] !== null ? String(row[col.name]) : '';
-                html += `<td contenteditable="true" data-dup="${dIdx}" data-col="${escapeAttr(col.name)}">${escapeHtml(val)}</td>`;
-            });
-            html += '</tr>';
-        });
+        // Orphan inserts whose anchor row is filtered out
+        orphanInserts.forEach(emitInsertRow);
 
         tableBody.innerHTML = html;
 
@@ -1565,6 +1607,26 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             });
         });
 
+        // Row selection: clicking anywhere in an existing row marks it as
+        // selected so that subsequent Insert Row / Duplicate Row place new
+        // rows directly below it. Clicking on action buttons (which stop
+        // propagation or trigger their own handler) still updates selection
+        // because the click bubbles up before button work.
+        tableBody.querySelectorAll('tr[data-row-index]').forEach(tr => {
+            tr.addEventListener('click', (e) => {
+                // Ignore clicks inside the FK button (it opens another view)
+                if (e.target.closest('.fk-btn')) return;
+                const idxStr = tr.getAttribute('data-row-index');
+                const idx = parseInt(idxStr);
+                if (selectedRowIdx === idx) return;
+                // Update class on previously selected row without full
+                // re-render to avoid clobbering an in-progress edit.
+                tableBody.querySelectorAll('tr.row-selected').forEach(prev => prev.classList.remove('row-selected'));
+                tr.classList.add('row-selected');
+                selectedRowIdx = idx;
+            });
+        });
+
         updateChangeIndicator();
     }
 
@@ -1628,7 +1690,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric' && newValue !== '') {
             newValue = normalizeNumericInput(newValue, thousandSeparator);
         }
-        insertedRows[iIdx][colName] = newValue;
+        insertedRows[iIdx].row[colName] = newValue;
         updateChangeIndicator();
     }
 
@@ -1641,7 +1703,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric' && newValue !== '') {
             newValue = normalizeNumericInput(newValue, thousandSeparator);
         }
-        duplicatedRows[dIdx][colName] = newValue;
+        duplicatedRows[dIdx].row[colName] = newValue;
         updateChangeIndicator();
     }
 
@@ -1669,7 +1731,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const modKey = `${idx}:${col.name}`;
             rowData[col.name] = modifiedCells.has(modKey) ? modifiedCells.get(modKey) : allRows[idx][col.name];
         });
-        duplicatedRows.push(rowData);
+        // Anchor the duplicate directly below the source row.
+        duplicatedRows.push({ row: rowData, anchor: idx });
+        selectedRowIdx = idx;
         renderBody();
         updateRowCount();
     };
@@ -1689,13 +1753,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function insertRow() {
         const newRow = {};
         columns.forEach(col => { newRow[col.name] = ''; });
-        insertedRows.push(newRow);
+        // Anchor below the currently selected row, or at the top if none.
+        const anchor = (selectedRowIdx != null && allRows[selectedRowIdx]) ? selectedRowIdx : null;
+        insertedRows.push({ row: newRow, anchor: anchor });
         renderBody();
         updateRowCount();
 
-        // Scroll to bottom
-        const wrapper = document.getElementById('tableWrapper');
-        wrapper.scrollTop = wrapper.scrollHeight;
+        // Scroll the newly inserted row into view
+        const selector = anchor == null
+            ? 'tr.row-inserted'
+            : `tr.row-inserted[data-insert-index="${insertedRows.length - 1}"]`;
+        const newTr = tableBody.querySelector(selector);
+        if (newTr && newTr.scrollIntoView) {
+            newTr.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+        }
     }
 
     function loadMore() {
@@ -1764,7 +1835,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         // Inserts (both new and duplicated)
-        changes.inserts = [...insertedRows, ...duplicatedRows].map(row => {
+        changes.inserts = [...insertedRows, ...duplicatedRows].map(entry => {
+            const row = entry.row;
             const clean = {};
             columns.forEach(col => {
                 if (row[col.name] !== '' && row[col.name] !== null && row[col.name] !== undefined) {

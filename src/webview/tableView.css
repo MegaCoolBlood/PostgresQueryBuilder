@@ -451,6 +451,15 @@ tr.row-duplicated td {
     background: rgba(33, 150, 243, 0.15);
 }
 
+/* Selected row (the row under which new inserts/duplicates are placed) */
+tr.row-selected td {
+    box-shadow: inset 2px 0 0 var(--vscode-focusBorder);
+}
+tr.row-selected td:first-child {
+    box-shadow: inset 2px 0 0 var(--vscode-focusBorder);
+    font-weight: 600;
+}
+
 /* Editable cells */
 td.cell-modified {
     background: rgba(255, 235, 59, 0.3) !important;
