@@ -476,9 +476,36 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function handleApplyFilter(msg) {
-        exactFilters[msg.column] = msg.value;
-        filters[msg.column] = msg.value;
-        applyFiltersToQuery();
+        // When opening a related table via FK/PK/custom mapping, only prefilter via
+        // the SELECT clause and leave the column filter row empty.
+        applyExactMatchToQuery(msg.column, msg.value);
+    }
+
+    function applyExactMatchToQuery(colName, value) {
+        if (!schema || !table) return;
+        if (value === null || value === undefined) return;
+        const colMeta = columns.find(c => c.name === colName);
+        const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
+        const fmtCol = formatIdentifier(colName);
+        const formatted = formatExactMatchValue(String(value), filterType, thousandSeparator);
+        const clause = `${fmtCol} = ${formatted}`;
+        mergeWhereClausesIntoQuery({ [colName]: clause });
+        runCustomQuery();
+    }
+
+    function mergeWhereClausesIntoQuery(clausesByCol) {
+        const baseSql = (queryInput.value || '').trim() || `SELECT * FROM ${getDefaultTableReference()}`;
+        const parsed = parseSqlForWhere(baseSql);
+        let existing = parsed.where ? splitWhereByAnd(parsed.where) : [];
+        const targetCols = Object.keys(clausesByCol);
+        if (targetCols.length > 0) {
+            existing = existing.filter(c => !targetCols.some(col => whereClauseTargetsColumn(c, col)));
+            for (const col of targetCols) existing.push(clausesByCol[col]);
+        }
+        let sql = parsed.base;
+        if (existing.length > 0) sql += ` WHERE ${existing.join(' AND ')}`;
+        if (parsed.orderBy) sql += ` ORDER BY ${parsed.orderBy}`;
+        queryInput.value = sql;
     }
 
     function updateRowCount() {
@@ -759,21 +786,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         // Merge into the existing SQL, preserving user-written clauses.
-        const baseSql = (queryInput.value || '').trim() || `SELECT * FROM ${getDefaultTableReference()}`;
-        const parsed = parseSqlForWhere(baseSql);
-        let existing = parsed.where ? splitWhereByAnd(parsed.where) : [];
-        const targetCols = Object.keys(newClausesByCol);
-        if (targetCols.length > 0) {
-            // Drop any existing top-level clauses that target a column we are now setting,
-            // then append the new clauses.
-            existing = existing.filter(c => !targetCols.some(col => whereClauseTargetsColumn(c, col)));
-            for (const col of targetCols) existing.push(newClausesByCol[col]);
-        }
-
-        let sql = parsed.base;
-        if (existing.length > 0) sql += ` WHERE ${existing.join(' AND ')}`;
-        if (parsed.orderBy) sql += ` ORDER BY ${parsed.orderBy}`;
-        queryInput.value = sql;
+        mergeWhereClausesIntoQuery(newClausesByCol);
         runCustomQuery();
     }
 
@@ -898,9 +911,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             items.push({
                 label: 'Add as Exact Match to Query',
                 action: () => {
-                    exactFilters[colName] = String(cellValue);
-                    filters[colName] = String(cellValue);
-                    applyFiltersToQuery();
+                    applyExactMatchToQuery(colName, String(cellValue));
                 }
             });
         }
