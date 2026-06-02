@@ -2,6 +2,14 @@
 .vscode-test/**
 src/**
 !src/webview/**
-node_modules/**
 .gitignore
 tsconfig.json
+**/*.map
+out/test/**
+node_modules/**/test/**
+node_modules/**/tests/**
+node_modules/**/*.md
+node_modules/**/*.ts
+node_modules/**/.bin/**
+*.vsix
+

@@ -2,7 +2,7 @@
   "name": "postgres-query-builder",
   "displayName": "PostgreSQL Query Builder",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "0.1.1",
+  "version": "0.1.4",
   "publisher": "postgres-query-builder",
   "engines": {
     "vscode": "^1.85.0"
@@ -11,7 +11,9 @@
     "Other"
   ],
   "activationEvents": [
-    "onView:postgresTableExplorer"
+    "onView:postgresTableExplorer",
+    "onView:postgresTableSearch",
+    "onStartupFinished"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -76,9 +78,20 @@
           "command": "postgresQueryBuilder.refreshExplorer",
           "when": "view == postgresTableExplorer",
           "group": "navigation"
+        },
+        {
+          "command": "postgresQueryBuilder.selectConnection",
+          "when": "view == postgresTableExplorer",
+          "group": "navigation"
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "postgresTableExplorer",
+        "contents": "Keine aktive PostgreSQL-Verbindung.\n[Verbindung auswählen](command:postgresQueryBuilder.selectConnection)\n[Neue Verbindung](command:postgresQueryBuilder.connect)"
+      }
+    ],
     "configuration": {
       "title": "PostgreSQL Query Builder",
       "properties": {
