@@ -72,8 +72,18 @@ export class TableWebViewManager {
             table: table,
             alwaysQuote: alwaysQuote,
             tableReference: tableReference,
-            thousandSeparator: thousandSeparator
+            thousandSeparator: thousandSeparator,
+            connectionName: this.getConnectionName()
         });
+
+        // Push connection updates to the webview while it's open
+        const connSub = this.connectionManager.onConnectionChanged(() => {
+            panel.webview.postMessage({
+                command: 'connectionChanged',
+                connectionName: this.getConnectionName()
+            });
+        });
+        panel.onDidDispose(() => connSub.dispose());
 
         // Handle messages from webview
         panel.webview.onDidReceiveMessage(async (message) => {
@@ -104,7 +114,8 @@ export class TableWebViewManager {
                             schema: schema,
                             table: table,
                             alwaysQuote: selectBuildInfo.alwaysQuote,
-                            tableReference: selectBuildInfo.tableReference
+                            tableReference: selectBuildInfo.tableReference,
+                            connectionName: this.getConnectionName()
                         });
 
                         // Send pending filter after data is loaded
@@ -155,7 +166,11 @@ export class TableWebViewManager {
                             table,
                             message.changes
                         );
-                        panel.webview.postMessage({ command: 'sqlPreview', sql });
+                        panel.webview.postMessage({
+                            command: 'sqlPreview',
+                            sql,
+                            connectionName: this.getConnectionName()
+                        });
                         break;
                     }
                     case 'commitChanges': {
@@ -211,7 +226,8 @@ export class TableWebViewManager {
                         panel.webview.postMessage({
                             command: 'queryResult',
                             rows: result.rows,
-                            columns: cols
+                            columns: cols,
+                            connectionName: this.getConnectionName()
                         });
                         break;
                     }
@@ -409,6 +425,12 @@ export class TableWebViewManager {
         html = html.replace('/* JS_PLACEHOLDER */', js);
 
         return html;
+    }
+
+    private getConnectionName(): string {
+        const cfg = this.connectionManager.getActiveConnectionConfig();
+        if (!cfg) return '';
+        return cfg.name || `${cfg.host}:${cfg.port}/${cfg.database}`;
     }
 
     private getQueryHistory(schema: string, table: string): { sql: string; lastUsed: number }[] {

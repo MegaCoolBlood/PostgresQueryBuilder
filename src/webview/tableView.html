@@ -11,6 +11,7 @@
         <div class="toolbar">
             <div class="toolbar-left">
                 <span class="table-name" id="tableName"></span>
+                <span class="connection-info" id="connectionInfo" title="Connection used for the currently displayed data"></span>
                 <span class="row-count" id="rowCount"></span>
                 <span class="loading-indicator" id="dataLoading"><span class="spinner"></span> Loading data...</span>
                 <span class="loading-indicator" id="metaLoading"><span class="spinner"></span> Loading relations...</span>
@@ -55,6 +56,8 @@
                     <span>SQL Preview</span>
                     <button class="sql-dialog-close" id="sqlDialogClose">&times;</button>
                 </div>
+                <div class="sql-dialog-connection" id="sqlDialogConnection"></div>
+                <div class="sql-dialog-warning" id="sqlDialogWarning" style="display:none;"></div>
                 <pre class="sql-dialog-content" id="sqlDialogContent"></pre>
                 <div class="sql-dialog-footer">
                     <button class="btn btn-success" id="sqlDialogExecute">Execute</button>

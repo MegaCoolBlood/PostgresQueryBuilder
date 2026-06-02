@@ -103,6 +103,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let thousandSeparator = ' ';
     let totalCount = 0;
     let currentOffset = 0;
+    let lastUsedConnection = '';
+    let currentConnection = '';
     const PAGE_SIZE = 50;
     // NOTE: Keep in sync with POSTGRES_RESERVED_KEYWORDS in src/queryRunner.ts
     const POSTGRES_RESERVED_KEYWORDS = new Set([
@@ -165,6 +167,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const contextMenuItems = document.getElementById('contextMenuItems');
     const dataLoading = document.getElementById('dataLoading');
     const metaLoading = document.getElementById('metaLoading');
+    const connectionInfo = document.getElementById('connectionInfo');
+    const sqlDialogConnection = document.getElementById('sqlDialogConnection');
+    const sqlDialogWarning = document.getElementById('sqlDialogWarning');
 
     // Show data loading, request initial data
     dataLoading.classList.remove('hidden');
@@ -263,7 +268,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 updateQueryHistoryDropdown(msg.history);
                 break;
             case 'sqlPreview':
-                showSqlDialog(msg.sql);
+                showSqlDialog(msg.sql, msg.connectionName);
                 break;
             case 'commitSuccess':
                 handleCommitSuccess();
@@ -286,6 +291,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'error':
                 showError(msg.text);
                 break;
+            case 'connectionChanged':
+                currentConnection = msg.connectionName || '';
+                updateConnectionDisplay();
+                break;
         }
     });
 
@@ -295,6 +304,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         tableReference = msg.tableReference || '';
         alwaysQuote = Boolean(msg.alwaysQuote);
         if (msg.thousandSeparator !== undefined) { thousandSeparator = msg.thousandSeparator; }
+        if (typeof msg.connectionName === 'string') {
+            currentConnection = msg.connectionName;
+            updateConnectionDisplay();
+        }
         tableName.textContent = `${schema}.${table}`;
         queryInput.value = `SELECT * FROM ${getDefaultTableReference()}`;
         // Request query history for this table
@@ -314,6 +327,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         table = msg.table;
         tableReference = msg.tableReference || '';
         alwaysQuote = Boolean(msg.alwaysQuote);
+        if (typeof msg.connectionName === 'string') {
+            lastUsedConnection = msg.connectionName;
+            if (!currentConnection) currentConnection = msg.connectionName;
+            updateConnectionDisplay();
+        }
 
         tableName.textContent = `${schema}.${table}`;
         queryInput.value = `SELECT * FROM ${getDefaultTableReference()}`;
@@ -358,6 +376,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         allRows = msg.rows;
         columns = msg.columns;
         totalCount = msg.rows.length;
+        if (typeof msg.connectionName === 'string') {
+            lastUsedConnection = msg.connectionName;
+            if (!currentConnection) currentConnection = msg.connectionName;
+            updateConnectionDisplay();
+        }
         tableName.textContent = `${schema}.${table} (custom query)`;
         rowCount.textContent = `${msg.rows.length} rows returned`;
         loadMoreBtn.disabled = true;
@@ -1635,9 +1658,46 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         vscode.postMessage({ command: 'previewSQL', changes });
     }
 
-    function showSqlDialog(sql) {
+    function showSqlDialog(sql, connectionName) {
         sqlDialogContent.textContent = sql;
+        const curr = (typeof connectionName === 'string' && connectionName) ? connectionName : currentConnection;
+        if (curr) currentConnection = curr;
+        const last = lastUsedConnection || '(none)';
+        const currLabel = curr || '(none)';
+        if (sqlDialogConnection) {
+            sqlDialogConnection.textContent = `Current connection: ${currLabel}  |  Data loaded with: ${last}`;
+        }
+        if (sqlDialogWarning) {
+            if (curr && lastUsedConnection && curr !== lastUsedConnection) {
+                sqlDialogWarning.textContent = `⚠ The active connection (${curr}) differs from the connection the data was loaded with (${lastUsedConnection}). Executing will run against "${curr}".`;
+                sqlDialogWarning.style.display = 'block';
+            } else {
+                sqlDialogWarning.style.display = 'none';
+                sqlDialogWarning.textContent = '';
+            }
+        }
+        updateConnectionDisplay();
         sqlDialogOverlay.style.display = 'flex';
+    }
+
+    function updateConnectionDisplay() {
+        if (!connectionInfo) return;
+        if (!lastUsedConnection && !currentConnection) {
+            connectionInfo.textContent = '';
+            connectionInfo.classList.remove('warn');
+            connectionInfo.title = '';
+            return;
+        }
+        const last = lastUsedConnection || '(none)';
+        if (currentConnection && lastUsedConnection && currentConnection !== lastUsedConnection) {
+            connectionInfo.textContent = `⚠ ${last} → ${currentConnection}`;
+            connectionInfo.classList.add('warn');
+            connectionInfo.title = `Data was loaded from "${last}". Active connection is now "${currentConnection}".`;
+        } else {
+            connectionInfo.textContent = last;
+            connectionInfo.classList.remove('warn');
+            connectionInfo.title = `Connection used for the currently displayed data: ${last}`;
+        }
     }
 
     function closeSqlDialog() {

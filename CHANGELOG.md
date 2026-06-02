@@ -9,6 +9,8 @@
 - Spaltenfilter (Enter) und „Add as Exact Match to Query" überschreiben nicht mehr die eigene SELECT-Anweisung: bestehende `WHERE`-Bedingungen bleiben erhalten, nur eine vorhandene Bedingung für dieselbe Spalte wird ersetzt; andere Bedingungen und `ORDER BY` bleiben unverändert.
 - Beim Öffnen einer verknüpften Tabelle (FK/PK/Custom Mapping) und bei „Add as Exact Match to Query" wird der Wert nur noch in die SELECT-Klausel gemergt — die Filterzeile bleibt leer (statt automatisch mit dem Wert vorbefüllt zu werden).
 - Neues Panel **Modify History** unter dem Search-Panel: zeigt persistent (bis 500 Einträge) alle ausgeführten ändernden Statements (INSERT/UPDATE/DELETE/MERGE/TRUNCATE/CREATE/DROP/ALTER/GRANT/REVOKE/COMMENT/REFRESH/CALL) aus Tabellen-Commits, der Query-Bar der Datenansicht und dem SQL-Editor. Klick auf einen Eintrag kopiert das SQL, „Clear" leert die Historie.
+- Tabellenansicht zeigt in der Toolbar die Verbindung an, mit der die aktuell sichtbaren Daten geladen wurden (wird bei jedem SELECT-Lauf aktualisiert). Wechselt die aktive Verbindung danach, wird die Anzeige als Warnung markiert.
+- Der „SQL Preview / Execute"-Dialog der Tabellenansicht zeigt jetzt die aktuelle Verbindung und die Verbindung, mit der die Daten geladen wurden. Unterscheiden sich beide, erscheint ein deutlich sichtbarer Warnhinweis, dass die Ausführung gegen die aktive Verbindung läuft.
 
 ## 0.1.0
 

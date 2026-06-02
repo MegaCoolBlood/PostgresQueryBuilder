@@ -222,6 +222,38 @@ body {
     font-size: 12px;
 }
 
+.connection-info {
+    color: var(--vscode-descriptionForeground);
+    font-size: 12px;
+    padding: 2px 6px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 3px;
+    background: var(--vscode-editorWidget-background);
+}
+
+.connection-info.warn {
+    color: var(--vscode-editorWarning-foreground, var(--vscode-inputValidation-warningForeground, #d18616));
+    border-color: var(--vscode-editorWarning-foreground, var(--vscode-inputValidation-warningBorder, #d18616));
+    background: var(--vscode-inputValidation-warningBackground, transparent);
+}
+
+.sql-dialog-connection {
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+    border-bottom: 1px solid var(--vscode-panel-border);
+    background: var(--vscode-editorWidget-background);
+}
+
+.sql-dialog-warning {
+    padding: 8px 12px;
+    font-size: 12px;
+    background: var(--vscode-inputValidation-warningBackground, rgba(255, 196, 0, 0.15));
+    color: var(--vscode-inputValidation-warningForeground, var(--vscode-editorWarning-foreground, #d18616));
+    border-bottom: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground, #d18616));
+    font-weight: 600;
+}
+
 /* Buttons */
 .btn {
     border: none;
