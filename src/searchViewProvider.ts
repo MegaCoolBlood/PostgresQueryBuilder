@@ -30,6 +30,12 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
             if (message.type === 'filter') {
                 this._filterText = message.value;
                 this._onDidChangeFilter.fire(this._filterText);
+            } else if (message.type === 'selectConnection') {
+                vscode.commands.executeCommand('postgresQueryBuilder.selectConnection');
+            } else if (message.type === 'newConnection') {
+                vscode.commands.executeCommand('postgresQueryBuilder.connect');
+            } else if (message.type === 'disconnect') {
+                vscode.commands.executeCommand('postgresQueryBuilder.disconnect');
             }
         });
     }
@@ -70,9 +76,40 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
             color: var(--vscode-descriptionForeground);
             margin-top: 4px;
         }
+        .button-row {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 6px;
+            flex-wrap: wrap;
+        }
+        button {
+            flex: 1 1 auto;
+            padding: 4px 8px;
+            border: 1px solid var(--vscode-button-border, transparent);
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            font-size: 12px;
+            border-radius: 2px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: var(--vscode-button-hoverBackground);
+        }
+        button.secondary {
+            background: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+        }
+        button.secondary:hover {
+            background: var(--vscode-button-secondaryHoverBackground);
+        }
     </style>
 </head>
 <body>
+    <div class="button-row">
+        <button id="selectConnBtn" title="Choose an existing saved connection">Select Connection</button>
+        <button id="newConnBtn" class="secondary" title="Create a new connection">New</button>
+        <button id="disconnectBtn" class="secondary" title="Disconnect">Disconnect</button>
+    </div>
     <div class="search-container">
         <input type="text" id="searchInput" placeholder="Filter tables... (e.g. schema.table)" />
     </div>
@@ -86,6 +123,15 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
             debounceTimer = setTimeout(() => {
                 vscode.postMessage({ type: 'filter', value: input.value });
             }, 200);
+        });
+        document.getElementById('selectConnBtn').addEventListener('click', () => {
+            vscode.postMessage({ type: 'selectConnection' });
+        });
+        document.getElementById('newConnBtn').addEventListener('click', () => {
+            vscode.postMessage({ type: 'newConnection' });
+        });
+        document.getElementById('disconnectBtn').addEventListener('click', () => {
+            vscode.postMessage({ type: 'disconnect' });
         });
         input.focus();
     </script>

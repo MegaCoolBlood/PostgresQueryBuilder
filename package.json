@@ -2,12 +2,14 @@
   "name": "postgres-query-builder",
   "displayName": "PostgreSQL Query Builder",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "postgres-query-builder",
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
+  "categories": [
+    "Other"
+  ],
   "activationEvents": [
     "onView:postgresTableExplorer"
   ],
@@ -16,14 +18,14 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "postgres-explorer",
-          "title": "PostgreSQL Explorer",
+          "id": "postgresQueryBuilderExplorer",
+          "title": "PostgreSQL Query Builder",
           "icon": "$(database)"
         }
       ]
     },
     "views": {
-      "postgres-explorer": [
+      "postgresQueryBuilderExplorer": [
         {
           "id": "postgresTableExplorer",
           "name": "Tables"
@@ -124,20 +126,16 @@
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "test": "npm run compile && node --test out/test/**/*.test.js",
-
     "bump:patch": "npm version patch --no-git-tag-version",
     "bump:minor": "npm version minor --no-git-tag-version",
     "bump:major": "npm version major --no-git-tag-version",
-
     "patch": "npm run bump:patch",
     "minor": "npm run bump:minor",
     "major": "npm run bump:major",
-
-    "deploy": "npm run compile && npx vsce package --no-telemetry --allow-missing-repository",
+    "deploy": "npm run compile && npx vsce package --allow-missing-repository",
     "deploy:patch": "npm run patch && npm run deploy",
     "deploy:minor": "npm run minor && npm run deploy",
     "deploy:major": "npm run major && npm run deploy",
-
     "d1": "npm run deploy:patch",
     "d2": "npm run deploy:minor",
     "d3": "npm run deploy:major"
