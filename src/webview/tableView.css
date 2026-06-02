@@ -796,10 +796,21 @@ td.has-fk-btn > .fk-btn {
 }
 
 /* Single Record View Dialog */
+#recordDialogOverlay {
+    /* Anchor near the top so the dialog doesn't jump around when its
+       height changes between records of different size. */
+    align-items: flex-start;
+    padding-top: 40px;
+    box-sizing: border-box;
+}
+
 .record-dialog {
     max-width: 900px;
     width: 90%;
-    max-height: 90vh;
+    max-height: calc(100vh - 80px);
+    /* Fixed visible height keeps the body scrollable area constant so the
+       remembered scrollTop stays valid when navigating between records. */
+    height: calc(100vh - 80px);
 }
 
 .record-dialog-nav {
@@ -812,7 +823,9 @@ td.has-fk-btn > .fk-btn {
     padding: 10px 14px;
     overflow-y: auto;
     flex: 1;
-    max-height: 75vh;
+    /* Let the flex container size us; remove the small cap so the body
+       grows to fill the dialog. */
+    max-height: none;
 }
 
 .record-row {

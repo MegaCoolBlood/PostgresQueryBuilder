@@ -2293,12 +2293,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const nextPos = pos + delta;
         if (nextPos < 0 || nextPos >= order.length) return;
         recordDialogRowIdx = order[nextPos];
-        renderRecordDialog();
-        // Scroll body to top for new record
-        recordDialogBody.scrollTop = 0;
+        // Preserve the scroll position when paging through records so the
+        // user stays at the same logical column instead of being yanked
+        // back to the top each time.
+        renderRecordDialog({ preserveScroll: true });
     }
 
-    function renderRecordDialog() {
+    function renderRecordDialog(opts) {
+        const preserveScroll = !!(opts && opts.preserveScroll);
+        const savedScrollTop = preserveScroll ? recordDialogBody.scrollTop : 0;
         const idx = recordDialogRowIdx;
         if (idx < 0 || !allRows[idx]) { closeRecordDialog(); return; }
 
@@ -2390,6 +2393,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         recordDialogBody.innerHTML = html;
 
+        // Restore the scroll position captured at the start of this render.
+        // We do this synchronously (innerHTML assignment is synchronous and
+        // the body has a fixed height, so the scroll range is already valid).
+        recordDialogBody.scrollTop = savedScrollTop;
+
         // Status line
         const parts = [];
         if (isDeleted) parts.push('row marked for deletion (read-only)');
@@ -2418,7 +2426,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             textarea.addEventListener('blur', () => {
                 applyRecordEdit(idx, colName, textarea.value);
                 // Re-render to refresh modified badges, reset buttons, displayed value
-                renderRecordDialog();
+                renderRecordDialog({ preserveScroll: true });
                 // Update underlying table view
                 renderBody();
             });
@@ -2429,7 +2437,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 resetBtn.addEventListener('click', (ev) => {
                     ev.preventDefault();
                     modifiedCells.delete(idx + ':' + colName);
-                    renderRecordDialog();
+                    renderRecordDialog({ preserveScroll: true });
                     renderBody();
                     updateChangeIndicator();
                 });
