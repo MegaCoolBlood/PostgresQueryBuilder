@@ -24,9 +24,14 @@
             </div>
         </div>
         <div class="query-bar">
-            <select id="queryHistoryDropdown" class="query-history-dropdown" title="Query history">
-                <option value="">-- History --</option>
-            </select>
+            <div class="query-history" id="queryHistoryContainer">
+                <button type="button" class="query-history-toggle" id="queryHistoryToggle" title="Query history">History &#9662;</button>
+                <div class="query-history-panel" id="queryHistoryPanel" style="display:none;">
+                    <input type="text" class="query-history-search" id="queryHistorySearch" placeholder="Search history..." />
+                    <ul class="query-history-list" id="queryHistoryList"></ul>
+                    <div class="query-history-empty" id="queryHistoryEmpty">No matching history</div>
+                </div>
+            </div>
             <input type="text" id="queryInput" class="query-input" />
             <button class="btn btn-primary" id="queryRunBtn" title="Run query">&#9654; Run</button>
         </div>

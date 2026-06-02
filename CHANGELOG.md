@@ -4,6 +4,7 @@
 
 - Lange Kontextmenüs in der Tabellenansicht sind jetzt scrollbar und werden innerhalb des Viewports positioniert (öffnen bei Bedarf nach oben).
 - Datenansicht zeigt jetzt eine Zeilennummernspalte (`#`) vor den Aktionen an.
+- Query-History ist jetzt ein durchsuchbares Typeahead-Panel (breiter, scrollbar, mit Tastatur-Navigation und Treffer-Hervorhebung) statt eines schmalen Dropdowns.
 
 ## 0.1.0
 

@@ -153,7 +153,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const sqlDialogClose = document.getElementById('sqlDialogClose');
     const queryInput = document.getElementById('queryInput');
     const queryRunBtn = document.getElementById('queryRunBtn');
-    const queryHistoryDropdown = document.getElementById('queryHistoryDropdown');
+    const queryHistoryContainer = document.getElementById('queryHistoryContainer');
+    const queryHistoryToggle = document.getElementById('queryHistoryToggle');
+    const queryHistoryPanel = document.getElementById('queryHistoryPanel');
+    const queryHistorySearch = document.getElementById('queryHistorySearch');
+    const queryHistoryList = document.getElementById('queryHistoryList');
+    const queryHistoryEmpty = document.getElementById('queryHistoryEmpty');
+    let queryHistoryEntries = [];
+    let queryHistoryActiveIdx = -1;
     const contextMenu = document.getElementById('contextMenu');
     const contextMenuItems = document.getElementById('contextMenuItems');
     const dataLoading = document.getElementById('dataLoading');
@@ -176,17 +183,48 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     queryInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { runCustomQuery(); }
     });
-    queryHistoryDropdown.addEventListener('change', () => {
-        const selected = queryHistoryDropdown.value;
-        if (selected) {
-            queryInput.value = selected;
-            queryHistoryDropdown.value = '';
+
+    queryHistoryToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleQueryHistoryPanel();
+    });
+    queryHistorySearch.addEventListener('input', () => {
+        queryHistoryActiveIdx = -1;
+        renderQueryHistoryList();
+    });
+    queryHistorySearch.addEventListener('keydown', (e) => {
+        const items = queryHistoryList.querySelectorAll('li');
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (items.length === 0) return;
+            queryHistoryActiveIdx = (queryHistoryActiveIdx + 1) % items.length;
+            highlightActiveHistoryItem(items);
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (items.length === 0) return;
+            queryHistoryActiveIdx = (queryHistoryActiveIdx - 1 + items.length) % items.length;
+            highlightActiveHistoryItem(items);
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (queryHistoryActiveIdx >= 0 && items[queryHistoryActiveIdx]) {
+                selectQueryHistoryItem(items[queryHistoryActiveIdx].getAttribute('data-sql'));
+            } else if (items.length > 0) {
+                selectQueryHistoryItem(items[0].getAttribute('data-sql'));
+            }
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            closeQueryHistoryPanel();
+            queryHistoryToggle.focus();
         }
+    });
+    queryHistoryPanel.addEventListener('click', (e) => {
+        e.stopPropagation();
     });
 
     // Close context menu on click outside
     document.addEventListener('click', () => {
         contextMenu.style.display = 'none';
+        closeQueryHistoryPanel();
     });
 
     // Listen for messages from extension
@@ -328,14 +366,99 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function updateQueryHistoryDropdown(history) {
-        let html = '<option value="">-- History --</option>';
-        if (history && history.length > 0) {
-            history.forEach(entry => {
-                const display = entry.sql.length > 80 ? entry.sql.substring(0, 80) + '...' : entry.sql;
-                html += `<option value="${escapeAttr(entry.sql)}">${escapeHtml(display)}</option>`;
-            });
+        queryHistoryEntries = Array.isArray(history) ? history.slice() : [];
+        if (queryHistoryPanel.style.display !== 'none') {
+            renderQueryHistoryList();
         }
-        queryHistoryDropdown.innerHTML = html;
+    }
+
+    function toggleQueryHistoryPanel() {
+        if (queryHistoryPanel.style.display === 'none') {
+            openQueryHistoryPanel();
+        } else {
+            closeQueryHistoryPanel();
+        }
+    }
+
+    function openQueryHistoryPanel() {
+        queryHistorySearch.value = '';
+        queryHistoryActiveIdx = -1;
+        renderQueryHistoryList();
+        queryHistoryPanel.style.display = 'flex';
+        // Focus search input after layout
+        setTimeout(() => queryHistorySearch.focus(), 0);
+    }
+
+    function closeQueryHistoryPanel() {
+        queryHistoryPanel.style.display = 'none';
+    }
+
+    function renderQueryHistoryList() {
+        const term = queryHistorySearch.value.trim().toLowerCase();
+        const filtered = term
+            ? queryHistoryEntries.filter(e => e.sql.toLowerCase().includes(term))
+            : queryHistoryEntries;
+
+        if (!filtered.length) {
+            queryHistoryList.innerHTML = '';
+            queryHistoryEmpty.style.display = 'block';
+            queryHistoryEmpty.textContent = queryHistoryEntries.length === 0
+                ? 'No history yet'
+                : 'No matching history';
+            return;
+        }
+        queryHistoryEmpty.style.display = 'none';
+
+        let html = '';
+        filtered.forEach(entry => {
+            html += `<li data-sql="${escapeAttr(entry.sql)}" title="${escapeAttr(entry.sql)}">${highlightMatch(entry.sql, term)}</li>`;
+        });
+        queryHistoryList.innerHTML = html;
+
+        queryHistoryList.querySelectorAll('li').forEach(li => {
+            li.addEventListener('click', () => {
+                selectQueryHistoryItem(li.getAttribute('data-sql'));
+            });
+            li.addEventListener('mouseenter', () => {
+                const items = Array.from(queryHistoryList.querySelectorAll('li'));
+                queryHistoryActiveIdx = items.indexOf(li);
+                highlightActiveHistoryItem(items);
+            });
+        });
+    }
+
+    function highlightMatch(text, term) {
+        if (!term) return escapeHtml(text);
+        const lower = text.toLowerCase();
+        let out = '';
+        let i = 0;
+        while (i < text.length) {
+            const idx = lower.indexOf(term, i);
+            if (idx === -1) {
+                out += escapeHtml(text.substring(i));
+                break;
+            }
+            out += escapeHtml(text.substring(i, idx));
+            out += '<mark>' + escapeHtml(text.substring(idx, idx + term.length)) + '</mark>';
+            i = idx + term.length;
+        }
+        return out;
+    }
+
+    function highlightActiveHistoryItem(items) {
+        items.forEach((li, i) => {
+            li.classList.toggle('active', i === queryHistoryActiveIdx);
+        });
+        if (queryHistoryActiveIdx >= 0 && items[queryHistoryActiveIdx]) {
+            items[queryHistoryActiveIdx].scrollIntoView({ block: 'nearest' });
+        }
+    }
+
+    function selectQueryHistoryItem(sql) {
+        if (sql == null) return;
+        queryInput.value = sql;
+        closeQueryHistoryPanel();
+        queryInput.focus();
     }
 
     function runCustomQuery() {
