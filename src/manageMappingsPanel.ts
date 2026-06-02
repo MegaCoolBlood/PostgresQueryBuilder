@@ -52,6 +52,12 @@ export class ManageMappingsPanel {
                         }
                         break;
                     }
+                    case 'updateMapping': {
+                        const id: string = msg.id;
+                        const updates = msg.updates || {};
+                        await this.manager.updateMapping(id, updates);
+                        break;
+                    }
                     case 'openFile': {
                         const uri = this.manager.getWorkspaceFileUri();
                         if (uri) {
@@ -137,6 +143,24 @@ export class ManageMappingsPanel {
         .mono { font-family: var(--vscode-editor-font-family, monospace); }
         .empty { padding: 24px; text-align: center; color: var(--vscode-descriptionForeground); }
         .cond { font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 2px; font-style: italic; }
+        .row-btn { padding: 2px 8px; font-size: 11px; }
+        /* Edit dialog */
+        .dlg-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 100; }
+        .dlg-overlay.open { display: flex; }
+        .dlg { background: var(--vscode-editor-background); color: var(--vscode-foreground); border: 1px solid var(--vscode-panel-border); border-radius: 4px; width: 560px; max-width: 92vw; max-height: 90vh; display: flex; flex-direction: column; }
+        .dlg-header { padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border); display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
+        .dlg-close { background: none; border: none; color: var(--vscode-foreground); font-size: 18px; cursor: pointer; padding: 0 4px; }
+        .dlg-body { padding: 12px; overflow: auto; }
+        .dlg-footer { padding: 8px 12px; border-top: 1px solid var(--vscode-panel-border); display: flex; gap: 6px; justify-content: flex-end; }
+        .dlg fieldset { border: 1px solid var(--vscode-panel-border); border-radius: 3px; margin: 0 0 10px 0; padding: 8px 10px; }
+        .dlg legend { padding: 0 4px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+        .dlg-grid { display: grid; grid-template-columns: 90px 1fr 60px 1fr; gap: 6px 8px; align-items: center; }
+        .dlg-grid label { font-size: 12px; color: var(--vscode-descriptionForeground); }
+        .dlg input[type="text"], .dlg select { width: 100%; padding: 3px 6px; box-sizing: border-box; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 2px; font-size: 12px; }
+        .dlg-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+        .dlg-row label { font-size: 12px; }
+        .cond-row { display: grid; grid-template-columns: 1fr 80px 1fr 24px; gap: 4px; margin-top: 4px; align-items: center; }
+        .cond-row button { padding: 2px 6px; font-size: 12px; }
     </style>
 </head>
 <body>
@@ -168,11 +192,66 @@ export class ManageMappingsPanel {
                 <th>Source</th>
                 <th>Target</th>
                 <th>Label / Conditions</th>
+                <th style="width:60px;"></th>
             </tr>
         </thead>
         <tbody id="tbody"></tbody>
     </table>
     <div class="empty" id="emptyMsg" style="display:none;">No custom mappings defined.</div>
+
+    <!-- Edit dialog -->
+    <div class="dlg-overlay" id="editOverlay">
+        <div class="dlg">
+            <div class="dlg-header">
+                <span>Edit Custom Column Mapping</span>
+                <button class="dlg-close" id="editClose">&times;</button>
+            </div>
+            <div class="dlg-body">
+                <fieldset>
+                    <legend>Source</legend>
+                    <div class="dlg-grid">
+                        <label for="editSrcSchema">Schema</label><input type="text" id="editSrcSchema" />
+                        <label for="editSrcTable">Table</label><input type="text" id="editSrcTable" />
+                        <label for="editSrcColumn">Column</label><input type="text" id="editSrcColumn" />
+                        <label></label><span></span>
+                    </div>
+                </fieldset>
+                <fieldset>
+                    <legend>Target</legend>
+                    <div class="dlg-grid">
+                        <label for="editTgtSchema">Schema</label><input type="text" id="editTgtSchema" />
+                        <label for="editTgtTable">Table</label><input type="text" id="editTgtTable" />
+                        <label for="editTgtColumn">Column</label><input type="text" id="editTgtColumn" />
+                        <label></label><span></span>
+                    </div>
+                </fieldset>
+                <fieldset>
+                    <legend>Metadata</legend>
+                    <div class="dlg-grid">
+                        <label for="editLabel">Label</label><input type="text" id="editLabel" placeholder="optional display name" />
+                        <label></label><span></span>
+                    </div>
+                    <div class="dlg-row">
+                        <input type="checkbox" id="editIsDefault" />
+                        <label for="editIsDefault">Set as default (show FK button in cell)</label>
+                    </div>
+                    <div class="dlg-row">
+                        <input type="checkbox" id="editShare" />
+                        <label for="editShare" title="Store this mapping in the workspace mappings file so it can be committed to git">Share with workspace (commit to git)</label>
+                    </div>
+                </fieldset>
+                <fieldset>
+                    <legend>Conditions (optional)</legend>
+                    <div id="editConditions"></div>
+                    <button id="editAddCondition" class="secondary" style="margin-top:6px;">+ Add Condition</button>
+                </fieldset>
+            </div>
+            <div class="dlg-footer">
+                <button id="editSave">Save</button>
+                <button id="editCancel" class="secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
 
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
@@ -217,6 +296,7 @@ export class ManageMappingsPanel {
                         + '<td class="mono">' + escapeHtml(m.sourceSchema) + '.' + escapeHtml(m.sourceTable) + '.' + escapeHtml(m.sourceColumn) + '</td>'
                         + '<td class="mono">' + escapeHtml(m.targetSchema) + '.' + escapeHtml(m.targetTable) + '.' + escapeHtml(m.targetColumn) + '</td>'
                         + '<td>' + label + cond + (label || cond ? '' : '<span style="color:var(--vscode-descriptionForeground);">—</span>') + '</td>'
+                        + '<td><button class="secondary row-btn edit-btn" title="Edit this mapping">Edit</button></td>'
                         + '</tr>';
                 }).join('');
             }
@@ -239,6 +319,10 @@ export class ManageMappingsPanel {
             const tr = e.target.closest('tr[data-id]');
             if (!tr) return;
             const id = tr.getAttribute('data-id');
+            if (e.target.classList.contains('edit-btn')) {
+                openEditDialog(id);
+                return;
+            }
             if (e.target.classList.contains('row-cb')) {
                 if (e.target.checked) selected.add(id); else selected.delete(id);
             } else {
@@ -305,6 +389,91 @@ export class ManageMappingsPanel {
         });
         document.getElementById('openFile').addEventListener('click', () => {
             vscode.postMessage({ command: 'openFile' });
+        });
+
+        // ===== Edit dialog =====
+        const OPERATORS = ['=', '!=', '>', '<', '>=', '<=', 'LIKE', 'ILIKE'];
+        let editingId = null;
+        const editOverlay = document.getElementById('editOverlay');
+        const editConditions = document.getElementById('editConditions');
+
+        function openEditDialog(id) {
+            const m = mappings.find(x => x.id === id);
+            if (!m) return;
+            editingId = id;
+            document.getElementById('editSrcSchema').value = m.sourceSchema || '';
+            document.getElementById('editSrcTable').value = m.sourceTable || '';
+            document.getElementById('editSrcColumn').value = m.sourceColumn || '';
+            document.getElementById('editTgtSchema').value = m.targetSchema || '';
+            document.getElementById('editTgtTable').value = m.targetTable || '';
+            document.getElementById('editTgtColumn').value = m.targetColumn || '';
+            document.getElementById('editLabel').value = m.label || '';
+            document.getElementById('editIsDefault').checked = !!m.isDefault;
+            document.getElementById('editShare').checked = m.scope === 'workspace';
+            editConditions.innerHTML = '';
+            (m.conditions || []).forEach(c => addCondRow(c));
+            editOverlay.classList.add('open');
+        }
+
+        function closeEditDialog() {
+            editOverlay.classList.remove('open');
+            editingId = null;
+        }
+
+        function addCondRow(cond) {
+            const row = document.createElement('div');
+            row.className = 'cond-row';
+            const opOptions = OPERATORS.map(o => '<option value="' + o + '"' + (cond && cond.operator === o ? ' selected' : '') + '>' + o + '</option>').join('');
+            row.innerHTML =
+                '<input type="text" class="cond-col" placeholder="column" value="' + escapeHtml(cond && cond.column || '') + '" />' +
+                '<select class="cond-op">' + opOptions + '</select>' +
+                '<input type="text" class="cond-val" placeholder="value" value="' + escapeHtml(cond && cond.value || '') + '" />' +
+                '<button class="secondary cond-del" title="Remove condition">&times;</button>';
+            row.querySelector('.cond-del').addEventListener('click', () => row.remove());
+            editConditions.appendChild(row);
+        }
+
+        function gatherConditions() {
+            const out = [];
+            editConditions.querySelectorAll('.cond-row').forEach(row => {
+                const col = row.querySelector('.cond-col').value.trim();
+                const op = row.querySelector('.cond-op').value;
+                const val = row.querySelector('.cond-val').value;
+                if (col) out.push({ column: col, operator: op, value: val });
+            });
+            return out;
+        }
+
+        document.getElementById('editAddCondition').addEventListener('click', (e) => {
+            e.preventDefault();
+            addCondRow(null);
+        });
+        document.getElementById('editClose').addEventListener('click', closeEditDialog);
+        document.getElementById('editCancel').addEventListener('click', closeEditDialog);
+        editOverlay.addEventListener('click', (e) => {
+            if (e.target === editOverlay) closeEditDialog();
+        });
+
+        document.getElementById('editSave').addEventListener('click', () => {
+            if (!editingId) return;
+            const updates = {
+                sourceSchema: document.getElementById('editSrcSchema').value.trim(),
+                sourceTable: document.getElementById('editSrcTable').value.trim(),
+                sourceColumn: document.getElementById('editSrcColumn').value.trim(),
+                targetSchema: document.getElementById('editTgtSchema').value.trim() || 'public',
+                targetTable: document.getElementById('editTgtTable').value.trim(),
+                targetColumn: document.getElementById('editTgtColumn').value.trim(),
+                label: document.getElementById('editLabel').value.trim() || undefined,
+                isDefault: document.getElementById('editIsDefault').checked,
+                conditions: gatherConditions(),
+                scope: document.getElementById('editShare').checked ? 'workspace' : 'global'
+            };
+            if (!updates.sourceSchema || !updates.sourceTable || !updates.sourceColumn || !updates.targetTable || !updates.targetColumn) {
+                alert('Source schema/table/column and target table/column are required.');
+                return;
+            }
+            vscode.postMessage({ command: 'updateMapping', id: editingId, updates });
+            closeEditDialog();
         });
 
         window.addEventListener('message', (e) => {
