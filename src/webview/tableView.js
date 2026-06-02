@@ -701,17 +701,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function applyFiltersToQuery() {
         if (!schema || !table) return;
 
-        const whereClauses = [];
+        const newClausesByCol = {};
         for (const [col, val] of Object.entries(filters)) {
             if (!val) continue;
             const fmtCol = formatIdentifier(col);
             const colMeta = columns.find(c => c.name === col);
             const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
+            let clause = null;
 
             if (exactFilters[col]) {
                 // Exact match for FK navigation — no cast
                 const formatted = formatExactMatchValue(val, filterType, thousandSeparator);
-                whereClauses.push(`${fmtCol} = ${formatted}`);
+                clause = `${fmtCol} = ${formatted}`;
             } else if (typeof val === 'object' && val !== null && val.from !== undefined) {
                 // Between mode
                 const fromRaw = val.from ? normalizeFilterInputValue(val.from, filterType, thousandSeparator) : '';
@@ -722,48 +723,162 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     const from = fromNum !== null && !isNaN(fromNum) ? String(fromNum) : '';
                     const to = toNum !== null && !isNaN(toNum) ? String(toNum) : '';
                     if (from && to) {
-                        whereClauses.push(`${fmtCol} BETWEEN ${from} AND ${to}`);
+                        clause = `${fmtCol} BETWEEN ${from} AND ${to}`;
                     } else if (from) {
-                        whereClauses.push(`${fmtCol} >= ${from}`);
+                        clause = `${fmtCol} >= ${from}`;
                     } else if (to) {
-                        whereClauses.push(`${fmtCol} <= ${to}`);
+                        clause = `${fmtCol} <= ${to}`;
                     }
                 } else {
                     const from = escapeSqlString(fromRaw);
                     const to = escapeSqlString(toRaw);
                     if (from && to) {
-                        whereClauses.push(`${fmtCol} BETWEEN '${from}' AND '${to}'`);
+                        clause = `${fmtCol} BETWEEN '${from}' AND '${to}'`;
                     } else if (from) {
-                        whereClauses.push(`${fmtCol} >= '${from}'`);
+                        clause = `${fmtCol} >= '${from}'`;
                     } else if (to) {
-                        whereClauses.push(`${fmtCol} <= '${to}'`);
+                        clause = `${fmtCol} <= '${to}'`;
                     }
                 }
             } else if (filterType === 'numeric') {
-                // Numeric with operator — no cast
                 const normalized = normalizeFilterInputValue(val, filterType, thousandSeparator);
                 const numericValue = Number(normalized);
                 if (isNaN(numericValue)) continue;
                 const op = getFilterOperator(col);
-                whereClauses.push(`${fmtCol} ${op} ${numericValue}`);
+                clause = `${fmtCol} ${op} ${numericValue}`;
             } else if (filterType === 'date') {
-                // Date/timestamp with operator — no cast
                 const escaped = escapeSqlString(val);
                 const op = getFilterOperator(col);
-                whereClauses.push(`${fmtCol} ${op} '${escaped}'`);
+                clause = `${fmtCol} ${op} '${escaped}'`;
             } else {
-                // Text ILIKE — no cast needed for text types
                 const escaped = escapeSqlString(val);
-                whereClauses.push(`${fmtCol}::text ILIKE '%${escaped}%'`);
+                clause = `${fmtCol}::text ILIKE '%${escaped}%'`;
             }
+
+            if (clause) newClausesByCol[col] = clause;
         }
 
-        let sql = `SELECT * FROM ${getDefaultTableReference()}`;
-        if (whereClauses.length > 0) {
-            sql += ` WHERE ${whereClauses.join(' AND ')}`;
+        // Merge into the existing SQL, preserving user-written clauses.
+        const baseSql = (queryInput.value || '').trim() || `SELECT * FROM ${getDefaultTableReference()}`;
+        const parsed = parseSqlForWhere(baseSql);
+        let existing = parsed.where ? splitWhereByAnd(parsed.where) : [];
+        const targetCols = Object.keys(newClausesByCol);
+        if (targetCols.length > 0) {
+            // Drop any existing top-level clauses that target a column we are now setting,
+            // then append the new clauses.
+            existing = existing.filter(c => !targetCols.some(col => whereClauseTargetsColumn(c, col)));
+            for (const col of targetCols) existing.push(newClausesByCol[col]);
         }
+
+        let sql = parsed.base;
+        if (existing.length > 0) sql += ` WHERE ${existing.join(' AND ')}`;
+        if (parsed.orderBy) sql += ` ORDER BY ${parsed.orderBy}`;
         queryInput.value = sql;
         runCustomQuery();
+    }
+
+    function parseSqlForWhere(sql) {
+        let s = String(sql || '').trim().replace(/;\s*$/, '').trim();
+        // Strip trailing LIMIT/OFFSET that we may have appended previously
+        s = s.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$/i, '');
+        // Strip trailing ORDER BY ...
+        let orderBy = '';
+        const ordRe = /\s+ORDER\s+BY\s+([\s\S]+)$/i;
+        const ordMatch = s.match(ordRe);
+        if (ordMatch) {
+            orderBy = ordMatch[1].trim();
+            s = s.substring(0, ordMatch.index);
+        }
+        // Find top-level WHERE (best-effort: first WHERE at paren depth 0, outside strings)
+        const whereIdx = findTopLevelKeywordIndex(s, 'WHERE');
+        let base = s;
+        let where = '';
+        if (whereIdx !== -1) {
+            const after = s.substring(whereIdx);
+            const m = after.match(/^\s*WHERE\s+/i);
+            base = s.substring(0, whereIdx).replace(/\s+$/, '');
+            where = after.substring(m[0].length).trim();
+        }
+        return { base, where, orderBy };
+    }
+
+    function findTopLevelKeywordIndex(sql, keyword) {
+        const upper = keyword.toUpperCase();
+        let depth = 0;
+        let inStr = false;
+        let strCh = '';
+        let i = 0;
+        while (i < sql.length) {
+            const ch = sql[i];
+            if (inStr) {
+                if (ch === strCh) {
+                    if (strCh === "'" && sql[i + 1] === "'") { i += 2; continue; }
+                    inStr = false;
+                }
+                i++;
+                continue;
+            }
+            if (ch === "'" || ch === '"') { inStr = true; strCh = ch; i++; continue; }
+            if (ch === '(') { depth++; i++; continue; }
+            if (ch === ')') { depth--; i++; continue; }
+            if (depth === 0) {
+                // Word boundary on left (whitespace), and matches keyword followed by whitespace
+                if ((i === 0 || /\s/.test(sql[i - 1])) &&
+                    sql.substring(i, i + upper.length).toUpperCase() === upper &&
+                    /\s/.test(sql[i + upper.length] || '')) {
+                    return i;
+                }
+            }
+            i++;
+        }
+        return -1;
+    }
+
+    function splitWhereByAnd(whereClause) {
+        const parts = [];
+        let buf = '';
+        let depth = 0;
+        let inStr = false;
+        let strCh = '';
+        let i = 0;
+        while (i < whereClause.length) {
+            const ch = whereClause[i];
+            if (inStr) {
+                buf += ch;
+                if (ch === strCh) {
+                    if (strCh === "'" && whereClause[i + 1] === "'") { buf += "'"; i += 2; continue; }
+                    inStr = false;
+                }
+                i++;
+                continue;
+            }
+            if (ch === "'" || ch === '"') { inStr = true; strCh = ch; buf += ch; i++; continue; }
+            if (ch === '(') { depth++; buf += ch; i++; continue; }
+            if (ch === ')') { depth--; buf += ch; i++; continue; }
+            if (depth === 0) {
+                const rest = whereClause.substring(i);
+                const m = rest.match(/^\s+AND\s+/i);
+                if (m && /\s/.test(whereClause[i] || '')) {
+                    parts.push(buf.trim());
+                    buf = '';
+                    i += m[0].length;
+                    continue;
+                }
+            }
+            buf += ch;
+            i++;
+        }
+        if (buf.trim()) parts.push(buf.trim());
+        return parts;
+    }
+
+    function whereClauseTargetsColumn(clause, colName) {
+        // Match an optional schema/table prefix then the column identifier (quoted or bare)
+        const m = clause.match(/^\s*(?:(?:"[^"]+"|[A-Za-z_][\w$]*)\s*\.\s*)*("[^"]+"|[A-Za-z_][\w$]*)/);
+        if (!m) return false;
+        let tok = m[1];
+        if (tok.startsWith('"') && tok.endsWith('"')) tok = tok.substring(1, tok.length - 1);
+        return tok.toLowerCase() === colName.toLowerCase();
     }
 
     function showCellContextMenu(e, td) {
