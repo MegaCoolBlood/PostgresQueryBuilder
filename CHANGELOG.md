@@ -17,6 +17,7 @@
 - Im Verwaltungs-Tab „Manage All Mappings..." lassen sich einzelne Mappings nun auch direkt bearbeiten: ein „Edit"-Button je Zeile öffnet einen Dialog für Source-/Target-Spalten, Label, Default-Flag, Workspace-Sharing und Bedingungen — Änderungen werden sofort im jeweiligen Store gespeichert und in allen offenen Tabellenansichten aktualisiert.
 - **„Load More" funktioniert jetzt auch für eigene Queries** aus der Query-Bar (z. B. nach Filtern oder Custom SELECTs): die SQL wird nicht mehr stumpf um `LIMIT 50 OFFSET 0` ergänzt und anschließend deaktiviert, sondern ein evtl. vorhandenes trailing `LIMIT/OFFSET` wird (paren-/string-/kommentar-sicher) abgetrennt, die Basis-SQL gemerkt, und „Load More" hängt weitere Seiten mit steigendem `OFFSET` an die bereits geladenen Zeilen an. Hat der Nutzer selbst ein explizites `LIMIT`/`OFFSET` geschrieben, bleibt der Button (wie bisher) deaktiviert.
 - **NULL-Zellen sind jetzt direkt editierbar:** Ein Klick in eine als `NULL` angezeigte Zelle leert den Platzhalter sofort, sodass man losschreiben kann. Verlässt man die Zelle wieder leer, wird der Wert (wie bisher) als `NULL` gespeichert und der `NULL`-Platzhalter wird wieder angezeigt.
+- **Breiteres Spalten-Feld bei Mapping-Bedingungen:** Im Mapping-Dialog (Tabellenansicht) und im „Manage All Mappings"-Panel ist die Spaltenauswahl für Bedingungen jetzt deutlich breiter (statt fixer 60 px), sodass auch lange Spaltennamen vollständig lesbar sind. Der Operator-Selektor bleibt schmal.
 
 ## 0.1.0
 

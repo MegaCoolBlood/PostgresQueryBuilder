@@ -159,7 +159,7 @@ export class ManageMappingsPanel {
         .dlg input[type="text"], .dlg select { width: 100%; padding: 3px 6px; box-sizing: border-box; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 2px; font-size: 12px; }
         .dlg-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
         .dlg-row label { font-size: 12px; }
-        .cond-row { display: grid; grid-template-columns: 1fr 80px 1fr 24px; gap: 4px; margin-top: 4px; align-items: center; }
+        .cond-row { display: grid; grid-template-columns: minmax(160px, 2fr) 80px minmax(120px, 1fr) 24px; gap: 4px; margin-top: 4px; align-items: center; }
         .cond-row button { padding: 2px 6px; font-size: 12px; }
     </style>
 </head>

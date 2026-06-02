@@ -771,6 +771,12 @@ td.has-fk-btn > .fk-btn {
     flex: 1;
 }
 
+.mapping-condition-row select.condition-column {
+    flex: 2;
+    min-width: 120px;
+    width: auto;
+}
+
 .mapping-condition-row select {
     width: 60px;
 }
