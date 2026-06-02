@@ -91,6 +91,11 @@
         "command": "postgresQueryBuilder.openCustomMappingsFile",
         "title": "Open Workspace Custom Mappings File",
         "category": "PostgreSQL"
+      },
+      {
+        "command": "postgresQueryBuilder.manageCustomMappings",
+        "title": "Manage Custom Column Mappings...",
+        "category": "PostgreSQL"
       }
     ],
     "menus": {

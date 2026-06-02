@@ -6,6 +6,8 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private _onDidChangeFilter = new vscode.EventEmitter<string>();
     readonly onDidChangeFilter = this._onDidChangeFilter.event;
+    private _onDidRequestManageMappings = new vscode.EventEmitter<void>();
+    readonly onDidRequestManageMappings = this._onDidRequestManageMappings.event;
 
     private _filterText = '';
 
@@ -36,6 +38,8 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
                 vscode.commands.executeCommand('postgresQueryBuilder.connect');
             } else if (message.type === 'disconnect') {
                 vscode.commands.executeCommand('postgresQueryBuilder.disconnect');
+            } else if (message.type === 'manageMappings') {
+                this._onDidRequestManageMappings.fire();
             }
         });
     }
@@ -110,6 +114,9 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
         <button id="newConnBtn" class="secondary" title="Create a new connection">New</button>
         <button id="disconnectBtn" class="secondary" title="Disconnect">Disconnect</button>
     </div>
+    <div class="button-row">
+        <button id="manageMappingsBtn" class="secondary" title="Open the manager for all custom column mappings (bulk share/move/delete)">Manage All Mappings...</button>
+    </div>
     <div class="search-container">
         <input type="text" id="searchInput" placeholder="Filter tables... (e.g. schema.table)" />
     </div>
@@ -132,6 +139,9 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
         });
         document.getElementById('disconnectBtn').addEventListener('click', () => {
             vscode.postMessage({ type: 'disconnect' });
+        });
+        document.getElementById('manageMappingsBtn').addEventListener('click', () => {
+            vscode.postMessage({ type: 'manageMappings' });
         });
         input.focus();
     </script>

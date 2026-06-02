@@ -7,6 +7,7 @@ import { SearchViewProvider } from './searchViewProvider';
 import { ModifyHistoryStore } from './modifyHistoryStore';
 import { ModifyHistoryViewProvider } from './modifyHistoryViewProvider';
 import { ColumnMappingManager } from './columnMappingManager';
+import { ManageMappingsPanel } from './manageMappingsPanel';
 
 let connectionManager: ConnectionManager;
 let tableExplorer: TableExplorerProvider;
@@ -131,6 +132,9 @@ export function activate(context: vscode.ExtensionContext) {
                         await vscode.window.showTextDocument(doc);
                     }
                 }
+            }),
+            vscode.commands.registerCommand('postgresQueryBuilder.manageCustomMappings', () => {
+                ManageMappingsPanel.show(context, columnMappingManager);
             })
         );
 
@@ -162,6 +166,9 @@ export function activate(context: vscode.ExtensionContext) {
         );
         searchViewProvider.onDidChangeFilter((filter) => {
             tableExplorer.setFilter(filter);
+        });
+        searchViewProvider.onDidRequestManageMappings(() => {
+            ManageMappingsPanel.show(context, columnMappingManager);
         });
 
         // Modify history view
