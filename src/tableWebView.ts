@@ -3,6 +3,7 @@ import { ConnectionManager } from './connectionManager';
 import { QueryRunner } from './queryRunner';
 import { ExportService } from './exportService';
 import { ColumnMappingManager } from './columnMappingManager';
+import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -13,12 +14,14 @@ export class TableWebViewManager {
     private connectionManager: ConnectionManager;
     private exportService: ExportService;
     private columnMappingManager: ColumnMappingManager;
+    private modifyHistoryStore?: ModifyHistoryStore;
 
-    constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager) {
+    constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager, modifyHistoryStore?: ModifyHistoryStore) {
         this.context = context;
         this.connectionManager = connectionManager;
         this.exportService = new ExportService(context);
         this.columnMappingManager = new ColumnMappingManager(context);
+        this.modifyHistoryStore = modifyHistoryStore;
     }
 
     async openTableView(schema: string, table: string): Promise<void> {
@@ -161,6 +164,13 @@ export class TableWebViewManager {
                             table,
                             message.changes
                         );
+                        if (this.modifyHistoryStore) {
+                            try {
+                                const sqlText = queryRunner.generateSQL(schema, table, message.changes);
+                                const stmts = splitSqlStatements(sqlText).map(sql => ({ sql, schema, table }));
+                                if (stmts.length > 0) this.modifyHistoryStore.addMany(stmts);
+                            } catch { /* ignore history failures */ }
+                        }
                         panel.webview.postMessage({ command: 'commitSuccess' });
                         vscode.window.showInformationMessage(
                             `Changes committed to ${schema}.${table}`
@@ -173,6 +183,13 @@ export class TableWebViewManager {
                     }
                     case 'runCustomQuery': {
                         const result = await queryRunner.executeSQL(message.sql);
+                        if (this.modifyHistoryStore) {
+                            for (const stmt of splitSqlStatements(message.sql)) {
+                                if (isModifyingSql(stmt)) {
+                                    this.modifyHistoryStore.add({ sql: stmt, schema, table });
+                                }
+                            }
+                        }
                         // Resolve field OIDs to type names
                         const oids = result.fields.map((f: any) => f.dataTypeID).filter((id: number) => id > 0);
                         let typeMap: Record<number, string> = {};

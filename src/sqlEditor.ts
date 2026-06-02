@@ -1,15 +1,18 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
 import { QueryRunner } from './queryRunner';
+import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
 
 export class SqlEditorManager {
     private panel: vscode.WebviewPanel | null = null;
     private context: vscode.ExtensionContext;
     private connectionManager: ConnectionManager;
+    private modifyHistoryStore?: ModifyHistoryStore;
 
-    constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager) {
+    constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager, modifyHistoryStore?: ModifyHistoryStore) {
         this.context = context;
         this.connectionManager = connectionManager;
+        this.modifyHistoryStore = modifyHistoryStore;
     }
 
     openSqlEditor(): void {
@@ -39,6 +42,13 @@ export class SqlEditorManager {
                 const queryRunner = new QueryRunner(this.connectionManager);
                 try {
                     const result = await queryRunner.executeSQL(message.sql);
+                    if (this.modifyHistoryStore) {
+                        for (const stmt of splitSqlStatements(message.sql)) {
+                            if (isModifyingSql(stmt)) {
+                                this.modifyHistoryStore.add({ sql: stmt });
+                            }
+                        }
+                    }
                     this.panel?.webview.postMessage({
                         command: 'sqlResult',
                         rows: result.rows,

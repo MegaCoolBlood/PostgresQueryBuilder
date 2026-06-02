@@ -4,11 +4,14 @@ import { TableExplorerProvider } from './tableExplorer';
 import { TableWebViewManager } from './tableWebView';
 import { SqlEditorManager } from './sqlEditor';
 import { SearchViewProvider } from './searchViewProvider';
+import { ModifyHistoryStore } from './modifyHistoryStore';
+import { ModifyHistoryViewProvider } from './modifyHistoryViewProvider';
 
 let connectionManager: ConnectionManager;
 let tableExplorer: TableExplorerProvider;
 let tableWebViewManager: TableWebViewManager;
 let sqlEditorManager: SqlEditorManager;
+let modifyHistoryStore: ModifyHistoryStore;
 let statusBarItem: vscode.StatusBarItem;
 let outputChannel: vscode.OutputChannel;
 
@@ -59,8 +62,9 @@ export function activate(context: vscode.ExtensionContext) {
 
         connectionManager = new ConnectionManager(context);
         tableExplorer = new TableExplorerProvider(connectionManager);
-        tableWebViewManager = new TableWebViewManager(context, connectionManager);
-        sqlEditorManager = new SqlEditorManager(context, connectionManager);
+        modifyHistoryStore = new ModifyHistoryStore(context);
+        tableWebViewManager = new TableWebViewManager(context, connectionManager, modifyHistoryStore);
+        sqlEditorManager = new SqlEditorManager(context, connectionManager, modifyHistoryStore);
 
         // Status bar
         statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -84,6 +88,12 @@ export function activate(context: vscode.ExtensionContext) {
         searchViewProvider.onDidChangeFilter((filter) => {
             tableExplorer.setFilter(filter);
         });
+
+        // Modify history view
+        const modifyHistoryProvider = new ModifyHistoryViewProvider(modifyHistoryStore);
+        context.subscriptions.push(
+            vscode.window.registerWebviewViewProvider(ModifyHistoryViewProvider.viewType, modifyHistoryProvider)
+        );
 
         // Listen for connection changes
         connectionManager.onConnectionChanged(() => {

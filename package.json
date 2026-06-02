@@ -13,6 +13,7 @@
   "activationEvents": [
     "onView:postgresTableExplorer",
     "onView:postgresTableSearch",
+    "onView:postgresModifyHistory",
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
@@ -35,6 +36,11 @@
         {
           "id": "postgresTableSearch",
           "name": "Search",
+          "type": "webview"
+        },
+        {
+          "id": "postgresModifyHistory",
+          "name": "Modify History",
           "type": "webview"
         }
       ]
