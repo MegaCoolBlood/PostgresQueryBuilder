@@ -45,6 +45,41 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
         return score;
     }
 
+    /**
+     * Compute non-overlapping [start, end) ranges in `s` that match any of
+     * the current filter terms (case-insensitive). Used to highlight matches
+     * in tree item labels (VS Code renders these with the list highlight
+     * foreground color from the active theme).
+     */
+    private computeHighlights(s: string): Array<[number, number]> {
+        if (this._filterTerms.length === 0) return [];
+        const lower = s.toLowerCase();
+        const ranges: Array<[number, number]> = [];
+        for (const term of this._filterTerms) {
+            if (!term) continue;
+            let from = 0;
+            while (true) {
+                const idx = lower.indexOf(term, from);
+                if (idx < 0) break;
+                ranges.push([idx, idx + term.length]);
+                from = idx + term.length;
+            }
+        }
+        if (ranges.length <= 1) return ranges;
+        ranges.sort((a, b) => a[0] - b[0]);
+        const merged: Array<[number, number]> = [ranges[0]];
+        for (let i = 1; i < ranges.length; i++) {
+            const last = merged[merged.length - 1];
+            const cur = ranges[i];
+            if (cur[0] <= last[1]) {
+                last[1] = Math.max(last[1], cur[1]);
+            } else {
+                merged.push(cur);
+            }
+        }
+        return merged;
+    }
+
     refresh(): void {
         this.connectionManager.clearMetadataCache();
         this._onDidChangeTreeData.fire();
@@ -52,12 +87,16 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
 
     getTreeItem(element: TreeNode): vscode.TreeItem {
         if (element.type === 'schema') {
-            const item = new vscode.TreeItem(element.schema, vscode.TreeItemCollapsibleState.Expanded);
+            const highlights = this.computeHighlights(element.schema);
+            const label: vscode.TreeItemLabel = { label: element.schema, highlights };
+            const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.Expanded);
             item.iconPath = new vscode.ThemeIcon('symbol-namespace');
             item.contextValue = 'schema';
             return item;
         } else {
-            const item = new vscode.TreeItem(element.table, vscode.TreeItemCollapsibleState.None);
+            const highlights = this.computeHighlights(element.table);
+            const label: vscode.TreeItemLabel = { label: element.table, highlights };
+            const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
             item.iconPath = new vscode.ThemeIcon('symbol-class');
             item.contextValue = 'table';
             item.command = {
