@@ -418,6 +418,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function renderHeader() {
         let html = '<tr>';
+        html += '<th class="row-num-cell">#</th>';
         html += '<th class="actions-cell">Actions</th>';
         columns.forEach(col => {
             let cls = '';
@@ -430,6 +431,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         // Filter row
         html += '<tr class="filter-row">';
+        html += '<th class="row-num-cell"></th>';
         html += '<th></th>';
         columns.forEach(col => {
             const filterType = getColumnFilterType(col.dataType);
@@ -916,6 +918,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function renderBody() {
         displayedRows = getFilteredAndSortedRows();
         let html = '';
+        let rowNum = 0;
 
         // Existing rows
         displayedRows.forEach(row => {
@@ -926,7 +929,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (isDeleted) rowClass = 'row-deleted';
             else if (isModified) rowClass = 'row-modified';
 
+            rowNum++;
             html += `<tr class="${rowClass}" data-row-index="${idx}">`;
+            html += `<td class="row-num-cell">${rowNum}</td>`;
             html += `<td class="actions-cell">`;
             if (!isDeleted) {
                 html += `<button class="btn btn-duplicate" onclick="duplicateRow(${idx})">⧉</button>`;
@@ -966,7 +971,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         // Inserted rows
         insertedRows.forEach((row, iIdx) => {
+            rowNum++;
             html += `<tr class="row-inserted" data-insert-index="${iIdx}">`;
+            html += `<td class="row-num-cell">${rowNum}</td>`;
             html += `<td class="actions-cell"><button class="btn btn-danger" onclick="removeInsertedRow(${iIdx})">✕</button></td>`;
             columns.forEach(col => {
                 const val = row[col.name] || '';
@@ -977,7 +984,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         // Duplicated rows
         duplicatedRows.forEach((row, dIdx) => {
+            rowNum++;
             html += `<tr class="row-duplicated" data-dup-index="${dIdx}">`;
+            html += `<td class="row-num-cell">${rowNum}</td>`;
             html += `<td class="actions-cell"><button class="btn btn-danger" onclick="removeDuplicatedRow(${dIdx})">✕</button></td>`;
             columns.forEach(col => {
                 const val = row[col.name] !== null ? String(row[col.name]) : '';

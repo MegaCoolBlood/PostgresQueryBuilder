@@ -339,6 +339,18 @@ td[contenteditable="true"]:focus {
     margin-right: 4px;
 }
 
+/* Row number column */
+.row-num-cell {
+    white-space: nowrap;
+    width: 1%;
+    text-align: right;
+    color: var(--vscode-descriptionForeground);
+    background: var(--vscode-editorWidget-background);
+    user-select: none;
+    font-variant-numeric: tabular-nums;
+    padding: 4px 8px;
+}
+
 /* Status bar */
 .status-bar {
     padding: 4px 12px;
