@@ -1501,8 +1501,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             }
         }
 
-        // Attach blur/input listeners for editable cell-content spans (existing rows)
+        // Clear the "NULL" placeholder when the user focuses a NULL cell so
+        // they can immediately type a new value. Leaving the cell empty on
+        // blur restores NULL via handleCellEdit (which converts '' -> null).
+        function handleNullCellFocus(span) {
+            if (span.querySelector('.null-value')) {
+                span.textContent = '';
+            }
+        }
+
+        // Attach focus/blur/input listeners for editable cell-content spans (existing rows)
         tableBody.querySelectorAll('td[data-row] .cell-content[contenteditable="true"]').forEach(span => {
+            span.addEventListener('focus', () => handleNullCellFocus(span));
             span.addEventListener('blur', handleCellEdit);
             span.addEventListener('input', () => handleNumericCellInput(span));
         });
@@ -1582,6 +1592,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (displayValue !== null) {
                 span.textContent = formatNumberDisplay(displayValue, thousandSeparator);
             }
+        }
+
+        // Restore the NULL placeholder when the cell ends up null (either
+        // because the user cleared a NULL cell without typing anything, or
+        // because they emptied a previously non-null cell -> we treat empty
+        // as NULL on commit, so the display should reflect that).
+        const finalValue = modifiedCells.has(modKey) ? modifiedCells.get(modKey) : original;
+        if (finalValue === null) {
+            span.innerHTML = '<span class="null-value">NULL</span>';
         }
 
         updateChangeIndicator();
