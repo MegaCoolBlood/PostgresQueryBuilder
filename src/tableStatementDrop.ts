@@ -128,7 +128,7 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
     }
 
     private async pickStatement(schema: string, table: string): Promise<string | undefined> {
-        let build: { tableReference: string; columns: string[]; firstColumnRaw: string | null };
+        let build: { tableReference: string; columns: string[]; columnTypes: string[]; firstColumnRaw: string | null };
         try {
             build = await this.queryRunner.getStatementBuildData(schema, table);
         } catch (err: any) {
@@ -158,7 +158,7 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
             let settled = false;
 
             const buildText = (kind: StatementKind) =>
-                buildStatement(kind, { tableReference: build.tableReference, columns: build.columns, qualifier });
+                buildStatement(kind, { tableReference: build.tableReference, columns: build.columns, columnTypes: build.columnTypes, qualifier });
 
             const rebuild = () => {
                 qp.title = `Insert statement for ${schema}.${table}  —  alias: ${qualifier}`;

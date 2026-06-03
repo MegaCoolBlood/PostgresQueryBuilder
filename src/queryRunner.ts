@@ -99,19 +99,21 @@ export class QueryRunner {
     /**
      * Collect the data required to build SQL statement skeletons (SELECT,
      * INSERT, ...) for a table: the (optionally schema-qualified) table
-     * reference, the list of properly quoted column identifiers, and the raw
-     * name of the first column (used to derive a default table alias).
+     * reference, the list of properly quoted column identifiers, the raw
+     * name of the first column (used to derive a default table alias), and
+     * the PostgreSQL data type of each column (used to cast values).
      */
     async getStatementBuildData(
         schema: string,
         table: string
-    ): Promise<{ tableReference: string; columns: string[]; firstColumnRaw: string | null }> {
+    ): Promise<{ tableReference: string; columns: string[]; columnTypes: string[]; firstColumnRaw: string | null }> {
         const { alwaysQuote } = this.getSelectOptions();
         const tableReference = await this.getSelectTableReference(schema, table);
         const cols = await this.getColumns(schema, table);
         return {
             tableReference,
             columns: cols.map(c => this.formatIdentifier(c.name, alwaysQuote)),
+            columnTypes: cols.map(c => c.dataType),
             firstColumnRaw: cols.length ? cols[0].name : null
         };
     }

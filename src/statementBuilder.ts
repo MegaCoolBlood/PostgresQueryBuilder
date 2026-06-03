@@ -24,9 +24,9 @@ export function deriveQualifier(firstColumnName: string | null, table: string): 
  */
 export function buildStatement(
     kind: StatementKind,
-    opts: { tableReference: string; columns: string[]; qualifier: string }
+    opts: { tableReference: string; columns: string[]; qualifier: string; columnTypes?: string[] }
 ): string {
-    const { tableReference, columns, qualifier } = opts;
+    const { tableReference, columns, qualifier, columnTypes = [] } = opts;
     const q = qualifier;
     const hasColumns = columns.length > 0;
     const selectCols = hasColumns ? columns : ['*'];
@@ -45,18 +45,36 @@ export function buildStatement(
             }
             const colsBlock = columns.map(c => `    ${c}`).join(',\n');
             const valsBlock = columns
-                .map((c, i) => `    NULL${i < columns.length - 1 ? ',' : ''} -- ${c}`)
+                .map((c, i) => {
+                    const cast = columnTypes[i] ? `::${columnTypes[i]}` : '';
+                    const comma = i < columns.length - 1 ? ',' : '';
+                    return `    NULL${cast}${comma} -- ${c}`;
+                })
                 .join('\n');
             return `INSERT INTO ${tableReference} (\n${colsBlock}\n) VALUES (\n${valsBlock}\n);`;
         }
         case 'update': {
-            const setBlock = hasColumns
-                ? columns.map((c, i) => `${i === 0 ? 'SET ' : '    '}${c} = ${i < columns.length - 1 ? ',' : ''}`).join('\n')
-                : 'SET ';
-            return `UPDATE ${tableReference} ${q}\n${setBlock}\nWHERE ;`;
+            if (!hasColumns) {
+                return `UPDATE ${tableReference} ${q}\nSET \nWHERE ;`;
+            }
+            const setBlock = columns
+                .map((c, i) => {
+                    const cast = columnTypes[i] ? `::${columnTypes[i]}` : '';
+                    const comma = i < columns.length - 1 ? ',' : '';
+                    return `  ${c} = NULL${cast}${comma}`;
+                })
+                .join('\n');
+            return `UPDATE ${tableReference} ${q}\nSET\n${setBlock}\nWHERE ;`;
         }
-        case 'delete':
-            return `DELETE FROM ${tableReference} ${q}\nWHERE ;`;
+        case 'delete': {
+            if (!hasColumns) {
+                return `DELETE FROM ${tableReference} ${q}\nWHERE ;`;
+            }
+            const whereBlock = columns
+                .map((c, i) => `${i === 0 ? '' : '  AND '}${q}.${c} = `)
+                .join('\n');
+            return `DELETE FROM ${tableReference} ${q}\nWHERE ${whereBlock};`;
+        }
         case 'join':
             return `JOIN ${tableReference} ${q} ON ${q}.${firstCol} = `;
     }

@@ -5,6 +5,7 @@ import { buildStatement, deriveQualifier } from '../statementBuilder';
 const opts = (qualifier = 'lei') => ({
     tableReference: 'leistungen',
     columns: ['lei_id', 'name', 'amount'],
+    columnTypes: ['integer', 'text', 'numeric'],
     qualifier
 });
 
@@ -43,19 +44,23 @@ test('buildStatement insert lists all columns', () => {
     assert.ok(sql.includes('    lei_id,'));
     assert.ok(sql.includes('    amount'));
     assert.ok(sql.includes('VALUES ('));
-    assert.ok(sql.includes('-- lei_id'));
+    assert.ok(sql.includes('NULL::integer, -- lei_id'));
+    assert.ok(sql.includes('NULL::text, -- name'));
+    assert.ok(sql.includes('NULL::numeric -- amount'));
 });
 
-test('buildStatement update qualifies table and sets all columns', () => {
-    const sql = buildStatement('update', opts());
-    assert.ok(sql.startsWith('UPDATE leistungen lei'));
-    assert.ok(sql.includes('SET lei_id = ,'));
-    assert.ok(sql.includes('    amount = '));
-    assert.ok(sql.trimEnd().endsWith('WHERE ;'));
+test('buildStatement update qualifies table and casts all columns', () => {
+    assert.equal(
+        buildStatement('update', opts()),
+        'UPDATE leistungen lei\nSET\n  lei_id = NULL::integer,\n  name = NULL::text,\n  amount = NULL::numeric\nWHERE ;'
+    );
 });
 
-test('buildStatement delete qualifies table', () => {
-    assert.equal(buildStatement('delete', opts()), 'DELETE FROM leistungen lei\nWHERE ;');
+test('buildStatement delete lists all columns in where clause', () => {
+    assert.equal(
+        buildStatement('delete', opts()),
+        'DELETE FROM leistungen lei\nWHERE lei.lei_id = \n  AND lei.name = \n  AND lei.amount = ;'
+    );
 });
 
 test('buildStatement join uses first column', () => {

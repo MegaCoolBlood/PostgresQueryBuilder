@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.0
+
+- **Tabelle per Drag & Drop in den Editor ziehen:** Eine Tabelle aus der Tabellen-Baumansicht lässt sich jetzt direkt in einen beliebigen Texteditor ziehen. Beim Ablegen erscheint eine Auswahl mit **Name only**, **Insert**, **Delete**, **Update**, **Select** (Standard) und **Join**; während des Navigierens wird eine Live-Vorschau des erzeugten Statements angezeigt. Nach Bestätigung wird das Statement an der Cursor-Position eingefügt. Alle Statements enthalten sämtliche Spalten der Tabelle und qualifizieren die Spalten mit einem Tabellen-Alias (z. B. `SELECT lei.lei_id ... FROM leistungen lei`). Der Alias wird aus dem Teil des ersten Spaltennamens vor dem ersten Unterstrich abgeleitet (`lei_id` → `lei`) bzw. fällt auf den Tabellennamen zurück. Über einen Stift-Button in der Auswahl lässt sich der Alias pro Tabelle ändern; die Wahl wird gespeichert und beim nächsten Mal wiederverwendet.
+- **Formatierter SELECT:** Der generierte SELECT listet jede Spalte eingerückt in einer eigenen Zeile auf (`SELECT`-Schlüsselwort und `FROM`-Klausel auf separaten Zeilen).
+- **DELETE mit allen Spalten in der WHERE-Klausel:** Das per Drag & Drop erzeugte DELETE-Statement listet alle Spalten der Tabelle (qualifiziert) in der WHERE-Klausel auf, jeweils mit `AND` verknüpft.
+- **UPDATE mit Typ-Cast:** Das per Drag & Drop erzeugte UPDATE-Statement setzt alle Spalten und castet jeden Wert auf den jeweiligen Spaltentyp (z. B. `amount = NULL::numeric`).
+- **INSERT mit Typ-Cast:** Das per Drag & Drop erzeugte INSERT-Statement castet ebenfalls jeden Wert auf den jeweiligen Spaltentyp (z. B. `NULL::numeric -- amount`).
+
 ## 0.2.1
 
 - `TIMESTAMP WITHOUT TIME ZONE`-Werte werden jetzt 1:1 so angezeigt, wie sie in der Datenbank gespeichert sind. Bisher wurden diese Werte vom Postgres-Treiber als lokale Zeit interpretiert und beim Anzeigen in die Browser-Zeitzone (UTC) umgerechnet, sodass der dargestellte Zeitpunkt vom gespeicherten Wert abweichen konnte. Die Werte werden nun unverändert als Zeichenkette übernommen.
