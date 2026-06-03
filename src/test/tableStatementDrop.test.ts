@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildStatement, deriveQualifier } from '../statementBuilder';
+import { buildStatement, deriveQualifier, buildJoinSelect, autoJoinClauses } from '../statementBuilder';
 
 const opts = (qualifier = 'lei') => ({
     tableReference: 'leistungen',
@@ -72,4 +72,80 @@ test('buildStatement respects a custom qualifier', () => {
         buildStatement('select', opts('x')),
         'SELECT\n  x.lei_id,\n  x.name,\n  x.amount\nFROM leistungen x;'
     );
+});
+
+const joinTables = () => [
+    { alias: 'o', tableReference: 'orders', columns: ['id', 'cust_id'] },
+    { alias: 'c', tableReference: 'customers', columns: ['id', 'name'] }
+];
+
+test('buildJoinSelect builds a two-table inner join', () => {
+    const joins = [
+        {
+            type: 'INNER JOIN' as const,
+            conditions: [{ leftAlias: 'o', leftColumn: 'cust_id', rightColumn: 'id' }]
+        }
+    ];
+    assert.equal(
+        buildJoinSelect(joinTables(), joins),
+        'SELECT\n  o.id,\n  o.cust_id,\n  c.id,\n  c.name\nFROM orders o\nINNER JOIN customers c ON c.id = o.cust_id;'
+    );
+});
+
+test('buildJoinSelect renders CROSS JOIN without ON', () => {
+    const joins = [{ type: 'CROSS JOIN' as const, conditions: [] }];
+    assert.equal(
+        buildJoinSelect(joinTables(), joins),
+        'SELECT\n  o.id,\n  o.cust_id,\n  c.id,\n  c.name\nFROM orders o\nCROSS JOIN customers c;'
+    );
+});
+
+test('buildJoinSelect supports multiple ON conditions', () => {
+    const tables = [
+        { alias: 'a', tableReference: 'a', columns: ['k1', 'k2'] },
+        { alias: 'b', tableReference: 'b', columns: ['k1', 'k2'] }
+    ];
+    const joins = [
+        {
+            type: 'LEFT JOIN' as const,
+            conditions: [
+                { leftAlias: 'a', leftColumn: 'k1', rightColumn: 'k1' },
+                { leftAlias: 'a', leftColumn: 'k2', rightColumn: 'k2' }
+            ]
+        }
+    ];
+    assert.equal(
+        buildJoinSelect(tables, joins),
+        'SELECT\n  a.k1,\n  a.k2,\n  b.k1,\n  b.k2\nFROM a a\nLEFT JOIN b b ON b.k1 = a.k1 AND b.k2 = a.k2;'
+    );
+});
+
+test('autoJoinClauses links a child FK to the parent table', () => {
+    // table 0 = orders (holds FK cust_id), table 1 = customers
+    const clauses = autoJoinClauses(
+        ['o', 'c'],
+        [{ fromIndex: 0, fromColumn: 'cust_id', toIndex: 1, toColumn: 'id' }]
+    );
+    assert.equal(clauses.length, 1);
+    assert.equal(clauses[0].type, 'INNER JOIN');
+    assert.deepEqual(clauses[0].conditions, [
+        { leftAlias: 'o', leftColumn: 'cust_id', rightColumn: 'id' }
+    ]);
+});
+
+test('autoJoinClauses links parent referenced by later child', () => {
+    // table 0 = customers, table 1 = orders (holds FK cust_id -> customers.id)
+    const clauses = autoJoinClauses(
+        ['c', 'o'],
+        [{ fromIndex: 1, fromColumn: 'cust_id', toIndex: 0, toColumn: 'id' }]
+    );
+    assert.deepEqual(clauses[0].conditions, [
+        { leftAlias: 'c', leftColumn: 'id', rightColumn: 'cust_id' }
+    ]);
+});
+
+test('autoJoinClauses falls back to CROSS JOIN without FK', () => {
+    const clauses = autoJoinClauses(['a', 'b'], []);
+    assert.equal(clauses[0].type, 'CROSS JOIN');
+    assert.deepEqual(clauses[0].conditions, []);
 });

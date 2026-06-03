@@ -118,6 +118,69 @@ export class QueryRunner {
         };
     }
 
+    /**
+     * Collect the data required to build a multi-table JOIN SELECT: for each
+     * requested table its reference, quoted column list and raw column names,
+     * plus all foreign-key edges that exist *between the requested tables*
+     * (used to auto-suggest join conditions). Each edge points from the table
+     * holding the FK column to the referenced table.
+     */
+    async getMultiTableJoinData(
+        tables: Array<{ schema: string; table: string }>
+    ): Promise<{
+        tables: Array<{
+            schema: string;
+            table: string;
+            tableReference: string;
+            columns: string[];
+            rawColumns: string[];
+            firstColumnRaw: string | null;
+        }>;
+        foreignKeys: Array<{
+            fromSchema: string;
+            fromTable: string;
+            fromColumn: string;
+            toSchema: string;
+            toTable: string;
+            toColumn: string;
+        }>;
+    }> {
+        const { alwaysQuote } = this.getSelectOptions();
+        const inSet = (schema: string, table: string) =>
+            tables.some(t => t.schema === schema && t.table === table);
+
+        const tableData = [];
+        const foreignKeys = [];
+        for (const t of tables) {
+            const tableReference = await this.getSelectTableReference(t.schema, t.table);
+            const cols = await this.getColumns(t.schema, t.table);
+            tableData.push({
+                schema: t.schema,
+                table: t.table,
+                tableReference,
+                columns: cols.map(c => this.formatIdentifier(c.name, alwaysQuote)),
+                rawColumns: cols.map(c => c.name),
+                firstColumnRaw: cols.length ? cols[0].name : null
+            });
+
+            const fks = await this.getForeignKeys(t.schema, t.table);
+            for (const fk of fks) {
+                if (inSet(fk.refSchema, fk.refTable)) {
+                    foreignKeys.push({
+                        fromSchema: t.schema,
+                        fromTable: t.table,
+                        fromColumn: this.formatIdentifier(fk.column, alwaysQuote),
+                        toSchema: fk.refSchema,
+                        toTable: fk.refTable,
+                        toColumn: this.formatIdentifier(fk.refColumn, alwaysQuote)
+                    });
+                }
+            }
+        }
+
+        return { tables: tableData, foreignKeys };
+    }
+
     async getPrimaryKeys(schema: string, table: string): Promise<string[]> {
         const rows = await this.connectionManager.queryMetadata(
             `SELECT a.attname

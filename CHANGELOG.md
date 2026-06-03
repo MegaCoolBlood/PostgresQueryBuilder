@@ -7,7 +7,7 @@
 - **DELETE mit allen Spalten in der WHERE-Klausel:** Das per Drag & Drop erzeugte DELETE-Statement listet alle Spalten der Tabelle (qualifiziert) in der WHERE-Klausel auf, jeweils mit `AND` verknüpft.
 - **UPDATE mit Typ-Cast:** Das per Drag & Drop erzeugte UPDATE-Statement setzt alle Spalten und castet jeden Wert auf den jeweiligen Spaltentyp (z. B. `amount = NULL::numeric`).
 - **INSERT mit Typ-Cast:** Das per Drag & Drop erzeugte INSERT-Statement castet ebenfalls jeden Wert auf den jeweiligen Spaltentyp (z. B. `NULL::numeric -- amount`).
-
+- **Mehrere Tabellen als JOIN SELECT einfügen:** Mehrere Tabellen lassen sich (mit `Strg`/`Shift`-Mehrfachauswahl) gemeinsam aus der Baumansicht in einen Editor ziehen. Es öffnet sich ein Bestätigungsdialog, der ein `SELECT … FROM … JOIN …` über alle Tabellen mit Live-Vorschau anzeigt. Die Join-Bedingungen werden automatisch aus vorhandenen Primär-/Fremdschlüsseln zwischen den Tabellen vorbelegt (Tabellen ohne Beziehung fallen auf `CROSS JOIN` zurück). Im Dialog lassen sich die Reihenfolge der Tabellen ändern, Aliase umbenennen, der Join-Typ (INNER/LEFT/RIGHT/FULL/CROSS) wählen sowie Join-Bedingungen hinzufügen, entfernen und bearbeiten. Nach Bestätigung wird das fertige Statement an der Cursor-Position eingefügt.
 ## 0.2.1
 
 - `TIMESTAMP WITHOUT TIME ZONE`-Werte werden jetzt 1:1 so angezeigt, wie sie in der Datenbank gespeichert sind. Bisher wurden diese Werte vom Postgres-Treiber als lokale Zeit interpretiert und beim Anzeigen in die Browser-Zeitzone (UTC) umgerechnet, sodass der dargestellte Zeitpunkt vom gespeicherten Wert abweichen konnte. Die Werte werden nun unverändert als Zeichenkette übernommen.

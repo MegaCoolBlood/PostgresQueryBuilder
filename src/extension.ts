@@ -157,6 +157,7 @@ export function activate(context: vscode.ExtensionContext) {
         const treeView = vscode.window.createTreeView('postgresTableExplorer', {
             treeDataProvider: tableExplorer,
             showCollapseAll: true,
+            canSelectMany: true,
             dragAndDropController: new TableDragAndDropController()
         });
         context.subscriptions.push(treeView);

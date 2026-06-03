@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { QueryRunner } from './queryRunner';
 import { TreeNode } from './tableExplorer';
-import { StatementKind, buildStatement, deriveQualifier, toPreview } from './statementBuilder';
+import { StatementKind, buildStatement, deriveQualifier, toPreview, autoJoinClauses, JoinFkEdge } from './statementBuilder';
+import { showJoinDialog, JoinDialogTable } from './joinDialog';
 
 export { StatementKind, buildStatement, deriveQualifier } from './statementBuilder';
 
@@ -88,8 +89,8 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
     ) {}
 
     async provideDocumentDropEdits(
-        _document: vscode.TextDocument,
-        _position: vscode.Position,
+        document: vscode.TextDocument,
+        position: vscode.Position,
         dataTransfer: vscode.DataTransfer,
         token: vscode.CancellationToken
     ): Promise<vscode.DocumentDropEdit | undefined> {
@@ -105,6 +106,19 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
             return undefined;
         }
         if (!Array.isArray(tables) || tables.length === 0) {
+            return undefined;
+        }
+
+        // Multiple tables: offer a JOIN SELECT builder dialog.
+        if (tables.length > 1) {
+            const sql = await this.pickJoinStatement(tables);
+            if (sql === undefined) {
+                return undefined;
+            }
+            // The dialog is interactive and resolves long after VS Code has
+            // finished the drop gesture, so a returned DocumentDropEdit would
+            // be ignored. Insert the text ourselves at the drop position.
+            await this.insertAt(document, position, sql);
             return undefined;
         }
 
@@ -124,7 +138,86 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
         if (parts.length === 0) {
             return undefined;
         }
-        return new vscode.DocumentDropEdit(parts.join('\n\n'));
+        // The quick pick is interactive and resolves after VS Code has
+        // finished the drop gesture, so insert the text ourselves rather than
+        // relying on a (by then ignored) returned DocumentDropEdit.
+        await this.insertAt(document, position, parts.join('\n\n'));
+        return undefined;
+    }
+
+    /**
+     * Insert `text` at `position` in the document. Prefers the active text
+     * editor for that document (so the selection/cursor is updated), and falls
+     * back to a workspace edit otherwise.
+     */
+    private async insertAt(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        text: string
+    ): Promise<void> {
+        const editor = vscode.window.visibleTextEditors.find(
+            e => e.document.uri.toString() === document.uri.toString()
+        );
+        if (editor) {
+            await editor.edit(editBuilder => editBuilder.insert(position, text));
+            const inserted = editor.document.positionAt(
+                editor.document.offsetAt(position) + text.length
+            );
+            editor.selection = new vscode.Selection(inserted, inserted);
+            return;
+        }
+        const edit = new vscode.WorkspaceEdit();
+        edit.insert(document.uri, position, text);
+        await vscode.workspace.applyEdit(edit);
+    }
+
+    private async pickJoinStatement(tables: DraggedTable[]): Promise<string | undefined> {
+        let data: Awaited<ReturnType<QueryRunner['getMultiTableJoinData']>>;
+        try {
+            data = await this.queryRunner.getMultiTableJoinData(tables);
+        } catch (err: any) {
+            vscode.window.showErrorMessage(`Failed to load tables for JOIN: ${err?.message || err}`);
+            return undefined;
+        }
+
+        const dialogTables: JoinDialogTable[] = data.tables.map(t => ({
+            schema: t.schema,
+            table: t.table,
+            tableReference: t.tableReference,
+            alias: this.qualifierStore.get(t.schema, t.table)
+                ?? deriveQualifier(t.firstColumnRaw, t.table),
+            columns: t.columns
+        }));
+
+        // Ensure aliases are unique so qualified columns are unambiguous.
+        const seen = new Map<string, number>();
+        for (const dt of dialogTables) {
+            const base = dt.alias;
+            const n = seen.get(base) ?? 0;
+            if (n > 0) {
+                dt.alias = `${base}${n + 1}`;
+            }
+            seen.set(base, n + 1);
+        }
+
+        const indexOf = (schema: string, table: string) =>
+            data.tables.findIndex(t => t.schema === schema && t.table === table);
+
+        const fkEdges: JoinFkEdge[] = data.foreignKeys
+            .map(fk => ({
+                fromIndex: indexOf(fk.fromSchema, fk.fromTable),
+                fromColumn: fk.fromColumn,
+                toIndex: indexOf(fk.toSchema, fk.toTable),
+                toColumn: fk.toColumn
+            }))
+            .filter(e => e.fromIndex >= 0 && e.toIndex >= 0);
+
+        const initialJoins = autoJoinClauses(
+            dialogTables.map(t => t.alias),
+            fkEdges
+        );
+
+        return await showJoinDialog(dialogTables, fkEdges, initialJoins);
     }
 
     private async pickStatement(schema: string, table: string): Promise<string | undefined> {
