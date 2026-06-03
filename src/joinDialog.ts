@@ -20,19 +20,26 @@ export interface JoinDialogFkEdge {
 interface ConfirmPayload {
     tables: JoinTableSpec[];
     joins: JoinClause[];
+    aliasMap: Array<{ schema: string; table: string; alias: string }>;
+}
+
+export interface JoinDialogResult {
+    sql: string;
+    /** Final alias chosen for each table, to be persisted by the caller. */
+    aliases: Array<{ schema: string; table: string; alias: string }>;
 }
 
 /**
  * Show a modal-like webview that lets the user reorder tables, edit aliases
  * and adjust join conditions before inserting a multi-table JOIN SELECT.
- * Resolves with the final SQL, or `undefined` if cancelled.
+ * Resolves with the final SQL and chosen aliases, or `undefined` if cancelled.
  */
 export function showJoinDialog(
     tables: JoinDialogTable[],
     fkEdges: JoinDialogFkEdge[],
     initialJoins: JoinClause[]
-): Promise<string | undefined> {
-    return new Promise<string | undefined>(resolve => {
+): Promise<JoinDialogResult | undefined> {
+    return new Promise<JoinDialogResult | undefined>(resolve => {
         const panel = vscode.window.createWebviewPanel(
             'postgresJoinBuilder',
             'Build JOIN SELECT',
@@ -47,7 +54,7 @@ export function showJoinDialog(
                 const payload = msg.payload as ConfirmPayload;
                 const sql = buildJoinSelect(payload.tables, payload.joins);
                 settled = true;
-                resolve(sql);
+                resolve({ sql, aliases: payload.aliasMap });
                 panel.dispose();
             } else if (msg?.command === 'cancel') {
                 settled = true;
@@ -337,7 +344,12 @@ function getHtml(
             const oi = order[pos];
             joinsArr.push(joins[oi] || { type: 'CROSS JOIN', conditions: [] });
         }
-        vscode.postMessage({ command: 'confirm', payload: { tables, joins: joinsArr } });
+        const aliasMap = order.map(oi => ({
+            schema: data.tables[oi].schema,
+            table: data.tables[oi].table,
+            alias: aliases[oi]
+        }));
+        vscode.postMessage({ command: 'confirm', payload: { tables, joins: joinsArr, aliasMap } });
     };
     document.getElementById('cancel').onclick = () => vscode.postMessage({ command: 'cancel' });
 

@@ -217,7 +217,17 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
             fkEdges
         );
 
-        return await showJoinDialog(dialogTables, fkEdges, initialJoins);
+        const result = await showJoinDialog(dialogTables, fkEdges, initialJoins);
+        if (!result) {
+            return undefined;
+        }
+        // Remember the chosen alias for each table so it is reused next time.
+        for (const a of result.aliases) {
+            if (a.alias && a.alias.trim()) {
+                await this.qualifierStore.set(a.schema, a.table, a.alias.trim());
+            }
+        }
+        return result.sql;
     }
 
     private async pickStatement(schema: string, table: string): Promise<string | undefined> {
