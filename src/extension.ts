@@ -8,7 +8,8 @@ import { ModifyHistoryStore } from './modifyHistoryStore';
 import { ModifyHistoryViewProvider } from './modifyHistoryViewProvider';
 import { ColumnMappingManager } from './columnMappingManager';
 import { ManageMappingsPanel } from './manageMappingsPanel';
-
+import { QueryRunner } from './queryRunner';
+import { TableDragAndDropController, TableStatementDropProvider, QualifierStore } from './tableStatementDrop';
 let connectionManager: ConnectionManager;
 let tableExplorer: TableExplorerProvider;
 let tableWebViewManager: TableWebViewManager;
@@ -155,9 +156,21 @@ export function activate(context: vscode.ExtensionContext) {
         // Tree view
         const treeView = vscode.window.createTreeView('postgresTableExplorer', {
             treeDataProvider: tableExplorer,
-            showCollapseAll: true
+            showCollapseAll: true,
+            dragAndDropController: new TableDragAndDropController()
         });
         context.subscriptions.push(treeView);
+
+        // Allow dropping a table from the tree view into any text editor to
+        // insert a generated SQL statement at the drop position.
+        const qualifierStore = new QualifierStore(context.globalState);
+        const dropQueryRunner = new QueryRunner(connectionManager);
+        context.subscriptions.push(
+            vscode.languages.registerDocumentDropEditProvider(
+                '*',
+                new TableStatementDropProvider(dropQueryRunner, qualifierStore)
+            )
+        );
 
         // Search view
         const searchViewProvider = new SearchViewProvider();

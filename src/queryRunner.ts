@@ -96,6 +96,26 @@ export class QueryRunner {
         }));
     }
 
+    /**
+     * Collect the data required to build SQL statement skeletons (SELECT,
+     * INSERT, ...) for a table: the (optionally schema-qualified) table
+     * reference, the list of properly quoted column identifiers, and the raw
+     * name of the first column (used to derive a default table alias).
+     */
+    async getStatementBuildData(
+        schema: string,
+        table: string
+    ): Promise<{ tableReference: string; columns: string[]; firstColumnRaw: string | null }> {
+        const { alwaysQuote } = this.getSelectOptions();
+        const tableReference = await this.getSelectTableReference(schema, table);
+        const cols = await this.getColumns(schema, table);
+        return {
+            tableReference,
+            columns: cols.map(c => this.formatIdentifier(c.name, alwaysQuote)),
+            firstColumnRaw: cols.length ? cols[0].name : null
+        };
+    }
+
     async getPrimaryKeys(schema: string, table: string): Promise<string[]> {
         const rows = await this.connectionManager.queryMetadata(
             `SELECT a.attname

@@ -1,18 +1,18 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
 
-interface SchemaNode {
+export interface SchemaNode {
     type: 'schema';
     schema: string;
 }
 
-interface TableNode {
+export interface TableNode {
     type: 'table';
     schema: string;
     table: string;
 }
 
-type TreeNode = SchemaNode | TableNode;
+export type TreeNode = SchemaNode | TableNode;
 
 export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
     private _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | undefined | void>();
