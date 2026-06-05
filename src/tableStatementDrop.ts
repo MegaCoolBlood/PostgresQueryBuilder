@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { QueryRunner } from './queryRunner';
 import { TreeNode } from './tableExplorer';
 import { StatementKind, buildStatement, deriveQualifier, toPreview, autoJoinClauses, JoinFkEdge } from './statementBuilder';
-import { showJoinDialog, JoinDialogTable } from './joinDialog';
+import { showJoinDialog, JoinDialogTable, JoinDialogIdentityEdge, JoinDialogAddPayload } from './joinDialog';
 
 export { StatementKind, buildStatement, deriveQualifier } from './statementBuilder';
 
@@ -16,6 +16,20 @@ export const TABLE_DRAG_MIME = 'application/vnd.postgresquerybuilder.table';
 interface DraggedTable {
     schema: string;
     table: string;
+}
+
+/**
+ * Tables dragged from the tree view in the most recent drag gesture. The join
+ * dialog webview cannot read VS Code's internal drag payload, so it asks the
+ * extension (via `requestAddTables`) which tables were last dragged. Consumed
+ * (and cleared) on read so a stale drop does not re-add tables.
+ */
+let lastDraggedTables: DraggedTable[] = [];
+
+function consumeLastDraggedTables(): DraggedTable[] {
+    const tables = lastDraggedTables;
+    lastDraggedTables = [];
+    return tables;
 }
 
 /**
@@ -73,6 +87,7 @@ export class TableDragAndDropController implements vscode.TreeDragAndDropControl
         if (tables.length === 0) {
             return;
         }
+        lastDraggedTables = tables;
         dataTransfer.set(TABLE_DRAG_MIME, new vscode.DataTransferItem(JSON.stringify(tables)));
     }
 }
@@ -217,7 +232,64 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
             fkEdges
         );
 
-        const result = await showJoinDialog(dialogTables, fkEdges, initialJoins);
+        // Track the set of tables currently in the dialog so dropping more
+        // tables can skip duplicates and recompute FK edges over the full set.
+        const currentSet: DraggedTable[] = data.tables.map(t => ({ schema: t.schema, table: t.table }));
+
+        const onAddTables = async (): Promise<JoinDialogAddPayload | undefined> => {
+            // Prefer tables from a just-completed drag gesture; otherwise let the
+            // user pick from all available tables. (Dropping a tree item onto a
+            // webview does not reliably deliver a DOM drop event, so the dialog
+            // also exposes a clickable "Add tables…" affordance that routes here.)
+            let candidates = consumeLastDraggedTables();
+            if (candidates.length === 0) {
+                candidates = await this.promptForTables(currentSet);
+            }
+            if (candidates.length === 0) {
+                return undefined;
+            }
+            const newOnes = candidates.filter(
+                d => !currentSet.some(c => c.schema === d.schema && c.table === d.table)
+            );
+            if (newOnes.length === 0) {
+                return undefined;
+            }
+
+            const combined = [...currentSet, ...newOnes];
+            let combinedData: Awaited<ReturnType<QueryRunner['getMultiTableJoinData']>>;
+            try {
+                combinedData = await this.queryRunner.getMultiTableJoinData(combined);
+            } catch (err: any) {
+                vscode.window.showErrorMessage(`Failed to add tables to JOIN: ${err?.message || err}`);
+                return undefined;
+            }
+
+            const newDialogTables: JoinDialogTable[] = newOnes.map(n => {
+                const td = combinedData.tables.find(t => t.schema === n.schema && t.table === n.table)!;
+                return {
+                    schema: td.schema,
+                    table: td.table,
+                    tableReference: td.tableReference,
+                    alias: this.qualifierStore.get(td.schema, td.table)
+                        ?? deriveQualifier(td.firstColumnRaw, td.table),
+                    columns: td.columns
+                };
+            });
+
+            const edges: JoinDialogIdentityEdge[] = combinedData.foreignKeys.map(fk => ({
+                fromSchema: fk.fromSchema,
+                fromTable: fk.fromTable,
+                fromColumn: fk.fromColumn,
+                toSchema: fk.toSchema,
+                toTable: fk.toTable,
+                toColumn: fk.toColumn
+            }));
+
+            currentSet.push(...newOnes);
+            return { tables: newDialogTables, fkEdges: edges };
+        };
+
+        const result = await showJoinDialog(dialogTables, fkEdges, initialJoins, onAddTables);
         if (!result) {
             return undefined;
         }
@@ -228,6 +300,41 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
             }
         }
         return result.sql;
+    }
+
+    /**
+     * Show a multi-select quick pick of all tables not already in the join,
+     * used when the user clicks the dialog's "Add tables…" affordance.
+     */
+    private async promptForTables(
+        current: ReadonlyArray<DraggedTable>
+    ): Promise<DraggedTable[]> {
+        let all: Array<{ schema: string; table: string }>;
+        try {
+            all = await this.queryRunner.listAllTables();
+        } catch (err: any) {
+            vscode.window.showErrorMessage(`Failed to list tables: ${err?.message || err}`);
+            return [];
+        }
+        const available = all.filter(
+            t => !current.some(c => c.schema === t.schema && c.table === t.table)
+        );
+        if (available.length === 0) {
+            vscode.window.showInformationMessage('No further tables available to add.');
+            return [];
+        }
+        const picks = await vscode.window.showQuickPick(
+            available.map(t => ({ label: `${t.schema}.${t.table}`, schema: t.schema, table: t.table })),
+            {
+                canPickMany: true,
+                title: 'Add tables to JOIN',
+                placeHolder: 'Select one or more tables to add to the join'
+            }
+        );
+        if (!picks || picks.length === 0) {
+            return [];
+        }
+        return picks.map(p => ({ schema: p.schema, table: p.table }));
     }
 
     private async pickStatement(schema: string, table: string): Promise<string | undefined> {

@@ -70,7 +70,11 @@ export class TableWebViewManager {
 
         this.panels.set(key, panel);
 
+        // Tracks whether the panel has been disposed so async work that resolves
+        // after the user closed the view does not post to a dead webview.
+        let disposed = false;
         panel.onDidDispose(() => {
+            disposed = true;
             this.panels.delete(key);
         });
 
@@ -99,6 +103,9 @@ export class TableWebViewManager {
 
         // Push connection updates to the webview while it's open
         const connSub = this.connectionManager.onConnectionChanged(() => {
+            if (disposed) {
+                return;
+            }
             panel.webview.postMessage({
                 command: 'connectionChanged',
                 connectionName: this.getConnectionName()
@@ -410,10 +417,12 @@ export class TableWebViewManager {
                     }
                 }
             } catch (err: any) {
-                panel.webview.postMessage({
-                    command: 'error',
-                    text: err.message
-                });
+                if (!disposed) {
+                    panel.webview.postMessage({
+                        command: 'error',
+                        text: err.message
+                    });
+                }
                 vscode.window.showErrorMessage(`Query error: ${err.message}`);
             }
         });

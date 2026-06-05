@@ -17,6 +17,23 @@ export interface JoinDialogFkEdge {
     toColumn: string;
 }
 
+/** Foreign-key edge identified by schema/table/column (order-independent). */
+export interface JoinDialogIdentityEdge {
+    fromSchema: string;
+    fromTable: string;
+    fromColumn: string;
+    toSchema: string;
+    toTable: string;
+    toColumn: string;
+}
+
+/** Payload returned by `onAddTables` describing tables to append to the dialog. */
+export interface JoinDialogAddPayload {
+    tables: JoinDialogTable[];
+    /** All known FK edges among the (now larger) full table set. */
+    fkEdges: JoinDialogIdentityEdge[];
+}
+
 interface ConfirmPayload {
     tables: JoinTableSpec[];
     joins: JoinClause[];
@@ -37,7 +54,8 @@ export interface JoinDialogResult {
 export function showJoinDialog(
     tables: JoinDialogTable[],
     fkEdges: JoinDialogFkEdge[],
-    initialJoins: JoinClause[]
+    initialJoins: JoinClause[],
+    onAddTables?: () => Promise<JoinDialogAddPayload | undefined>
 ): Promise<JoinDialogResult | undefined> {
     return new Promise<JoinDialogResult | undefined>(resolve => {
         const panel = vscode.window.createWebviewPanel(
@@ -49,7 +67,7 @@ export function showJoinDialog(
 
         let settled = false;
 
-        panel.webview.onDidReceiveMessage((msg: any) => {
+        panel.webview.onDidReceiveMessage(async (msg: any) => {
             if (msg?.command === 'confirm') {
                 const payload = msg.payload as ConfirmPayload;
                 const sql = buildJoinSelect(payload.tables, payload.joins);
@@ -60,6 +78,14 @@ export function showJoinDialog(
                 settled = true;
                 resolve(undefined);
                 panel.dispose();
+            } else if (msg?.command === 'requestAddTables') {
+                if (!onAddTables) {
+                    return;
+                }
+                const payload = await onAddTables();
+                if (payload && payload.tables.length > 0) {
+                    panel.webview.postMessage({ command: 'addTables', payload });
+                }
             }
         });
 
@@ -104,6 +130,10 @@ function getHtml(
         background: var(--vscode-editorWidget-background);
     }
     .table-row { display: flex; align-items: center; gap: 8px; }
+    .table-row.dragging { opacity: 0.4; }
+    .table-row.drag-over { border-color: var(--vscode-focusBorder); border-style: dashed; }
+    .drag-handle { cursor: grab; user-select: none; padding: 0 4px; color: var(--vscode-descriptionForeground); }
+    .drag-handle:active { cursor: grabbing; }
     .table-row .name { font-weight: 600; }
     .badge { font-size: 0.75em; padding: 1px 6px; border-radius: 8px;
         background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
@@ -128,6 +158,17 @@ function getHtml(
     }
     .actions { margin-top: 12px; display: flex; gap: 8px; }
     .section-title { font-weight: 600; margin: 14px 0 6px; }
+    #dropZone {
+        border: 1px dashed var(--vscode-panel-border); border-radius: 4px;
+        padding: 12px; margin-bottom: 8px; text-align: center; cursor: pointer;
+        color: var(--vscode-descriptionForeground); font-size: 0.9em;
+    }
+    #dropZone:hover { border-color: var(--vscode-focusBorder); color: var(--vscode-foreground); }
+    #dropZone.drag-over {
+        border-color: var(--vscode-focusBorder);
+        background: var(--vscode-editorWidget-background);
+        color: var(--vscode-foreground);
+    }
 </style>
 </head>
 <body>
@@ -136,6 +177,7 @@ function getHtml(
 
     <div class="section-title">Tables (order)</div>
     <div id="tables"></div>
+    <div id="dropZone">+ Add tables… (click to choose, or drag tables from the tree here)</div>
 
     <div class="section-title">Joins</div>
     <div id="joins"></div>
@@ -157,11 +199,89 @@ function getHtml(
     let order = data.tables.map((_, i) => i);
     // aliases keyed by original index
     let aliases = data.tables.map(t => t.alias);
-    // joins keyed by original index -> { type, conditions: [{leftAlias,leftColumn,rightColumn}] }
-    // initialJoins is positional (for tables[1..]); map to original index of the
-    // table at that position in the initial order (identity at start).
+    // joins keyed by original index -> { type, conditions: [{leftOrig,leftColumn,rightColumn}] }
+    // where leftOrig is the ORIGINAL index of the partner (earlier) table, so
+    // the relationship survives reordering and renaming.
+    // initialJoins is positional (for tables[1..]); the initial order is the
+    // identity, so position p maps to original index p.
     let joins = {};
-    data.joins.forEach((j, idx) => { joins[idx + 1] = JSON.parse(JSON.stringify(j)); });
+    // Join type per ORIGINAL table index, kept independently of the current
+    // order so it is not lost while a table temporarily sits in the FROM slot.
+    let typeByOrig = {};
+    data.joins.forEach((j, idx) => {
+        const oi = idx + 1;
+        typeByOrig[oi] = j.type;
+        joins[oi] = {
+            type: j.type,
+            conditions: (j.conditions || []).map(c => ({
+                leftOrig: aliases.indexOf(c.leftAlias),
+                leftColumn: c.leftColumn,
+                rightColumn: c.rightColumn
+            })).filter(c => c.leftOrig >= 0)
+        };
+    });
+
+    // All known FK edges as schema/table/column identities, so they survive
+    // reordering and so newly added tables can auto-join existing ones.
+    let identityEdges = [];
+    (data.fkEdges || []).forEach(e => {
+        const from = data.tables[e.fromIndex];
+        const to = data.tables[e.toIndex];
+        if (from && to) {
+            identityEdges.push({
+                fromSchema: from.schema, fromTable: from.table, fromColumn: e.fromColumn,
+                toSchema: to.schema, toTable: to.table, toColumn: e.toColumn
+            });
+        }
+    });
+
+    function origIdxByName(schema, table) {
+        return data.tables.findIndex(t => t.schema === schema && t.table === table);
+    }
+
+    function sameEdge(a, b) {
+        return a.fromSchema === b.fromSchema && a.fromTable === b.fromTable && a.fromColumn === b.fromColumn
+            && a.toSchema === b.toSchema && a.toTable === b.toTable && a.toColumn === b.toColumn;
+    }
+
+    // Rebuild the directional join clauses from the order-independent set of
+    // relationships currently stored in joins. Each condition links two tables
+    // by their original index; after a reorder the condition is re-attached to
+    // whichever of the two tables now comes later, so join conditions are never
+    // lost when a table is moved (e.g. into the FROM slot).
+    function normalizeJoins() {
+        const links = [];
+        Object.keys(joins).forEach(k => {
+            const oi = +k;
+            const j = joins[oi];
+            if (!j) return;
+            if (j.type) typeByOrig[oi] = j.type;
+            (j.conditions || []).forEach(c => {
+                if (c.leftOrig == null || c.leftOrig < 0 || c.leftOrig === oi) return;
+                links.push({ a: c.leftOrig, colA: c.leftColumn, b: oi, colB: c.rightColumn });
+            });
+        });
+
+        const rebuilt = {};
+        const seen = new Set();
+        for (let pos = 1; pos < order.length; pos++) {
+            const oi = order[pos];
+            const earlier = new Set(order.slice(0, pos));
+            const conds = [];
+            for (const lk of links) {
+                let partner = -1, partnerCol = null, myCol = null;
+                if (lk.b === oi && earlier.has(lk.a)) { partner = lk.a; partnerCol = lk.colA; myCol = lk.colB; }
+                else if (lk.a === oi && earlier.has(lk.b)) { partner = lk.b; partnerCol = lk.colB; myCol = lk.colA; }
+                if (partner < 0) continue;
+                const sig = oi + '|' + partner + '|' + myCol + '|' + partnerCol;
+                if (seen.has(sig)) continue;
+                seen.add(sig);
+                conds.push({ leftOrig: partner, leftColumn: partnerCol, rightColumn: myCol });
+            }
+            rebuilt[oi] = { type: typeByOrig[oi] || 'INNER JOIN', conditions: conds };
+        }
+        joins = rebuilt;
+    }
 
     function tableAt(pos) { return data.tables[order[pos]]; }
     function aliasOf(origIdx) { return aliases[origIdx]; }
@@ -177,6 +297,17 @@ function getHtml(
         render();
     }
 
+    // Move the table currently at fromPos so it sits at toPos, preserving the
+    // relative order of the others. Join conditions are keyed by the original
+    // table index, so they are preserved across reordering.
+    function moveTo(fromPos, toPos) {
+        if (fromPos === toPos || fromPos < 0 || toPos < 0
+            || fromPos >= order.length || toPos >= order.length) return;
+        const [moved] = order.splice(fromPos, 1);
+        order.splice(toPos, 0, moved);
+        render();
+    }
+
     function setAlias(origIdx, value) {
         aliases[origIdx] = value.trim() || aliases[origIdx];
     }
@@ -187,12 +318,13 @@ function getHtml(
     }
 
     function earlierColumnOptions(pos) {
-        // All (alias, column) pairs from tables before pos.
+        // All (orig, alias, column) tuples from tables before pos.
         const opts = [];
         for (let p = 0; p < pos; p++) {
             const t = tableAt(p);
-            const a = aliasOf(order[p]);
-            for (const c of t.columns) opts.push({ alias: a, column: c });
+            const oi = order[p];
+            const a = aliasOf(oi);
+            for (const c of t.columns) opts.push({ orig: oi, alias: a, column: c });
         }
         return opts;
     }
@@ -217,7 +349,7 @@ function getHtml(
                 continue;
             }
             const on = j.conditions.length
-                ? j.conditions.map(c => t.alias + '.' + c.rightColumn + ' = ' + c.leftAlias + '.' + c.leftColumn).join(' AND ')
+                ? j.conditions.map(c => t.alias + '.' + c.rightColumn + ' = ' + aliases[c.leftOrig] + '.' + c.leftColumn).join(' AND ')
                 : '';
             lines.push(j.type + ' ' + t.tableReference + ' ' + t.alias + ' ON ' + on);
         }
@@ -225,6 +357,7 @@ function getHtml(
     }
 
     function render() {
+        normalizeJoins();
         // Tables
         const tablesEl = document.getElementById('tables');
         tablesEl.innerHTML = '';
@@ -232,7 +365,10 @@ function getHtml(
             const t = data.tables[oi];
             const row = document.createElement('div');
             row.className = 'table-row';
+            row.draggable = true;
+            row.dataset.pos = String(pos);
             row.innerHTML =
+                '<span class="drag-handle" title="Drag to reorder">\u2630</span>' +
                 '<button data-up="' + pos + '" ' + (pos === 0 ? 'disabled' : '') + '>\u2191</button>' +
                 '<button data-down="' + pos + '" ' + (pos === order.length - 1 ? 'disabled' : '') + '>\u2193</button>' +
                 '<span class="badge">' + (pos === 0 ? 'FROM' : 'JOIN') + '</span>' +
@@ -258,10 +394,10 @@ function getHtml(
             if (j.type !== 'CROSS JOIN') {
                 const earlier = earlierColumnOptions(pos);
                 j.conditions.forEach((c, ci) => {
-                    const leftVal = c.leftAlias + '.' + c.leftColumn;
                     const leftOpts = earlier.map(o => {
-                        const v = o.alias + '.' + o.column;
-                        return '<option value="' + escapeHtml(v) + '" ' + (v === leftVal ? 'selected' : '') + '>' + escapeHtml(v) + '</option>';
+                        const v = o.orig + '\u0001' + o.column;
+                        const sel = (o.orig === c.leftOrig && o.column === c.leftColumn);
+                        return '<option value="' + escapeHtml(v) + '" ' + (sel ? 'selected' : '') + '>' + escapeHtml(o.alias + '.' + o.column) + '</option>';
                     }).join('');
                     const rightOpts = t.columns.map(col =>
                         '<option value="' + escapeHtml(col) + '" ' + (col === c.rightColumn ? 'selected' : '') + '>' + escapeHtml(col) + '</option>'
@@ -288,18 +424,25 @@ function getHtml(
     function bind() {
         document.querySelectorAll('[data-up]').forEach(b => b.onclick = () => move(+b.dataset.up, -1));
         document.querySelectorAll('[data-down]').forEach(b => b.onclick = () => move(+b.dataset.down, 1));
+        bindDragAndDrop();
         document.querySelectorAll('[data-alias]').forEach(inp => {
             inp.onchange = () => { setAlias(+inp.dataset.alias, inp.value); render(); };
         });
         document.querySelectorAll('[data-jtype]').forEach(sel => {
-            sel.onchange = () => { ensureJoin(+sel.dataset.jtype).type = sel.value; render(); };
+            sel.onchange = () => {
+                const oi = +sel.dataset.jtype;
+                typeByOrig[oi] = sel.value;
+                ensureJoin(oi).type = sel.value;
+                render();
+            };
         });
         document.querySelectorAll('[data-left]').forEach(sel => {
             sel.onchange = () => {
                 const [oi, ci] = sel.dataset.left.split(':').map(Number);
-                const [a, col] = splitAliasCol(sel.value);
-                joins[oi].conditions[ci].leftAlias = a;
-                joins[oi].conditions[ci].leftColumn = col;
+                const raw = sel.value;
+                const si = raw.indexOf('\u0001');
+                joins[oi].conditions[ci].leftOrig = Number(raw.slice(0, si));
+                joins[oi].conditions[ci].leftColumn = raw.slice(si + 1);
                 document.getElementById('preview').textContent = buildPreview();
             };
         });
@@ -320,20 +463,150 @@ function getHtml(
             const pos = order.indexOf(oi);
             const earlier = earlierColumnOptions(pos);
             const t = data.tables[oi];
-            const left = earlier[0] || { alias: aliases[order[0]], column: (data.tables[order[0]].columns[0] || '') };
+            const left = earlier[0] || { orig: order[0], column: (data.tables[order[0]].columns[0] || '') };
             ensureJoin(oi).conditions.push({
-                leftAlias: left.alias, leftColumn: left.column, rightColumn: t.columns[0] || ''
+                leftOrig: left.orig, leftColumn: left.column, rightColumn: t.columns[0] || ''
             });
             render();
         });
     }
 
-    function splitAliasCol(v) {
-        const i = v.indexOf('.');
-        return [v.slice(0, i), v.slice(i + 1)];
+    let dragFromPos = null;
+    function bindDragAndDrop() {
+        document.querySelectorAll('.table-row').forEach(row => {
+            row.addEventListener('dragstart', e => {
+                dragFromPos = +row.dataset.pos;
+                row.classList.add('dragging');
+                if (e.dataTransfer) {
+                    e.dataTransfer.effectAllowed = 'move';
+                    // Required for Firefox to start the drag.
+                    e.dataTransfer.setData('text/plain', String(dragFromPos));
+                }
+            });
+            row.addEventListener('dragend', () => {
+                dragFromPos = null;
+                document.querySelectorAll('.table-row').forEach(r => r.classList.remove('dragging', 'drag-over'));
+            });
+            row.addEventListener('dragover', e => {
+                e.preventDefault();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+            });
+            row.addEventListener('dragenter', e => {
+                e.preventDefault();
+                if (dragFromPos !== null && +row.dataset.pos !== dragFromPos) {
+                    row.classList.add('drag-over');
+                }
+            });
+            row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+            row.addEventListener('drop', e => {
+                e.preventDefault();
+                row.classList.remove('drag-over');
+                if (dragFromPos === null) return;
+                e.stopPropagation();
+                const toPos = +row.dataset.pos;
+                const from = dragFromPos;
+                dragFromPos = null;
+                moveTo(from, toPos);
+            });
+        });
     }
 
+    // Auto-derive a join clause for a newly added table from known FK edges to
+    // tables that already precede it in the current order.
+    function computeAutoJoin(origIdx) {
+        const pos = order.indexOf(origIdx);
+        const earlier = new Set(order.slice(0, pos));
+        const conn = identityEdges.filter(e => {
+            const fi = origIdxByName(e.fromSchema, e.fromTable);
+            const ti = origIdxByName(e.toSchema, e.toTable);
+            return (fi === origIdx && earlier.has(ti)) || (ti === origIdx && earlier.has(fi));
+        });
+        if (!conn.length) { joins[origIdx] = { type: 'CROSS JOIN', conditions: [] }; typeByOrig[origIdx] = 'CROSS JOIN'; return; }
+        let partner = -1, partnerPos = Infinity;
+        for (const e of conn) {
+            const fi = origIdxByName(e.fromSchema, e.fromTable);
+            const ti = origIdxByName(e.toSchema, e.toTable);
+            const other = (fi === origIdx) ? ti : fi;
+            const op = order.indexOf(other);
+            if (op < partnerPos) { partnerPos = op; partner = other; }
+        }
+        const conditions = conn.filter(e => {
+            const fi = origIdxByName(e.fromSchema, e.fromTable);
+            const ti = origIdxByName(e.toSchema, e.toTable);
+            const other = (fi === origIdx) ? ti : fi;
+            return other === partner;
+        }).map(e => {
+            const fi = origIdxByName(e.fromSchema, e.fromTable);
+            if (fi === origIdx) {
+                // New table holds the FK column, partner is referenced.
+                return { leftOrig: partner, leftColumn: e.toColumn, rightColumn: e.fromColumn };
+            }
+            // Partner holds the FK column, new table is referenced.
+            return { leftOrig: partner, leftColumn: e.fromColumn, rightColumn: e.toColumn };
+        });
+        typeByOrig[origIdx] = 'INNER JOIN';
+        joins[origIdx] = { type: 'INNER JOIN', conditions };
+    }
+
+    // Append tables (and their FK edges) pushed by the extension after the user
+    // drops additional tables onto the dialog. Existing order/aliases/joins are
+    // preserved; new tables go to the end and auto-join earlier tables.
+    function addTables(payload) {
+        (payload.fkEdges || []).forEach(e => {
+            if (!identityEdges.some(x => sameEdge(x, e))) identityEdges.push(e);
+        });
+        let added = false;
+        (payload.tables || []).forEach(nt => {
+            if (data.tables.some(t => t.schema === nt.schema && t.table === nt.table)) return;
+            let alias = nt.alias || nt.table;
+            const used = new Set(aliases);
+            if (used.has(alias)) {
+                let n = 2;
+                while (used.has(alias + n)) n++;
+                alias = alias + n;
+            }
+            const origIdx = data.tables.length;
+            data.tables.push(nt);
+            aliases.push(alias);
+            order.push(origIdx);
+            computeAutoJoin(origIdx);
+            added = true;
+        });
+        if (added) render();
+    }
+
+    function bindExternalDrop() {
+        const dropZone = document.getElementById('dropZone');
+        dropZone.addEventListener('click', () => {
+            vscode.postMessage({ command: 'requestAddTables' });
+        });
+        const isExternal = () => dragFromPos === null;
+        ['dragenter', 'dragover'].forEach(ev => {
+            document.addEventListener(ev, e => {
+                if (!isExternal()) return;
+                e.preventDefault();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+                dropZone.classList.add('drag-over');
+            });
+        });
+        document.addEventListener('dragleave', e => {
+            if (e.relatedTarget === null) dropZone.classList.remove('drag-over');
+        });
+        document.addEventListener('drop', e => {
+            if (!isExternal()) return;
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            vscode.postMessage({ command: 'requestAddTables' });
+        });
+    }
+
+    window.addEventListener('message', ev => {
+        const m = ev.data;
+        if (m && m.command === 'addTables') addTables(m.payload);
+    });
+
     document.getElementById('confirm').onclick = () => {
+        normalizeJoins();
         const tables = order.map(oi => ({
             alias: aliases[oi],
             tableReference: data.tables[oi].tableReference,
@@ -342,7 +615,16 @@ function getHtml(
         const joinsArr = [];
         for (let pos = 1; pos < order.length; pos++) {
             const oi = order[pos];
-            joinsArr.push(joins[oi] || { type: 'CROSS JOIN', conditions: [] });
+            const j = joins[oi] || { type: 'CROSS JOIN', conditions: [] };
+            // Convert internal leftOrig references back to aliases for the builder.
+            joinsArr.push({
+                type: j.type,
+                conditions: (j.conditions || []).map(c => ({
+                    leftAlias: aliases[c.leftOrig],
+                    leftColumn: c.leftColumn,
+                    rightColumn: c.rightColumn
+                }))
+            });
         }
         const aliasMap = order.map(oi => ({
             schema: data.tables[oi].schema,
@@ -353,6 +635,7 @@ function getHtml(
     };
     document.getElementById('cancel').onclick = () => vscode.postMessage({ command: 'cancel' });
 
+    bindExternalDrop();
     render();
 </script>
 </body>

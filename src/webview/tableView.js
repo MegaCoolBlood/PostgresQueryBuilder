@@ -2661,7 +2661,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         mappingTargetTable.value = existingMapping ? existingMapping.targetTable : '';
         mappingTargetColumn.value = existingMapping ? existingMapping.targetColumn : '';
         mappingLabel.value = existingMapping ? (existingMapping.label || '') : '';
-        mappingIsDefault.checked = existingMapping ? existingMapping.isDefault : false;
+        mappingIsDefault.checked = existingMapping ? existingMapping.isDefault : true;
         if (mappingShareWorkspace) {
             mappingShareWorkspace.checked = existingMapping ? (existingMapping.scope === 'workspace') : false;
         }

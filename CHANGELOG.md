@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0
+
+- Die Checkbox **„Set as default (show FK button in cell)"** im Mapping-Dialog der Tabellenansicht ist bei neuen Mappings jetzt standardmäßig aktiviert, sodass der FK-Sprungknopf direkt in der Zelle angezeigt wird.
+- Im **JOIN-Dialog** lässt sich die Reihenfolge der Tabellen jetzt zusätzlich per **Drag & Drop** ändern (neben den Pfeil-Buttons). Eine Tabelle wird am Ziehgriff (☰) gegriffen und an die gewünschte Position gezogen; die bereits konfigurierten Join-Bedingungen bleiben dabei erhalten — auch wenn eine Tabelle an die erste Position (FROM) verschoben wird, wird die Join-Bedingung automatisch der jeweils späteren Tabelle zugeordnet und geht nicht mehr verloren.
+- Im **JOIN-Dialog** lassen sich jetzt **weitere Tabellen hinzufügen**: Über den Bereich „+ Add tables…" (anklicken zum Auswählen aus einer Tabellenliste oder Tabellen aus der Baumansicht darauf ziehen) werden zusätzliche Tabellen ans Ende der Tabellenliste angehängt. Join-Bedingungen werden für die neuen Tabellen automatisch aus vorhandenen Fremdschlüsseln zu den bereits vorhandenen Tabellen vorbelegt; bereits konfigurierte Reihenfolge, Aliase und Bedingungen der vorhandenen Tabellen bleiben unverändert. Bereits enthaltene Tabellen werden übersprungen, Aliase bei Bedarf eindeutig gemacht.
+
 ## 1.0.0
 
 - **Tabelle per Drag & Drop in den Editor ziehen:** Eine Tabelle aus der Tabellen-Baumansicht lässt sich jetzt direkt in einen beliebigen Texteditor ziehen. Beim Ablegen erscheint eine Auswahl mit **Name only**, **Insert**, **Delete**, **Update**, **Select** (Standard) und **Join**; während des Navigierens wird eine Live-Vorschau des erzeugten Statements angezeigt. Nach Bestätigung wird das Statement an der Cursor-Position eingefügt. Alle Statements enthalten sämtliche Spalten der Tabelle und qualifizieren die Spalten mit einem Tabellen-Alias (z. B. `SELECT lei.lei_id ... FROM leistungen lei`). Der Alias wird aus dem Teil des ersten Spaltennamens vor dem ersten Unterstrich abgeleitet (`lei_id` → `lei`) bzw. fällt auf den Tabellennamen zurück. Über einen Stift-Button in der Auswahl lässt sich der Alias pro Tabelle ändern; die Wahl wird gespeichert und beim nächsten Mal wiederverwendet.

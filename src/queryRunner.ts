@@ -181,6 +181,22 @@ export class QueryRunner {
         return { tables: tableData, foreignKeys };
     }
 
+    /**
+     * List all selectable tables as `{ schema, table }`, optionally restricted
+     * to the schemas configured for the table explorer. Used by the JOIN dialog
+     * to let the user add more tables.
+     */
+    async listAllTables(): Promise<Array<{ schema: string; table: string }>> {
+        const rows = await this.connectionManager.queryMetadata(
+            `SELECT table_schema, table_name
+             FROM information_schema.tables
+             WHERE table_type IN ('BASE TABLE', 'FOREIGN')
+               AND table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+             ORDER BY table_schema, table_name`
+        );
+        return rows.map((row: any) => ({ schema: row.table_schema, table: row.table_name }));
+    }
+
     async getPrimaryKeys(schema: string, table: string): Promise<string[]> {
         const rows = await this.connectionManager.queryMetadata(
             `SELECT a.attname
