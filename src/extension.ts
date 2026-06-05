@@ -19,6 +19,11 @@ let columnMappingManager: ColumnMappingManager;
 let statusBarItem: vscode.StatusBarItem;
 let outputChannel: vscode.OutputChannel;
 
+/** Max delay (ms) between two clicks on the same table to count as a double click. */
+const DOUBLE_CLICK_MS = 500;
+/** Tracks the last table click to detect double clicks in the explorer. */
+let lastTableClick: { key: string; time: number } = { key: '', time: 0 };
+
 export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('PostgreSQL Query Builder');
     context.subscriptions.push(outputChannel);
@@ -47,7 +52,17 @@ export function activate(context: vscode.ExtensionContext) {
                 tableExplorer?.refresh();
             }),
             vscode.commands.registerCommand('postgresQueryBuilder.openTable', (schema: string, table: string) => {
-                tableWebViewManager.openTableView(schema, table);
+                // VS Code fires a tree item's command on a single click, but the
+                // data view should only open on a double click. Detect a second
+                // click on the same table within a short window.
+                const now = Date.now();
+                const key = `${schema}.${table}`;
+                if (lastTableClick.key === key && now - lastTableClick.time < DOUBLE_CLICK_MS) {
+                    lastTableClick = { key: '', time: 0 };
+                    tableWebViewManager.openTableView(schema, table);
+                } else {
+                    lastTableClick = { key, time: now };
+                }
             }),
             vscode.commands.registerCommand('postgresQueryBuilder.selectConnection', async () => {
                 try {

@@ -2,6 +2,7 @@
 
 ## 1.1.0
 
+- Die **Datenansicht** öffnet jetzt nur noch beim **Doppelklick** auf eine Tabelle in der Baumansicht (statt beim einfachen Klick), damit das Navigieren/Auswählen in der Tabellenliste nicht mehr versehentlich Tabellen öffnet.
 - Die Checkbox **„Set as default (show FK button in cell)"** im Mapping-Dialog der Tabellenansicht ist bei neuen Mappings jetzt standardmäßig aktiviert, sodass der FK-Sprungknopf direkt in der Zelle angezeigt wird.
 - Im **JOIN-Dialog** lässt sich die Reihenfolge der Tabellen jetzt zusätzlich per **Drag & Drop** ändern (neben den Pfeil-Buttons). Eine Tabelle wird am Ziehgriff (☰) gegriffen und an die gewünschte Position gezogen; die bereits konfigurierten Join-Bedingungen bleiben dabei erhalten — auch wenn eine Tabelle an die erste Position (FROM) verschoben wird, wird die Join-Bedingung automatisch der jeweils späteren Tabelle zugeordnet und geht nicht mehr verloren.
 - Im **JOIN-Dialog** lassen sich jetzt **weitere Tabellen hinzufügen**: Über den Bereich „+ Add tables…" (anklicken zum Auswählen aus einer Tabellenliste oder Tabellen aus der Baumansicht darauf ziehen) werden zusätzliche Tabellen ans Ende der Tabellenliste angehängt. Join-Bedingungen werden für die neuen Tabellen automatisch aus vorhandenen Fremdschlüsseln zu den bereits vorhandenen Tabellen vorbelegt; bereits konfigurierte Reihenfolge, Aliase und Bedingungen der vorhandenen Tabellen bleiben unverändert. Bereits enthaltene Tabellen werden übersprungen, Aliase bei Bedarf eindeutig gemacht.
