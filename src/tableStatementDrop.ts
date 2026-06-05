@@ -289,7 +289,14 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
             return { tables: newDialogTables, fkEdges: edges };
         };
 
-        const result = await showJoinDialog(dialogTables, fkEdges, initialJoins, onAddTables);
+        const onRemoveTable = (schema: string, table: string): void => {
+            const i = currentSet.findIndex(c => c.schema === schema && c.table === table);
+            if (i >= 0) {
+                currentSet.splice(i, 1);
+            }
+        };
+
+        const result = await showJoinDialog(dialogTables, fkEdges, initialJoins, onAddTables, onRemoveTable);
         if (!result) {
             return undefined;
         }

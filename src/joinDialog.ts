@@ -55,7 +55,8 @@ export function showJoinDialog(
     tables: JoinDialogTable[],
     fkEdges: JoinDialogFkEdge[],
     initialJoins: JoinClause[],
-    onAddTables?: () => Promise<JoinDialogAddPayload | undefined>
+    onAddTables?: () => Promise<JoinDialogAddPayload | undefined>,
+    onRemoveTable?: (schema: string, table: string) => void
 ): Promise<JoinDialogResult | undefined> {
     return new Promise<JoinDialogResult | undefined>(resolve => {
         const panel = vscode.window.createWebviewPanel(
@@ -86,6 +87,8 @@ export function showJoinDialog(
                 if (payload && payload.tables.length > 0) {
                     panel.webview.postMessage({ command: 'addTables', payload });
                 }
+            } else if (msg?.command === 'tableRemoved') {
+                onRemoveTable?.(msg.schema, msg.table);
             }
         });
 
@@ -134,6 +137,7 @@ function getHtml(
     .table-row.drag-over { border-color: var(--vscode-focusBorder); border-style: dashed; }
     .drag-handle { cursor: grab; user-select: none; padding: 0 4px; color: var(--vscode-descriptionForeground); }
     .drag-handle:active { cursor: grabbing; }
+    .remove-table { margin-left: auto; }
     .table-row .name { font-weight: 600; }
     .badge { font-size: 0.75em; padding: 1px 6px; border-radius: 8px;
         background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
@@ -312,6 +316,27 @@ function getHtml(
         aliases[origIdx] = value.trim() || aliases[origIdx];
     }
 
+    // Remove the table at the given display position from the join. Its own join
+    // clause is dropped, and any conditions on other tables that reference it are
+    // removed too, so no dangling relationships remain. The original table data
+    // is kept (only the display order changes) so indices stay stable.
+    function removeTable(pos) {
+        if (order.length <= 1 || pos < 0 || pos >= order.length) return;
+        const oi = order[pos];
+        order.splice(pos, 1);
+        delete joins[oi];
+        delete typeByOrig[oi];
+        Object.keys(joins).forEach(k => {
+            const j = joins[k];
+            if (j && j.conditions) {
+                j.conditions = j.conditions.filter(c => c.leftOrig !== oi);
+            }
+        });
+        const t = data.tables[oi];
+        vscode.postMessage({ command: 'tableRemoved', schema: t.schema, table: t.table });
+        render();
+    }
+
     function ensureJoin(origIdx) {
         if (!joins[origIdx]) joins[origIdx] = { type: 'INNER JOIN', conditions: [] };
         return joins[origIdx];
@@ -373,7 +398,9 @@ function getHtml(
                 '<button data-down="' + pos + '" ' + (pos === order.length - 1 ? 'disabled' : '') + '>\u2193</button>' +
                 '<span class="badge">' + (pos === 0 ? 'FROM' : 'JOIN') + '</span>' +
                 '<span class="name">' + escapeHtml(t.schema + '.' + t.table) + '</span>' +
-                ' as <input class="alias" data-alias="' + oi + '" value="' + escapeHtml(aliases[oi]) + '">';
+                ' as <input class="alias" data-alias="' + oi + '" value="' + escapeHtml(aliases[oi]) + '">' +
+                '<button class="remove-table" data-remove="' + pos + '" title="Remove table from join" ' +
+                (order.length <= 1 ? 'disabled' : '') + '>\u2715</button>';
             tablesEl.appendChild(row);
         });
 
@@ -424,6 +451,7 @@ function getHtml(
     function bind() {
         document.querySelectorAll('[data-up]').forEach(b => b.onclick = () => move(+b.dataset.up, -1));
         document.querySelectorAll('[data-down]').forEach(b => b.onclick = () => move(+b.dataset.down, 1));
+        document.querySelectorAll('[data-remove]').forEach(b => b.onclick = () => removeTable(+b.dataset.remove));
         bindDragAndDrop();
         document.querySelectorAll('[data-alias]').forEach(inp => {
             inp.onchange = () => { setAlias(+inp.dataset.alias, inp.value); render(); };
@@ -557,7 +585,17 @@ function getHtml(
         });
         let added = false;
         (payload.tables || []).forEach(nt => {
-            if (data.tables.some(t => t.schema === nt.schema && t.table === nt.table)) return;
+            const existingIdx = data.tables.findIndex(t => t.schema === nt.schema && t.table === nt.table);
+            if (existingIdx >= 0) {
+                // Table data already exists. If it was previously removed (not in
+                // the current order), re-add it to the end; otherwise skip it.
+                if (order.indexOf(existingIdx) === -1) {
+                    order.push(existingIdx);
+                    computeAutoJoin(existingIdx);
+                    added = true;
+                }
+                return;
+            }
             let alias = nt.alias || nt.table;
             const used = new Set(aliases);
             if (used.has(alias)) {
