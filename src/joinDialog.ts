@@ -15,6 +15,8 @@ export interface JoinDialogFkEdge {
     fromColumn: string;
     toIndex: number;
     toColumn: string;
+    /** Extra literal conditions; `tableIndex` identifies the owning table. */
+    extraConditions?: Array<{ tableIndex: number; column: string; operator: string; value: string }>;
 }
 
 /** Foreign-key edge identified by schema/table/column (order-independent). */
@@ -25,6 +27,17 @@ export interface JoinDialogIdentityEdge {
     toSchema: string;
     toTable: string;
     toColumn: string;
+    /**
+     * Extra literal conditions (from a custom mapping) for the join's ON clause.
+     * Each references a column on one of the two tables (by schema/table).
+     */
+    extraConditions?: Array<{
+        schema: string;
+        table: string;
+        column: string;
+        operator: string;
+        value: string;
+    }>;
 }
 
 /** Payload returned by `onAddTables` describing tables to append to the dialog. */
@@ -155,6 +168,7 @@ function getHtml(
     }
     input.alias { width: 90px; }
     .cond-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+    .cond-literal .lit-text { font-family: var(--vscode-editor-font-family, monospace); opacity: 0.85; }
     .join-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
     pre {
         background: var(--vscode-textCodeBlock-background); padding: 10px; border-radius: 4px;
@@ -215,14 +229,19 @@ function getHtml(
     data.joins.forEach((j, idx) => {
         const oi = idx + 1;
         typeByOrig[oi] = j.type;
-        joins[oi] = {
-            type: j.type,
-            conditions: (j.conditions || []).map(c => ({
-                leftOrig: aliases.indexOf(c.leftAlias),
-                leftColumn: c.leftColumn,
-                rightColumn: c.rightColumn
-            })).filter(c => c.leftOrig >= 0)
-        };
+        const conditions = (j.conditions || []).map(c => ({
+            leftOrig: aliases.indexOf(c.leftAlias),
+            leftColumn: c.leftColumn,
+            rightColumn: c.rightColumn
+        })).filter(c => c.leftOrig >= 0);
+        // partnerOrig: the table this join attaches to (from the equality cond).
+        const partnerOrig = conditions.length ? conditions[0].leftOrig : -1;
+        const literals = (j.literalConditions || []).map(lc => {
+            const litOrig = aliases.indexOf(lc.literalAlias);
+            const otherOrig = (litOrig === oi) ? partnerOrig : oi;
+            return { litOrig, otherOrig, litColumn: lc.literalColumn, operator: lc.operator, value: lc.value };
+        }).filter(l => l.litOrig >= 0 && l.otherOrig >= 0);
+        joins[oi] = { type: j.type, conditions, literals };
     });
 
     // All known FK edges as schema/table/column identities, so they survive
@@ -232,9 +251,14 @@ function getHtml(
         const from = data.tables[e.fromIndex];
         const to = data.tables[e.toIndex];
         if (from && to) {
+            const extraConditions = (e.extraConditions || []).map(ec => {
+                const t = data.tables[ec.tableIndex];
+                return t ? { schema: t.schema, table: t.table, column: ec.column, operator: ec.operator, value: ec.value } : null;
+            }).filter(Boolean);
             identityEdges.push({
                 fromSchema: from.schema, fromTable: from.table, fromColumn: e.fromColumn,
-                toSchema: to.schema, toTable: to.table, toColumn: e.toColumn
+                toSchema: to.schema, toTable: to.table, toColumn: e.toColumn,
+                extraConditions
             });
         }
     });
@@ -255,6 +279,7 @@ function getHtml(
     // lost when a table is moved (e.g. into the FROM slot).
     function normalizeJoins() {
         const links = [];
+        const litLinks = [];
         Object.keys(joins).forEach(k => {
             const oi = +k;
             const j = joins[oi];
@@ -264,10 +289,15 @@ function getHtml(
                 if (c.leftOrig == null || c.leftOrig < 0 || c.leftOrig === oi) return;
                 links.push({ a: c.leftOrig, colA: c.leftColumn, b: oi, colB: c.rightColumn });
             });
+            (j.literals || []).forEach(l => {
+                if (l.litOrig == null || l.litOrig < 0 || l.otherOrig == null || l.otherOrig < 0) return;
+                litLinks.push({ litOrig: l.litOrig, otherOrig: l.otherOrig, litColumn: l.litColumn, operator: l.operator, value: l.value });
+            });
         });
 
         const rebuilt = {};
         const seen = new Set();
+        const litSeen = new Set();
         for (let pos = 1; pos < order.length; pos++) {
             const oi = order[pos];
             const earlier = new Set(order.slice(0, pos));
@@ -282,7 +312,20 @@ function getHtml(
                 seen.add(sig);
                 conds.push({ leftOrig: partner, leftColumn: partnerCol, rightColumn: myCol });
             }
-            rebuilt[oi] = { type: typeByOrig[oi] || 'INNER JOIN', conditions: conds };
+            const lits = [];
+            for (const ll of litLinks) {
+                // Attach to whichever endpoint comes later (this position) when
+                // the other endpoint is already listed earlier.
+                let belongs = false;
+                if (ll.litOrig === oi && earlier.has(ll.otherOrig)) belongs = true;
+                else if (ll.otherOrig === oi && earlier.has(ll.litOrig)) belongs = true;
+                if (!belongs) continue;
+                const sig = oi + '|' + ll.litOrig + '|' + ll.otherOrig + '|' + ll.litColumn + '|' + ll.operator + '|' + ll.value;
+                if (litSeen.has(sig)) continue;
+                litSeen.add(sig);
+                lits.push({ litOrig: ll.litOrig, otherOrig: ll.otherOrig, litColumn: ll.litColumn, operator: ll.operator, value: ll.value });
+            }
+            rebuilt[oi] = { type: typeByOrig[oi] || 'INNER JOIN', conditions: conds, literals: lits };
         }
         joins = rebuilt;
     }
@@ -338,7 +381,8 @@ function getHtml(
     }
 
     function ensureJoin(origIdx) {
-        if (!joins[origIdx]) joins[origIdx] = { type: 'INNER JOIN', conditions: [] };
+        if (!joins[origIdx]) joins[origIdx] = { type: 'INNER JOIN', conditions: [], literals: [] };
+        if (!joins[origIdx].literals) joins[origIdx].literals = [];
         return joins[origIdx];
     }
 
@@ -352,6 +396,11 @@ function getHtml(
             for (const c of t.columns) opts.push({ orig: oi, alias: a, column: c });
         }
         return opts;
+    }
+
+    function fmtLiteral(value) {
+        if (/^-?\\d+(\\.\\d+)?$/.test(value)) return value;
+        return "'" + String(value).replace(/'/g, "''") + "'";
     }
 
     function buildPreview() {
@@ -373,9 +422,11 @@ function getHtml(
                 lines.push('CROSS JOIN ' + t.tableReference + ' ' + t.alias);
                 continue;
             }
-            const on = j.conditions.length
-                ? j.conditions.map(c => t.alias + '.' + c.rightColumn + ' = ' + aliases[c.leftOrig] + '.' + c.leftColumn).join(' AND ')
-                : '';
+            const parts = j.conditions.map(c => t.alias + '.' + c.rightColumn + ' = ' + aliases[c.leftOrig] + '.' + c.leftColumn);
+            (j.literals || []).forEach(l => {
+                parts.push(aliases[l.litOrig] + '.' + l.litColumn + ' ' + l.operator + ' ' + fmtLiteral(l.value));
+            });
+            const on = parts.join(' AND ');
             lines.push(j.type + ' ' + t.tableReference + ' ' + t.alias + ' ON ' + on);
         }
         return 'SELECT\\n' + selectList + '\\n' + lines.join('\\n') + ';';
@@ -437,6 +488,12 @@ function getHtml(
                         '<button data-rmcond="' + oi + ':' + ci + '">Remove</button>' +
                         '</div>';
                 });
+                (j.literals || []).forEach((l, li) => {
+                    html += '<div class="cond-row cond-literal" title="Condition from a custom mapping">' +
+                        '<span class="lit-text">' + escapeHtml(aliases[l.litOrig] + '.' + l.litColumn + ' ' + l.operator + ' ' + fmtLiteral(l.value)) + '</span>' +
+                        '<button data-rmlit="' + oi + ':' + li + '">Remove</button>' +
+                        '</div>';
+                });
                 html += '<div class="cond-row"><button data-addcond="' + oi + '">+ Add condition</button></div>';
             }
 
@@ -484,6 +541,11 @@ function getHtml(
         document.querySelectorAll('[data-rmcond]').forEach(b => b.onclick = () => {
             const [oi, ci] = b.dataset.rmcond.split(':').map(Number);
             joins[oi].conditions.splice(ci, 1);
+            render();
+        });
+        document.querySelectorAll('[data-rmlit]').forEach(b => b.onclick = () => {
+            const [oi, li] = b.dataset.rmlit.split(':').map(Number);
+            if (joins[oi] && joins[oi].literals) joins[oi].literals.splice(li, 1);
             render();
         });
         document.querySelectorAll('[data-addcond]').forEach(b => b.onclick = () => {
@@ -549,7 +611,7 @@ function getHtml(
             const ti = origIdxByName(e.toSchema, e.toTable);
             return (fi === origIdx && earlier.has(ti)) || (ti === origIdx && earlier.has(fi));
         });
-        if (!conn.length) { joins[origIdx] = { type: 'CROSS JOIN', conditions: [] }; typeByOrig[origIdx] = 'CROSS JOIN'; return; }
+        if (!conn.length) { joins[origIdx] = { type: 'CROSS JOIN', conditions: [], literals: [] }; typeByOrig[origIdx] = 'CROSS JOIN'; return; }
         let partner = -1, partnerPos = Infinity;
         for (const e of conn) {
             const fi = origIdxByName(e.fromSchema, e.fromTable);
@@ -572,8 +634,17 @@ function getHtml(
             // Partner holds the FK column, new table is referenced.
             return { leftOrig: partner, leftColumn: e.fromColumn, rightColumn: e.toColumn };
         });
+        const literals = conn.filter(e => {
+            const fi = origIdxByName(e.fromSchema, e.fromTable);
+            const ti = origIdxByName(e.toSchema, e.toTable);
+            const other = (fi === origIdx) ? ti : fi;
+            return other === partner;
+        }).flatMap(e => (e.extraConditions || []).map(ec => {
+            const litOrig = origIdxByName(ec.schema, ec.table);
+            return { litOrig, otherOrig: (litOrig === origIdx ? partner : origIdx), litColumn: ec.column, operator: ec.operator, value: ec.value };
+        }).filter(l => l.litOrig >= 0));
         typeByOrig[origIdx] = 'INNER JOIN';
-        joins[origIdx] = { type: 'INNER JOIN', conditions };
+        joins[origIdx] = { type: 'INNER JOIN', conditions, literals };
     }
 
     // Append tables (and their FK edges) pushed by the extension after the user
@@ -638,7 +709,7 @@ function getHtml(
         const joinsArr = [];
         for (let pos = 1; pos < order.length; pos++) {
             const oi = order[pos];
-            const j = joins[oi] || { type: 'CROSS JOIN', conditions: [] };
+            const j = joins[oi] || { type: 'CROSS JOIN', conditions: [], literals: [] };
             // Convert internal leftOrig references back to aliases for the builder.
             joinsArr.push({
                 type: j.type,
@@ -646,6 +717,12 @@ function getHtml(
                     leftAlias: aliases[c.leftOrig],
                     leftColumn: c.leftColumn,
                     rightColumn: c.rightColumn
+                })),
+                literalConditions: (j.literals || []).map(l => ({
+                    literalAlias: aliases[l.litOrig],
+                    literalColumn: l.litColumn,
+                    operator: l.operator,
+                    value: l.value
                 }))
             });
         }

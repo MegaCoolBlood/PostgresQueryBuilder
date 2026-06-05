@@ -3,6 +3,7 @@ import { QueryRunner } from './queryRunner';
 import { TreeNode } from './tableExplorer';
 import { StatementKind, buildStatement, deriveQualifier, toPreview, autoJoinClauses, JoinFkEdge } from './statementBuilder';
 import { showJoinDialog, JoinDialogTable, JoinDialogIdentityEdge, JoinDialogAddPayload } from './joinDialog';
+import { ColumnMappingManager } from './columnMappingManager';
 
 export { StatementKind, buildStatement, deriveQualifier } from './statementBuilder';
 
@@ -100,7 +101,8 @@ export class TableDragAndDropController implements vscode.TreeDragAndDropControl
 export class TableStatementDropProvider implements vscode.DocumentDropEditProvider {
     constructor(
         private readonly queryRunner: QueryRunner,
-        private readonly qualifierStore: QualifierStore
+        private readonly qualifierStore: QualifierStore,
+        private readonly columnMappingManager?: ColumnMappingManager
     ) {}
 
     async provideDocumentDropEdits(
@@ -186,6 +188,69 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
         await vscode.workspace.applyEdit(edit);
     }
 
+    /**
+     * Build join edges derived from user-defined custom column mappings, for the
+     * given set of join tables. A mapping `A.col -> B.col` becomes an edge when
+     * both A and B are part of the join. Columns are returned in their quoted
+     * form (resolved from the table's column list) so they match the FK edges.
+     */
+    private customMappingEdges(
+        joinTables: ReadonlyArray<{ schema: string; table: string; columns: string[]; rawColumns: string[] }>
+    ): JoinDialogIdentityEdge[] {
+        if (!this.columnMappingManager) {
+            return [];
+        }
+        const find = (schema: string, table: string) =>
+            joinTables.find(t => t.schema === schema && t.table === table);
+        const quoteCol = (
+            t: { columns: string[]; rawColumns: string[] },
+            rawCol: string
+        ): string | undefined => {
+            const i = t.rawColumns.indexOf(rawCol);
+            return i >= 0 ? t.columns[i] : undefined;
+        };
+
+        const edges: JoinDialogIdentityEdge[] = [];
+        const seen = new Set<string>();
+        for (const m of this.columnMappingManager.getAllMappings()) {
+            const src = find(m.sourceSchema, m.sourceTable);
+            const tgt = find(m.targetSchema, m.targetTable);
+            if (!src || !tgt) {
+                continue;
+            }
+            const fromCol = quoteCol(src, m.sourceColumn);
+            const toCol = quoteCol(tgt, m.targetColumn);
+            if (!fromCol || !toCol) {
+                continue;
+            }
+            const sig = `${m.sourceSchema}.${m.sourceTable}.${fromCol}->${m.targetSchema}.${m.targetTable}.${toCol}`;
+            if (seen.has(sig)) {
+                continue;
+            }
+            seen.add(sig);
+            // A mapping condition references a column on the mapping's source
+            // table. Resolve it to its quoted form so it matches the join columns.
+            const extraConditions = (m.conditions ?? [])
+                .map(cond => {
+                    const col = quoteCol(src, cond.column);
+                    return col
+                        ? { schema: m.sourceSchema, table: m.sourceTable, column: col, operator: cond.operator, value: cond.value }
+                        : undefined;
+                })
+                .filter((c): c is NonNullable<typeof c> => !!c);
+            edges.push({
+                fromSchema: m.sourceSchema,
+                fromTable: m.sourceTable,
+                fromColumn: fromCol,
+                toSchema: m.targetSchema,
+                toTable: m.targetTable,
+                toColumn: toCol,
+                extraConditions: extraConditions.length ? extraConditions : undefined
+            });
+        }
+        return edges;
+    }
+
     private async pickJoinStatement(tables: DraggedTable[]): Promise<string | undefined> {
         let data: Awaited<ReturnType<QueryRunner['getMultiTableJoinData']>>;
         try {
@@ -194,7 +259,6 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
             vscode.window.showErrorMessage(`Failed to load tables for JOIN: ${err?.message || err}`);
             return undefined;
         }
-
         const dialogTables: JoinDialogTable[] = data.tables.map(t => ({
             schema: t.schema,
             table: t.table,
@@ -226,6 +290,35 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
                 toColumn: fk.toColumn
             }))
             .filter(e => e.fromIndex >= 0 && e.toIndex >= 0);
+
+        // Also derive edges from user-defined custom column mappings.
+        for (const ce of this.customMappingEdges(data.tables)) {
+            const fromIndex = indexOf(ce.fromSchema, ce.fromTable);
+            const toIndex = indexOf(ce.toSchema, ce.toTable);
+            if (fromIndex < 0 || toIndex < 0) {
+                continue;
+            }
+            const dup = fkEdges.some(e =>
+                e.fromIndex === fromIndex && e.toIndex === toIndex
+                && e.fromColumn === ce.fromColumn && e.toColumn === ce.toColumn);
+            if (!dup) {
+                const extraConditions = (ce.extraConditions ?? [])
+                    .map(ec => {
+                        const ti = indexOf(ec.schema, ec.table);
+                        return ti >= 0
+                            ? { tableIndex: ti, column: ec.column, operator: ec.operator, value: ec.value }
+                            : undefined;
+                    })
+                    .filter((c): c is NonNullable<typeof c> => !!c);
+                fkEdges.push({
+                    fromIndex,
+                    fromColumn: ce.fromColumn,
+                    toIndex,
+                    toColumn: ce.toColumn,
+                    extraConditions: extraConditions.length ? extraConditions : undefined
+                });
+            }
+        }
 
         const initialJoins = autoJoinClauses(
             dialogTables.map(t => t.alias),
@@ -284,6 +377,16 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
                 toTable: fk.toTable,
                 toColumn: fk.toColumn
             }));
+
+            // Include edges derived from custom column mappings over the full set.
+            for (const ce of this.customMappingEdges(combinedData.tables)) {
+                const dup = edges.some(e =>
+                    e.fromSchema === ce.fromSchema && e.fromTable === ce.fromTable && e.fromColumn === ce.fromColumn
+                    && e.toSchema === ce.toSchema && e.toTable === ce.toTable && e.toColumn === ce.toColumn);
+                if (!dup) {
+                    edges.push(ce);
+                }
+            }
 
             currentSet.push(...newOnes);
             return { tables: newDialogTables, fkEdges: edges };

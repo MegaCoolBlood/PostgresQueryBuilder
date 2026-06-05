@@ -105,9 +105,32 @@ export interface JoinCondition {
     rightColumn: string;
 }
 
+/**
+ * A literal join condition of the form `alias.column <operator> <value>`,
+ * derived from a custom column mapping's extra conditions.
+ */
+export interface JoinLiteralCondition {
+    /** Alias of the table the column belongs to. */
+    literalAlias: string;
+    /** Quoted column on that table. */
+    literalColumn: string;
+    operator: string;
+    value: string;
+}
+
 export interface JoinClause {
     type: JoinType;
     conditions: JoinCondition[];
+    /** Extra literal conditions (e.g. from custom mappings) added to the ON clause. */
+    literalConditions?: JoinLiteralCondition[];
+}
+
+/** Format a custom-mapping condition value as a SQL literal. */
+function formatLiteralValue(value: string): string {
+    if (/^-?\d+(\.\d+)?$/.test(value)) {
+        return value;
+    }
+    return `'${String(value).replace(/'/g, "''")}'`;
 }
 
 /**
@@ -140,11 +163,13 @@ export function buildJoinSelect(tables: JoinTableSpec[], joins: JoinClause[]): s
             lines.push(`CROSS JOIN ${t.tableReference} ${t.alias}`);
             continue;
         }
-        const on = join.conditions.length
-            ? join.conditions
-                  .map(c => `${t.alias}.${c.rightColumn} = ${c.leftAlias}.${c.leftColumn}`)
-                  .join(' AND ')
-            : '';
+        const parts = join.conditions.map(
+            c => `${t.alias}.${c.rightColumn} = ${c.leftAlias}.${c.leftColumn}`
+        );
+        for (const lc of join.literalConditions ?? []) {
+            parts.push(`${lc.literalAlias}.${lc.literalColumn} ${lc.operator} ${formatLiteralValue(lc.value)}`);
+        }
+        const on = parts.join(' AND ');
         lines.push(`${join.type} ${t.tableReference} ${t.alias} ON ${on}`);
     }
 
@@ -160,6 +185,11 @@ export interface JoinFkEdge {
     toIndex: number;
     /** Quoted referenced column on the `toIndex` table. */
     toColumn: string;
+    /**
+     * Extra literal conditions (from a custom mapping) to add to the join's ON
+     * clause. `tableIndex` identifies the table the column belongs to.
+     */
+    extraConditions?: Array<{ tableIndex: number; column: string; operator: string; value: string }>;
 }
 
 /**
@@ -209,7 +239,16 @@ export function autoJoinClauses(
                 return { leftAlias: aliases[partner], leftColumn: e.fromColumn, rightColumn: e.toColumn };
             });
 
-        clauses.push({ type: defaultType, conditions });
+        const literalConditions: JoinLiteralCondition[] = connecting
+            .filter(e => (e.fromIndex === i ? e.toIndex : e.fromIndex) === partner)
+            .flatMap(e => (e.extraConditions ?? []).map(ec => ({
+                literalAlias: aliases[ec.tableIndex],
+                literalColumn: ec.column,
+                operator: ec.operator,
+                value: ec.value
+            })));
+
+        clauses.push({ type: defaultType, conditions, literalConditions });
     }
 
     return clauses;

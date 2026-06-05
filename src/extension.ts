@@ -184,7 +184,7 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(
             vscode.languages.registerDocumentDropEditProvider(
                 '*',
-                new TableStatementDropProvider(dropQueryRunner, qualifierStore)
+                new TableStatementDropProvider(dropQueryRunner, qualifierStore, columnMappingManager)
             )
         );
 
