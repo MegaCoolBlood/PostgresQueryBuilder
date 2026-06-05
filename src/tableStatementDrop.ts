@@ -491,7 +491,9 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
                     label,
                     statementKind: kind,
                     description: kind === DEFAULT_KIND ? '(default)' : undefined,
-                    detail: toPreview(buildText(kind))
+                    detail: kind === 'join'
+                        ? 'Opens the interactive JOIN builder (add tables, set conditions)'
+                        : toPreview(buildText(kind))
                 }));
                 const active = qp.items.find(i => i.statementKind === activeKind);
                 if (active) {
@@ -524,14 +526,21 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
                 qp.show();
             });
 
-            qp.onDidAccept(() => {
+            qp.onDidAccept(async () => {
                 const selected = qp.selectedItems[0] ?? qp.activeItems[0];
                 if (!selected) {
                     return;
                 }
                 settled = true;
-                const text = buildText(selected.statementKind);
                 qp.dispose();
+                if (selected.statementKind === 'join') {
+                    // Open the interactive JOIN builder seeded with this table so
+                    // the user can add more tables and configure the join.
+                    const sql = await this.pickJoinStatement([{ schema, table }]);
+                    resolve(sql);
+                    return;
+                }
+                const text = buildText(selected.statementKind);
                 resolve(text);
             });
 
