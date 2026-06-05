@@ -252,6 +252,10 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
     }
 
     private async pickJoinStatement(tables: DraggedTable[]): Promise<string | undefined> {
+        // The tables that opened this dialog are already part of the join, so
+        // clear any leftover drag state to keep the first "Add tables…" click
+        // from re-consuming them (which would otherwise be a no-op).
+        consumeLastDraggedTables();
         let data: Awaited<ReturnType<QueryRunner['getMultiTableJoinData']>>;
         try {
             data = await this.queryRunner.getMultiTableJoinData(tables);
