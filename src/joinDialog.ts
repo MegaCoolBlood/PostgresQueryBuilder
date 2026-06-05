@@ -181,7 +181,7 @@ function getHtml(
 
     <div class="section-title">Tables (order)</div>
     <div id="tables"></div>
-    <div id="dropZone">+ Add tables… (click to choose, or drag tables from the tree here)</div>
+    <div id="dropZone">+ Add tables…</div>
 
     <div class="section-title">Joins</div>
     <div id="joins"></div>
@@ -613,27 +613,12 @@ function getHtml(
         if (added) render();
     }
 
-    function bindExternalDrop() {
+    // Tree → webview native drag events are not delivered by VS Code, so adding
+    // tables is click-driven: clicking the zone asks the extension to show a
+    // table picker (which also picks up any just-dragged tree selection).
+    function bindAddTables() {
         const dropZone = document.getElementById('dropZone');
         dropZone.addEventListener('click', () => {
-            vscode.postMessage({ command: 'requestAddTables' });
-        });
-        const isExternal = () => dragFromPos === null;
-        ['dragenter', 'dragover'].forEach(ev => {
-            document.addEventListener(ev, e => {
-                if (!isExternal()) return;
-                e.preventDefault();
-                if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-                dropZone.classList.add('drag-over');
-            });
-        });
-        document.addEventListener('dragleave', e => {
-            if (e.relatedTarget === null) dropZone.classList.remove('drag-over');
-        });
-        document.addEventListener('drop', e => {
-            if (!isExternal()) return;
-            e.preventDefault();
-            dropZone.classList.remove('drag-over');
             vscode.postMessage({ command: 'requestAddTables' });
         });
     }
@@ -673,7 +658,7 @@ function getHtml(
     };
     document.getElementById('cancel').onclick = () => vscode.postMessage({ command: 'cancel' });
 
-    bindExternalDrop();
+    bindAddTables();
     render();
 </script>
 </body>
