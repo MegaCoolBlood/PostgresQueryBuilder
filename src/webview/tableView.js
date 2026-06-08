@@ -1,5 +1,20 @@
 const DEFAULT_THOUSAND_SEPARATOR = ' ';
 
+// Convert a raw cell value to its canonical string representation.
+// JSON/JSONB columns are parsed by the pg driver into JS objects/arrays;
+// String() would render them as "[object Object]", so stringify them as JSON.
+function cellToString(value) {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'object') {
+        try {
+            return JSON.stringify(value);
+        } catch {
+            return String(value);
+        }
+    }
+    return String(value);
+}
+
 function escapeSqlString(value) {
     return String(value).replace(/'/g, "''");
 }
@@ -1450,7 +1465,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 html += `<td class="row-num-cell">${rowNum}</td>`;
                 html += `<td class="actions-cell"><button class="btn btn-danger" onclick="removeDuplicatedRow(${w.dIdx})">✕</button></td>`;
                 columns.forEach(col => {
-                    const val = row[col.name] !== null && row[col.name] !== undefined ? String(row[col.name]) : '';
+                    const val = row[col.name] !== null && row[col.name] !== undefined ? cellToString(row[col.name]) : '';
                     html += `<td contenteditable="true" data-dup="${w.dIdx}" data-col="${escapeAttr(col.name)}">${escapeHtml(val)}</td>`;
                 });
                 html += '</tr>';
@@ -1494,7 +1509,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 const displayVal = currentVal === null ? '<span class="null-value">NULL</span>' : (
                     getColumnFilterType(col.dataType) === 'numeric'
                         ? escapeHtml(formatNumberDisplay(currentVal, thousandSeparator))
-                        : escapeHtml(String(currentVal))
+                        : escapeHtml(cellToString(currentVal))
                 );
 
                 const fk = foreignKeys.find(f => f.column === col.name);
@@ -1502,13 +1517,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 let fkBtn = '';
                 if (defaultCustomMapping && currentVal !== null && currentVal !== undefined) {
                     // Custom mapping overrides or supplements FK button
-                    fkBtn = `<button class="fk-btn custom-fk-btn" data-ref-schema="${escapeAttr(defaultCustomMapping.targetSchema)}" data-ref-table="${escapeAttr(defaultCustomMapping.targetTable)}" data-ref-column="${escapeAttr(defaultCustomMapping.targetColumn)}" data-value="${escapeAttr(String(currentVal))}" title="${escapeAttr(defaultCustomMapping.label || defaultCustomMapping.targetSchema + '.' + defaultCustomMapping.targetTable)}">&#8599;</button>`;
+                    fkBtn = `<button class="fk-btn custom-fk-btn" data-ref-schema="${escapeAttr(defaultCustomMapping.targetSchema)}" data-ref-table="${escapeAttr(defaultCustomMapping.targetTable)}" data-ref-column="${escapeAttr(defaultCustomMapping.targetColumn)}" data-value="${escapeAttr(cellToString(currentVal))}" title="${escapeAttr(defaultCustomMapping.label || defaultCustomMapping.targetSchema + '.' + defaultCustomMapping.targetTable)}">&#8599;</button>`;
                 } else if (fk && currentVal !== null && currentVal !== undefined) {
-                    fkBtn = `<button class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(String(currentVal))}" title="Open ${fk.refSchema}.${fk.refTable}">&#8599;</button>`;
+                    fkBtn = `<button class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(cellToString(currentVal))}" title="Open ${fk.refSchema}.${fk.refTable}">&#8599;</button>`;
                 }
                 const editableAttr = !isDeleted ? 'true' : 'false';
                 const cellExtraClass = fkBtn ? ' has-fk-btn' : '';
-                html += `<td class="${cellClass}${cellExtraClass}" data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : String(originalVal))}"><span class="cell-content" contenteditable="${editableAttr}">${displayVal}</span>${fkBtn}</td>`;
+                html += `<td class="${cellClass}${cellExtraClass}" data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}"><span class="cell-content" contenteditable="${editableAttr}">${displayVal}</span>${fkBtn}</td>`;
             });
             html += '</tr>';
 
@@ -2417,7 +2432,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             } else if (filterType === 'numeric') {
                 displayVal = formatNumberDisplay(currentVal, thousandSeparator);
             } else {
-                displayVal = String(currentVal);
+                displayVal = cellToString(currentVal);
             }
 
             const lineCount = isNull ? 1 : Math.min(15, Math.max(1, displayVal.split('\n').length));
@@ -2434,7 +2449,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     ' data-ref-schema="' + escapeAttr(defaultMapping.targetSchema) + '"' +
                     ' data-ref-table="' + escapeAttr(defaultMapping.targetTable) + '"' +
                     ' data-ref-column="' + escapeAttr(defaultMapping.targetColumn) + '"' +
-                    ' data-value="' + escapeAttr(String(currentVal)) + '"' +
+                    ' data-value="' + escapeAttr(cellToString(currentVal)) + '"' +
                     ' title="' + escapeAttr(defaultMapping.label || (defaultMapping.targetSchema + '.' + defaultMapping.targetTable)) + '"' +
                     '>&#8599; Jump</button>';
             } else if (fk && !isNull) {
@@ -2442,7 +2457,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     ' data-ref-schema="' + escapeAttr(fk.refSchema) + '"' +
                     ' data-ref-table="' + escapeAttr(fk.refTable) + '"' +
                     ' data-ref-column="' + escapeAttr(fk.refColumn) + '"' +
-                    ' data-value="' + escapeAttr(String(currentVal)) + '"' +
+                    ' data-value="' + escapeAttr(cellToString(currentVal)) + '"' +
                     ' title="Open ' + escapeAttr(fk.refSchema + '.' + fk.refTable) + '"' +
                     '>&#8599; Open</button>';
             }
@@ -2550,7 +2565,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const finalValue = newValue === '' ? null : newValue;
 
         // Compare against original, accounting for stringification
-        const originalStr = (originalVal === null || originalVal === undefined) ? null : String(originalVal);
+        const originalStr = (originalVal === null || originalVal === undefined) ? null : cellToString(originalVal);
         const finalStr = finalValue === null ? null : String(finalValue);
 
         const modKey = rowIdx + ':' + colName;
