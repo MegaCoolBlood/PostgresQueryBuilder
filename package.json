@@ -96,6 +96,11 @@
         "command": "postgresQueryBuilder.manageCustomMappings",
         "title": "Manage Custom Column Mappings...",
         "category": "PostgreSQL"
+      },
+      {
+        "command": "postgresQueryBuilder.viewDataFromSelect",
+        "title": "View Data",
+        "category": "PostgreSQL"
       }
     ],
     "menus": {
@@ -109,6 +114,13 @@
           "command": "postgresQueryBuilder.selectConnection",
           "when": "view == postgresTableExplorer",
           "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "postgresQueryBuilder.viewDataFromSelect",
+          "when": "editorTextFocus && resourceLangId == sql",
+          "group": "navigation@9"
         }
       ]
     },

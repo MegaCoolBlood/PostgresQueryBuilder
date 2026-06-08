@@ -10,12 +10,14 @@ import { ColumnMappingManager } from './columnMappingManager';
 import { ManageMappingsPanel } from './manageMappingsPanel';
 import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore } from './tableStatementDrop';
+import { ViewDataFromSelect } from './viewDataFromSelect';
 let connectionManager: ConnectionManager;
 let tableExplorer: TableExplorerProvider;
 let tableWebViewManager: TableWebViewManager;
 let sqlEditorManager: SqlEditorManager;
 let modifyHistoryStore: ModifyHistoryStore;
 let columnMappingManager: ColumnMappingManager;
+let viewDataFromSelect: ViewDataFromSelect;
 let statusBarItem: vscode.StatusBarItem;
 let outputChannel: vscode.OutputChannel;
 
@@ -151,6 +153,14 @@ export function activate(context: vscode.ExtensionContext) {
             }),
             vscode.commands.registerCommand('postgresQueryBuilder.manageCustomMappings', () => {
                 ManageMappingsPanel.show(context, columnMappingManager);
+            }),
+            vscode.commands.registerCommand('postgresQueryBuilder.viewDataFromSelect', async () => {
+                try {
+                    await viewDataFromSelect.run(vscode.window.activeTextEditor);
+                } catch (err: any) {
+                    outputChannel.appendLine(`[viewDataFromSelect] ${err?.stack || err}`);
+                    vscode.window.showErrorMessage(`View Data failed: ${err?.message || err}`);
+                }
             })
         );
 
@@ -160,6 +170,7 @@ export function activate(context: vscode.ExtensionContext) {
         columnMappingManager = new ColumnMappingManager(context);
         tableWebViewManager = new TableWebViewManager(context, connectionManager, columnMappingManager, modifyHistoryStore);
         sqlEditorManager = new SqlEditorManager(context, connectionManager, modifyHistoryStore);
+        viewDataFromSelect = new ViewDataFromSelect(context, connectionManager, tableWebViewManager);
 
         // Status bar
         statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);

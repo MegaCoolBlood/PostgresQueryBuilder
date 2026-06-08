@@ -487,6 +487,128 @@ export class TableWebViewManager {
             this.pendingFilters.set(key, { column, value: String(value) });
             await this.openTableView(schema, table);
         }
+    }
 
+    /**
+     * Open the data viewer in read-only "custom query" mode for an ad-hoc SELECT
+     * (e.g. the "View Data" command run inside a procedure body). The panel runs
+     * the given SQL and renders the result grid; table editing is disabled.
+     *
+     * @param sql The runnable SELECT statement.
+     * @param title A short label shown in the toolbar.
+     * @param viewColumn Where to place the panel (defaults to a side-by-side split).
+     */
+    openCustomQueryView(sql: string, title: string, viewColumn: vscode.ViewColumn = vscode.ViewColumn.Beside): void {
+        const panel = vscode.window.createWebviewPanel(
+            'postgresTableView',
+            title,
+            viewColumn,
+            {
+                enableScripts: true,
+                retainContextWhenHidden: true,
+                localResourceRoots: [
+                    vscode.Uri.file(path.join(this.context.extensionPath, 'src', 'webview'))
+                ]
+            }
+        );
+
+        let disposed = false;
+        panel.onDidDispose(() => { disposed = true; });
+
+        panel.webview.html = this.getWebviewContent(panel.webview);
+
+        const thousandSeparator = vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('thousandSeparator', ' ');
+        panel.webview.postMessage({
+            command: 'init',
+            schema: '',
+            table: '',
+            customQuery: sql,
+            viewTitle: title,
+            thousandSeparator,
+            connectionName: this.getConnectionName()
+        });
+
+        const connSub = this.connectionManager.onConnectionChanged(() => {
+            if (disposed) return;
+            panel.webview.postMessage({
+                command: 'connectionChanged',
+                connectionName: this.getConnectionName()
+            });
+        });
+        panel.onDidDispose(() => connSub.dispose());
+
+        const customHistoryKey = 'customQuery';
+        panel.webview.onDidReceiveMessage(async (message) => {
+            const queryRunner = new QueryRunner(this.connectionManager);
+            try {
+                switch (message.command) {
+                    case 'runCustomQuery': {
+                        const result = await queryRunner.executeSQL(message.sql);
+                        if (this.modifyHistoryStore) {
+                            for (const stmt of splitSqlStatements(message.sql)) {
+                                if (isModifyingSql(stmt)) {
+                                    this.modifyHistoryStore.add({ sql: stmt });
+                                }
+                            }
+                        }
+                        // Resolve field OIDs to type names
+                        const oids = result.fields.map((f: any) => f.dataTypeID).filter((id: number) => id > 0);
+                        let typeMap: Record<number, string> = {};
+                        if (oids.length > 0) {
+                            const typeRows = await this.connectionManager.query(
+                                `SELECT oid, typname FROM pg_type WHERE oid = ANY($1)`,
+                                [oids]
+                            );
+                            for (const row of typeRows.rows) {
+                                typeMap[row.oid] = row.typname;
+                            }
+                        }
+                        const cols = result.fields.map((f: any) => ({
+                            name: f.name,
+                            dataType: typeMap[f.dataTypeID] || '',
+                            isNullable: true,
+                            columnDefault: null
+                        }));
+                        if (!disposed) {
+                            panel.webview.postMessage({
+                                command: 'queryResult',
+                                rows: result.rows,
+                                columns: cols,
+                                connectionName: this.getConnectionName()
+                            });
+                        }
+                        break;
+                    }
+                    case 'saveQueryHistory': {
+                        this.saveQueryToHistory('', customHistoryKey, message.sql);
+                        if (!disposed) {
+                            panel.webview.postMessage({
+                                command: 'queryHistoryUpdated',
+                                history: this.getQueryHistory('', customHistoryKey)
+                            });
+                        }
+                        break;
+                    }
+                    case 'getQueryHistory': {
+                        if (!disposed) {
+                            panel.webview.postMessage({
+                                command: 'queryHistoryUpdated',
+                                history: this.getQueryHistory('', customHistoryKey)
+                            });
+                        }
+                        break;
+                    }
+                    case 'showError': {
+                        vscode.window.showErrorMessage(message.text);
+                        break;
+                    }
+                }
+            } catch (err: any) {
+                if (!disposed) {
+                    panel.webview.postMessage({ command: 'error', text: err.message });
+                }
+                vscode.window.showErrorMessage(`Query error: ${err.message}`);
+            }
+        });
     }
 }

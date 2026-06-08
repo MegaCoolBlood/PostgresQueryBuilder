@@ -295,6 +295,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let currentOffset = 0;
     let lastUsedConnection = '';
     let currentConnection = '';
+    // Read-only mode: set when the view is opened for an ad-hoc SELECT (e.g.
+    // "View Data" from a procedure). Editing/commit/insert is disabled and the
+    // grid only displays query results.
+    let readOnly = false;
     // Custom-query pagination state. When the user runs a custom SQL via the
     // query bar (or via FK/PK/filter helpers that send runCustomQuery), we keep
     // the base SQL (with any trailing LIMIT/OFFSET stripped) so Load More can
@@ -375,10 +379,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const sqlDialogConnection = document.getElementById('sqlDialogConnection');
     const sqlDialogWarning = document.getElementById('sqlDialogWarning');
 
-    // Show data loading, request initial data
+    // Show data loading spinner. The actual initial load is kicked off from
+    // handleInit() once the extension tells us whether this is a normal table
+    // view or a read-only custom query.
     dataLoading.classList.remove('hidden');
-    metaLoading.classList.remove('hidden');
-    vscode.postMessage({ command: 'loadData', offset: 0, limit: PAGE_SIZE });
 
     // Event listeners
     commitBtn.addEventListener('click', commitChanges);
@@ -512,10 +516,32 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             currentConnection = msg.connectionName;
             updateConnectionDisplay();
         }
+
+        if (msg.customQuery) {
+            // Read-only ad-hoc query view (e.g. "View Data" from a procedure).
+            readOnly = true;
+            applyReadOnlyMode();
+            tableName.textContent = msg.viewTitle || 'Query result';
+            queryInput.value = msg.customQuery;
+            metaLoading.classList.add('hidden');
+            runCustomQuery();
+            return;
+        }
+
         tableName.textContent = `${schema}.${table}`;
         queryInput.value = `SELECT * FROM ${getDefaultTableReference()}`;
+        // Standard table view: load the table and its relation metadata.
+        metaLoading.classList.remove('hidden');
+        vscode.postMessage({ command: 'loadData', offset: 0, limit: PAGE_SIZE });
         // Request query history for this table
         vscode.postMessage({ command: 'getQueryHistory' });
+    }
+
+    // Hide editing affordances when the view is read-only.
+    function applyReadOnlyMode() {
+        [insertRowBtn, commitBtn, discardBtn].forEach(btn => {
+            if (btn) btn.style.display = 'none';
+        });
     }
 
     function handleDataLoaded(msg) {
@@ -598,7 +624,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (!currentConnection) currentConnection = msg.connectionName;
             updateConnectionDisplay();
         }
-        tableName.textContent = `${schema}.${table} (custom query)`;
+        if (!readOnly) {
+            tableName.textContent = `${schema}.${table} (custom query)`;
+        }
         // Re-enable Load More when this looks like a paged custom query and the
         // last batch came back full (i.e. there may be more rows).
         const canPage = customQueryActive && !customQueryUserPaged;
@@ -1490,7 +1518,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             html += `<tr class="${rowClass}" data-row-index="${idx}">`;
             html += `<td class="row-num-cell">${rowNum}</td>`;
             html += `<td class="actions-cell">`;
-            if (!isDeleted) {
+            if (readOnly) {
+                html += `<button class="btn-view-record" onclick="openRecordDialog(${idx})" title="View full record">&#128065;</button>`;
+            } else if (!isDeleted) {
                 html += `<button class="btn-view-record" onclick="openRecordDialog(${idx})" title="View full record">&#128065;</button>`;
                 html += `<button class="btn btn-duplicate" onclick="duplicateRow(${idx})">⧉</button>`;
                 html += `<button class="btn btn-danger" onclick="deleteRow(${idx})">✕</button>`;
@@ -1521,7 +1551,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 } else if (fk && currentVal !== null && currentVal !== undefined) {
                     fkBtn = `<button class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(cellToString(currentVal))}" title="Open ${fk.refSchema}.${fk.refTable}">&#8599;</button>`;
                 }
-                const editableAttr = !isDeleted ? 'true' : 'false';
+                const editableAttr = !isDeleted && !readOnly ? 'true' : 'false';
                 const cellExtraClass = fkBtn ? ' has-fk-btn' : '';
                 html += `<td class="${cellClass}${cellExtraClass}" data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}"><span class="cell-content" contenteditable="${editableAttr}">${displayVal}</span>${fkBtn}</td>`;
             });
