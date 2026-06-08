@@ -84,6 +84,181 @@ function liveFormatNumeric(text, digitCursorPos, thousandSeparator = DEFAULT_THO
     return { formatted, normalized, newCursor };
 }
 
+// ===== SQL query helpers (pure; shared with the webview IIFE and unit tests) =====
+
+// Detect and strip a trailing LIMIT [n] [OFFSET m] clause that is not
+// inside parentheses or string literals. Returns { base, hadLimit }.
+function stripTrailingLimitOffset(sql) {
+    const len = sql.length;
+    let depth = 0;
+    let inSingle = false, inDouble = false, inLineComment = false, inBlockComment = false;
+    const tokens = []; // [{kw, start}] for top-level LIMIT/OFFSET
+    let i = 0;
+    while (i < len) {
+        const ch = sql[i];
+        const next = sql[i + 1];
+        if (inLineComment) { if (ch === '\n') inLineComment = false; i++; continue; }
+        if (inBlockComment) { if (ch === '*' && next === '/') { inBlockComment = false; i += 2; continue; } i++; continue; }
+        if (inSingle) { if (ch === "'") { if (next === "'") { i += 2; continue; } inSingle = false; } i++; continue; }
+        if (inDouble) { if (ch === '"') { if (next === '"') { i += 2; continue; } inDouble = false; } i++; continue; }
+        if (ch === '-' && next === '-') { inLineComment = true; i += 2; continue; }
+        if (ch === '/' && next === '*') { inBlockComment = true; i += 2; continue; }
+        if (ch === "'") { inSingle = true; i++; continue; }
+        if (ch === '"') { inDouble = true; i++; continue; }
+        if (ch === '(') { depth++; i++; continue; }
+        if (ch === ')') { depth--; i++; continue; }
+        if (depth === 0 && /[A-Za-z_]/.test(ch)) {
+            let j = i;
+            while (j < len && /[A-Za-z0-9_]/.test(sql[j])) j++;
+            const word = sql.substring(i, j).toLowerCase();
+            const before = i === 0 ? ' ' : sql[i - 1];
+            if ((word === 'limit' || word === 'offset' || word === 'fetch') && /[\s);]/.test(before)) {
+                tokens.push({ kw: word, start: i });
+            }
+            i = j;
+            continue;
+        }
+        i++;
+    }
+    if (tokens.length === 0) return { base: sql.replace(/[\s;]+$/, ''), hadLimit: false };
+    // Pick the earliest LIMIT/FETCH token among the trailing run
+    // (allow OFFSET to come before LIMIT too).
+    const trailing = tokens[tokens.length - 1];
+    // Walk back to the first contiguous LIMIT/OFFSET/FETCH that all belong
+    // to the same trailing clause group.
+    let firstIdx = trailing.start;
+    for (let t = tokens.length - 1; t >= 0; t--) {
+        firstIdx = tokens[t].start;
+        if (t === 0) break;
+        const prev = tokens[t - 1];
+        // Only keep walking back if the previous token is also LIMIT/OFFSET
+        // and only whitespace/numbers/parens between them.
+        const between = sql.substring(prev.start, firstIdx);
+        if (!/^\s*(limit|offset|fetch)\b[^A-Za-z_]*$/i.test(between)) break;
+    }
+    return {
+        base: sql.substring(0, firstIdx).replace(/[\s;]+$/, ''),
+        hadLimit: true
+    };
+}
+
+function findTopLevelKeywordIndex(sql, keyword) {
+    const upper = keyword.toUpperCase();
+    let depth = 0;
+    let inStr = false;
+    let strCh = '';
+    let i = 0;
+    while (i < sql.length) {
+        const ch = sql[i];
+        if (inStr) {
+            if (ch === strCh) {
+                if (strCh === "'" && sql[i + 1] === "'") { i += 2; continue; }
+                inStr = false;
+            }
+            i++;
+            continue;
+        }
+        if (ch === "'" || ch === '"') { inStr = true; strCh = ch; i++; continue; }
+        if (ch === '(') { depth++; i++; continue; }
+        if (ch === ')') { depth--; i++; continue; }
+        if (depth === 0) {
+            // Word boundary on left (whitespace), and matches keyword followed by whitespace
+            if ((i === 0 || /\s/.test(sql[i - 1])) &&
+                sql.substring(i, i + upper.length).toUpperCase() === upper &&
+                /\s/.test(sql[i + upper.length] || '')) {
+                return i;
+            }
+        }
+        i++;
+    }
+    return -1;
+}
+
+function parseSqlForWhere(sql) {
+    let s = String(sql || '').trim().replace(/;\s*$/, '').trim();
+    // Strip trailing LIMIT/OFFSET that we may have appended previously
+    s = s.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$/i, '');
+    // Strip trailing ORDER BY ...
+    let orderBy = '';
+    const ordRe = /\s+ORDER\s+BY\s+([\s\S]+)$/i;
+    const ordMatch = s.match(ordRe);
+    if (ordMatch) {
+        orderBy = ordMatch[1].trim();
+        s = s.substring(0, ordMatch.index);
+    }
+    // Find top-level WHERE (best-effort: first WHERE at paren depth 0, outside strings)
+    const whereIdx = findTopLevelKeywordIndex(s, 'WHERE');
+    let base = s;
+    let where = '';
+    if (whereIdx !== -1) {
+        const after = s.substring(whereIdx);
+        const m = after.match(/^\s*WHERE\s+/i);
+        base = s.substring(0, whereIdx).replace(/\s+$/, '');
+        where = after.substring(m[0].length).trim();
+    }
+    return { base, where, orderBy };
+}
+
+function splitWhereByAnd(whereClause) {
+    const parts = [];
+    let buf = '';
+    let depth = 0;
+    let inStr = false;
+    let strCh = '';
+    let i = 0;
+    while (i < whereClause.length) {
+        const ch = whereClause[i];
+        if (inStr) {
+            buf += ch;
+            if (ch === strCh) {
+                if (strCh === "'" && whereClause[i + 1] === "'") { buf += "'"; i += 2; continue; }
+                inStr = false;
+            }
+            i++;
+            continue;
+        }
+        if (ch === "'" || ch === '"') { inStr = true; strCh = ch; buf += ch; i++; continue; }
+        if (ch === '(') { depth++; buf += ch; i++; continue; }
+        if (ch === ')') { depth--; buf += ch; i++; continue; }
+        if (depth === 0) {
+            const rest = whereClause.substring(i);
+            const m = rest.match(/^\s+AND\s+/i);
+            if (m && /\s/.test(whereClause[i] || '')) {
+                parts.push(buf.trim());
+                buf = '';
+                i += m[0].length;
+                continue;
+            }
+        }
+        buf += ch;
+        i++;
+    }
+    if (buf.trim()) parts.push(buf.trim());
+    return parts;
+}
+
+function whereClauseTargetsColumn(clause, colName) {
+    // Match an optional schema/table prefix then the column identifier (quoted or bare)
+    const m = clause.match(/^\s*(?:(?:"[^"]+"|[A-Za-z_][\w$]*)\s*\.\s*)*("[^"]+"|[A-Za-z_][\w$]*)/);
+    if (!m) return false;
+    let tok = m[1];
+    if (tok.startsWith('"') && tok.endsWith('"')) tok = tok.substring(1, tok.length - 1);
+    return tok.toLowerCase() === colName.toLowerCase();
+}
+
+function parseSqlForOrder(sql) {
+    let s = String(sql || '').trim().replace(/;\s*$/, '').trim();
+    // Strip trailing LIMIT [OFFSET] (numeric only — generated by us)
+    s = s.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$/i, '');
+    // Extract trailing ORDER BY ... up to end
+    const orderRe = /\s+ORDER\s+BY\s+([\s\S]+)$/i;
+    const m = s.match(orderRe);
+    if (m) {
+        return { base: s.substring(0, m.index), orderBy: m[1].trim() };
+    }
+    return { base: s, orderBy: '' };
+}
+
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 (function() {
     const vscode = acquireVsCodeApi();
@@ -535,62 +710,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         vscode.postMessage({ command: 'runCustomQuery', sql });
     }
 
-    // Detect and strip a trailing LIMIT [n] [OFFSET m] clause that is not
-    // inside parentheses or string literals. Returns { base, hadLimit }.
-    function stripTrailingLimitOffset(sql) {
-        const len = sql.length;
-        let depth = 0;
-        let inSingle = false, inDouble = false, inLineComment = false, inBlockComment = false;
-        const tokens = []; // [{kw, start}] for top-level LIMIT/OFFSET
-        let i = 0;
-        while (i < len) {
-            const ch = sql[i];
-            const next = sql[i + 1];
-            if (inLineComment) { if (ch === '\n') inLineComment = false; i++; continue; }
-            if (inBlockComment) { if (ch === '*' && next === '/') { inBlockComment = false; i += 2; continue; } i++; continue; }
-            if (inSingle) { if (ch === "'") { if (next === "'") { i += 2; continue; } inSingle = false; } i++; continue; }
-            if (inDouble) { if (ch === '"') { if (next === '"') { i += 2; continue; } inDouble = false; } i++; continue; }
-            if (ch === '-' && next === '-') { inLineComment = true; i += 2; continue; }
-            if (ch === '/' && next === '*') { inBlockComment = true; i += 2; continue; }
-            if (ch === "'") { inSingle = true; i++; continue; }
-            if (ch === '"') { inDouble = true; i++; continue; }
-            if (ch === '(') { depth++; i++; continue; }
-            if (ch === ')') { depth--; i++; continue; }
-            if (depth === 0 && /[A-Za-z_]/.test(ch)) {
-                let j = i;
-                while (j < len && /[A-Za-z0-9_]/.test(sql[j])) j++;
-                const word = sql.substring(i, j).toLowerCase();
-                const before = i === 0 ? ' ' : sql[i - 1];
-                if ((word === 'limit' || word === 'offset' || word === 'fetch') && /[\s);]/.test(before)) {
-                    tokens.push({ kw: word, start: i });
-                }
-                i = j;
-                continue;
-            }
-            i++;
-        }
-        if (tokens.length === 0) return { base: sql.replace(/[\s;]+$/, ''), hadLimit: false };
-        // Pick the earliest LIMIT/FETCH token among the trailing run
-        // (allow OFFSET to come before LIMIT too).
-        const trailing = tokens[tokens.length - 1];
-        // Walk back to the first contiguous LIMIT/OFFSET/FETCH that all belong
-        // to the same trailing clause group.
-        let firstIdx = trailing.start;
-        for (let t = tokens.length - 1; t >= 0; t--) {
-            firstIdx = tokens[t].start;
-            if (t === 0) break;
-            const prev = tokens[t - 1];
-            // Only keep walking back if the previous token is also LIMIT/OFFSET
-            // and only whitespace/numbers/parens between them.
-            const between = sql.substring(prev.start, firstIdx);
-            if (!/^\s*(limit|offset|fetch)\b[^A-Za-z_]*$/i.test(between)) break;
-        }
-        return {
-            base: sql.substring(0, firstIdx).replace(/[\s;]+$/, ''),
-            hadLimit: true
-        };
-    }
-
     function handleApplyFilter(msg) {
         // When opening a related table via FK/PK/custom mapping, only prefilter via
         // the SELECT clause and leave the column filter row empty.
@@ -906,110 +1025,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         runCustomQuery();
     }
 
-    function parseSqlForWhere(sql) {
-        let s = String(sql || '').trim().replace(/;\s*$/, '').trim();
-        // Strip trailing LIMIT/OFFSET that we may have appended previously
-        s = s.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$/i, '');
-        // Strip trailing ORDER BY ...
-        let orderBy = '';
-        const ordRe = /\s+ORDER\s+BY\s+([\s\S]+)$/i;
-        const ordMatch = s.match(ordRe);
-        if (ordMatch) {
-            orderBy = ordMatch[1].trim();
-            s = s.substring(0, ordMatch.index);
-        }
-        // Find top-level WHERE (best-effort: first WHERE at paren depth 0, outside strings)
-        const whereIdx = findTopLevelKeywordIndex(s, 'WHERE');
-        let base = s;
-        let where = '';
-        if (whereIdx !== -1) {
-            const after = s.substring(whereIdx);
-            const m = after.match(/^\s*WHERE\s+/i);
-            base = s.substring(0, whereIdx).replace(/\s+$/, '');
-            where = after.substring(m[0].length).trim();
-        }
-        return { base, where, orderBy };
-    }
-
-    function findTopLevelKeywordIndex(sql, keyword) {
-        const upper = keyword.toUpperCase();
-        let depth = 0;
-        let inStr = false;
-        let strCh = '';
-        let i = 0;
-        while (i < sql.length) {
-            const ch = sql[i];
-            if (inStr) {
-                if (ch === strCh) {
-                    if (strCh === "'" && sql[i + 1] === "'") { i += 2; continue; }
-                    inStr = false;
-                }
-                i++;
-                continue;
-            }
-            if (ch === "'" || ch === '"') { inStr = true; strCh = ch; i++; continue; }
-            if (ch === '(') { depth++; i++; continue; }
-            if (ch === ')') { depth--; i++; continue; }
-            if (depth === 0) {
-                // Word boundary on left (whitespace), and matches keyword followed by whitespace
-                if ((i === 0 || /\s/.test(sql[i - 1])) &&
-                    sql.substring(i, i + upper.length).toUpperCase() === upper &&
-                    /\s/.test(sql[i + upper.length] || '')) {
-                    return i;
-                }
-            }
-            i++;
-        }
-        return -1;
-    }
-
-    function splitWhereByAnd(whereClause) {
-        const parts = [];
-        let buf = '';
-        let depth = 0;
-        let inStr = false;
-        let strCh = '';
-        let i = 0;
-        while (i < whereClause.length) {
-            const ch = whereClause[i];
-            if (inStr) {
-                buf += ch;
-                if (ch === strCh) {
-                    if (strCh === "'" && whereClause[i + 1] === "'") { buf += "'"; i += 2; continue; }
-                    inStr = false;
-                }
-                i++;
-                continue;
-            }
-            if (ch === "'" || ch === '"') { inStr = true; strCh = ch; buf += ch; i++; continue; }
-            if (ch === '(') { depth++; buf += ch; i++; continue; }
-            if (ch === ')') { depth--; buf += ch; i++; continue; }
-            if (depth === 0) {
-                const rest = whereClause.substring(i);
-                const m = rest.match(/^\s+AND\s+/i);
-                if (m && /\s/.test(whereClause[i] || '')) {
-                    parts.push(buf.trim());
-                    buf = '';
-                    i += m[0].length;
-                    continue;
-                }
-            }
-            buf += ch;
-            i++;
-        }
-        if (buf.trim()) parts.push(buf.trim());
-        return parts;
-    }
-
-    function whereClauseTargetsColumn(clause, colName) {
-        // Match an optional schema/table prefix then the column identifier (quoted or bare)
-        const m = clause.match(/^\s*(?:(?:"[^"]+"|[A-Za-z_][\w$]*)\s*\.\s*)*("[^"]+"|[A-Za-z_][\w$]*)/);
-        if (!m) return false;
-        let tok = m[1];
-        if (tok.startsWith('"') && tok.endsWith('"')) tok = tok.substring(1, tok.length - 1);
-        return tok.toLowerCase() === colName.toLowerCase();
-    }
-
     function showCellContextMenu(e, td) {
         const colName = td.getAttribute('data-col');
         const rowIdx = td.getAttribute('data-row');
@@ -1209,19 +1224,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             ? `${parsed.base} ORDER BY ${parts.join(', ')}`
             : parsed.base;
         runCustomQuery();
-    }
-
-    function parseSqlForOrder(sql) {
-        let s = String(sql || '').trim().replace(/;\s*$/, '').trim();
-        // Strip trailing LIMIT [OFFSET] (numeric only — generated by us)
-        s = s.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$/i, '');
-        // Extract trailing ORDER BY ... up to end
-        const orderRe = /\s+ORDER\s+BY\s+([\s\S]+)$/i;
-        const m = s.match(orderRe);
-        if (m) {
-            return { base: s.substring(0, m.index), orderBy: m[1].trim() };
-        }
-        return { base: s, orderBy: '' };
     }
 
     function applyOrderBy(colName, direction, mode) {
@@ -2870,6 +2872,12 @@ if (typeof module !== 'undefined' && module.exports) {
         formatExactMatchValue,
         normalizeFilterInputValue,
         escapeSqlString,
-        liveFormatNumeric
+        liveFormatNumeric,
+        stripTrailingLimitOffset,
+        parseSqlForWhere,
+        findTopLevelKeywordIndex,
+        splitWhereByAnd,
+        whereClauseTargetsColumn,
+        parseSqlForOrder
     };
 }

@@ -149,3 +149,82 @@ test('autoJoinClauses falls back to CROSS JOIN without FK', () => {
     assert.equal(clauses[0].type, 'CROSS JOIN');
     assert.deepEqual(clauses[0].conditions, []);
 });
+
+// ===== 1.1.0: JOIN dialog conditions from custom mappings =====
+
+test('autoJoinClauses derives literal conditions from custom-mapping extras', () => {
+    const clauses = autoJoinClauses(
+        ['o', 'c'],
+        [{
+            fromIndex: 0,
+            fromColumn: 'cust_id',
+            toIndex: 1,
+            toColumn: 'id',
+            extraConditions: [{ tableIndex: 0, column: 'status', operator: '=', value: 'active' }]
+        }]
+    );
+    assert.equal(clauses.length, 1);
+    assert.equal(clauses[0].type, 'INNER JOIN');
+    assert.deepEqual(clauses[0].conditions, [
+        { leftAlias: 'o', leftColumn: 'cust_id', rightColumn: 'id' }
+    ]);
+    assert.deepEqual(clauses[0].literalConditions, [
+        { literalAlias: 'o', literalColumn: 'status', operator: '=', value: 'active' }
+    ]);
+});
+
+test('autoJoinClauses leaves literalConditions empty when no extras are present', () => {
+    const clauses = autoJoinClauses(
+        ['o', 'c'],
+        [{ fromIndex: 0, fromColumn: 'cust_id', toIndex: 1, toColumn: 'id' }]
+    );
+    assert.deepEqual(clauses[0].literalConditions, []);
+});
+
+test('buildJoinSelect appends a quoted string literal condition to the ON clause', () => {
+    const tables = [
+        { alias: 'a', tableReference: 'a', columns: ['id'] },
+        { alias: 'b', tableReference: 'b', columns: ['a_id'] }
+    ];
+    const joins = [{
+        type: 'INNER JOIN' as const,
+        conditions: [{ leftAlias: 'a', leftColumn: 'id', rightColumn: 'a_id' }],
+        literalConditions: [{ literalAlias: 'a', literalColumn: 'status', operator: '=', value: 'active' }]
+    }];
+    assert.equal(
+        buildJoinSelect(tables, joins),
+        "SELECT\n  a.id,\n  b.a_id\nFROM a a\nINNER JOIN b b ON b.a_id = a.id AND a.status = 'active';"
+    );
+});
+
+test('buildJoinSelect renders numeric literal conditions without quotes', () => {
+    const tables = [
+        { alias: 'a', tableReference: 'a', columns: ['id'] },
+        { alias: 'b', tableReference: 'b', columns: ['a_id'] }
+    ];
+    const joins = [{
+        type: 'LEFT JOIN' as const,
+        conditions: [{ leftAlias: 'a', leftColumn: 'id', rightColumn: 'a_id' }],
+        literalConditions: [{ literalAlias: 'a', literalColumn: 'priority', operator: '>', value: '5' }]
+    }];
+    assert.equal(
+        buildJoinSelect(tables, joins),
+        'SELECT\n  a.id,\n  b.a_id\nFROM a a\nLEFT JOIN b b ON b.a_id = a.id AND a.priority > 5;'
+    );
+});
+
+test('buildJoinSelect escapes single quotes inside string literal conditions', () => {
+    const tables = [
+        { alias: 'a', tableReference: 'a', columns: ['id'] },
+        { alias: 'b', tableReference: 'b', columns: ['a_id'] }
+    ];
+    const joins = [{
+        type: 'INNER JOIN' as const,
+        conditions: [{ leftAlias: 'a', leftColumn: 'id', rightColumn: 'a_id' }],
+        literalConditions: [{ literalAlias: 'a', literalColumn: 'owner', operator: '=', value: "O'Brien" }]
+    }];
+    assert.equal(
+        buildJoinSelect(tables, joins),
+        "SELECT\n  a.id,\n  b.a_id\nFROM a a\nINNER JOIN b b ON b.a_id = a.id AND a.owner = 'O''Brien';"
+    );
+});

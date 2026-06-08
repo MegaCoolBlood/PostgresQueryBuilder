@@ -1,3 +1,4 @@
+import './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ColumnMappingManager, CustomColumnMapping } from '../columnMappingManager';
