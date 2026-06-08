@@ -4,7 +4,8 @@ import {
     maskSql,
     findVariableTokens,
     extractSelect,
-    substituteVariables
+    substituteVariables,
+    findEnclosingDollarBody
 } from '../selectStatementExtractor';
 
 // ===== maskSql =====
@@ -86,6 +87,42 @@ test('extractSelect keeps a WITH statement', () => {
     assert.ok(res);
     assert.ok(res.sql.startsWith('WITH c AS'));
     assert.deepEqual(res.variables, ['v_n']);
+});
+
+test('extractSelect picks only the SELECT inside a dollar-quoted function body', () => {
+    const fn = [
+        'CREATE OR REPLACE FUNCTION f(pi_employeeid numeric)',
+        ' RETURNS boolean LANGUAGE plpgsql AS $function$',
+        'DECLARE vJaNein varchar(10);',
+        'BEGIN',
+        "    vJaNein := 'N';",
+        '    IF (pi_employeeid is not null) THEN',
+        '        SELECT eaz.eaz_wert',
+        '        INTO vJaNein',
+        '        FROM bos_ext_attr_zuordnungen eaz',
+        "        WHERE eaz.eaz_mit_id = pi_employeeid::integer;",
+        '    END IF;',
+        '    RETURN FALSE;',
+        'END;',
+        '$function$;'
+    ].join('\n');
+    const cursor = fn.indexOf('eaz.eaz_wert');
+    const res = extractSelect(fn, cursor);
+    assert.ok(res);
+    assert.ok(res.sql.startsWith('SELECT eaz.eaz_wert'), `got: ${res.sql}`);
+    assert.ok(!/CREATE OR REPLACE/i.test(res.sql), 'must not include the CREATE FUNCTION wrapper');
+    assert.ok(!/\bINTO\b/i.test(res.sql), 'INTO clause must be stripped');
+    assert.ok(!/END IF/i.test(res.sql), 'must stop at the statement semicolon');
+    assert.deepEqual(res.variables, ['pi_employeeid']);
+});
+
+test('findEnclosingDollarBody returns inner bounds for the enclosing body', () => {
+    const text = 'AS $b$ SELECT 1 $b$;';
+    const inside = text.indexOf('SELECT');
+    const bounds = findEnclosingDollarBody(text, inside);
+    assert.ok(bounds);
+    assert.equal(text.slice(bounds.start, bounds.end).trim(), 'SELECT 1');
+    assert.equal(findEnclosingDollarBody(text, 0), null);
 });
 
 // ===== extractSelect: INTO stripping =====

@@ -152,7 +152,75 @@ export function maskSql(text: string): string {
     return out.join('');
 }
 
-/** Tokenize a masked SQL string into words / params / punctuation / operators. */
+/**
+ * If `offset` falls inside the contents of a dollar-quoted block
+ * (`$tag$ ... $tag$`, e.g. a PL/pgSQL function body), return the `[start, end)`
+ * bounds of that inner content (excluding the tags). Otherwise return null.
+ *
+ * Comments and single-quoted strings are skipped while scanning so a `$tag$`
+ * sequence inside them is not mistaken for a real opening tag. Returns the
+ * outermost block that encloses the offset.
+ */
+export function findEnclosingDollarBody(text: string, offset: number): { start: number; end: number } | null {
+    const n = text.length;
+    let i = 0;
+    while (i < n) {
+        const c = text[i];
+        const c2 = text[i + 1];
+        // Line comment
+        if (c === '-' && c2 === '-') {
+            let j = i + 2;
+            while (j < n && text[j] !== '\n') j++;
+            i = j;
+            continue;
+        }
+        // Block comment (nesting allowed)
+        if (c === '/' && c2 === '*') {
+            let j = i + 2;
+            let depth = 1;
+            while (j < n && depth > 0) {
+                if (text[j] === '/' && text[j + 1] === '*') { depth++; j += 2; }
+                else if (text[j] === '*' && text[j + 1] === '/') { depth--; j += 2; }
+                else j++;
+            }
+            i = j;
+            continue;
+        }
+        // Single-quoted string
+        if (c === "'") {
+            let j = i + 1;
+            while (j < n) {
+                if (text[j] === '\\') { j += 2; continue; }
+                if (text[j] === "'") {
+                    if (text[j + 1] === "'") { j += 2; continue; }
+                    j++;
+                    break;
+                }
+                j++;
+            }
+            i = j;
+            continue;
+        }
+        // Dollar-quoted string
+        if (c === '$') {
+            const tagMatch = /^\$[A-Za-z_]?[A-Za-z0-9_]*\$/.exec(text.slice(i));
+            if (tagMatch) {
+                const tag = tagMatch[0];
+                const close = text.indexOf(tag, i + tag.length);
+                const innerStart = i + tag.length;
+                const innerEnd = close === -1 ? n : close;
+                if (offset >= innerStart && offset <= innerEnd) {
+                    return { start: innerStart, end: innerEnd };
+                }
+                i = close === -1 ? n : close + tag.length;
+                continue;
+            }
+        }
+        i++;
+    }
+    return null;
+}
+
 function tokenize(masked: string): Token[] {
     const tokens: Token[] = [];
     const n = masked.length;
@@ -378,11 +446,19 @@ export function extractSelect(
     if (selection && selection.end > selection.start) {
         stmt = fullText.slice(selection.start, selection.end);
     } else {
-        const masked = maskSql(fullText);
-        const bounds = enclosingStatementBounds(masked, cursorOffset);
-        stmt = fullText.slice(bounds.start, bounds.end);
+        // When the cursor sits inside a dollar-quoted body (e.g. a PL/pgSQL
+        // function body), restrict the search to that body's contents.
+        // Otherwise the whole `CREATE FUNCTION ... $body$;` would be treated as
+        // a single statement (its inner semicolons are masked away).
+        const body = findEnclosingDollarBody(fullText, cursorOffset);
+        const searchText = body ? fullText.slice(body.start, body.end) : fullText;
+        const localOffset = body ? cursorOffset - body.start : cursorOffset;
+
+        const masked = maskSql(searchText);
+        const bounds = enclosingStatementBounds(masked, localOffset);
+        stmt = searchText.slice(bounds.start, bounds.end);
         // Trim down to the SELECT / WITH start if the statement has a prefix
-        // (e.g. `RETURN QUERY SELECT ...`).
+        // (e.g. `IF ... THEN SELECT ...` or `RETURN QUERY SELECT ...`).
         const stmtMasked = maskSql(stmt);
         const selIdx = firstSelectOrWithIndex(tokenize(stmtMasked));
         if (selIdx > 0) stmt = stmt.slice(selIdx);
