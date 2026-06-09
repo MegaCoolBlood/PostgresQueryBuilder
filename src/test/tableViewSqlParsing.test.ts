@@ -8,7 +8,8 @@ const {
     findTopLevelKeywordIndex,
     splitWhereByAnd,
     whereClauseTargetsColumn,
-    parseSqlForOrder
+    parseSqlForOrder,
+    formatSql
 } = require(path.join(__dirname, '../../src/webview/tableView.js'));
 
 // ===== 0.2.0: "Load More" for custom queries (stripTrailingLimitOffset) =====
@@ -172,4 +173,82 @@ test('parseSqlForOrder strips a generated LIMIT before extracting ORDER BY', () 
         parseSqlForOrder('SELECT * FROM t ORDER BY a, b DESC LIMIT 50 OFFSET 0'),
         { base: 'SELECT * FROM t', orderBy: 'a, b DESC' }
     );
+});
+
+// ===== 1.1.0: multi-line formatted SELECT in the data viewer (formatSql) =====
+
+test('formatSql puts the FROM clause on its own line', () => {
+    assert.equal(
+        formatSql('SELECT * FROM public.foo'),
+        'SELECT *\nFROM public.foo'
+    );
+});
+
+test('formatSql lists each top-level column on its own indented line', () => {
+    assert.equal(
+        formatSql('SELECT a, b, c FROM t'),
+        'SELECT\n    a,\n    b,\n    c\nFROM t'
+    );
+});
+
+test('formatSql splits WHERE conditions on top-level AND', () => {
+    assert.equal(
+        formatSql('SELECT * FROM t WHERE a = 1 AND b = 2'),
+        'SELECT *\nFROM t\nWHERE a = 1\n    AND b = 2'
+    );
+});
+
+test('formatSql places JOIN, GROUP BY, ORDER BY and LIMIT on separate lines', () => {
+    const input = 'SELECT a FROM t JOIN u ON t.id = u.tid GROUP BY a ORDER BY a LIMIT 50';
+    assert.equal(
+        formatSql(input),
+        'SELECT a\nFROM t\nJOIN u ON t.id = u.tid\nGROUP BY a\nORDER BY a\nLIMIT 50'
+    );
+});
+
+test('formatSql collapses pre-existing whitespace and re-formats', () => {
+    const input = 'SELECT   a,\n   b\n  FROM    t   WHERE   a=1';
+    assert.equal(
+        formatSql(input),
+        'SELECT\n    a,\n    b\nFROM t\nWHERE a=1'
+    );
+});
+
+test('formatSql does not split commas inside a function call', () => {
+    assert.equal(
+        formatSql('SELECT coalesce(a, b) AS x, c FROM t'),
+        'SELECT\n    coalesce(a, b) AS x,\n    c\nFROM t'
+    );
+});
+
+test('formatSql does not treat keywords inside string literals as clauses', () => {
+    assert.equal(
+        formatSql("SELECT * FROM t WHERE name = 'from where'"),
+        "SELECT *\nFROM t\nWHERE name = 'from where'"
+    );
+});
+
+test('formatSql keeps DISTINCT on the SELECT line', () => {
+    assert.equal(
+        formatSql('SELECT DISTINCT a, b FROM t'),
+        'SELECT DISTINCT\n    a,\n    b\nFROM t'
+    );
+});
+
+test('formatSql leaves statements with comments untouched', () => {
+    const input = 'SELECT a FROM t -- comment';
+    assert.equal(formatSql(input), 'SELECT a FROM t -- comment');
+});
+
+test('formatSql leaves non-SELECT statements untouched (trimmed)', () => {
+    assert.equal(formatSql('  UPDATE t SET a = 1;  '), 'UPDATE t SET a = 1');
+});
+
+test('formatSql strips a trailing semicolon', () => {
+    assert.equal(formatSql('SELECT * FROM t;'), 'SELECT *\nFROM t');
+});
+
+test('formatSql is idempotent', () => {
+    const once = formatSql('SELECT a, b FROM t WHERE a = 1 AND b = 2');
+    assert.equal(formatSql(once), once);
 });

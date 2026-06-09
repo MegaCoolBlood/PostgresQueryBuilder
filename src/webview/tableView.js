@@ -286,6 +286,161 @@ function parseSqlForOrder(sql) {
     return { base: s, orderBy: '' };
 }
 
+// --- SQL pretty-printer for the query bar -------------------------------------
+// Produces a readable, multi-line layout for plain SELECT statements: each
+// top-level clause (FROM/WHERE/JOIN/GROUP BY/ORDER BY/...) starts on its own
+// line, SELECT columns are listed one per indented line and WHERE/HAVING
+// conditions are split on top-level AND. The function is intentionally
+// conservative: statements it cannot safely reformat (CTEs, statements with
+// comments, non-SELECT statements) are returned trimmed but otherwise as-is.
+
+// True when the SQL contains a -- line comment or /* */ block comment at the
+// top level (outside string/identifier literals).
+function hasSqlComment(s) {
+    let inSingle = false, inDouble = false, i = 0;
+    while (i < s.length) {
+        const ch = s[i], nx = s[i + 1];
+        if (inSingle) { if (ch === "'") { if (nx === "'") { i += 2; continue; } inSingle = false; } i++; continue; }
+        if (inDouble) { if (ch === '"') { if (nx === '"') { i += 2; continue; } inDouble = false; } i++; continue; }
+        if (ch === "'") { inSingle = true; i++; continue; }
+        if (ch === '"') { inDouble = true; i++; continue; }
+        if (ch === '-' && nx === '-') return true;
+        if (ch === '/' && nx === '*') return true;
+        i++;
+    }
+    return false;
+}
+
+// Collapse every run of whitespace outside string/identifier literals to a
+// single space so the keyword scanner can rely on single-space separators.
+function collapseSqlWhitespace(s) {
+    let out = '', inSingle = false, inDouble = false, i = 0;
+    while (i < s.length) {
+        const ch = s[i];
+        if (inSingle) { out += ch; if (ch === "'") { if (s[i + 1] === "'") { out += "'"; i += 2; continue; } inSingle = false; } i++; continue; }
+        if (inDouble) { out += ch; if (ch === '"') { if (s[i + 1] === '"') { out += '"'; i += 2; continue; } inDouble = false; } i++; continue; }
+        if (ch === "'") { inSingle = true; out += ch; i++; continue; }
+        if (ch === '"') { inDouble = true; out += ch; i++; continue; }
+        if (/\s/.test(ch)) { out += ' '; i++; while (i < s.length && /\s/.test(s[i])) i++; continue; }
+        out += ch; i++;
+    }
+    return out.trim();
+}
+
+// Split a list on top-level commas (ignoring commas inside parentheses or
+// string/identifier literals).
+function splitTopLevelCommas(s) {
+    const parts = [];
+    let buf = '', depth = 0, inSingle = false, inDouble = false, i = 0;
+    while (i < s.length) {
+        const ch = s[i];
+        if (inSingle) { buf += ch; if (ch === "'") { if (s[i + 1] === "'") { buf += "'"; i += 2; continue; } inSingle = false; } i++; continue; }
+        if (inDouble) { buf += ch; if (ch === '"') { if (s[i + 1] === '"') { buf += '"'; i += 2; continue; } inDouble = false; } i++; continue; }
+        if (ch === "'") { inSingle = true; buf += ch; i++; continue; }
+        if (ch === '"') { inDouble = true; buf += ch; i++; continue; }
+        if (ch === '(') { depth++; buf += ch; i++; continue; }
+        if (ch === ')') { depth--; buf += ch; i++; continue; }
+        if (ch === ',' && depth === 0) { parts.push(buf); buf = ''; i++; continue; }
+        buf += ch; i++;
+    }
+    if (buf.trim()) parts.push(buf);
+    return parts;
+}
+
+// Clause keywords that start a new top-level line. Multi-word entries must
+// precede their single-word prefixes so the scanner matches the longest form.
+const SQL_CLAUSE_KEYWORDS = [
+    'LEFT OUTER JOIN', 'RIGHT OUTER JOIN', 'FULL OUTER JOIN',
+    'LEFT JOIN', 'RIGHT JOIN', 'FULL JOIN', 'CROSS JOIN', 'INNER JOIN',
+    'GROUP BY', 'ORDER BY', 'UNION ALL',
+    'SELECT', 'FROM', 'WHERE', 'HAVING', 'WINDOW', 'LIMIT', 'OFFSET',
+    'FETCH', 'UNION', 'INTERSECT', 'EXCEPT', 'JOIN', 'RETURNING'
+];
+
+// Break a (whitespace-collapsed) statement into ordered { kw, content }
+// segments at top-level clause keywords.
+function splitTopLevelClauses(s) {
+    const U = s.toUpperCase();
+    const segs = [];
+    let i = 0, depth = 0, inSingle = false, inDouble = false;
+    let segStart = 0, segKw = '';
+    while (i < s.length) {
+        const ch = s[i];
+        if (inSingle) { if (ch === "'") { if (s[i + 1] === "'") { i += 2; continue; } inSingle = false; } i++; continue; }
+        if (inDouble) { if (ch === '"') { if (s[i + 1] === '"') { i += 2; continue; } inDouble = false; } i++; continue; }
+        if (ch === "'") { inSingle = true; i++; continue; }
+        if (ch === '"') { inDouble = true; i++; continue; }
+        if (ch === '(') { depth++; i++; continue; }
+        if (ch === ')') { depth--; i++; continue; }
+        if (depth === 0 && (i === 0 || /[\s(,]/.test(s[i - 1]))) {
+            let matched = null;
+            for (const kw of SQL_CLAUSE_KEYWORDS) {
+                if (U.startsWith(kw, i)) {
+                    const after = s[i + kw.length];
+                    if (after === undefined || /[\s(]/.test(after)) { matched = kw; break; }
+                }
+            }
+            if (matched) {
+                segs.push({ kw: segKw, content: s.slice(segStart, i).trim() });
+                segKw = matched;
+                i += matched.length;
+                segStart = i;
+                continue;
+            }
+        }
+        i++;
+    }
+    segs.push({ kw: segKw, content: s.slice(segStart).trim() });
+    return segs.filter((seg, idx) => !(idx === 0 && seg.kw === '' && seg.content === ''));
+}
+
+function formatSql(sql) {
+    if (sql == null) return sql;
+    const raw = String(sql).trim().replace(/;+\s*$/, '').trim();
+    if (!raw) return String(sql);
+    // Only reformat plain SELECT statements; leave CTEs/DML/commented SQL alone.
+    if (!/^SELECT\b/i.test(raw)) return raw;
+    if (hasSqlComment(raw)) return raw;
+
+    const s = collapseSqlWhitespace(raw);
+    const segs = splitTopLevelClauses(s);
+    if (segs.length === 0 || segs[0].kw.toUpperCase() !== 'SELECT') return raw;
+
+    const INDENT = '    ';
+    const lines = [];
+    for (const seg of segs) {
+        const kw = seg.kw.toUpperCase();
+        const content = seg.content;
+        if (kw === 'SELECT') {
+            let prefix = '';
+            let body = content;
+            const distinct = body.match(/^DISTINCT(\s+ON\s*\([\s\S]*?\))?\s+/i);
+            if (distinct) { prefix = body.slice(0, distinct[0].length).trim(); body = body.slice(distinct[0].length); }
+            const cols = splitTopLevelCommas(body);
+            const header = prefix ? `SELECT ${prefix}` : 'SELECT';
+            if (cols.length <= 1) {
+                lines.push(`${header} ${body}`.trimEnd());
+            } else {
+                lines.push(header);
+                cols.forEach((c, idx) => {
+                    lines.push(INDENT + c.trim() + (idx < cols.length - 1 ? ',' : ''));
+                });
+            }
+        } else if (kw === 'WHERE' || kw === 'HAVING') {
+            const conds = splitWhereByAnd(content);
+            if (conds.length <= 1) {
+                lines.push(`${kw} ${content}`.trimEnd());
+            } else {
+                lines.push(`${kw} ${conds[0].trim()}`);
+                for (let k = 1; k < conds.length; k++) lines.push(`${INDENT}AND ${conds[k].trim()}`);
+            }
+        } else {
+            lines.push(content ? `${kw} ${content}` : kw);
+        }
+    }
+    return lines.join('\n');
+}
+
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 (function() {
     const vscode = acquireVsCodeApi();
@@ -375,6 +530,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const sqlDialogClose = document.getElementById('sqlDialogClose');
     const queryInput = document.getElementById('queryInput');
     const queryRunBtn = document.getElementById('queryRunBtn');
+    const queryFormatBtn = document.getElementById('queryFormatBtn');
     const queryHistoryContainer = document.getElementById('queryHistoryContainer');
     const queryHistoryToggle = document.getElementById('queryHistoryToggle');
     const queryHistoryPanel = document.getElementById('queryHistoryPanel');
@@ -396,6 +552,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // view or a read-only custom query.
     dataLoading.classList.remove('hidden');
 
+    // Set the query bar text, pretty-printed as a formatted multi-line SELECT,
+    // and resize the textarea to fit.
+    function setQueryText(sql) {
+        queryInput.value = formatSql(sql == null ? '' : String(sql));
+        autoSizeQueryInput();
+    }
+
+    // Grow/shrink the query textarea to fit its content (bounded by the CSS
+    // max-height).
+    function autoSizeQueryInput() {
+        if (!queryInput) return;
+        queryInput.style.height = 'auto';
+        queryInput.style.height = (queryInput.scrollHeight + 2) + 'px';
+    }
+
     // Event listeners
     commitBtn.addEventListener('click', commitChanges);
     discardBtn.addEventListener('click', discardChanges);
@@ -405,9 +576,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     sqlDialogClose.addEventListener('click', closeSqlDialog);
     sqlDialogExecute.addEventListener('click', executePendingChanges);
     queryRunBtn.addEventListener('click', runCustomQuery);
+    if (queryFormatBtn) {
+        queryFormatBtn.addEventListener('click', () => {
+            setQueryText(queryInput.value);
+            queryInput.focus();
+        });
+    }
     queryInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { runCustomQuery(); }
+        // The query input is a multi-line textarea: plain Enter inserts a new
+        // line, Ctrl/Cmd+Enter runs the query.
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            runCustomQuery();
+        }
     });
+    queryInput.addEventListener('input', autoSizeQueryInput);
 
     queryHistoryToggle.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -592,14 +775,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             readOnly = true;
             applyReadOnlyMode();
             tableName.textContent = msg.viewTitle || 'Query result';
-            queryInput.value = msg.customQuery;
+            setQueryText(msg.customQuery);
             metaLoading.classList.add('hidden');
             runCustomQuery();
             return;
         }
 
         tableName.textContent = `${schema}.${table}`;
-        queryInput.value = `SELECT * FROM ${getDefaultTableReference()}`;
+        setQueryText(`SELECT * FROM ${getDefaultTableReference()}`);
         // Standard table view: load the table and its relation metadata.
         metaLoading.classList.remove('hidden');
         vscode.postMessage({ command: 'loadData', offset: 0, limit: PAGE_SIZE });
@@ -640,7 +823,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         tableName.textContent = `${schema}.${table}`;
-        queryInput.value = `SELECT * FROM ${getDefaultTableReference()}`;
+        setQueryText(`SELECT * FROM ${getDefaultTableReference()}`);
         dataLoading.classList.add('hidden');
         updateRowCount();
         renderTable();
@@ -800,7 +983,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function selectQueryHistoryItem(sql) {
         if (sql == null) return;
-        queryInput.value = sql;
+        setQueryText(sql);
         closeQueryHistoryPanel();
         queryInput.focus();
     }
@@ -853,7 +1036,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         let sql = parsed.base;
         if (existing.length > 0) sql += ` WHERE ${existing.join(' AND ')}`;
         if (parsed.orderBy) sql += ` ORDER BY ${parsed.orderBy}`;
-        queryInput.value = sql;
+        setQueryText(sql);
     }
 
     function updateRowCount() {
@@ -1178,7 +1361,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 action: () => {
                     if (!schema || !table) return;
                     const escaped = escapeSqlString(cellValue);
-                    const currentSql = queryInput.value.trim();
                     const fmtCol = formatIdentifier(colName);
                     const colMeta = columns.find(c => c.name === colName);
                     const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
@@ -1188,13 +1370,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     } else {
                         excludeClause = `${fmtCol} != '${escaped}'`;
                     }
-                    let sql;
-                    if (currentSql.toLowerCase().includes(' where ')) {
-                        sql = currentSql + ` AND ${excludeClause}`;
-                    } else {
-                        sql = `SELECT * FROM ${getDefaultTableReference()} WHERE ${excludeClause}`;
-                    }
-                    queryInput.value = sql;
+                    const parsed = parseSqlForWhere(
+                        queryInput.value.trim() || `SELECT * FROM ${getDefaultTableReference()}`
+                    );
+                    const clauses = parsed.where ? splitWhereByAnd(parsed.where) : [];
+                    clauses.push(excludeClause);
+                    let sql = parsed.base + ` WHERE ${clauses.join(' AND ')}`;
+                    if (parsed.orderBy) sql += ` ORDER BY ${parsed.orderBy}`;
+                    setQueryText(sql);
                     runCustomQuery();
                 }
             });
@@ -1333,9 +1516,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             .split(',')
             .map(p => p.trim())
             .filter(p => p && !orderByMatchesColumn(p, colName));
-        queryInput.value = parts.length > 0
+        setQueryText(parts.length > 0
             ? `${parsed.base} ORDER BY ${parts.join(', ')}`
-            : parsed.base;
+            : parsed.base);
         runCustomQuery();
     }
 
@@ -1355,7 +1538,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             parts.push(`${fmtCol} ${direction}`);
             newOrder = parts.join(', ');
         }
-        queryInput.value = `${parsed.base} ORDER BY ${newOrder}`;
+        setQueryText(`${parsed.base} ORDER BY ${newOrder}`);
         runCustomQuery();
     }
 
@@ -1363,7 +1546,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const baseSql = (queryInput.value || '').trim();
         if (!baseSql) return;
         const parsed = parseSqlForOrder(baseSql);
-        queryInput.value = parsed.base;
+        setQueryText(parsed.base);
         runCustomQuery();
     }
 
@@ -2994,6 +3177,7 @@ if (typeof module !== 'undefined' && module.exports) {
         findTopLevelKeywordIndex,
         splitWhereByAnd,
         whereClauseTargetsColumn,
-        parseSqlForOrder
+        parseSqlForOrder,
+        formatSql
     };
 }

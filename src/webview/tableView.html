@@ -33,8 +33,9 @@
                     <div class="query-history-empty" id="queryHistoryEmpty">No matching history</div>
                 </div>
             </div>
-            <input type="text" id="queryInput" class="query-input" />
-            <button class="btn btn-primary" id="queryRunBtn" title="Run query">&#9654; Run</button>
+            <textarea id="queryInput" class="query-input" rows="1" spellcheck="false" wrap="off"></textarea>
+            <button class="btn" id="queryFormatBtn" title="Format SQL">Format</button>
+            <button class="btn btn-primary" id="queryRunBtn" title="Run query (Ctrl+Enter)">&#9654; Run</button>
         </div>
         <div class="table-wrapper" id="tableWrapper">
             <table id="dataTable">
