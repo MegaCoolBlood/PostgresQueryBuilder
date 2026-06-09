@@ -34,6 +34,18 @@ function normalizeNumericInput(value, thousandSeparator = DEFAULT_THOUSAND_SEPAR
     return str;
 }
 
+/**
+ * Remove thousand separators from a displayed numeric string for copying,
+ * while preserving the decimal separator exactly as shown (e.g. the German
+ * decimal comma). "9 999 999,99" -> "9999999,99". Non-numeric text or an empty
+ * separator is returned unchanged.
+ */
+function stripThousandSeparators(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
+    if (value === null || value === undefined) return value;
+    if (!thousandSeparator) return String(value);
+    return String(value).split(thousandSeparator).join('');
+}
+
 function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (value === null || value === undefined) return null;
     const num = Number(value);
@@ -439,6 +451,64 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         contextMenu.style.display = 'none';
         closeQueryHistoryPanel();
     });
+
+    // Strip thousand separators from numeric cells when copying from the grid,
+    // so a displayed "9 999 999,99" lands on the clipboard as "9999999,99".
+    document.addEventListener('copy', handleGridCopy);
+
+    function isNumericColumn(colName) {
+        const colMeta = columns.find(c => c.name === colName);
+        return colMeta ? getColumnFilterType(colMeta.dataType) === 'numeric' : false;
+    }
+
+    function handleGridCopy(e) {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+
+        // Only act on selections that cover data cells in the grid.
+        const cells = Array.from(tableBody.querySelectorAll('td[data-col]'))
+            .filter(td => sel.containsNode(td, true));
+        if (cells.length === 0) return;
+
+        // Leave native copy untouched unless at least one numeric cell is involved.
+        if (!cells.some(td => isNumericColumn(td.getAttribute('data-col')))) return;
+
+        // Single cell: respect a partial in-cell text selection; only normalize
+        // when the column is numeric.
+        if (cells.length === 1) {
+            const td = cells[0];
+            if (!isNumericColumn(td.getAttribute('data-col'))) return;
+            const selectedText = sel.toString();
+            const fullText = getCellTextContent(td);
+            const source = (selectedText && selectedText.trim() && selectedText.trim() !== fullText)
+                ? selectedText.trim()
+                : fullText;
+            e.clipboardData.setData('text/plain', stripThousandSeparators(source, thousandSeparator));
+            e.preventDefault();
+            return;
+        }
+
+        // Multiple cells: rebuild tab/newline separated text, normalizing the
+        // numeric columns and leaving everything else as displayed.
+        const rowMap = new Map();
+        for (const td of cells) {
+            const tr = td.closest('tr');
+            if (!rowMap.has(tr)) rowMap.set(tr, []);
+            rowMap.get(tr).push(td);
+        }
+        const lines = [];
+        for (const rowCells of rowMap.values()) {
+            const parts = rowCells.map(td => {
+                const text = getCellTextContent(td);
+                return isNumericColumn(td.getAttribute('data-col'))
+                    ? stripThousandSeparators(text, thousandSeparator)
+                    : text;
+            });
+            lines.push(parts.join('\t'));
+        }
+        e.clipboardData.setData('text/plain', lines.join('\n'));
+        e.preventDefault();
+    }
 
     // Listen for messages from extension
     window.addEventListener('message', (event) => {
@@ -2918,6 +2988,7 @@ if (typeof module !== 'undefined' && module.exports) {
         normalizeFilterInputValue,
         escapeSqlString,
         liveFormatNumeric,
+        stripThousandSeparators,
         stripTrailingLimitOffset,
         parseSqlForWhere,
         findTopLevelKeywordIndex,

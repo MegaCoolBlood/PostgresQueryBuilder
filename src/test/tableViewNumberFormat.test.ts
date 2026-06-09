@@ -2,13 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators } = require(
     path.join(__dirname, '../../src/webview/tableView.js')
 );
 
 test('normalizeNumericInput strips thousand separators and converts decimal comma', () => {
     assert.equal(normalizeNumericInput('1 234,50', ' '), '1234.50');
     assert.equal(normalizeNumericInput('-9 999 999,99', ' '), '-9999999.99');
+});
+
+test('stripThousandSeparators removes separators but keeps the decimal as shown', () => {
+    assert.equal(stripThousandSeparators('9 999 999,99', ' '), '9999999,99');
+    assert.equal(stripThousandSeparators('1 234', ' '), '1234');
+    assert.equal(stripThousandSeparators('-12 345,67', ' '), '-12345,67');
+});
+
+test('stripThousandSeparators supports other separators and leaves text alone', () => {
+    assert.equal(stripThousandSeparators('1.234.567,89', '.'), '1234567,89');
+    assert.equal(stripThousandSeparators('hello world', ' '), 'helloworld');
+    assert.equal(stripThousandSeparators('1234,5', ''), '1234,5');
 });
 
 test('formatNumberDisplay uses thousand separators and comma decimal', () => {
