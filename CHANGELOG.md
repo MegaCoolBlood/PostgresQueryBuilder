@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.1
+
+- **„View Data" innerhalb einer `FOR … IN (…) LOOP`-Schleife:** Bei einem Rechtsklick auf eine `SELECT`-Anweisung, die als Schleifen-Query in einem PL/pgSQL-`FOR r IN ( SELECT … ) LOOP`-Konstrukt steht, wird jetzt nur noch die eigentliche `SELECT`/`WITH`-Abfrage extrahiert. Das umgebende Schleifengerüst (`FOR r IN (`, das schließende `) LOOP …`) sowie der Schleifenkörper werden nicht mehr mit übernommen. Sowohl die geklammerte Variante (`FOR r IN ( SELECT … ) LOOP`, auch mit `UNION ALL`, verschachtelten Klammern/Subqueries und einem führenden Kommentar vor dem `SELECT`) als auch die ungeklammerte Variante (`FOR r IN SELECT … LOOP`) werden korrekt erkannt.
+
 ## 1.1.0
 
 - Die **Datenansicht** öffnet jetzt nur noch beim **Doppelklick** auf eine Tabelle in der Baumansicht (statt beim einfachen Klick), damit das Navigieren/Auswählen in der Tabellenliste nicht mehr versehentlich Tabellen öffnet.

@@ -293,6 +293,79 @@ function firstSelectOrWithIndex(tokens: Token[]): number {
     return -1;
 }
 
+/**
+ * If `stmt` begins with a PL/pgSQL `FOR <target> IN (query) LOOP` (or
+ * `FOR <target> IN query LOOP`) construct, return just the inner query
+ * (`SELECT ...` / `WITH ...`). Otherwise return null.
+ *
+ * This keeps the surrounding loop scaffolding (`FOR r IN (`, `) LOOP ...`)
+ * out of the extracted statement when the cursor sits on the loop's query.
+ */
+function extractForLoopQuery(stmt: string, tokens: Token[]): string | null {
+    // Locate the loop's `FOR` keyword at the top level.
+    const firstIdx = tokens.findIndex(
+        (t) => t.type === 'word' && t.depth === 0 && t.text.toLowerCase() === 'for'
+    );
+    if (firstIdx === -1) return null;
+
+    // Find the `IN` keyword that introduces the loop query (same depth as FOR).
+    let inIdx = -1;
+    for (let i = firstIdx + 1; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (t.type === 'word' && t.depth === 0) {
+            const w = t.text.toLowerCase();
+            if (w === 'in') { inIdx = i; break; }
+            if (w === 'loop') return null;
+        }
+    }
+    if (inIdx === -1) return null;
+
+    const after = tokens[inIdx + 1];
+    if (!after) return null;
+
+    /** First SELECT/WITH token at `depth` within tokens[from..to), or -1. */
+    const findQueryStart = (from: number, to: number, depth: number): number => {
+        for (let j = from; j < to; j++) {
+            const t = tokens[j];
+            if (t.type === 'word' && t.depth === depth) {
+                const w = t.text.toLowerCase();
+                if (w === 'select' || w === 'with') return t.start;
+            }
+        }
+        return -1;
+    };
+
+    // Parenthesized query: `FOR r IN ( SELECT ... ) LOOP`. Inner tokens sit one
+    // level deeper than the opening paren; leading comments are skipped.
+    if (after.type === 'punct' && after.text === '(') {
+        const openDepth = after.depth;
+        for (let j = inIdx + 2; j < tokens.length; j++) {
+            const t = tokens[j];
+            if (t.type === 'punct' && t.text === ')' && t.depth === openDepth) {
+                const queryStart = findQueryStart(inIdx + 2, j, openDepth + 1);
+                if (queryStart === -1) return null;
+                return stmt.slice(queryStart, t.start).trim();
+            }
+        }
+        return null;
+    }
+
+    // Unparenthesized query: `FOR r IN SELECT ... LOOP`.
+    let loopIdx = tokens.length;
+    let loopStart = stmt.length;
+    for (let j = inIdx + 1; j < tokens.length; j++) {
+        const t = tokens[j];
+        if (t.type === 'word' && t.depth === after.depth && t.text.toLowerCase() === 'loop') {
+            loopIdx = j;
+            loopStart = t.start;
+            break;
+        }
+    }
+    const queryStart = findQueryStart(inIdx + 1, loopIdx, after.depth);
+    if (queryStart === -1) return null;
+    return stmt.slice(queryStart, loopStart).trim();
+}
+
 /** Remove a top-level `INTO [STRICT] target, ...` clause from a SELECT. */
 function stripIntoClause(sql: string): string {
     const masked = maskSql(sql);
@@ -460,8 +533,16 @@ export function extractSelect(
         // Trim down to the SELECT / WITH start if the statement has a prefix
         // (e.g. `IF ... THEN SELECT ...` or `RETURN QUERY SELECT ...`).
         const stmtMasked = maskSql(stmt);
-        const selIdx = firstSelectOrWithIndex(tokenize(stmtMasked));
-        if (selIdx > 0) stmt = stmt.slice(selIdx);
+        const stmtTokens = tokenize(stmtMasked);
+        // A PL/pgSQL `FOR r IN (SELECT ...) LOOP` wraps the query in parens, so
+        // peel off the loop scaffolding and keep only the inner SELECT/WITH.
+        const forQuery = extractForLoopQuery(stmt, stmtTokens);
+        if (forQuery !== null) {
+            stmt = forQuery;
+        } else {
+            const selIdx = firstSelectOrWithIndex(stmtTokens);
+            if (selIdx > 0) stmt = stmt.slice(selIdx);
+        }
     }
 
     // Drop a trailing semicolon and surrounding whitespace.

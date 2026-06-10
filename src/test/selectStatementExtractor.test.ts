@@ -125,6 +125,104 @@ test('findEnclosingDollarBody returns inner bounds for the enclosing body', () =
     assert.equal(findEnclosingDollarBody(text, 0), null);
 });
 
+// ===== extractSelect: PL/pgSQL FOR ... IN (query) LOOP =====
+
+test('extractSelect peels a parenthesized FOR ... IN (SELECT ...) LOOP', () => {
+    const body = [
+        'BEGIN',
+        '    x := 1;',
+        '    FOR r IN (',
+        '        SELECT col_id, col_name',
+        '        FROM some_table',
+        '        WHERE col_name = p_name',
+        '    ) LOOP',
+        '        do_something(r);',
+        '    END LOOP;',
+        'END;'
+    ].join('\n');
+    const cursor = body.indexOf('col_id');
+    const res = extractSelect(body, cursor);
+    assert.ok(res);
+    assert.ok(res.sql.startsWith('SELECT col_id'), `got: ${res.sql}`);
+    assert.ok(!/FOR\s+r\s+IN/i.test(res.sql), 'must not include the FOR ... IN scaffolding');
+    assert.ok(!/LOOP/i.test(res.sql), 'must not include the LOOP keyword');
+    assert.ok(!/do_something/i.test(res.sql), 'must not include the loop body');
+    assert.deepEqual(res.variables, ['p_name']);
+});
+
+test('extractSelect peels a FOR ... IN (...) loop with a UNION ALL query', () => {
+    const body = [
+        'BEGIN',
+        '    x := 1;',
+        '    FOR r IN (',
+        '        SELECT a FROM t1 WHERE x = v_x',
+        '        UNION ALL',
+        '        SELECT b FROM t2',
+        '    ) LOOP',
+        '        process(r);',
+        '    END LOOP;',
+        'END;'
+    ].join('\n');
+    const cursor = body.indexOf('FROM t1');
+    const res = extractSelect(body, cursor);
+    assert.ok(res);
+    assert.ok(res.sql.startsWith('SELECT a FROM t1'), `got: ${res.sql}`);
+    assert.ok(/UNION ALL/i.test(res.sql), 'must keep the full union query');
+    assert.ok(/SELECT b FROM t2/i.test(res.sql));
+    assert.ok(!/\)\s*LOOP/i.test(res.sql), 'must not include the closing paren and LOOP');
+    assert.deepEqual(res.variables, ['v_x']);
+});
+
+test('extractSelect peels an unparenthesized FOR ... IN SELECT ... LOOP', () => {
+    const body = [
+        'BEGIN',
+        '    x := 1;',
+        '    FOR r IN SELECT id FROM users WHERE id = v_id LOOP',
+        '        handle(r);',
+        '    END LOOP;',
+        'END;'
+    ].join('\n');
+    const cursor = body.indexOf('FROM users');
+    const res = extractSelect(body, cursor);
+    assert.ok(res);
+    assert.equal(res.sql, 'SELECT id FROM users WHERE id = v_id');
+    assert.deepEqual(res.variables, ['v_id']);
+});
+
+test('extractSelect peels a FOR ... IN (...) loop whose query starts with a comment', () => {
+    const body = [
+        'BEGIN',
+        '    -- COMMIT;',
+        '    FOR r IN (',
+        '        -- leading comment before the query',
+        '        SELECT',
+        '            col_a,',
+        '            COALESCE(col_b, col_c) AS col_b',
+        '        FROM some_table t',
+        '        WHERE NOT EXISTS (',
+        '            SELECT 1 FROM other_table WHERE o_id = t.t_id',
+        '        )',
+        '        AND t.col_a = p_value',
+        '    )',
+        '    LOOP',
+        '        IF r.col_a IS NULL THEN',
+        '            v_x := 1;',
+        '        END IF;',
+        '    END LOOP;',
+        'END;'
+    ].join('\n');
+    const cursor = body.indexOf('col_a,');
+    const res = extractSelect(body, cursor);
+    assert.ok(res);
+    assert.ok(res.sql.startsWith('SELECT'), `got: ${res.sql}`);
+    assert.ok(!/FOR\s+r\s+IN/i.test(res.sql), 'must not include the FOR ... IN scaffolding');
+    assert.ok(!/leading comment/i.test(res.sql), 'must not keep the leading comment line');
+    assert.ok(!/\bLOOP\b/i.test(res.sql), 'must not include the LOOP keyword');
+    assert.ok(!/v_x\s*:=/i.test(res.sql), 'must not include the loop body');
+    assert.ok(/NOT EXISTS/i.test(res.sql), 'must keep the nested subquery');
+    assert.deepEqual(res.variables, ['p_value']);
+});
+
 // ===== extractSelect: INTO stripping =====
 
 test('extractSelect strips a simple INTO clause', () => {
