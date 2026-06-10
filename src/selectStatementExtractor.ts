@@ -472,6 +472,14 @@ function computeNextValueExpectation(
             return false;
         }
         if (VALUE_KEYWORDS.has(lw)) return true;
+        // A function call sitting in a value position propagates the value
+        // context into its argument list, so variables used as arguments are
+        // detected too (e.g. `DATE_TRUNC('day', v_von)` or `LAST_DAY(v_bis)`).
+        const next = tokens[i + 1];
+        if (expectValue && !SQL_KEYWORDS.has(lw) && next && next.type === 'punct' && next.text === '(') {
+            valueListDepths.push(next.depth + 1);
+            return true;
+        }
         return false;
     }
     if (t.type === 'punct') {

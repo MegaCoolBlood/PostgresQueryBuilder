@@ -3,6 +3,7 @@
 ## 1.1.1
 
 - **„View Data" innerhalb einer `FOR … IN (…) LOOP`-Schleife:** Bei einem Rechtsklick auf eine `SELECT`-Anweisung, die als Schleifen-Query in einem PL/pgSQL-`FOR r IN ( SELECT … ) LOOP`-Konstrukt steht, wird jetzt nur noch die eigentliche `SELECT`/`WITH`-Abfrage extrahiert. Das umgebende Schleifengerüst (`FOR r IN (`, das schließende `) LOOP …`) sowie der Schleifenkörper werden nicht mehr mit übernommen. Sowohl die geklammerte Variante (`FOR r IN ( SELECT … ) LOOP`, auch mit `UNION ALL`, verschachtelten Klammern/Subqueries und einem führenden Kommentar vor dem `SELECT`) als auch die ungeklammerte Variante (`FOR r IN SELECT … LOOP`) werden korrekt erkannt.
+- **Variablen-Erkennung in Funktionsargumenten:** Variablen, die als Argument eines Funktionsaufrufs in einer Wert-Position stehen (z. B. `v_von` in `DATE_TRUNC('day', v_von)` oder `v_bis` in `LAST_DAY(v_bis)` bzw. `LEAST(v_bis, …)`), werden im Variablen-Dialog jetzt ebenfalls erkannt und ersetzt. Der Wert-Kontext wird in die Argumentliste eines Funktionsaufrufs weitergereicht (auch verschachtelt), während Funktionsargumente außerhalb einer Wert-Position (z. B. in der SELECT-Liste) weiterhin nicht als Variablen behandelt werden.
 
 ## 1.1.0
 

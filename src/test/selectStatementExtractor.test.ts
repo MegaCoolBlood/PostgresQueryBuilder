@@ -61,6 +61,29 @@ test('findVariableTokens captures positional parameters', () => {
     assert.deepEqual(names, ['$1']);
 });
 
+test('findVariableTokens captures variables used as function arguments in BETWEEN', () => {
+    const sql =
+        "SELECT * FROM t WHERE d BETWEEN DATE_TRUNC('day', v_von) AND LAST_DAY(v_bis)";
+    const names = findVariableTokens(sql).map((o) => o.name);
+    assert.ok(names.includes('v_von'), 'v_von (DATE_TRUNC argument) must be detected');
+    assert.ok(names.includes('v_bis'), 'v_bis (LAST_DAY argument) must be detected');
+});
+
+test('findVariableTokens captures variables nested in function arguments after an operator', () => {
+    const sql = 'SELECT * FROM t WHERE d < LEAST(v_bis, GREATEST(v_min, v_max))';
+    const names = findVariableTokens(sql).map((o) => o.name);
+    assert.ok(names.includes('v_bis'));
+    assert.ok(names.includes('v_min'));
+    assert.ok(names.includes('v_max'));
+});
+
+test('findVariableTokens does not treat select-list function arguments as values', () => {
+    const sql = "SELECT DATE_TRUNC('day', mtd_datum) AS d FROM t WHERE x = v_x";
+    const names = findVariableTokens(sql).map((o) => o.name);
+    assert.ok(!names.includes('mtd_datum'), 'select-list function args are not value positions');
+    assert.deepEqual(names, ['v_x']);
+});
+
 // ===== extractSelect: statement boundary detection =====
 
 test('extractSelect finds the SELECT around the cursor between semicolons', () => {
