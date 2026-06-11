@@ -277,6 +277,63 @@ test('extractSelect uses an explicit selection verbatim without expanding', () =
     assert.deepEqual(res.variables, ['v_id']);
 });
 
+// ===== extractSelect: UPDATE -> SELECT conversion =====
+
+test('extractSelect converts a simple UPDATE into a SELECT', () => {
+    const body = "UPDATE some_table SET col_a = '60', col_b = 0 WHERE id = v_id AND name = p_name;";
+    const cursor = body.indexOf('SET');
+    const res = extractSelect(body, cursor);
+    assert.ok(res);
+    assert.equal(res.sql, 'SELECT * FROM some_table WHERE id = v_id AND name = p_name');
+    assert.ok(!/\bSET\b/i.test(res.sql), 'SET clause must be dropped');
+    assert.deepEqual(res.variables, ['v_id', 'p_name']);
+});
+
+test('extractSelect converts an UPDATE with a nested NOT EXISTS subquery and BETWEEN', () => {
+    const body = [
+        'UPDATE some_table',
+        "    SET col_status = '60',",
+        '        col_hours = 0',
+        '    WHERE col_sid = v_sid',
+        '    AND col_persnr = p_persnr',
+        '    AND NOT EXISTS (',
+        '        SELECT 1',
+        '        FROM other_table o',
+        '        WHERE o.o_persnr = st.col_persnr',
+        "        AND o.o_valid = 'J'",
+        '    )',
+        "    AND col_from BETWEEN v_von AND v_bis + INTERVAL '1 day';"
+    ].join('\n');
+    const cursor = body.indexOf('SET');
+    const res = extractSelect(body, cursor);
+    assert.ok(res);
+    assert.ok(res.sql.startsWith('SELECT * FROM some_table'), `got: ${res.sql}`);
+    assert.ok(!/\bSET\b/i.test(res.sql), 'SET clause must be dropped');
+    assert.ok(!/col_status/i.test(res.sql), 'assignment columns must be dropped');
+    assert.ok(/NOT EXISTS/i.test(res.sql), 'WHERE subquery must be kept');
+    assert.deepEqual(res.variables, ['v_sid', 'p_persnr', 'v_von', 'v_bis']);
+});
+
+test('extractSelect converts an UPDATE ... FROM ... into a SELECT with a combined FROM list', () => {
+    const body =
+        'UPDATE t1 SET a = b.x FROM t2 b WHERE t1.id = b.t1_id AND t1.k = v_k;';
+    const cursor = body.indexOf('SET');
+    const res = extractSelect(body, cursor);
+    assert.ok(res);
+    assert.equal(res.sql, 'SELECT * FROM t1, t2 b WHERE t1.id = b.t1_id AND t1.k = v_k');
+    assert.deepEqual(res.variables, ['v_k']);
+});
+
+test('extractSelect converts an UPDATE with an alias and drops RETURNING', () => {
+    const body = 'UPDATE some_table st SET col = 1 WHERE st.id = v_id RETURNING st.id;';
+    const cursor = body.indexOf('SET');
+    const res = extractSelect(body, cursor);
+    assert.ok(res);
+    assert.equal(res.sql, 'SELECT * FROM some_table st WHERE st.id = v_id');
+    assert.ok(!/RETURNING/i.test(res.sql), 'RETURNING clause must be dropped');
+    assert.deepEqual(res.variables, ['v_id']);
+});
+
 // ===== substituteVariables =====
 
 test('substituteVariables replaces values verbatim and case-insensitively', () => {

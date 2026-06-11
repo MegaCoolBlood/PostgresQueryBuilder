@@ -397,6 +397,65 @@ function stripIntoClause(sql: string): string {
 }
 
 /**
+ * Convert a top-level `UPDATE <table> SET ... [FROM ...] WHERE ...` statement
+ * into an equivalent `SELECT * FROM <table> [, <from list>] WHERE ...` so the
+ * affected rows can be previewed. The `SET` assignment list and any
+ * `RETURNING` clause are dropped. Returns null when `sql` is not an UPDATE.
+ */
+function convertUpdateToSelect(sql: string): string | null {
+    const masked = maskSql(sql);
+    const tokens = tokenize(masked);
+
+    const firstWord = tokens.find((t) => t.type === 'word');
+    if (!firstWord || firstWord.depth !== 0 || firstWord.text.toLowerCase() !== 'update') {
+        return null;
+    }
+
+    // Locate the top-level clause keywords that delimit an UPDATE.
+    let setIdx = -1;
+    let fromIdx = -1;
+    let whereIdx = -1;
+    let returningIdx = -1;
+    for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (t.type !== 'word' || t.depth !== 0) continue;
+        const w = t.text.toLowerCase();
+        if (w === 'set' && setIdx === -1) setIdx = i;
+        else if (w === 'from' && fromIdx === -1 && setIdx !== -1 && whereIdx === -1) fromIdx = i;
+        else if (w === 'where' && whereIdx === -1 && setIdx !== -1) whereIdx = i;
+        else if (w === 'returning' && returningIdx === -1) returningIdx = i;
+    }
+    if (setIdx === -1) return null;
+
+    const tailStart =
+        returningIdx !== -1 ? tokens[returningIdx].start : sql.length;
+
+    // Target table (and optional alias) between UPDATE and SET, minus `ONLY`.
+    let tablePart = sql.slice(firstWord.end, tokens[setIdx].start).trim();
+    tablePart = tablePart.replace(/^only\s+/i, '').trim();
+    if (!tablePart) return null;
+
+    // Optional UPDATE ... FROM <list> (additional relations).
+    let fromClause = '';
+    if (fromIdx !== -1) {
+        const fromEnd = whereIdx !== -1 ? tokens[whereIdx].start : tailStart;
+        fromClause = sql.slice(tokens[fromIdx].end, fromEnd).trim();
+    }
+
+    // Optional WHERE condition.
+    let wherePart = '';
+    if (whereIdx !== -1) {
+        wherePart = sql.slice(tokens[whereIdx].end, tailStart).trim();
+    }
+
+    let out = `SELECT * FROM ${tablePart}`;
+    if (fromClause) out += `, ${fromClause}`;
+    if (wherePart) out += ` WHERE ${wherePart}`;
+    return out.trim();
+}
+
+
+/**
  * Return every occurrence of an identifier that should be treated as a
  * substitutable value variable. Order follows appearance in the SQL.
  *
@@ -556,6 +615,10 @@ export function extractSelect(
     // Drop a trailing semicolon and surrounding whitespace.
     stmt = stmt.trim().replace(/;\s*$/, '').trim();
     if (!stmt) return null;
+
+    // Turn an UPDATE into an equivalent SELECT so its rows can be previewed.
+    const asSelect = convertUpdateToSelect(stmt);
+    if (asSelect) stmt = asSelect;
 
     stmt = stripIntoClause(stmt).trim();
     if (!stmt) return null;
