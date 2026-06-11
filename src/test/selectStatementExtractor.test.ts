@@ -5,7 +5,8 @@ import {
     findVariableTokens,
     extractSelect,
     substituteVariables,
-    findEnclosingDollarBody
+    findEnclosingDollarBody,
+    extractTableNames
 } from '../selectStatementExtractor';
 
 // ===== maskSql =====
@@ -332,6 +333,43 @@ test('extractSelect converts an UPDATE with an alias and drops RETURNING', () =>
     assert.equal(res.sql, 'SELECT * FROM some_table st WHERE st.id = v_id');
     assert.ok(!/RETURNING/i.test(res.sql), 'RETURNING clause must be dropped');
     assert.deepEqual(res.variables, ['v_id']);
+});
+
+// ===== extractTableNames =====
+
+test('extractTableNames returns the FROM table', () => {
+    assert.deepEqual(extractTableNames('SELECT * FROM users WHERE id = v_id'), ['users']);
+});
+
+test('extractTableNames returns FROM-list and JOIN tables with aliases skipped', () => {
+    const sql =
+        'SELECT * FROM t1 a, t2 b JOIN t3 c ON c.id = a.id LEFT JOIN t4 ON t4.k = b.k';
+    assert.deepEqual(extractTableNames(sql), ['t1', 't2', 't3', 't4']);
+});
+
+test('extractTableNames strips the schema qualifier', () => {
+    assert.deepEqual(extractTableNames('SELECT * FROM public.users u'), ['users']);
+});
+
+test('extractTableNames includes tables inside subqueries', () => {
+    const sql =
+        'SELECT * FROM orders o WHERE NOT EXISTS (SELECT 1 FROM order_items i WHERE i.oid = o.id)';
+    assert.deepEqual(extractTableNames(sql), ['orders', 'order_items']);
+});
+
+test('extractTableNames skips derived tables (subquery in FROM)', () => {
+    const sql = 'SELECT * FROM (SELECT id FROM users) sub JOIN roles r ON r.id = sub.id';
+    assert.deepEqual(extractTableNames(sql), ['users', 'roles']);
+});
+
+test('extractTableNames does not treat a table-position function as a table', () => {
+    const sql = 'SELECT * FROM generate_series(1, 10) g JOIN nums n ON n.v = g';
+    assert.deepEqual(extractTableNames(sql), ['nums']);
+});
+
+test('extractTableNames de-duplicates repeated tables', () => {
+    const sql = 'SELECT * FROM t a JOIN t b ON a.id = b.parent';
+    assert.deepEqual(extractTableNames(sql), ['t']);
 });
 
 // ===== substituteVariables =====

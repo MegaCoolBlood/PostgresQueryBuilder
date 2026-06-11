@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
 import { TableWebViewManager } from './tableWebView';
-import { extractSelect, substituteVariables } from './selectStatementExtractor';
+import { extractSelect, extractTableNames, substituteVariables } from './selectStatementExtractor';
 
 const VARIABLE_CACHE_KEY = 'viewDataVariableCache';
 
@@ -41,13 +41,17 @@ export class ViewDataFromSelect {
             return;
         }
 
-        if (extraction.variables.length === 0) {
+        // Drop identifiers that are actually columns of the referenced tables;
+        // only the remaining (true) variables should be prompted for.
+        const variables = await this.filterKnownColumns(extraction.sql, extraction.variables);
+
+        if (variables.length === 0) {
             this.tableWebViewManager.openCustomQueryView(extraction.sql, this.makeTitle(extraction.sql));
             return;
         }
 
         const cache = this.getCache();
-        const prefilled = extraction.variables.map(name => ({
+        const prefilled = variables.map(name => ({
             name,
             value: cache[name.toLowerCase()] ?? ''
         }));
@@ -64,6 +68,33 @@ export class ViewDataFromSelect {
 
         const finalSql = substituteVariables(extraction.sql, values);
         this.tableWebViewManager.openCustomQueryView(finalSql, this.makeTitle(finalSql));
+    }
+
+    /**
+     * Remove identifiers that match real column names of any table referenced
+     * in `sql`. This keeps PL/pgSQL variables (and positional parameters) while
+     * filtering out plain columns that only look like variables. On any error
+     * (or no referenced tables) the original list is returned unchanged.
+     */
+    private async filterKnownColumns(sql: string, variables: string[]): Promise<string[]> {
+        if (variables.length === 0) return variables;
+        try {
+            const tableNames = extractTableNames(sql);
+            if (tableNames.length === 0) return variables;
+            const lowerNames = tableNames.map(n => n.toLowerCase());
+            const rows = await this.connectionManager.queryMetadata(
+                `SELECT DISTINCT lower(column_name) AS col
+                 FROM information_schema.columns
+                 WHERE lower(table_name) = ANY($1)`,
+                [lowerNames]
+            );
+            const knownColumns = new Set<string>(rows.map(r => String(r.col)));
+            if (knownColumns.size === 0) return variables;
+            return variables.filter(v => !knownColumns.has(v.toLowerCase()));
+        } catch {
+            // Fall back to the unfiltered list if the lookup fails.
+            return variables;
+        }
     }
 
     private makeTitle(sql: string): string {

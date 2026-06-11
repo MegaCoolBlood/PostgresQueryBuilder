@@ -635,6 +635,94 @@ export function extractSelect(
     return { sql: stmt, variables };
 }
 
+/** Keywords that end a `FROM`/`JOIN` table reference (alias or list). */
+const TABLE_REF_STOP = new Set([
+    'where', 'group', 'having', 'window', 'order', 'limit', 'offset', 'fetch',
+    'for', 'union', 'intersect', 'except', 'on', 'using', 'join', 'inner',
+    'left', 'right', 'full', 'cross', 'natural', 'lateral', 'returning',
+    'set', 'as', 'and', 'or'
+]);
+
+/**
+ * Return the distinct base-table names referenced after a `FROM` or `JOIN`
+ * keyword (at any nesting depth, so tables inside subqueries are included).
+ *
+ * Schema-qualified names (`schema.table`) yield the table part. Derived tables
+ * / subqueries (`FROM (SELECT ...) alias`) and aliases are skipped. The result
+ * is used to look up real column names so that columns are not mistaken for
+ * substitutable variables.
+ */
+export function extractTableNames(sql: string): string[] {
+    const masked = maskSql(sql);
+    const tokens = tokenize(masked);
+    const names: string[] = [];
+    const seen = new Set<string>();
+    const add = (name: string) => {
+        const key = name.toLowerCase();
+        if (!seen.has(key)) { seen.add(key); names.push(name); }
+    };
+
+    // Consume a single table reference (plus optional alias) starting at `start`.
+    // Returns the index just after the reference and any alias.
+    const consumeRef = (start: number): number => {
+        let k = start;
+        if (k >= tokens.length) return k;
+        const tk = tokens[k];
+        if (tk.type === 'punct' && tk.text === '(') {
+            // Derived table / subquery: skip to the matching close paren.
+            const depth = tk.depth;
+            k++;
+            while (k < tokens.length &&
+                !(tokens[k].type === 'punct' && tokens[k].text === ')' && tokens[k].depth === depth)) {
+                k++;
+            }
+            if (k < tokens.length) k++;
+        } else if (tk.type === 'word') {
+            // Dotted chain: keep the last identifier as the table name.
+            let lastName = tk.text;
+            k++;
+            while (k + 1 < tokens.length &&
+                tokens[k].type === 'punct' && tokens[k].text === '.' &&
+                tokens[k + 1].type === 'word') {
+                lastName = tokens[k + 1].text;
+                k += 2;
+            }
+            // A function call in table position (`FROM fn(...)`) is not a table.
+            if (!(k < tokens.length && tokens[k].type === 'punct' && tokens[k].text === '(')) {
+                add(lastName);
+            }
+        } else {
+            return k;
+        }
+        // Optional alias: `AS name` or a bare identifier that is not a keyword.
+        if (k < tokens.length && tokens[k].type === 'word' && tokens[k].text.toLowerCase() === 'as') {
+            k++;
+            if (k < tokens.length && tokens[k].type === 'word') k++;
+        } else if (k < tokens.length && tokens[k].type === 'word' &&
+            !TABLE_REF_STOP.has(tokens[k].text.toLowerCase())) {
+            k++;
+        }
+        return k;
+    };
+
+    for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (t.type !== 'word') continue;
+        const w = t.text.toLowerCase();
+        if (w !== 'from' && w !== 'join') continue;
+
+        let j = consumeRef(i + 1);
+        // `FROM a, b, c` — keep reading comma-separated table references.
+        if (w === 'from') {
+            while (j < tokens.length && tokens[j].type === 'punct' && tokens[j].text === ',') {
+                j = consumeRef(j + 1);
+            }
+        }
+    }
+    return names;
+}
+
+
 /**
  * Replace variable occurrences in `sql` with the provided values. Keys are
  * matched case-insensitively. Empty / missing values leave the identifier
