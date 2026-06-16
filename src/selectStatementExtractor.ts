@@ -461,12 +461,19 @@ function convertUpdateToSelect(sql: string): string | null {
  *
  * An identifier is considered a variable when it appears in a "value position"
  * — i.e. on the value side of a comparison/arithmetic operator, inside an
- * `IN (...)` / `VALUES (...)` list, or after `LIKE` / `ILIKE` / `BETWEEN`. The
- * session value keywords (`current_user`, `user`, ...) and positional
- * parameters (`$1`) are always included. Keywords, qualified columns
- * (`a.col`), table/alias qualifiers and function names are excluded.
+ * `IN (...)` / `VALUES (...)` list, after `LIKE` / `ILIKE` / `BETWEEN`, or as
+ * the value of `LIMIT` / `OFFSET`. The session value keywords (`current_user`,
+ * `user`, ...) and positional parameters (`$1`) are always included. Keywords,
+ * table/alias-qualified columns (`a.col`) and function names are excluded.
+ *
+ * A dotted identifier `head.tail` is, by default, treated as a qualified column
+ * and excluded. When `tableQualifiers` is supplied, a dotted identifier whose
+ * `head` is **not** one of the query's table names/aliases (and which is not a
+ * function call `head.tail(...)` nor a longer chain `head.a.b`) is instead
+ * treated as a PL/pgSQL record-field access (e.g. `pi_employeeObj.emplId`) and
+ * reported as a single substitutable variable.
  */
-export function findVariableTokens(sql: string): VariableOccurrence[] {
+export function findVariableTokens(sql: string, tableQualifiers?: Set<string>): VariableOccurrence[] {
     const masked = maskSql(sql);
     const tokens = tokenize(masked);
     const result: VariableOccurrence[] = [];
@@ -495,7 +502,23 @@ export function findVariableTokens(sql: string): VariableOccurrence[] {
                 const prevDot = prev && prev.type === 'punct' && prev.text === '.';
                 const nextDot = next && next.type === 'punct' && next.text === '.';
                 const nextParen = next && next.type === 'punct' && next.text === '(';
-                if (!prevDot && !nextDot && !nextParen) {
+                const tail = tokens[i + 2];
+                const afterTail = tokens[i + 3];
+                if (prevDot) {
+                    // Tail of a dotted chain — handled (or excluded) at the head.
+                } else if (nextDot && tail && tail.type === 'word') {
+                    // Dotted identifier `head.tail`. Treat it as a record-field
+                    // access (a variable) only when the head is not a known
+                    // table qualifier, it is not a function call (`head.tail(`)
+                    // and it is not a longer chain (`head.tail.more`).
+                    const tailIsCall = afterTail && afterTail.type === 'punct' && afterTail.text === '(';
+                    const tailIsChain = afterTail && afterTail.type === 'punct' && afterTail.text === '.';
+                    if (tableQualifiers && !tableQualifiers.has(lower) && !tailIsCall && !tailIsChain) {
+                        const full = `${t.text}.${tail.text}`;
+                        result.push({ name: full, key: full.toLowerCase(), start: t.start, end: tail.end });
+                    }
+                    // Otherwise it is a qualified column / function call → excluded.
+                } else if (!nextParen) {
                     result.push({ name: t.text, key: lower, start: t.start, end: t.end });
                 }
             }
@@ -531,6 +554,9 @@ function computeNextValueExpectation(
             return false;
         }
         if (VALUE_KEYWORDS.has(lw)) return true;
+        // `LIMIT <value>` / `OFFSET <value>` introduce a value position, so a
+        // variable used as the row count (e.g. `LIMIT pi_max_history`) is found.
+        if (lw === 'limit' || lw === 'offset') return true;
         // A function call sitting in a value position propagates the value
         // context into its argument list, so variables used as arguments are
         // detected too (e.g. `DATE_TRUNC('day', v_von)` or `LAST_DAY(v_bis)`).
@@ -623,7 +649,7 @@ export function extractSelect(
     stmt = stripIntoClause(stmt).trim();
     if (!stmt) return null;
 
-    const occurrences = findVariableTokens(stmt);
+    const occurrences = findVariableTokens(stmt, extractTableQualifiers(stmt));
     const seen = new Set<string>();
     const variables: string[] = [];
     for (const occ of occurrences) {
@@ -722,6 +748,75 @@ export function extractTableNames(sql: string): string[] {
     return names;
 }
 
+/**
+ * Return the set of lower-cased identifiers that may legitimately appear as the
+ * qualifier of a column reference (`qualifier.column`) — i.e. every table
+ * name and every alias introduced in a `FROM` / `JOIN` clause (at any nesting
+ * depth). This lets {@link findVariableTokens} tell a real qualified column
+ * (`lbe.lbe_mit_id`) apart from a PL/pgSQL record-field access
+ * (`pi_employeeObj.emplId`), the latter being a substitutable variable.
+ */
+export function extractTableQualifiers(sql: string): Set<string> {
+    const masked = maskSql(sql);
+    const tokens = tokenize(masked);
+    const qualifiers = new Set<string>();
+
+    // Consume one table reference; record its table name and optional alias.
+    const consumeRef = (start: number): number => {
+        let k = start;
+        if (k >= tokens.length) return k;
+        const tk = tokens[k];
+        if (tk.type === 'punct' && tk.text === '(') {
+            const depth = tk.depth;
+            k++;
+            while (k < tokens.length &&
+                !(tokens[k].type === 'punct' && tokens[k].text === ')' && tokens[k].depth === depth)) {
+                k++;
+            }
+            if (k < tokens.length) k++;
+        } else if (tk.type === 'word') {
+            let lastName = tk.text;
+            k++;
+            while (k + 1 < tokens.length &&
+                tokens[k].type === 'punct' && tokens[k].text === '.' &&
+                tokens[k + 1].type === 'word') {
+                lastName = tokens[k + 1].text;
+                k += 2;
+            }
+            // A function call in table position (`FROM fn(...)`) is not a table.
+            if (!(k < tokens.length && tokens[k].type === 'punct' && tokens[k].text === '(')) {
+                qualifiers.add(lastName.toLowerCase());
+            }
+        } else {
+            return k;
+        }
+        // Optional alias: `AS name` or a bare non-keyword identifier.
+        if (k < tokens.length && tokens[k].type === 'word' && tokens[k].text.toLowerCase() === 'as') {
+            k++;
+            if (k < tokens.length && tokens[k].type === 'word') { qualifiers.add(tokens[k].text.toLowerCase()); k++; }
+        } else if (k < tokens.length && tokens[k].type === 'word' &&
+            !TABLE_REF_STOP.has(tokens[k].text.toLowerCase())) {
+            qualifiers.add(tokens[k].text.toLowerCase());
+            k++;
+        }
+        return k;
+    };
+
+    for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (t.type !== 'word') continue;
+        const w = t.text.toLowerCase();
+        if (w !== 'from' && w !== 'join') continue;
+        let j = consumeRef(i + 1);
+        if (w === 'from') {
+            while (j < tokens.length && tokens[j].type === 'punct' && tokens[j].text === ',') {
+                j = consumeRef(j + 1);
+            }
+        }
+    }
+    return qualifiers;
+}
+
 
 /**
  * Replace variable occurrences in `sql` with the provided values. Keys are
@@ -738,7 +833,7 @@ export function substituteVariables(sql: string, values: Record<string, string>)
     }
     if (lookup.size === 0) return sql;
 
-    const occurrences = findVariableTokens(sql);
+    const occurrences = findVariableTokens(sql, extractTableQualifiers(sql));
     // Apply right-to-left so earlier spans keep their offsets.
     let result = sql;
     for (let i = occurrences.length - 1; i >= 0; i--) {

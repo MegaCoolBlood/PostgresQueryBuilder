@@ -6,7 +6,8 @@ import {
     extractSelect,
     substituteVariables,
     findEnclosingDollarBody,
-    extractTableNames
+    extractTableNames,
+    extractTableQualifiers
 } from '../selectStatementExtractor';
 
 // ===== maskSql =====
@@ -84,6 +85,72 @@ test('findVariableTokens does not treat select-list function arguments as values
     assert.ok(!names.includes('mtd_datum'), 'select-list function args are not value positions');
     assert.deepEqual(names, ['v_x']);
 });
+
+test('findVariableTokens detects a variable after LIMIT', () => {
+    const sql = 'SELECT * FROM t WHERE a = v_a ORDER BY id LIMIT pi_max_history';
+    const names = findVariableTokens(sql).map((o) => o.name);
+    assert.ok(names.includes('pi_max_history'), 'LIMIT introduces a value position');
+});
+
+test('findVariableTokens detects a variable after OFFSET', () => {
+    const sql = 'SELECT * FROM t LIMIT 10 OFFSET pi_skip';
+    const names = findVariableTokens(sql).map((o) => o.name);
+    assert.ok(names.includes('pi_skip'), 'OFFSET introduces a value position');
+});
+
+test('findVariableTokens does not flag a numeric LIMIT literal', () => {
+    const sql = 'SELECT * FROM t WHERE a = v_a LIMIT 100';
+    const names = findVariableTokens(sql).map((o) => o.name);
+    assert.deepEqual(names, ['v_a']);
+});
+
+test('findVariableTokens treats a record-field access as a variable', () => {
+    const sql = 'SELECT * FROM bos_belege lbe WHERE lbe.lbe_mit_id = pi_employeeObj.emplId';
+    const qualifiers = extractTableQualifiers(sql);
+    const names = findVariableTokens(sql, qualifiers).map((o) => o.name);
+    assert.ok(names.includes('pi_employeeObj.emplId'), 'record-field access is a variable');
+    assert.ok(!names.includes('lbe.lbe_mit_id'), 'real qualified column stays excluded');
+});
+
+test('findVariableTokens keeps a qualified column excluded without qualifiers', () => {
+    const sql = 'SELECT * FROM users t WHERE t.id = a.col';
+    const names = findVariableTokens(sql).map((o) => o.name);
+    assert.deepEqual(names, [], 'no qualifiers supplied → all dotted identifiers excluded');
+});
+
+test('findVariableTokens excludes a schema-qualified function call in value position', () => {
+    const sql = 'SELECT * FROM t WHERE d >= oracle.trunc(oracle.sysdate())';
+    const qualifiers = extractTableQualifiers(sql);
+    const names = findVariableTokens(sql, qualifiers).map((o) => o.name);
+    assert.ok(!names.some((n) => n.startsWith('oracle.')), 'function calls are not variables');
+});
+
+test('findVariableTokens excludes a three-part chain in value position', () => {
+    const sql = 'SELECT * FROM t WHERE a = my_schema.my_table.col';
+    const qualifiers = extractTableQualifiers(sql);
+    const names = findVariableTokens(sql, qualifiers).map((o) => o.name);
+    assert.ok(!names.some((n) => n.startsWith('my_schema')), 'longer chains are not record variables');
+});
+
+// ===== extractTableQualifiers =====
+
+test('extractTableQualifiers collects table names and aliases', () => {
+    const sql = 'SELECT * FROM bos_belege lbe JOIN bos_leistungen lei ON lei_id = lbe_id';
+    const q = extractTableQualifiers(sql);
+    assert.ok(q.has('bos_belege'));
+    assert.ok(q.has('lbe'));
+    assert.ok(q.has('bos_leistungen'));
+    assert.ok(q.has('lei'));
+});
+
+test('substituteVariables replaces a record-field variable', () => {
+    const sql = 'SELECT * FROM bos_belege lbe WHERE lbe.lbe_mit_id = pi_employeeObj.emplId LIMIT pi_max_history';
+    const out = substituteVariables(sql, { 'pi_employeeObj.emplId': '42', 'pi_max_history': '5' });
+    assert.ok(out.includes('= 42'), 'record-field variable substituted');
+    assert.ok(out.includes('LIMIT 5'), 'LIMIT variable substituted');
+    assert.ok(out.includes('lbe.lbe_mit_id'), 'qualified column left intact');
+});
+
 
 // ===== extractSelect: statement boundary detection =====
 
@@ -292,7 +359,7 @@ test('extractSelect converts a simple UPDATE into a SELECT', () => {
 
 test('extractSelect converts an UPDATE with a nested NOT EXISTS subquery and BETWEEN', () => {
     const body = [
-        'UPDATE some_table',
+        'UPDATE some_table st',
         "    SET col_status = '60',",
         '        col_hours = 0',
         '    WHERE col_sid = v_sid',
@@ -308,7 +375,7 @@ test('extractSelect converts an UPDATE with a nested NOT EXISTS subquery and BET
     const cursor = body.indexOf('SET');
     const res = extractSelect(body, cursor);
     assert.ok(res);
-    assert.ok(res.sql.startsWith('SELECT * FROM some_table'), `got: ${res.sql}`);
+    assert.ok(res.sql.startsWith('SELECT * FROM some_table st'), `got: ${res.sql}`);
     assert.ok(!/\bSET\b/i.test(res.sql), 'SET clause must be dropped');
     assert.ok(!/col_status/i.test(res.sql), 'assignment columns must be dropped');
     assert.ok(/NOT EXISTS/i.test(res.sql), 'WHERE subquery must be kept');
