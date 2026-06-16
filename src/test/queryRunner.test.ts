@@ -43,15 +43,43 @@ function createRunner({
     return { runner, queryCalls, metadataCalls };
 }
 
-test('getSelectBuildInfo does not qualify table when schema is configured on active connection', async () => {
+test('getSelectBuildInfo qualifies schema even when it is in the connection display schemas but not on the search path', async () => {
+    // The connection's configured `schemas` is only a display filter for the
+    // tree (here both `leda` and `leda_dev` are shown). Only `leda` is on the
+    // runtime search_path, so opening a `leda_dev` foreign table must qualify
+    // the schema, otherwise the query would resolve against `leda`.
     const { runner, queryCalls } = createRunner({
-        activeConnectionConfig: { schemas: ['Public'] }
+        activeConnectionConfig: { schemas: ['leda', 'leda_dev'] },
+        queryHandler: (sql: string) => {
+            if (sql.includes('current_schemas')) {
+                return { rows: [{ schemas: ['leda', 'leda_types', 'oracle', 'public'] }] };
+            }
+            throw new Error(`Unexpected query: ${sql}`);
+        }
     });
 
-    const buildInfo = await runner.getSelectBuildInfo('public', 'users');
+    const buildInfo = await runner.getSelectBuildInfo('leda_dev', 'persons');
 
-    assert.deepEqual(buildInfo, { alwaysQuote: false, tableReference: 'users' });
-    assert.equal(queryCalls.length, 0);
+    assert.deepEqual(buildInfo, { alwaysQuote: false, tableReference: 'leda_dev.persons' });
+    assert.equal(queryCalls.length, 1);
+    assert.ok(queryCalls[0].sql.includes('current_schemas'));
+});
+
+test('getSelectBuildInfo does not qualify a schema that is on the runtime search path', async () => {
+    const { runner, queryCalls } = createRunner({
+        activeConnectionConfig: { schemas: ['leda', 'leda_dev'] },
+        queryHandler: (sql: string) => {
+            if (sql.includes('current_schemas')) {
+                return { rows: [{ schemas: ['leda', 'leda_types', 'oracle', 'public'] }] };
+            }
+            throw new Error(`Unexpected query: ${sql}`);
+        }
+    });
+
+    const buildInfo = await runner.getSelectBuildInfo('leda', 'persons');
+
+    assert.deepEqual(buildInfo, { alwaysQuote: false, tableReference: 'persons' });
+    assert.equal(queryCalls.length, 1);
 });
 
 test('getSelectBuildInfo uses runtime search path when connection schemas are not configured', async () => {

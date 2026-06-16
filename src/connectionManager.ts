@@ -5,6 +5,7 @@ import * as dns from 'dns';
 import { promisify } from 'util';
 import { Pool, PoolConfig, types as pgTypes } from 'pg';
 import { createHash } from 'crypto';
+import { Logger } from './logger';
 
 const dnsLookup = promisify(dns.lookup);
 
@@ -221,6 +222,12 @@ export class ConnectionManager {
         }
 
         console.log(`[PG] Connecting to ${resolvedHost}:${config.port} (resolved from ${config.host})`);
+        Logger.log(
+            'connection',
+            `Connecting to ${config.host}:${config.port} (resolved host ${resolvedHost}), ` +
+            `database "${config.database}", user "${config.user}"` +
+            (config.schemas?.length ? `, display schemas [${config.schemas.join(', ')}]` : '')
+        );
 
         const poolConfig: PoolConfig = {
             host: resolvedHost,
@@ -254,6 +261,16 @@ export class ConnectionManager {
 
         this.activeConfig = config;
         this._onConnectionChanged.fire();
+
+        // Log the server's effective search_path so it is visible which schemas
+        // are resolved without qualification for this connection.
+        try {
+            const spResult = await this.query('SHOW search_path');
+            const searchPath = spResult.rows[0]?.search_path;
+            Logger.log('connection', `Connected. Server search_path = ${searchPath ?? '(unknown)'}`);
+        } catch (err) {
+            Logger.error('connection', err);
+        }
     }
 
     async disconnect(): Promise<void> {

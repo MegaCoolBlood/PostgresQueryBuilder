@@ -11,6 +11,7 @@ import { ManageMappingsPanel } from './manageMappingsPanel';
 import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore } from './tableStatementDrop';
 import { ViewDataFromSelect } from './viewDataFromSelect';
+import { Logger } from './logger';
 let connectionManager: ConnectionManager;
 let tableExplorer: TableExplorerProvider;
 let tableWebViewManager: TableWebViewManager;
@@ -29,6 +30,7 @@ let lastTableClick: { key: string; time: number } = { key: '', time: 0 };
 export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('PostgreSQL Query Builder');
     context.subscriptions.push(outputChannel);
+    Logger.init(outputChannel);
     outputChannel.appendLine(`[activate] starting (version ${context.extension?.packageJSON?.version ?? '?'})`);
 
     try {

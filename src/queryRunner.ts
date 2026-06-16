@@ -1,4 +1,5 @@
 import { ConnectionManager } from './connectionManager';
+import { Logger } from './logger';
 
 /**
  * Table types from `information_schema.tables` that the extension treats as
@@ -444,35 +445,45 @@ export class QueryRunner {
 
     private async getSelectTableReference(schema: string, table: string): Promise<string> {
         const { alwaysQualifySchema, alwaysQuote } = this.getSelectOptions();
-        const shouldQualify = alwaysQualifySchema || !(await this.isSchemaInSearchPath(schema));
+        // Skip the search_path lookup when we already know we will qualify.
+        const inSearchPath = alwaysQualifySchema ? false : await this.isSchemaInSearchPath(schema);
+        const shouldQualify = alwaysQualifySchema || !inSearchPath;
         const tableName = this.formatIdentifier(table, alwaysQuote);
+        const tableReference = shouldQualify
+            ? `${this.formatIdentifier(schema, alwaysQuote)}.${tableName}`
+            : tableName;
 
-        if (!shouldQualify) {
-            return tableName;
-        }
+        Logger.log(
+            'queryRunner',
+            `Table reference for ${schema}.${table} -> "${tableReference}" ` +
+            `(alwaysQualifySchema=${alwaysQualifySchema}, schemaInSearchPath=${alwaysQualifySchema ? 'n/a' : inSearchPath}, qualified=${shouldQualify})`
+        );
 
-        return `${this.formatIdentifier(schema, alwaysQuote)}.${tableName}`;
+        return tableReference;
     }
 
     private async isSchemaInSearchPath(schema: string): Promise<boolean> {
         const lowerSchema = schema.toLowerCase();
 
-        // Check schemas configured in the connection settings
-        const connConfig = this.connectionManager.getActiveConnectionConfig();
-        if (connConfig?.schemas?.length) {
-            const configSchemas = new Set(connConfig.schemas.map((s: string) => s.toLowerCase()));
-            if (configSchemas.has(lowerSchema)) {
-                return true;
-            }
-        }
-
-        // Fall back to PostgreSQL's runtime search path
+        // The authoritative source for whether a schema needs qualification is
+        // PostgreSQL's *runtime* search_path. The connection's configured
+        // `schemas` list is only a display filter for the table explorer (it may
+        // contain schemas that are NOT on the search_path, e.g. a "_dev" schema
+        // of foreign tables shown alongside the local one). Using that list here
+        // would wrongly suppress the schema prefix and resolve `SELECT * FROM t`
+        // against whichever same-named table actually is on the search_path.
         const result = await this.connectionManager.query('SELECT current_schemas(false) AS schemas');
         const schemas = result.rows[0]?.schemas;
-        const schemaSet = new Set(
-            Array.isArray(schemas) ? schemas.map((s: string) => s.toLowerCase()) : []
+        const schemaList = Array.isArray(schemas) ? schemas.map((s: string) => String(s)) : [];
+        const schemaSet = new Set(schemaList.map((s: string) => s.toLowerCase()));
+        const found = schemaSet.has(lowerSchema);
+
+        Logger.log(
+            'queryRunner',
+            `Retrieved search_path = [${schemaList.join(', ')}]; schema "${schema}" ${found ? 'is' : 'is NOT'} on the search_path`
         );
-        return schemaSet.has(lowerSchema);
+
+        return found;
     }
 
     private formatIdentifier(identifier: string, alwaysQuote: boolean): string {
