@@ -199,14 +199,12 @@ export function activate(context: vscode.ExtensionContext) {
         sqlEditorManager = new SqlEditorManager(context, connectionManager, modifyHistoryStore);
         viewDataFromSelect = new ViewDataFromSelect(context, connectionManager, tableWebViewManager);
 
-        // Status bar
         statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
         statusBarItem.command = 'postgresQueryBuilder.selectConnection';
         updateStatusBar();
         statusBarItem.show();
         context.subscriptions.push(statusBarItem);
 
-        // Tree view
         const treeView = vscode.window.createTreeView('postgresTableExplorer', {
             treeDataProvider: tableExplorer,
             showCollapseAll: true,
@@ -226,7 +224,6 @@ export function activate(context: vscode.ExtensionContext) {
             )
         );
 
-        // Search view
         const searchViewProvider = new SearchViewProvider();
         context.subscriptions.push(
             vscode.window.registerWebviewViewProvider(SearchViewProvider.viewType, searchViewProvider)
@@ -238,13 +235,11 @@ export function activate(context: vscode.ExtensionContext) {
             ManageMappingsPanel.show(context, columnMappingManager);
         });
 
-        // Modify history view
         const modifyHistoryProvider = new ModifyHistoryViewProvider(modifyHistoryStore);
         context.subscriptions.push(
             vscode.window.registerWebviewViewProvider(ModifyHistoryViewProvider.viewType, modifyHistoryProvider)
         );
 
-        // Listen for connection changes
         connectionManager.onConnectionChanged(() => {
             updateStatusBar();
             tableExplorer.refresh();

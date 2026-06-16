@@ -127,7 +127,6 @@ export class ConnectionManager {
         const htmlPath = path.join(this.context.extensionPath, 'src', 'webview', 'connectionForm.html');
         panel.webview.html = fs.readFileSync(htmlPath, 'utf8');
 
-        // Prefill with defaults or existing config
         const prefill = existingConfig
             ? { ...existingConfig, port: String(existingConfig.port), schemas: (existingConfig.schemas || []).join(', '), title: `Edit: ${existingConfig.name}` }
             : { name: 'My Database', host: defaultHost, port: String(defaultPort), database: defaultDatabase, user: 'postgres', schemas: '', title: 'New Connection' };

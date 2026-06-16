@@ -48,7 +48,6 @@ export class TableWebViewManager {
     async openTableView(schema: string, table: string): Promise<void> {
         const key = `${schema}.${table}`;
 
-        // If panel already exists, reveal it
         const existingPanel = this.panels.get(key);
         if (existingPanel) {
             existingPanel.reveal();
@@ -113,7 +112,6 @@ export class TableWebViewManager {
         });
         panel.onDidDispose(() => connSub.dispose());
 
-        // Handle messages from webview
         panel.webview.onDidReceiveMessage(async (message) => {
             const queryRunner = new QueryRunner(this.connectionManager);
 

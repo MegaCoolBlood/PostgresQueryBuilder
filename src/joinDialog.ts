@@ -434,7 +434,6 @@ function getHtml(
 
     function render() {
         normalizeJoins();
-        // Tables
         const tablesEl = document.getElementById('tables');
         tablesEl.innerHTML = '';
         order.forEach((oi, pos) => {
@@ -455,7 +454,6 @@ function getHtml(
             tablesEl.appendChild(row);
         });
 
-        // Joins
         const joinsEl = document.getElementById('joins');
         joinsEl.innerHTML = '';
         for (let pos = 1; pos < order.length; pos++) {

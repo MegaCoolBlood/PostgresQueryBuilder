@@ -57,7 +57,6 @@ const INTO_TERMINATORS = new Set([
 interface Token {
     /** Token text (read from the masked string; identical to the original for words). */
     text: string;
-    /** 'word' | 'param' | 'punct' | 'op' */
     type: 'word' | 'param' | 'punct' | 'op';
     start: number;
     end: number;

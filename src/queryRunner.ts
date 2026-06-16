@@ -343,7 +343,6 @@ export class QueryRunner {
 
             const tableRef = `${this.formatIdentifier(schema, alwaysQuote)}.${this.formatIdentifier(table, alwaysQuote)}`;
 
-            // Process updates
             for (const update of changes.updates) {
                 const setClauses: string[] = [];
                 const values: any[] = [];
@@ -368,7 +367,6 @@ export class QueryRunner {
                 );
             }
 
-            // Process inserts
             for (const insert of changes.inserts) {
                 const columns = Object.keys(insert).filter(k => insert[k] !== null && insert[k] !== '');
                 if (columns.length === 0) { continue; }
@@ -382,7 +380,6 @@ export class QueryRunner {
                 );
             }
 
-            // Process deletes
             for (const del of changes.deletes) {
                 const whereClauses: string[] = [];
                 const values: any[] = [];
@@ -423,7 +420,6 @@ export class QueryRunner {
         const tableRef = `${this.formatIdentifier(schema, alwaysQuote)}.${this.formatIdentifier(table, alwaysQuote)}`;
         const statements: string[] = [];
 
-        // Updates
         for (const update of changes.updates) {
             const setClauses: string[] = [];
             for (const [col, val] of Object.entries(update.changes)) {
@@ -440,7 +436,6 @@ export class QueryRunner {
             );
         }
 
-        // Inserts
         for (const insert of changes.inserts) {
             const columns = Object.keys(insert).filter(k => insert[k] !== null && insert[k] !== '');
             if (columns.length === 0) { continue; }
@@ -451,7 +446,6 @@ export class QueryRunner {
             );
         }
 
-        // Deletes
         for (const del of changes.deletes) {
             const whereClauses: string[] = [];
             for (const [col, val] of Object.entries(del)) {

@@ -50,11 +50,9 @@ function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARAT
     if (value === null || value === undefined) return null;
     const num = Number(value);
     if (isNaN(num)) return String(value);
-    // Split into integer and decimal parts
     const parts = String(value).split('.');
     const intPart = parts[0].replace(/^-/, '');
     const sign = num < 0 ? '-' : '';
-    // Add thousand separator
     let formatted = '';
     for (let i = 0; i < intPart.length; i++) {
         if (i > 0 && (intPart.length - i) % 3 === 0) {
@@ -445,7 +443,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 (function() {
     const vscode = acquireVsCodeApi();
 
-    // State
     let columns = [];
     let primaryKeys = [];
     let foreignKeys = []; // [{column, refSchema, refTable, refColumn}]
@@ -493,7 +490,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         'where', 'window', 'with'
     ]);
 
-    // Change tracking
     let modifiedCells = new Map(); // "rowIndex:colName" -> newValue
     let deletedRows = new Set();   // rowIndex
     let insertedRows = [];          // [{ row: {col: val, ...}, anchor: number|null }]
@@ -504,16 +500,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // null means no row is selected -> new rows appear at the very top.
     let selectedRowIdx = null;
 
-    // Sort state
     let sortColumn = null;
     let sortDirection = 'asc';
 
-    // Filter state
     let filters = {};
     let exactFilters = {}; // FK filters that use exact match
     let filterModes = {}; // 'contains' | 'between' per column
 
-    // DOM refs
     const tableHead = document.getElementById('tableHead');
     const tableBody = document.getElementById('tableBody');
     const tableName = document.getElementById('tableName');
@@ -567,7 +560,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         queryInput.style.height = (queryInput.scrollHeight + 2) + 'px';
     }
 
-    // Event listeners
     commitBtn.addEventListener('click', commitChanges);
     discardBtn.addEventListener('click', discardChanges);
     insertRowBtn.addEventListener('click', insertRow);
@@ -629,7 +621,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         e.stopPropagation();
     });
 
-    // Close context menu on click outside
     document.addEventListener('click', () => {
         contextMenu.style.display = 'none';
         closeQueryHistoryPanel();
@@ -693,7 +684,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         e.preventDefault();
     }
 
-    // Listen for messages from extension
     window.addEventListener('message', (event) => {
         const msg = event.data;
         switch (msg.command) {
@@ -786,7 +776,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // Standard table view: load the table and its relation metadata.
         metaLoading.classList.remove('hidden');
         vscode.postMessage({ command: 'loadData', offset: 0, limit: PAGE_SIZE });
-        // Request query history for this table
         vscode.postMessage({ command: 'getQueryHistory' });
     }
 
@@ -1110,7 +1099,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
         html += '</tr>';
 
-        // Filter row
         html += '<tr class="filter-row">';
         html += '<th class="row-num-cell"></th>';
         html += '<th></th>';
@@ -1123,7 +1111,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             html += '<th><div class="filter-cell">';
 
             if (filterType === 'date' || filterType === 'numeric') {
-                // Mode selector
                 html += `<select class="filter-mode-select" data-col="${escapeAttr(col.name)}">`;
                 html += `<option value="equals"${mode === 'equals' ? ' selected' : ''}>=</option>`;
                 html += `<option value="not_equals"${mode === 'not_equals' ? ' selected' : ''}>!=</option>`;
@@ -1134,7 +1121,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 html += `<option value="between"${mode === 'between' ? ' selected' : ''}>Between</option>`;
                 html += `</select>`;
 
-                // Compute width style for numeric columns
                 const numWidthStyle = (filterType === 'numeric') ? ` style="width:${getMaxFormattedWidth(col.name) + 2}ch"` : '';
 
                 if (mode === 'between') {
@@ -1162,7 +1148,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         tableHead.innerHTML = html;
 
-        // Attach sort listeners
         tableHead.querySelectorAll('tr:first-child th[data-col]').forEach(th => {
             th.addEventListener('click', () => {
                 const col = th.getAttribute('data-col');
@@ -1181,7 +1166,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             });
         });
 
-        // Attach filter listeners
         tableHead.querySelectorAll('.filter-input').forEach(input => {
             const col = input.getAttribute('data-col');
             const colMeta = columns.find(c => c.name === col);
@@ -1232,7 +1216,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             });
         });
 
-        // Attach filter mode change listeners
         tableHead.querySelectorAll('.filter-mode-select').forEach(select => {
             select.addEventListener('change', (e) => {
                 const col = e.target.getAttribute('data-col');
@@ -1553,7 +1536,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function showContextMenu(e, items) {
         if (!items || items.length === 0) return;
 
-        // Render menu
         let html = '';
         items.forEach((item, i) => {
             if (item.separator) {
@@ -1595,7 +1577,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         contextMenu.style.top = top + 'px';
         contextMenu.style.visibility = '';
 
-        // Attach click handlers
         contextMenuItems.querySelectorAll('li[data-action-idx]').forEach(li => {
             li.addEventListener('click', (ev) => {
                 ev.stopPropagation();
@@ -1611,7 +1592,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function getFilteredAndSortedRows() {
         let rows = allRows.map((row, idx) => ({ ...row, _originalIndex: idx }));
 
-        // Apply filters
         for (const [col, filterVal] of Object.entries(filters)) {
             if (!filterVal) continue;
             const colMeta = columns.find(c => c.name === col);
@@ -1676,7 +1656,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             }
         }
 
-        // Apply sort
         if (sortColumn) {
             rows.sort((a, b) => {
                 let valA = a[sortColumn];
@@ -1884,7 +1863,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             td.addEventListener('input', () => handleNumericCellInput(td));
         });
 
-        // Attach FK button listeners
         tableBody.querySelectorAll('.fk-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -1899,7 +1877,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             });
         });
 
-        // Attach context menu to data cells
         tableBody.querySelectorAll('td[data-col]').forEach(td => {
             td.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
@@ -2059,7 +2036,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         renderBody();
         updateRowCount();
 
-        // Scroll the newly inserted row into view
         const selector = anchor == null
             ? 'tr.row-inserted'
             : `tr.row-inserted[data-insert-index="${insertedRows.length - 1}"]`;
@@ -2106,7 +2082,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const totalChanges = modifiedCells.size + deletedRows.size + insertedRows.length + duplicatedRows.length;
         if (totalChanges === 0) return;
 
-        // Build change set
         const changes = {
             updates: [],
             inserts: [],
@@ -2146,7 +2121,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             return clean;
         });
 
-        // Deletes
         for (const rowIdx of deletedRows) {
             const pk = {};
             primaryKeys.forEach(pkCol => {
@@ -2281,11 +2255,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     });
 
     function openExportDialog() {
-        // Request defaults from extension
         vscode.postMessage({ command: 'getExportDefaults' });
-        // Set default filename based on table
         exportFilename.value = table || 'export';
-        // Set insert table name default
         const insertTableName = document.getElementById('insertTableName');
         if (insertTableName) {
             insertTableName.value = getDefaultTableReference();
@@ -2303,7 +2274,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         Object.keys(exportOptGroups).forEach(key => {
             exportOptGroups[key].style.display = key === fmt ? 'block' : 'none';
         });
-        // Update filename extension hint
         const extensions = { csv: '.csv', json: '.json', xml: '.xml', insert: '.sql', excel: '.xlsx' };
         const base = exportFilename.value.replace(/\.(csv|json|xml|sql|xlsx)$/, '');
         exportFilename.value = base;
@@ -2312,7 +2282,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function applyExportDefaults(defaults) {
         exportDefaults = defaults || {};
-        // Apply save location if stored
         if (exportDefaults._saveLocation) {
             exportSaveLocation.value = exportDefaults._saveLocation;
         }
@@ -2415,7 +2384,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
     }
 
-    // Utility
     function getCellTextContent(td) {
         let text = '';
         td.childNodes.forEach(node => {
@@ -2609,14 +2577,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
     }
 
-    // Event listeners for mapping dialog
     mappingDialogClose.addEventListener('click', closeMappingDialog);
     mappingDialogCancel.addEventListener('click', closeMappingDialog);
     mappingDialogSave.addEventListener('click', saveMappingFromDialog);
     mappingDialogDelete.addEventListener('click', deleteCurrentMapping);
     mappingAddCondition.addEventListener('click', addConditionRow);
 
-    // Event listeners for manage mappings dialog
     manageMappingsClose.addEventListener('click', closeManageMappingsDialog);
     manageMappingsCloseBtn.addEventListener('click', closeManageMappingsDialog);
     manageMappingsAdd.addEventListener('click', () => {
@@ -2725,7 +2691,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const valueClass = 'record-value' + (isNull ? ' is-null' : '');
             const rowClass = 'record-row' + (isModified ? ' record-row-modified' : '');
 
-            // Actions for this row
             let actions = '';
             if (defaultMapping && !isNull) {
                 actions += '<button class="btn btn-default btn-sm record-fk-btn"' +
@@ -2770,7 +2735,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // the body has a fixed height, so the scroll range is already valid).
         recordDialogBody.scrollTop = savedScrollTop;
 
-        // Status line
         const parts = [];
         if (isDeleted) parts.push('row marked for deletion (read-only)');
         if (Array.from(modifiedCells.keys()).some(k => k.startsWith(idx + ':'))) {
@@ -2779,7 +2743,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         recordDialogStatus.textContent = parts.join(' \u2014 ');
 
-        // Wire up textareas
         recordDialogBody.querySelectorAll('.record-row').forEach(rowEl => {
             const colName = rowEl.getAttribute('data-col');
             const textarea = rowEl.querySelector('.record-value');
@@ -2799,11 +2762,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 applyRecordEdit(idx, colName, textarea.value);
                 // Re-render to refresh modified badges, reset buttons, displayed value
                 renderRecordDialog({ preserveScroll: true });
-                // Update underlying table view
                 renderBody();
             });
 
-            // Reset button
             const resetBtn = rowEl.querySelector('.record-reset-btn');
             if (resetBtn) {
                 resetBtn.addEventListener('click', (ev) => {
@@ -2815,7 +2776,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 });
             }
 
-            // FK button
             const fkBtn = rowEl.querySelector('.record-fk-btn');
             if (fkBtn) {
                 fkBtn.addEventListener('click', (ev) => {

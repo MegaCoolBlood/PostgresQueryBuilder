@@ -223,7 +223,6 @@ export class ExportService {
 
         if (options.excelIncludeHeaders !== false) {
             worksheet.addRow(columns.map(c => c.name));
-            // Bold header row
             const headerRow = worksheet.getRow(1);
             headerRow.font = { bold: true };
         }
@@ -237,7 +236,6 @@ export class ExportService {
             worksheet.addRow(values);
         }
 
-        // Auto-fit column widths
         worksheet.columns.forEach((column: any) => {
             let maxLength = 10;
             column.eachCell({ includeEmpty: true }, (cell: any) => {
@@ -247,7 +245,6 @@ export class ExportService {
             column.width = Math.min(maxLength + 2, 50);
         });
 
-        // Add SQL sheet if requested
         if (options.excelIncludeSqlSheet && options.excelSqlStatement) {
             const sqlSheet = workbook.addWorksheet('SQL');
             sqlSheet.addRow(['SQL Statement']);
