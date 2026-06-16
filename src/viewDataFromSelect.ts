@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
 import { TableWebViewManager } from './tableWebView';
 import { extractSelect, extractTableNames, substituteVariables } from './selectStatementExtractor';
+import { buildHtmlDocument } from './webviewUtils';
 
 const VARIABLE_CACHE_KEY = 'viewDataVariableCache';
 
@@ -130,7 +131,7 @@ export class ViewDataFromSelect {
                 panel.dispose();
             };
 
-            panel.webview.html = this.getModalHtml(sql, variables);
+            panel.webview.html = this.getModalHtml(panel.webview, sql, variables);
 
             panel.webview.onDidReceiveMessage((message) => {
                 if (message.command === 'submit') {
@@ -144,7 +145,7 @@ export class ViewDataFromSelect {
         });
     }
 
-    private getModalHtml(sql: string, variables: { name: string; value: string }[]): string {
+    private getModalHtml(webview: vscode.Webview, sql: string, variables: { name: string; value: string }[]): string {
         const esc = (s: string) =>
             s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -155,11 +156,7 @@ export class ViewDataFromSelect {
                        placeholder="e.g. 123 or 'text' (leave empty to keep as-is)" />
             </div>`).join('');
 
-        return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<style>
+        const styles = `
     body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size);
            color: var(--vscode-foreground); background: var(--vscode-editor-background);
            padding: 16px; margin: 0; }
@@ -180,10 +177,8 @@ export class ViewDataFromSelect {
     .primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
     .primary:hover { background: var(--vscode-button-hoverBackground); }
     .secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
-    .secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
-</style>
-</head>
-<body>
+    .secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }`;
+        const body = `
     <h2>Provide query variables</h2>
     <p class="hint">Values are inserted verbatim. Quote string literals (e.g. <code>'active'</code>).
        Leave a field empty to keep the identifier unchanged. Press Ctrl+Enter to run.</p>
@@ -194,8 +189,8 @@ export class ViewDataFromSelect {
             <button type="button" class="secondary" id="cancelBtn">Cancel</button>
             <button type="submit" class="primary" id="runBtn">View Data</button>
         </div>
-    </form>
-    <script>
+    </form>`;
+        const script = `
         const vscode = acquireVsCodeApi();
         const form = document.getElementById('form');
         function collect() {
@@ -220,9 +215,7 @@ export class ViewDataFromSelect {
             }
         });
         const firstInput = form.querySelector('input[data-name]');
-        if (firstInput) { firstInput.focus(); firstInput.select(); }
-    </script>
-</body>
-</html>`;
+        if (firstInput) { firstInput.focus(); firstInput.select(); }`;
+        return buildHtmlDocument({ webview, styles, body, script });
     }
 }

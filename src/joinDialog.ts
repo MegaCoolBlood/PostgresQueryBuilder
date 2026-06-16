@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { buildJoinSelect, JoinClause, JoinTableSpec, JoinType } from './statementBuilder';
-import { getNonce, buildCsp } from './webviewUtils';
+import { getNonce, buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
 
 export interface JoinDialogTable {
     schema: string;
@@ -130,14 +130,8 @@ function getHtml(
 ): string {
     const data = JSON.stringify(initial).replace(/</g, '\\u003c');
     const joinTypes = JSON.stringify(JOIN_TYPES);
-    const csp = buildCsp(webview, nonce);
 
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="${csp}">
-<style>
+    const styles = `
     body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 12px; }
     h2 { margin: 0 0 8px; font-size: 1.1em; }
     .hint { color: var(--vscode-descriptionForeground); margin-bottom: 12px; font-size: 0.9em; }
@@ -187,10 +181,8 @@ function getHtml(
         border-color: var(--vscode-focusBorder);
         background: var(--vscode-editorWidget-background);
         color: var(--vscode-foreground);
-    }
-</style>
-</head>
-<body>
+    }`;
+    const body = `
     <h2>Build JOIN SELECT</h2>
     <div class="hint">Reorder tables, rename aliases and adjust join conditions. Joins were pre-filled from existing primary/foreign keys where possible.</div>
 
@@ -208,8 +200,8 @@ function getHtml(
         <button class="primary" id="confirm">Insert statement</button>
         <button id="cancel">Cancel</button>
     </div>
-
-<script nonce="${nonce}">
+`;
+    const script = `
     const vscode = acquireVsCodeApi();
     const JOIN_TYPES = ${joinTypes};
     const data = ${data};
@@ -334,9 +326,7 @@ function getHtml(
     function tableAt(pos) { return data.tables[order[pos]]; }
     function aliasOf(origIdx) { return aliases[origIdx]; }
 
-    function escapeHtml(s) {
-        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-    }
+    ${WEBVIEW_ESCAPE_HTML_JS}
 
     function move(pos, delta) {
         const np = pos + delta;
@@ -735,8 +725,6 @@ function getHtml(
     document.getElementById('cancel').onclick = () => vscode.postMessage({ command: 'cancel' });
 
     bindAddTables();
-    render();
-</script>
-</body>
-</html>`;
+    render();`;
+    return buildHtmlDocument({ webview, nonce, lang: 'en', styles, body, script });
 }

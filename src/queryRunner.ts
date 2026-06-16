@@ -2,6 +2,7 @@ import { ConnectionManager } from './connectionManager';
 import { Logger } from './logger';
 import { escapeSqlLiteral } from './sqlUtils';
 import { POSTGRES_RESERVED_KEYWORDS } from './reservedKeywords';
+import type { QueryResultRow, FieldDef } from 'pg';
 
 /**
  * Table types from `information_schema.tables` that the extension treats as
@@ -116,7 +117,7 @@ export class QueryRunner {
         this.selectOptionsProvider = selectOptionsProvider ?? this.getDefaultSelectOptions;
     }
 
-    async fetchRows(schema: string, table: string, offset: number, limit: number): Promise<any[]> {
+    async fetchRows(schema: string, table: string, offset: number, limit: number): Promise<QueryResultRow[]> {
         const tableReference = await this.getSelectTableReference(schema, table);
         const result = await this.connectionManager.query(
             `SELECT * FROM ${tableReference} LIMIT $1 OFFSET $2`,
@@ -147,7 +148,7 @@ export class QueryRunner {
              ORDER BY ordinal_position`,
             [schema, table]
         );
-        return rows.map((row: any) => ({
+        return rows.map((row) => ({
             name: row.column_name,
             dataType: row.data_type,
             isNullable: row.is_nullable === 'YES',
@@ -247,7 +248,7 @@ export class QueryRunner {
      */
     async listAllTables(): Promise<Array<{ schema: string; table: string }>> {
         const rows = await this.connectionManager.queryMetadata(buildRelationListQuery());
-        return rows.map((row: any) => ({ schema: row.table_schema, table: row.table_name }));
+        return rows.map((row) => ({ schema: row.table_schema, table: row.table_name }));
     }
 
     async getPrimaryKeys(schema: string, table: string): Promise<string[]> {
@@ -258,7 +259,7 @@ export class QueryRunner {
              WHERE i.indrelid = '"${schema}"."${table}"'::regclass
              AND i.indisprimary`,
         );
-        return rows.map((row: any) => row.attname);
+        return rows.map((row) => row.attname);
     }
 
     async getForeignKeys(schema: string, table: string): Promise<ForeignKeyInfo[]> {
@@ -280,7 +281,7 @@ export class QueryRunner {
                 AND c1.relname = $2`,
             [schema, table]
         );
-        return rows.map((row: any) => ({
+        return rows.map((row) => ({
             column: row.fk_column,
             refSchema: row.ref_schema,
             refTable: row.ref_table,
@@ -307,7 +308,7 @@ export class QueryRunner {
                 AND c1.relname = $2`,
             [schema, table]
         );
-        return rows.map((row: any) => ({
+        return rows.map((row) => ({
             fkSchema: row.fk_schema,
             fkTable: row.fk_table,
             fkColumn: row.fk_column,
@@ -330,7 +331,7 @@ export class QueryRunner {
 
             for (const update of changes.updates) {
                 const setClauses: string[] = [];
-                const values: any[] = [];
+                const values: unknown[] = [];
                 let paramIndex = 1;
 
                 for (const [col, val] of Object.entries(update.changes)) {
@@ -367,7 +368,7 @@ export class QueryRunner {
 
             for (const del of changes.deletes) {
                 const whereClauses: string[] = [];
-                const values: any[] = [];
+                const values: unknown[] = [];
                 let paramIndex = 1;
 
                 for (const [col, val] of Object.entries(del)) {
@@ -391,7 +392,7 @@ export class QueryRunner {
         }
     }
 
-    async executeSQL(sql: string): Promise<{ rows: any[]; fields: any[]; rowCount: number }> {
+    async executeSQL(sql: string): Promise<{ rows: QueryResultRow[]; fields: FieldDef[]; rowCount: number }> {
         const result = await this.connectionManager.query(sql);
         return {
             rows: result.rows || [],
@@ -444,7 +445,7 @@ export class QueryRunner {
         return statements.join('\n\n');
     }
 
-    private formatValue(val: any): string {
+    private formatValue(val: unknown): string {
         if (val === null || val === undefined) {
             return 'NULL';
         }

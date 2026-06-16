@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ModifyHistoryStore } from './modifyHistoryStore';
+import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
 
 export class ModifyHistoryViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'postgresModifyHistory';
@@ -17,7 +18,7 @@ export class ModifyHistoryViewProvider implements vscode.WebviewViewProvider {
     ): void {
         this._view = webviewView;
         webviewView.webview.options = { enableScripts: true };
-        webviewView.webview.html = this._getHtml();
+        webviewView.webview.html = this._getHtml(webviewView.webview);
 
         webviewView.webview.onDidReceiveMessage((message) => {
             if (message.type === 'ready') {
@@ -39,11 +40,8 @@ export class ModifyHistoryViewProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    private _getHtml(): string {
-        return `<!DOCTYPE html>
-<html>
-<head>
-<style>
+    private _getHtml(webview: vscode.Webview): string {
+        const styles = `
 body { padding: 0; margin: 0; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); }
 .toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border); }
 .toolbar .count { font-size: 11px; color: var(--vscode-descriptionForeground); }
@@ -54,16 +52,14 @@ body { padding: 0; margin: 0; font-family: var(--vscode-font-family); font-size:
 .entry { padding: 6px 8px; border-bottom: 1px solid var(--vscode-panel-border); cursor: pointer; }
 .entry:hover { background: var(--vscode-list-hoverBackground); }
 .entry-meta { font-size: 10px; color: var(--vscode-descriptionForeground); display: flex; justify-content: space-between; gap: 8px; margin-bottom: 2px; }
-.entry-sql { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
-</style>
-</head>
-<body>
+.entry-sql { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; white-space: pre-wrap; word-break: break-word; }`;
+        const body = `
 <div class="toolbar">
     <span class="count" id="count">0 entries</span>
     <button id="clearBtn" title="Clear modify history">Clear</button>
 </div>
-<div class="list" id="list"></div>
-<script>
+<div class="list" id="list"></div>`;
+        const script = `
 const vscode = acquireVsCodeApi();
 const listEl = document.getElementById('list');
 const countEl = document.getElementById('count');
@@ -71,11 +67,7 @@ document.getElementById('clearBtn').addEventListener('click', () => {
     vscode.postMessage({ type: 'clear' });
 });
 
-function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-    })[c]);
-}
+${WEBVIEW_ESCAPE_HTML_JS}
 
 function formatTime(ts) {
     try {
@@ -117,9 +109,7 @@ window.addEventListener('message', (ev) => {
     }
 });
 
-vscode.postMessage({ type: 'ready' });
-</script>
-</body>
-</html>`;
+vscode.postMessage({ type: 'ready' });`;
+        return buildHtmlDocument({ webview, styles, body, script });
     }
 }

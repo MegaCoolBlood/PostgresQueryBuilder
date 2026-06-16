@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
 import { QueryRunner } from './queryRunner';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
+import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
+import { getErrorMessage } from './logger';
 
 export class SqlEditorManager {
     private panel: vscode.WebviewPanel | null = null;
@@ -35,7 +37,7 @@ export class SqlEditorManager {
             this.panel = null;
         });
 
-        this.panel.webview.html = this.getHtml();
+        this.panel.webview.html = this.getHtml(this.panel.webview);
 
         this.panel.webview.onDidReceiveMessage(async (message) => {
             if (message.command === 'executeSQL') {
@@ -52,28 +54,22 @@ export class SqlEditorManager {
                     this.panel?.webview.postMessage({
                         command: 'sqlResult',
                         rows: result.rows,
-                        fields: result.fields.map((f: any) => f.name),
+                        fields: result.fields.map((f) => f.name),
                         rowCount: result.rowCount
                     });
-                } catch (err: any) {
+                } catch (err: unknown) {
                     this.panel?.webview.postMessage({
                         command: 'sqlError',
-                        text: err.message
+                        text: getErrorMessage(err)
                     });
-                    vscode.window.showErrorMessage(`SQL Error: ${err.message}`);
+                    vscode.window.showErrorMessage(`SQL Error: ${getErrorMessage(err)}`);
                 }
             }
         });
     }
 
-    private getHtml(): string {
-        return `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SQL Editor</title>
-    <style>
+    private getHtml(webview: vscode.Webview): string {
+        const styles = `
         body {
             font-family: var(--vscode-font-family);
             font-size: var(--vscode-font-size);
@@ -153,10 +149,8 @@ export class SqlEditorManager {
             background: var(--vscode-inputValidation-errorBackground);
             border: 1px solid var(--vscode-inputValidation-errorBorder);
             margin-top: 8px;
-        }
-    </style>
-</head>
-<body>
+        }`;
+        const body = `
     <div class="editor-container">
         <div class="sql-input">
             <textarea id="sqlInput" placeholder="Enter SQL query..."></textarea>
@@ -165,8 +159,10 @@ export class SqlEditorManager {
             <button id="executeBtn">▶ Execute (Ctrl+Enter)</button>
         </div>
         <div class="result-container" id="resultContainer"></div>
-    </div>
-    <script>
+    </div>`;
+        const script = `
+        ${WEBVIEW_ESCAPE_HTML_JS}
+
         const vscode = acquireVsCodeApi();
         const sqlInput = document.getElementById('sqlInput');
         const executeBtn = document.getElementById('executeBtn');
@@ -208,15 +204,7 @@ export class SqlEditorManager {
             } else if (msg.command === 'sqlError') {
                 resultContainer.innerHTML = '<div class="error">' + escapeHtml(msg.text) + '</div>';
             }
-        });
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-    </script>
-</body>
-</html>`;
+        });`;
+        return buildHtmlDocument({ webview, title: 'SQL Editor', styles, body, script });
     }
 }

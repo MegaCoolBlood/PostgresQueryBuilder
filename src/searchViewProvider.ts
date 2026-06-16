@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { buildHtmlDocument } from './webviewUtils';
 
 export class SearchViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'postgresTableSearch';
@@ -26,7 +27,7 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
             enableScripts: true
         };
 
-        webviewView.webview.html = this._getHtml();
+        webviewView.webview.html = this._getHtml(webviewView.webview);
 
         webviewView.webview.onDidReceiveMessage((message) => {
             if (message.type === 'filter') {
@@ -44,11 +45,8 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    private _getHtml(): string {
-        return `<!DOCTYPE html>
-<html>
-<head>
-    <style>
+    private _getHtml(webview: vscode.Webview): string {
+        const styles = `
         body {
             padding: 4px 8px;
             margin: 0;
@@ -105,10 +103,8 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
         }
         button.secondary:hover {
             background: var(--vscode-button-secondaryHoverBackground);
-        }
-    </style>
-</head>
-<body>
+        }`;
+        const body = `
     <div class="button-row">
         <button id="selectConnBtn" title="Choose an existing saved connection">Select Connection</button>
         <button id="newConnBtn" class="secondary" title="Create a new connection">New</button>
@@ -120,8 +116,8 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
     <div class="search-container">
         <input type="text" id="searchInput" placeholder="Filter tables... (e.g. schema.table or multiple terms)" />
     </div>
-    <div class="hint">Mehrere mit Leerzeichen getrennte Begriffe: Treffer mit den meisten Übereinstimmungen oben</div>
-    <script>
+    <div class="hint">Mehrere mit Leerzeichen getrennte Begriffe: Treffer mit den meisten Übereinstimmungen oben</div>`;
+        const script = `
         const vscode = acquireVsCodeApi();
         const input = document.getElementById('searchInput');
         let debounceTimer;
@@ -143,9 +139,7 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
         document.getElementById('manageMappingsBtn').addEventListener('click', () => {
             vscode.postMessage({ type: 'manageMappings' });
         });
-        input.focus();
-    </script>
-</body>
-</html>`;
+        input.focus();`;
+        return buildHtmlDocument({ webview, styles, body, script });
     }
 }

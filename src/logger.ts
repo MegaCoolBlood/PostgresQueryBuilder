@@ -31,3 +31,20 @@ export class Logger {
         Logger.log(scope, `ERROR: ${detail}`);
     }
 }
+
+/**
+ * Extract a human-readable message from an unknown caught value. Returns the
+ * `Error.message` for `Error` instances and a stringified form otherwise, so
+ * `catch` blocks can avoid typing the caught value as `any`.
+ */
+export function getErrorMessage(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Extract a stack trace (falling back to the message) from an unknown caught
+ * value, mirroring {@link Logger.error}'s formatting for ad-hoc logging.
+ */
+export function getErrorStack(err: unknown): string {
+    return err instanceof Error ? (err.stack ?? err.message) : String(err);
+}

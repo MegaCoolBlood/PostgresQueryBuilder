@@ -35,6 +35,9 @@ export interface ExportDefaultsMap {
     excel?: Partial<ExportOptions>;
 }
 
+/** A single result row keyed by column name, as produced by the query layer. */
+export type ExportRow = Record<string, unknown>;
+
 export class ExportService {
     private context: vscode.ExtensionContext;
 
@@ -50,7 +53,7 @@ export class ExportService {
 
     saveDefaults(format: string, options: Partial<ExportOptions>): void {
         const defaults = this.context.globalState.get<ExportDefaultsMap>('exportDefaults', {});
-        (defaults as any)[format] = options;
+        (defaults as Record<string, Partial<ExportOptions>>)[format] = options;
         this.context.globalState.update('exportDefaults', defaults);
     }
 
@@ -62,7 +65,7 @@ export class ExportService {
         this.context.globalState.update('exportSaveLocation', location);
     }
 
-    async exportData(rows: any[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
+    async exportData(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
         switch (options.format) {
             case 'csv':
                 await this.exportCsv(rows, columns, options);
@@ -82,7 +85,7 @@ export class ExportService {
         }
     }
 
-    private async exportCsv(rows: any[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
+    private async exportCsv(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
         const separator = options.csvSeparator || ',';
         const quoteStrings = options.csvQuoteStrings !== false;
         const includeHeaders = options.csvIncludeHeaders !== false;
@@ -113,11 +116,11 @@ export class ExportService {
         return value;
     }
 
-    private async exportJson(rows: any[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
+    private async exportJson(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
         const pretty = options.jsonPretty !== false;
 
         const data = rows.map(row => {
-            const obj: any = {};
+            const obj: Record<string, unknown> = {};
             columns.forEach(col => { obj[col.name] = row[col.name] ?? null; });
             return obj;
         });
@@ -126,7 +129,7 @@ export class ExportService {
         fs.writeFileSync(options.filePath, content, 'utf8');
     }
 
-    private async exportXml(rows: any[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
+    private async exportXml(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
         const rootElement = options.xmlRootElement || 'data';
         const rowElement = options.xmlRowElement || 'row';
 
@@ -166,7 +169,7 @@ export class ExportService {
         return tag;
     }
 
-    private async exportInsert(rows: any[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
+    private async exportInsert(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
         const tableName = options.insertTableName || 'table_name';
         const batchSize = options.insertBatchSize || 1;
 
@@ -199,14 +202,14 @@ export class ExportService {
         return '"' + name.replace(/"/g, '""') + '"';
     }
 
-    private formatSqlValue(value: any): string {
+    private formatSqlValue(value: unknown): string {
         if (value === null || value === undefined) return 'NULL';
         if (typeof value === 'number') return String(value);
         if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
         return escapeSqlLiteral(String(value));
     }
 
-    private async exportExcel(rows: any[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
+    private async exportExcel(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
         const ExcelJS = require('exceljs');
         const workbook = new ExcelJS.Workbook();
         const sheetName = options.excelSheetName || 'Data';

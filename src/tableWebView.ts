@@ -4,6 +4,7 @@ import { QueryRunner, buildRelationListQuery } from './queryRunner';
 import { ExportService } from './exportService';
 import { ColumnMappingManager } from './columnMappingManager';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
+import { getErrorMessage } from './logger';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -132,14 +133,14 @@ export class TableWebViewManager {
 
             try {
                 await handler.call(this, ctx);
-            } catch (err: any) {
+            } catch (err: unknown) {
                 if (!disposed) {
                     panel.webview.postMessage({
                         command: 'error',
-                        text: err.message
+                        text: getErrorMessage(err)
                     });
                 }
-                vscode.window.showErrorMessage(`Query error: ${err.message}`);
+                vscode.window.showErrorMessage(`Query error: ${getErrorMessage(err)}`);
             }
         });
     }
@@ -283,7 +284,7 @@ export class TableWebViewManager {
             }
         }
         // Resolve field OIDs to type names
-        const oids = result.fields.map((f: any) => f.dataTypeID).filter((id: number) => id > 0);
+        const oids = result.fields.map((f) => f.dataTypeID).filter((id: number) => id > 0);
         let typeMap: Record<number, string> = {};
         if (oids.length > 0) {
             const typeRows = await this.connectionManager.query(
@@ -294,7 +295,7 @@ export class TableWebViewManager {
                 typeMap[row.oid] = row.typname;
             }
         }
-        const cols = result.fields.map((f: any) => ({
+        const cols = result.fields.map((f) => ({
             name: f.name,
             dataType: typeMap[f.dataTypeID] || '',
             isNullable: true,
@@ -357,10 +358,10 @@ export class TableWebViewManager {
             );
             panel.webview.postMessage({
                 command: 'tablesForTypeahead',
-                tables: tables.map((r: any) => ({ schema: r.table_schema, table: r.table_name }))
+                tables: tables.map((r) => ({ schema: r.table_schema, table: r.table_name }))
             });
-        } catch (err: any) {
-            console.warn(`Failed to load tables for typeahead: ${err.message}`);
+        } catch (err: unknown) {
+            console.warn(`Failed to load tables for typeahead: ${getErrorMessage(err)}`);
         }
     }
 
@@ -375,12 +376,12 @@ export class TableWebViewManager {
             );
             panel.webview.postMessage({
                 command: 'columnsForTypeahead',
-                columns: cols.map((r: any) => r.column_name),
+                columns: cols.map((r) => r.column_name),
                 forSchema: message.schema,
                 forTable: message.table
             });
-        } catch (err: any) {
-            console.warn(`Failed to load columns for typeahead: ${err.message}`);
+        } catch (err: unknown) {
+            console.warn(`Failed to load columns for typeahead: ${getErrorMessage(err)}`);
         }
     }
 
@@ -465,8 +466,8 @@ export class TableWebViewManager {
                 filePath: uri.fsPath
             });
             vscode.window.showInformationMessage(`Exported ${exportRows.length} rows to ${path.basename(uri.fsPath)}`);
-        } catch (exportErr: any) {
-            vscode.window.showErrorMessage(`Export failed: ${exportErr.message}`);
+        } catch (exportErr: unknown) {
+            vscode.window.showErrorMessage(`Export failed: ${getErrorMessage(exportErr)}`);
         }
     }
 
@@ -594,7 +595,7 @@ export class TableWebViewManager {
                             }
                         }
                         // Resolve field OIDs to type names
-                        const oids = result.fields.map((f: any) => f.dataTypeID).filter((id: number) => id > 0);
+                        const oids = result.fields.map((f) => f.dataTypeID).filter((id: number) => id > 0);
                         let typeMap: Record<number, string> = {};
                         if (oids.length > 0) {
                             const typeRows = await this.connectionManager.query(
@@ -605,7 +606,7 @@ export class TableWebViewManager {
                                 typeMap[row.oid] = row.typname;
                             }
                         }
-                        const cols = result.fields.map((f: any) => ({
+                        const cols = result.fields.map((f) => ({
                             name: f.name,
                             dataType: typeMap[f.dataTypeID] || '',
                             isNullable: true,
@@ -645,11 +646,11 @@ export class TableWebViewManager {
                         break;
                     }
                 }
-            } catch (err: any) {
+            } catch (err: unknown) {
                 if (!disposed) {
-                    panel.webview.postMessage({ command: 'error', text: err.message });
+                    panel.webview.postMessage({ command: 'error', text: getErrorMessage(err) });
                 }
-                vscode.window.showErrorMessage(`Query error: ${err.message}`);
+                vscode.window.showErrorMessage(`Query error: ${getErrorMessage(err)}`);
             }
         });
     }

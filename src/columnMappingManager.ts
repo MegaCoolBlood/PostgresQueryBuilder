@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { getErrorMessage } from './logger';
 
 export interface MappingCondition {
     column: string;
@@ -228,8 +229,8 @@ export class ColumnMappingManager {
         let parsed: any;
         try {
             parsed = JSON.parse(text);
-        } catch (err: any) {
-            throw new Error(`Could not parse JSON: ${err?.message || err}`);
+        } catch (err: unknown) {
+            throw new Error(`Could not parse JSON: ${getErrorMessage(err)}`);
         }
         const incoming: CustomColumnMapping[] = Array.isArray(parsed)
             ? parsed
@@ -392,8 +393,8 @@ export class ColumnMappingManager {
                 ? parsed
                 : Array.isArray(parsed?.mappings) ? parsed.mappings : [];
             this.workspaceMappings = arr.map(m => this.normalizeIncoming(m));
-        } catch (err: any) {
-            vscode.window.showWarningMessage(`PostgreSQL Query Builder: could not read custom mappings file: ${err?.message || err}`);
+        } catch (err: unknown) {
+            vscode.window.showWarningMessage(`PostgreSQL Query Builder: could not read custom mappings file: ${getErrorMessage(err)}`);
         }
     }
 

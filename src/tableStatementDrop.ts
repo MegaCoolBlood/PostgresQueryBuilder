@@ -4,6 +4,7 @@ import { TreeNode } from './tableExplorer';
 import { StatementKind, buildStatement, deriveQualifier, toPreview, autoJoinClauses, JoinFkEdge } from './statementBuilder';
 import { showJoinDialog, JoinDialogTable, JoinDialogIdentityEdge, JoinDialogAddPayload } from './joinDialog';
 import { ColumnMappingManager } from './columnMappingManager';
+import { getErrorMessage } from './logger';
 
 export { StatementKind, buildStatement, deriveQualifier } from './statementBuilder';
 
@@ -259,8 +260,8 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
         let data: Awaited<ReturnType<QueryRunner['getMultiTableJoinData']>>;
         try {
             data = await this.queryRunner.getMultiTableJoinData(tables);
-        } catch (err: any) {
-            vscode.window.showErrorMessage(`Failed to load tables for JOIN: ${err?.message || err}`);
+        } catch (err: unknown) {
+            vscode.window.showErrorMessage(`Failed to load tables for JOIN: ${getErrorMessage(err)}`);
             return undefined;
         }
         const dialogTables: JoinDialogTable[] = data.tables.map(t => ({
@@ -356,8 +357,8 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
             let combinedData: Awaited<ReturnType<QueryRunner['getMultiTableJoinData']>>;
             try {
                 combinedData = await this.queryRunner.getMultiTableJoinData(combined);
-            } catch (err: any) {
-                vscode.window.showErrorMessage(`Failed to add tables to JOIN: ${err?.message || err}`);
+            } catch (err: unknown) {
+                vscode.window.showErrorMessage(`Failed to add tables to JOIN: ${getErrorMessage(err)}`);
                 return undefined;
             }
 
@@ -426,8 +427,8 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
         let all: Array<{ schema: string; table: string }>;
         try {
             all = await this.queryRunner.listAllTables();
-        } catch (err: any) {
-            vscode.window.showErrorMessage(`Failed to list tables: ${err?.message || err}`);
+        } catch (err: unknown) {
+            vscode.window.showErrorMessage(`Failed to list tables: ${getErrorMessage(err)}`);
             return [];
         }
         const available = all.filter(
@@ -455,8 +456,8 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
         let build: { tableReference: string; columns: string[]; columnTypes: string[]; firstColumnRaw: string | null };
         try {
             build = await this.queryRunner.getStatementBuildData(schema, table);
-        } catch (err: any) {
-            vscode.window.showErrorMessage(`Failed to load columns for ${schema}.${table}: ${err?.message || err}`);
+        } catch (err: unknown) {
+            vscode.window.showErrorMessage(`Failed to load columns for ${schema}.${table}: ${getErrorMessage(err)}`);
             return undefined;
         }
 

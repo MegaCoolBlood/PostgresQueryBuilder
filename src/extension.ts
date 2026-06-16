@@ -11,7 +11,7 @@ import { ManageMappingsPanel } from './manageMappingsPanel';
 import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore } from './tableStatementDrop';
 import { ViewDataFromSelect } from './viewDataFromSelect';
-import { Logger } from './logger';
+import { Logger, getErrorMessage, getErrorStack } from './logger';
 let connectionManager: ConnectionManager;
 let tableExplorer: TableExplorerProvider;
 let tableWebViewManager: TableWebViewManager;
@@ -42,9 +42,9 @@ export function activate(context: vscode.ExtensionContext) {
                     await connectionManager.connectWithInputFlow();
                     updateStatusBar();
                     tableExplorer.refresh();
-                } catch (err: any) {
-                    outputChannel.appendLine(`[connect] ${err?.stack || err}`);
-                    vscode.window.showErrorMessage(`Connect failed: ${err?.message || err}`);
+                } catch (err: unknown) {
+                    outputChannel.appendLine(`[connect] ${getErrorStack(err)}`);
+                    vscode.window.showErrorMessage(`Connect failed: ${getErrorMessage(err)}`);
                 }
             }),
             vscode.commands.registerCommand('postgresQueryBuilder.disconnect', async () => {
@@ -75,9 +75,9 @@ export function activate(context: vscode.ExtensionContext) {
                     const effective = await connectionManager.getSearchPath();
                     tableExplorer.refresh();
                     vscode.window.showInformationMessage(`search_path is now: ${effective}`);
-                } catch (err: any) {
-                    outputChannel.appendLine(`[editSearchPath] ${err?.stack || err}`);
-                    vscode.window.showErrorMessage(`Failed to update search_path: ${err?.message || err}`);
+                } catch (err: unknown) {
+                    outputChannel.appendLine(`[editSearchPath] ${getErrorStack(err)}`);
+                    vscode.window.showErrorMessage(`Failed to update search_path: ${getErrorMessage(err)}`);
                 }
             }),
             vscode.commands.registerCommand('postgresQueryBuilder.openTable', (schema: string, table: string) => {
@@ -98,9 +98,9 @@ export function activate(context: vscode.ExtensionContext) {
                     await connectionManager.selectConnection();
                     updateStatusBar();
                     tableExplorer.refresh();
-                } catch (err: any) {
-                    outputChannel.appendLine(`[selectConnection] ${err?.stack || err}`);
-                    vscode.window.showErrorMessage(`Select connection failed: ${err?.message || err}`);
+                } catch (err: unknown) {
+                    outputChannel.appendLine(`[selectConnection] ${getErrorStack(err)}`);
+                    vscode.window.showErrorMessage(`Select connection failed: ${getErrorMessage(err)}`);
                 }
             }),
             vscode.commands.registerCommand('postgresQueryBuilder.openSqlEditor', () => {
@@ -120,8 +120,8 @@ export function activate(context: vscode.ExtensionContext) {
                     if (!target) return;
                     const n = await columnMappingManager.exportToFile(target);
                     vscode.window.showInformationMessage(`Exported ${n} custom mapping(s).`);
-                } catch (err: any) {
-                    vscode.window.showErrorMessage(`Export failed: ${err?.message || err}`);
+                } catch (err: unknown) {
+                    vscode.window.showErrorMessage(`Export failed: ${getErrorMessage(err)}`);
                 }
             }),
             vscode.commands.registerCommand('postgresQueryBuilder.importCustomMappings', async () => {
@@ -152,8 +152,8 @@ export function activate(context: vscode.ExtensionContext) {
                     vscode.window.showInformationMessage(
                         `Import done: ${res.added} added, ${res.replaced} replaced, ${res.skipped} skipped.`
                     );
-                } catch (err: any) {
-                    vscode.window.showErrorMessage(`Import failed: ${err?.message || err}`);
+                } catch (err: unknown) {
+                    vscode.window.showErrorMessage(`Import failed: ${getErrorMessage(err)}`);
                 }
             }),
             vscode.commands.registerCommand('postgresQueryBuilder.openCustomMappingsFile', async () => {
@@ -165,7 +165,7 @@ export function activate(context: vscode.ExtensionContext) {
                 try {
                     const doc = await vscode.workspace.openTextDocument(uri);
                     await vscode.window.showTextDocument(doc);
-                } catch (err: any) {
+                } catch {
                     const create = 'Create file';
                     const choice = await vscode.window.showInformationMessage(
                         `Workspace mappings file does not exist yet (${vscode.workspace.asRelativePath(uri)}). Create it?`,
@@ -184,9 +184,9 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.commands.registerCommand('postgresQueryBuilder.viewDataFromSelect', async () => {
                 try {
                     await viewDataFromSelect.run(vscode.window.activeTextEditor);
-                } catch (err: any) {
-                    outputChannel.appendLine(`[viewDataFromSelect] ${err?.stack || err}`);
-                    vscode.window.showErrorMessage(`View Data failed: ${err?.message || err}`);
+                } catch (err: unknown) {
+                    outputChannel.appendLine(`[viewDataFromSelect] ${getErrorStack(err)}`);
+                    vscode.window.showErrorMessage(`View Data failed: ${getErrorMessage(err)}`);
                 }
             })
         );
@@ -246,9 +246,9 @@ export function activate(context: vscode.ExtensionContext) {
         });
 
         outputChannel.appendLine('[activate] done');
-    } catch (err: any) {
-        outputChannel.appendLine(`[activate] FAILED: ${err?.stack || err}`);
-        vscode.window.showErrorMessage(`PostgreSQL Query Builder failed to activate: ${err?.message || err}`);
+    } catch (err: unknown) {
+        outputChannel.appendLine(`[activate] FAILED: ${getErrorStack(err)}`);
+        vscode.window.showErrorMessage(`PostgreSQL Query Builder failed to activate: ${getErrorMessage(err)}`);
         throw err;
     }
 

@@ -3,9 +3,9 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as dns from 'dns';
 import { promisify } from 'util';
-import { Pool, PoolConfig, types as pgTypes } from 'pg';
+import { Pool, PoolConfig, QueryResult, QueryResultRow, types as pgTypes } from 'pg';
 import { createHash } from 'crypto';
-import { Logger } from './logger';
+import { Logger, getErrorMessage } from './logger';
 
 const dnsLookup = promisify(dns.lookup);
 
@@ -28,7 +28,7 @@ export interface ConnectionConfig {
 export class ConnectionManager {
     private pool: Pool | null = null;
     private activeConfig: ConnectionConfig | null = null;
-    private metadataQueryCache = new Map<string, any[]>();
+    private metadataQueryCache = new Map<string, QueryResultRow[]>();
     private context: vscode.ExtensionContext;
     private _onConnectionChanged = new vscode.EventEmitter<void>();
     public readonly onConnectionChanged = this._onConnectionChanged.event;
@@ -166,8 +166,8 @@ export class ConnectionManager {
                         await this.saveConnection(connConfig, password);
                         vscode.window.showInformationMessage(`Connected to ${msg.database} on ${msg.host}:${msg.port}`);
                         panel.dispose();
-                    } catch (err: any) {
-                        panel.webview.postMessage({ type: 'error', message: `Connection failed: ${err.message}` });
+                    } catch (err: unknown) {
+                        panel.webview.postMessage({ type: 'error', message: `Connection failed: ${getErrorMessage(err)}` });
                     }
                 }
             });
@@ -233,14 +233,14 @@ export class ConnectionManager {
             try {
                 await this.connect(conn, pwd);
                 await this.context.secrets.store(`pgqb_password_${conn.name}`, pwd);
-            } catch (err: any) {
-                vscode.window.showErrorMessage(`Connection failed: ${err.message}`);
+            } catch (err: unknown) {
+                vscode.window.showErrorMessage(`Connection failed: ${getErrorMessage(err)}`);
             }
         } else {
             try {
                 await this.connect(conn, password);
-            } catch (err: any) {
-                vscode.window.showErrorMessage(`Connection failed: ${err.message}`);
+            } catch (err: unknown) {
+                vscode.window.showErrorMessage(`Connection failed: ${getErrorMessage(err)}`);
             }
         }
     }
@@ -286,9 +286,10 @@ export class ConnectionManager {
         try {
             const client = await this.pool.connect();
             client.release();
-        } catch (err: any) {
+        } catch (err: unknown) {
             // If SSL is not supported, retry without SSL
-            if (err.message && err.message.includes('does not support SSL')) {
+            const message = getErrorMessage(err);
+            if (message.includes('does not support SSL')) {
                 console.log(`[PG] SSL not supported, retrying without SSL`);
                 await this.pool.end();
                 delete poolConfig.ssl;
@@ -384,14 +385,14 @@ export class ConnectionManager {
         await config.update('savedConnections', saved, vscode.ConfigurationTarget.Global);
     }
 
-    async query(sql: string, params?: any[]): Promise<any> {
+    async query(sql: string, params?: unknown[]): Promise<QueryResult> {
         if (!this.pool) {
             throw new Error('Not connected to a database');
         }
-        return this.pool.query(sql, params);
+        return this.pool.query(sql, params as unknown[] | undefined);
     }
 
-    async queryMetadata(sql: string, params?: any[]): Promise<any[]> {
+    async queryMetadata(sql: string, params?: unknown[]): Promise<QueryResultRow[]> {
         const normalizedParams = (params ?? []).map(param =>
             `${param === null ? 'null' : typeof param}:${this.stableSerialize(param)}`
         );
@@ -415,7 +416,7 @@ export class ConnectionManager {
         this.metadataQueryCache.clear();
     }
 
-    private stableSerialize(value: any): string {
+    private stableSerialize(value: unknown): string {
         if (value === null || value === undefined) {
             return String(value);
         }

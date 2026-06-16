@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ColumnMappingManager, CustomColumnMapping, MappingScope } from './columnMappingManager';
-import { getNonce } from './webviewUtils';
+import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
+import { getErrorMessage } from './logger';
 
 export class ManageMappingsPanel {
     public static readonly viewType = 'postgresManageMappings';
@@ -29,7 +30,7 @@ export class ManageMappingsPanel {
         _context: vscode.ExtensionContext,
         private readonly manager: ColumnMappingManager
     ) {
-        this.panel.webview.html = this.getHtml();
+        this.panel.webview.html = this.getHtml(this.panel.webview);
         this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
 
         this.panel.webview.onDidReceiveMessage(async (msg) => {
@@ -74,8 +75,8 @@ export class ManageMappingsPanel {
                         break;
                     }
                 }
-            } catch (err: any) {
-                vscode.window.showErrorMessage(`Manage Mappings: ${err?.message || err}`);
+            } catch (err: unknown) {
+                vscode.window.showErrorMessage(`Manage Mappings: ${getErrorMessage(err)}`);
             }
         }, null, this.disposables);
 
@@ -111,13 +112,8 @@ export class ManageMappingsPanel {
         }
     }
 
-    private getHtml(): string {
-        const nonce = getNonce();
-        return `<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8" />
-    <style>
+    private getHtml(webview: vscode.Webview): string {
+        const styles = `
         body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 12px 16px; }
         h2 { margin: 0 0 6px 0; font-size: 16px; }
         .hint { color: var(--vscode-descriptionForeground); font-size: 12px; margin-bottom: 12px; }
@@ -161,10 +157,8 @@ export class ManageMappingsPanel {
         .dlg-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
         .dlg-row label { font-size: 12px; }
         .cond-row { display: grid; grid-template-columns: minmax(160px, 2fr) 80px minmax(120px, 1fr) 24px; gap: 4px; margin-top: 4px; align-items: center; }
-        .cond-row button { padding: 2px 6px; font-size: 12px; }
-    </style>
-</head>
-<body>
+        .cond-row button { padding: 2px 6px; font-size: 12px; }`;
+        const body = `
     <h2>Custom Column Mappings</h2>
     <div class="hint">Verwalte alle Mappings an einer Stelle. Wähle Einträge aus und ändere ihren Scope, um sie z. B. mit dem Team zu teilen (Workspace) oder wieder privat zu halten (Personal).</div>
     <div class="file-info" id="fileInfo"></div>
@@ -254,7 +248,10 @@ export class ManageMappingsPanel {
         </div>
     </div>
 
-    <script nonce="${nonce}">
+`;
+        const script = `
+        ${WEBVIEW_ESCAPE_HTML_JS}
+
         const vscode = acquireVsCodeApi();
         let mappings = [];
         let filtered = [];
@@ -266,8 +263,6 @@ export class ManageMappingsPanel {
         const selInfo = document.getElementById('selInfo');
         const headerCheckbox = document.getElementById('headerCheckbox');
         const fileInfo = document.getElementById('fileInfo');
-
-        function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
         function render() {
             const q = filterInput.value.trim().toLowerCase();
@@ -493,9 +488,7 @@ export class ManageMappingsPanel {
             }
         });
 
-        vscode.postMessage({ command: 'ready' });
-    </script>
-</body>
-</html>`;
+        vscode.postMessage({ command: 'ready' });`;
+        return buildHtmlDocument({ webview, styles, body, script });
     }
 }

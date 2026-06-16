@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
 import { buildSchemaRelationListQuery } from './queryRunner';
+import { getErrorMessage } from './logger';
 
 export interface SchemaNode {
     type: 'schema';
@@ -166,7 +167,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
             if (!element) {
                 const configSchemas = this.connectionManager.getActiveConnectionConfig()?.schemas;
                 let query: string;
-                let params: any[] | undefined;
+                let params: string[] | undefined;
 
                 if (configSchemas && configSchemas.length > 0) {
                     const placeholders = configSchemas.map((_, i) => `$${i + 1}`).join(', ');
@@ -182,7 +183,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
 
                 const rows = await this.connectionManager.queryMetadata(query, params);
 
-                const schemas = rows.map((row: any) => ({
+                const schemas = rows.map((row) => ({
                     type: 'schema' as const,
                     schema: row.schema_name
                 }));
@@ -239,8 +240,8 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
 
                 return tables;
             }
-        } catch (err: any) {
-            vscode.window.showErrorMessage(`Failed to load tables: ${err.message}`);
+        } catch (err: unknown) {
+            vscode.window.showErrorMessage(`Failed to load tables: ${getErrorMessage(err)}`);
         }
 
         return [];
@@ -252,7 +253,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
             buildSchemaRelationListQuery(),
             [schema]
         );
-        return rows.map((row: any) => ({
+        return rows.map((row) => ({
             type: 'table' as const,
             schema,
             table: row.table_name,
