@@ -114,22 +114,12 @@ export class ExportService {
 
     private async exportJson(rows: any[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
         const pretty = options.jsonPretty !== false;
-        const arrayWrapper = options.jsonArrayWrapper !== false;
 
-        let data: any;
-        if (arrayWrapper) {
-            data = rows.map(row => {
-                const obj: any = {};
-                columns.forEach(col => { obj[col.name] = row[col.name] ?? null; });
-                return obj;
-            });
-        } else {
-            data = rows.map(row => {
-                const obj: any = {};
-                columns.forEach(col => { obj[col.name] = row[col.name] ?? null; });
-                return obj;
-            });
-        }
+        const data = rows.map(row => {
+            const obj: any = {};
+            columns.forEach(col => { obj[col.name] = row[col.name] ?? null; });
+            return obj;
+        });
 
         const content = pretty ? JSON.stringify(data, null, 2) : JSON.stringify(data);
         fs.writeFileSync(options.filePath, content, 'utf8');

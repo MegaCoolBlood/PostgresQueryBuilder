@@ -74,6 +74,18 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
     }
 
     /**
+     * Keep only items with a positive score and return them ordered by score
+     * descending. Shared by the schema- and category-level filtering branches.
+     */
+    private sortByScoreDesc<T>(items: T[], score: (item: T) => number): T[] {
+        return items
+            .map(item => ({ item, score: score(item) }))
+            .filter(x => x.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .map(x => x.item);
+    }
+
+    /**
      * Compute non-overlapping [start, end) ranges in `s` that match any of
      * the current filter terms (case-insensitive). Used to highlight matches
      * in tree item labels (VS Code renders these with the list highlight
@@ -219,11 +231,10 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                 let tables = relations.filter(r => r.kind === element.kind);
 
                 if (this._filterTerms.length > 0) {
-                    const scored = tables
-                        .map((t: TableNode) => ({ t, score: this.scoreString(`${t.schema}.${t.table}`) }))
-                        .filter((x: { t: TableNode; score: number }) => x.score > 0)
-                        .sort((a: { score: number }, b: { score: number }) => b.score - a.score);
-                    tables = scored.map((x: { t: TableNode }) => x.t);
+                    tables = this.sortByScoreDesc(
+                        tables,
+                        t => this.scoreString(`${t.schema}.${t.table}`)
+                    );
                 }
 
                 return tables;

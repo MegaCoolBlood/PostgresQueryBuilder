@@ -228,19 +228,20 @@ export function autoJoinClauses(
             continue;
         }
 
-        const conditions: JoinCondition[] = connecting
-            .filter(e => (e.fromIndex === i ? e.toIndex : e.fromIndex) === partner)
-            .map(e => {
-                if (e.fromIndex === i) {
-                    // Current table holds the FK, partner is referenced.
-                    return { leftAlias: aliases[partner], leftColumn: e.toColumn, rightColumn: e.fromColumn };
-                }
-                // Partner holds the FK, current table is referenced.
-                return { leftAlias: aliases[partner], leftColumn: e.fromColumn, rightColumn: e.toColumn };
-            });
+        const partnerEdges = connecting.filter(
+            e => (e.fromIndex === i ? e.toIndex : e.fromIndex) === partner
+        );
 
-        const literalConditions: JoinLiteralCondition[] = connecting
-            .filter(e => (e.fromIndex === i ? e.toIndex : e.fromIndex) === partner)
+        const conditions: JoinCondition[] = partnerEdges.map(e => {
+            if (e.fromIndex === i) {
+                // Current table holds the FK, partner is referenced.
+                return { leftAlias: aliases[partner], leftColumn: e.toColumn, rightColumn: e.fromColumn };
+            }
+            // Partner holds the FK, current table is referenced.
+            return { leftAlias: aliases[partner], leftColumn: e.fromColumn, rightColumn: e.toColumn };
+        });
+
+        const literalConditions: JoinLiteralCondition[] = partnerEdges
             .flatMap(e => (e.extraConditions ?? []).map(ec => ({
                 literalAlias: aliases[ec.tableIndex],
                 literalColumn: ec.column,
