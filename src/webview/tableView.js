@@ -3125,6 +3125,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
+        cellToString,
         normalizeNumericInput,
         formatNumberDisplay,
         formatExactMatchValue,
@@ -3138,6 +3139,10 @@ if (typeof module !== 'undefined' && module.exports) {
         splitWhereByAnd,
         whereClauseTargetsColumn,
         parseSqlForOrder,
+        hasSqlComment,
+        collapseSqlWhitespace,
+        splitTopLevelCommas,
+        splitTopLevelClauses,
         formatSql
     };
 }
