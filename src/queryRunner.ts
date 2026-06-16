@@ -1,5 +1,19 @@
 import { ConnectionManager } from './connectionManager';
 
+/**
+ * Table types from `information_schema.tables` that the extension treats as
+ * selectable tables. PostgreSQL reports foreign tables as `'FOREIGN'` (server
+ * versions >= 9.5) or `'FOREIGN TABLE'` (versions < 9.5), so both spellings are
+ * accepted to make sure foreign tables always show up.
+ */
+export const SELECTABLE_TABLE_TYPES = ['BASE TABLE', 'FOREIGN', 'FOREIGN TABLE'] as const;
+
+/**
+ * SQL value list for `SELECTABLE_TABLE_TYPES`, ready to be inlined into an
+ * `table_type IN (...)` clause, e.g. `'BASE TABLE', 'FOREIGN', 'FOREIGN TABLE'`.
+ */
+export const SELECTABLE_TABLE_TYPES_SQL = SELECTABLE_TABLE_TYPES.map(t => `'${t}'`).join(', ');
+
 // NOTE: Keep in sync with POSTGRES_RESERVED_KEYWORDS in src/webview/tableView.js
 const POSTGRES_RESERVED_KEYWORDS = new Set([
     'all', 'analyse', 'analyze', 'and', 'any', 'array', 'as', 'asc', 'asymmetric',
@@ -190,7 +204,7 @@ export class QueryRunner {
         const rows = await this.connectionManager.queryMetadata(
             `SELECT table_schema, table_name
              FROM information_schema.tables
-             WHERE table_type IN ('BASE TABLE', 'FOREIGN')
+             WHERE table_type IN (${SELECTABLE_TABLE_TYPES_SQL})
                AND table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
              ORDER BY table_schema, table_name`
         );

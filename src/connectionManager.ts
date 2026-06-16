@@ -36,6 +36,28 @@ export class ConnectionManager {
         this.context = context;
     }
 
+    /**
+     * Determines which password to use when saving/connecting from the connection
+     * form. When editing an existing connection and the password field is left
+     * empty, the previously stored password is reused instead of overwriting it
+     * with an empty value. For new connections (no existing config) the provided
+     * password is used as-is.
+     */
+    static async resolvePassword(
+        providedPassword: string,
+        existingConfig: ConnectionConfig | undefined,
+        getStoredPassword: (name: string) => PromiseLike<string | undefined>
+    ): Promise<string> {
+        let password = providedPassword;
+        if (existingConfig && (password === undefined || password === '')) {
+            const storedPassword = await getStoredPassword(existingConfig.name);
+            if (storedPassword !== undefined) {
+                password = storedPassword;
+            }
+        }
+        return password;
+    }
+
     isConnected(): boolean {
         return this.pool !== null;
     }
@@ -91,9 +113,17 @@ export class ConnectionManager {
                         user: msg.user,
                         schemas: schemas
                     };
+                    // When editing an existing connection and the password field is left
+                    // empty, reuse the previously stored password instead of overwriting
+                    // it with an empty value.
+                    const password = await ConnectionManager.resolvePassword(
+                        msg.password,
+                        existingConfig,
+                        (name) => this.context.secrets.get(`pgqb_password_${name}`)
+                    );
                     try {
-                        await this.connect(connConfig, msg.password);
-                        await this.saveConnection(connConfig, msg.password);
+                        await this.connect(connConfig, password);
+                        await this.saveConnection(connConfig, password);
                         vscode.window.showInformationMessage(`Connected to ${msg.database} on ${msg.host}:${msg.port}`);
                         panel.dispose();
                     } catch (err: any) {

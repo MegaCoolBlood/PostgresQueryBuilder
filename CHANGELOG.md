@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.2
+
+- **Foreign Tables erscheinen jetzt in der Tabellen-Baumansicht:** Fremd-Tabellen (Foreign Tables, z. B. über `postgres_fdw` eingebundene Tabellen) wurden in der Baumansicht, der Tabellen-Suche, dem JOIN-Dialog und der Typeahead-Auswahl nicht angezeigt, wenn der PostgreSQL-Server sie in `information_schema.tables` als `'FOREIGN TABLE'` meldet (Server-Versionen < 9.5). Die Filter berücksichtigen jetzt beide Schreibweisen (`'FOREIGN'` und `'FOREIGN TABLE'`) über eine gemeinsame Konstante, sodass Foreign Tables versionsunabhängig wie normale Tabellen aufgelistet werden.
+- **Verbindung bearbeiten ohne Passwort-Eingabe:** Beim Bearbeiten einer bestehenden Verbindung (z. B. um nur den Port, Host oder die Datenbank anzupassen) muss das Passwortfeld nicht mehr erneut ausgefüllt werden. Bleibt das Feld leer, wird automatisch das zuvor gespeicherte Passwort dieser Verbindung weiterverwendet, statt es mit einem leeren Wert zu überschreiben. Wird ein neues Passwort eingegeben, ersetzt dieses wie gewohnt das alte. Bei neuen Verbindungen bleibt das Verhalten unverändert.
+
 ## 1.1.1
 
 - **„View Data" innerhalb einer `FOR … IN (…) LOOP`-Schleife:** Bei einem Rechtsklick auf eine `SELECT`-Anweisung, die als Schleifen-Query in einem PL/pgSQL-`FOR r IN ( SELECT … ) LOOP`-Konstrukt steht, wird jetzt nur noch die eigentliche `SELECT`/`WITH`-Abfrage extrahiert. Das umgebende Schleifengerüst (`FOR r IN (`, das schließende `) LOOP …`) sowie der Schleifenkörper werden nicht mehr mit übernommen. Sowohl die geklammerte Variante (`FOR r IN ( SELECT … ) LOOP`, auch mit `UNION ALL`, verschachtelten Klammern/Subqueries und einem führenden Kommentar vor dem `SELECT`) als auch die ungeklammerte Variante (`FOR r IN SELECT … LOOP`) werden korrekt erkannt.

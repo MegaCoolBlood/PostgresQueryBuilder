@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
-import { QueryRunner } from './queryRunner';
+import { QueryRunner, SELECTABLE_TABLE_TYPES_SQL } from './queryRunner';
 import { ExportService } from './exportService';
 import { ColumnMappingManager } from './columnMappingManager';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
@@ -300,7 +300,7 @@ export class TableWebViewManager {
                         try {
                             const tables = await this.connectionManager.queryMetadata(
                                 `SELECT table_schema, table_name FROM information_schema.tables
-                                 WHERE table_type IN ('BASE TABLE', 'FOREIGN')
+                                 WHERE table_type IN (${SELECTABLE_TABLE_TYPES_SQL})
                                    AND table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
                                  ORDER BY table_schema, table_name`
                             );
