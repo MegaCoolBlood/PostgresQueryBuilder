@@ -22,7 +22,10 @@ const SYSTEM_SCHEMAS_SQL = `'pg_catalog', 'information_schema', 'pg_toast'`;
 
 /**
  * Build a query that lists all selectable relations as `(table_schema,
- * table_name)` across all non-system schemas.
+ * table_name, rel_kind)` across all non-system schemas.
+ *
+ * `rel_kind` is one of `'table'`, `'view'`, `'foreign'` or `'matview'` so
+ * callers can group relations by type.
  *
  * In addition to the relations reported by `information_schema.tables` (tables,
  * foreign tables and regular views) it also includes **materialized views**,
@@ -30,12 +33,17 @@ const SYSTEM_SCHEMAS_SQL = `'pg_catalog', 'information_schema', 'pg_toast'`;
  * from `pg_matviews` and merged in via `UNION`.
  */
 export function buildRelationListQuery(): string {
-    return `SELECT table_schema, table_name FROM (
-                SELECT table_schema, table_name
+    return `SELECT table_schema, table_name, rel_kind FROM (
+                SELECT table_schema, table_name,
+                       CASE table_type
+                           WHEN 'BASE TABLE' THEN 'table'
+                           WHEN 'VIEW' THEN 'view'
+                           ELSE 'foreign'
+                       END AS rel_kind
                 FROM information_schema.tables
                 WHERE table_type IN (${SELECTABLE_TABLE_TYPES_SQL})
                 UNION
-                SELECT schemaname AS table_schema, matviewname AS table_name
+                SELECT schemaname AS table_schema, matviewname AS table_name, 'matview' AS rel_kind
                 FROM pg_matviews
             ) rels
             WHERE table_schema NOT IN (${SYSTEM_SCHEMAS_SQL})
@@ -43,17 +51,23 @@ export function buildRelationListQuery(): string {
 }
 
 /**
- * Build a query that lists the selectable relation names within a single schema
- * (bound to parameter `$1`). Like {@link buildRelationListQuery} it also
- * includes materialized views from `pg_matviews`.
+ * Build a query that lists the selectable relations within a single schema
+ * (bound to parameter `$1`) as `(table_name, rel_kind)`. Like
+ * {@link buildRelationListQuery} it also includes materialized views from
+ * `pg_matviews` and tags each relation with its `rel_kind`.
  */
 export function buildSchemaRelationListQuery(): string {
-    return `SELECT table_name FROM (
-                SELECT table_name
+    return `SELECT table_name, rel_kind FROM (
+                SELECT table_name,
+                       CASE table_type
+                           WHEN 'BASE TABLE' THEN 'table'
+                           WHEN 'VIEW' THEN 'view'
+                           ELSE 'foreign'
+                       END AS rel_kind
                 FROM information_schema.tables
                 WHERE table_schema = $1 AND table_type IN (${SELECTABLE_TABLE_TYPES_SQL})
                 UNION
-                SELECT matviewname AS table_name
+                SELECT matviewname AS table_name, 'matview' AS rel_kind
                 FROM pg_matviews
                 WHERE schemaname = $1
             ) rels

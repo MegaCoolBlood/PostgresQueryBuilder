@@ -80,3 +80,104 @@ test('computeHighlights returns [] when terms do not match', () => {
     p.setFilter('xyz');
     assert.deepEqual(p.computeHighlights('public.users'), []);
 });
+
+// ===== 1.1.2: relations grouped into category nodes under a schema =====
+
+function createProviderWithRelations(relationsBySchema: Record<string, Array<{ table_name: string; rel_kind: string }>>): any {
+    const connectionManager = {
+        isConnected: () => true,
+        getActiveConnectionConfig: () => ({ schemas: undefined }),
+        clearMetadataCache: () => {},
+        queryMetadata: async (sql: string, params?: any[]) => {
+            if (sql.includes('information_schema.schemata')) {
+                return Object.keys(relationsBySchema).map(s => ({ schema_name: s }));
+            }
+            // Schema relation query, bound to $1 = schema name.
+            const schema = params?.[0];
+            return relationsBySchema[schema] ?? [];
+        }
+    };
+    return new TableExplorerProvider(connectionManager as any);
+}
+
+test('schema children are category nodes only for kinds that are present, in fixed order', async () => {
+    const p = createProviderWithRelations({
+        public: [
+            { table_name: 'users', rel_kind: 'table' },
+            { table_name: 'active_users', rel_kind: 'view' },
+            { table_name: 'remote_orders', rel_kind: 'foreign' }
+        ]
+    });
+
+    const categories = await p.getChildren({ type: 'schema', schema: 'public' });
+    assert.deepEqual(
+        categories.map((c: any) => ({ type: c.type, schema: c.schema, kind: c.kind })),
+        [
+            { type: 'category', schema: 'public', kind: 'table' },
+            { type: 'category', schema: 'public', kind: 'view' },
+            { type: 'category', schema: 'public', kind: 'foreign' }
+        ]
+    );
+});
+
+test('materialized views appear as their own category', async () => {
+    const p = createProviderWithRelations({
+        reporting: [
+            { table_name: 'orders', rel_kind: 'table' },
+            { table_name: 'daily_sales', rel_kind: 'matview' }
+        ]
+    });
+
+    const categories = await p.getChildren({ type: 'schema', schema: 'reporting' });
+    assert.deepEqual(categories.map((c: any) => c.kind), ['table', 'matview']);
+});
+
+test('category children are the relations of that kind as leaf table nodes', async () => {
+    const p = createProviderWithRelations({
+        public: [
+            { table_name: 'users', rel_kind: 'table' },
+            { table_name: 'orders', rel_kind: 'table' },
+            { table_name: 'active_users', rel_kind: 'view' }
+        ]
+    });
+
+    const tables = await p.getChildren({ type: 'category', schema: 'public', kind: 'table' });
+    assert.deepEqual(
+        tables.map((t: any) => ({ type: t.type, table: t.table, kind: t.kind })),
+        [
+            { type: 'table', table: 'users', kind: 'table' },
+            { type: 'table', table: 'orders', kind: 'table' }
+        ]
+    );
+
+    const views = await p.getChildren({ type: 'category', schema: 'public', kind: 'view' });
+    assert.deepEqual(views.map((t: any) => t.table), ['active_users']);
+});
+
+test('a filter keeps only categories that contain a matching relation', async () => {
+    const p = createProviderWithRelations({
+        public: [
+            { table_name: 'users', rel_kind: 'table' },
+            { table_name: 'active_users', rel_kind: 'view' },
+            { table_name: 'remote_orders', rel_kind: 'foreign' }
+        ]
+    });
+    p.setFilter('user');
+
+    const categories = await p.getChildren({ type: 'schema', schema: 'public' });
+    // Only "users" (table) and "active_users" (view) match -> no foreign category.
+    assert.deepEqual(categories.map((c: any) => c.kind), ['table', 'view']);
+
+    const foreign = await p.getChildren({ type: 'category', schema: 'public', kind: 'foreign' });
+    assert.deepEqual(foreign, []);
+});
+
+test('getTreeItem marks schema and category nodes as expanded', () => {
+    const p = createProvider();
+    const schemaItem = p.getTreeItem({ type: 'schema', schema: 'public' });
+    const categoryItem = p.getTreeItem({ type: 'category', schema: 'public', kind: 'view' });
+    // 2 === TreeItemCollapsibleState.Expanded in the vscode mock.
+    assert.equal(schemaItem.collapsibleState, 2);
+    assert.equal(categoryItem.collapsibleState, 2);
+    assert.equal(categoryItem.label, 'Views');
+});

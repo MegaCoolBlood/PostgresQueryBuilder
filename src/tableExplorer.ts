@@ -7,13 +7,40 @@ export interface SchemaNode {
     schema: string;
 }
 
+/** The kind of a relation, used to group relations under a schema. */
+export type RelationKind = 'table' | 'view' | 'matview' | 'foreign';
+
+export interface CategoryNode {
+    type: 'category';
+    schema: string;
+    kind: RelationKind;
+}
+
 export interface TableNode {
     type: 'table';
     schema: string;
     table: string;
+    kind: RelationKind;
 }
 
-export type TreeNode = SchemaNode | TableNode;
+export type TreeNode = SchemaNode | CategoryNode | TableNode;
+
+/**
+ * Display metadata for each relation kind: the category label shown in the
+ * tree, the icon for category and leaf nodes, and the order in which the
+ * categories appear under a schema.
+ */
+const RELATION_KIND_META: Record<RelationKind, { label: string; categoryIcon: string; itemIcon: string; order: number }> = {
+    table: { label: 'Tables', categoryIcon: 'folder', itemIcon: 'symbol-class', order: 0 },
+    view: { label: 'Views', categoryIcon: 'folder', itemIcon: 'eye', order: 1 },
+    matview: { label: 'Materialized Views', categoryIcon: 'folder', itemIcon: 'layers', order: 2 },
+    foreign: { label: 'Foreign Tables', categoryIcon: 'folder', itemIcon: 'plug', order: 3 }
+};
+
+/** Normalize the raw `rel_kind` value returned by the relation queries. */
+function toRelationKind(raw: unknown): RelationKind {
+    return raw === 'view' || raw === 'matview' || raw === 'foreign' ? raw : 'table';
+}
 
 export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> {
     private _onDidChangeTreeData = new vscode.EventEmitter<TreeNode | undefined | void>();
@@ -94,18 +121,26 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
             item.iconPath = new vscode.ThemeIcon('symbol-namespace');
             item.contextValue = 'schema';
             return item;
+        } else if (element.type === 'category') {
+            const meta = RELATION_KIND_META[element.kind];
+            // Categories are auto-expanded so the relations are visible immediately.
+            const item = new vscode.TreeItem(meta.label, vscode.TreeItemCollapsibleState.Expanded);
+            item.iconPath = new vscode.ThemeIcon(meta.categoryIcon);
+            item.contextValue = `category:${element.kind}`;
+            return item;
         } else {
+            const meta = RELATION_KIND_META[element.kind];
             const highlights = this.computeHighlights(element.table);
             const label: vscode.TreeItemLabel = { label: element.table, highlights };
             const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
-            item.iconPath = new vscode.ThemeIcon('symbol-class');
+            item.iconPath = new vscode.ThemeIcon(meta.itemIcon);
             item.contextValue = 'table';
             item.command = {
                 command: 'postgresQueryBuilder.openTable',
                 title: 'Open Table',
                 arguments: [element.schema, element.table]
             };
-            item.tooltip = `${element.schema}.${element.table}`;
+            item.tooltip = `${element.schema}.${element.table} (${meta.label})`;
             return item;
         }
     }
@@ -166,16 +201,22 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
 
                 return schemas;
             } else if (element.type === 'schema') {
-                const rows = await this.connectionManager.queryMetadata(
-                    buildSchemaRelationListQuery(),
-                    [element.schema]
-                );
+                // Group the schema's relations into auto-expanded category nodes
+                // (Tables / Views / Materialized Views / Foreign Tables). Only
+                // categories that contain at least one (matching) relation are shown.
+                const relations = await this.getSchemaRelations(element.schema);
+                const matching = this._filterTerms.length > 0
+                    ? relations.filter(r => this.scoreString(`${r.schema}.${r.table}`) > 0)
+                    : relations;
 
-                let tables = rows.map((row: any) => ({
-                    type: 'table' as const,
-                    schema: element.schema,
-                    table: row.table_name
-                }));
+                const kindsPresent = new Set<RelationKind>(matching.map(r => r.kind));
+                return (Object.keys(RELATION_KIND_META) as RelationKind[])
+                    .filter(kind => kindsPresent.has(kind))
+                    .sort((a, b) => RELATION_KIND_META[a].order - RELATION_KIND_META[b].order)
+                    .map(kind => ({ type: 'category' as const, schema: element.schema, kind }));
+            } else if (element.type === 'category') {
+                const relations = await this.getSchemaRelations(element.schema);
+                let tables = relations.filter(r => r.kind === element.kind);
 
                 if (this._filterTerms.length > 0) {
                     const scored = tables
@@ -192,5 +233,19 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
         }
 
         return [];
+    }
+
+    /** Fetch all relations of a schema as `TableNode`s, tagged with their kind. */
+    private async getSchemaRelations(schema: string): Promise<TableNode[]> {
+        const rows = await this.connectionManager.queryMetadata(
+            buildSchemaRelationListQuery(),
+            [schema]
+        );
+        return rows.map((row: any) => ({
+            type: 'table' as const,
+            schema,
+            table: row.table_name,
+            kind: toRelationKind(row.rel_kind)
+        }));
     }
 }
