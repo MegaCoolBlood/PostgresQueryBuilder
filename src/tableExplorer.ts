@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
-import { SELECTABLE_TABLE_TYPES_SQL } from './queryRunner';
+import { buildSchemaRelationListQuery } from './queryRunner';
 
 export interface SchemaNode {
     type: 'schema';
@@ -148,9 +148,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                     const scored: Array<{ schema: SchemaNode; score: number }> = [];
                     for (const schema of schemas) {
                         const rows = await this.connectionManager.queryMetadata(
-                            `SELECT table_name FROM information_schema.tables
-                             WHERE table_schema = $1 AND table_type IN (${SELECTABLE_TABLE_TYPES_SQL})
-                             ORDER BY table_name`,
+                            buildSchemaRelationListQuery(),
                             [schema.schema]
                         );
                         let best = this.scoreString(schema.schema);
@@ -169,9 +167,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                 return schemas;
             } else if (element.type === 'schema') {
                 const rows = await this.connectionManager.queryMetadata(
-                    `SELECT table_name FROM information_schema.tables
-                     WHERE table_schema = $1 AND table_type IN (${SELECTABLE_TABLE_TYPES_SQL})
-                     ORDER BY table_name`,
+                    buildSchemaRelationListQuery(),
                     [element.schema]
                 );
 

@@ -3,17 +3,62 @@ import { Logger } from './logger';
 
 /**
  * Table types from `information_schema.tables` that the extension treats as
- * selectable tables. PostgreSQL reports foreign tables as `'FOREIGN'` (server
- * versions >= 9.5) or `'FOREIGN TABLE'` (versions < 9.5), so both spellings are
- * accepted to make sure foreign tables always show up.
+ * selectable relations shown in the table tree. PostgreSQL reports foreign
+ * tables as `'FOREIGN'` (server versions >= 9.5) or `'FOREIGN TABLE'` (versions
+ * < 9.5), so both spellings are accepted to make sure foreign tables always
+ * show up. Regular views (`'VIEW'`) are included as well so they appear in the
+ * tree alongside ordinary tables.
  */
-export const SELECTABLE_TABLE_TYPES = ['BASE TABLE', 'FOREIGN', 'FOREIGN TABLE'] as const;
+export const SELECTABLE_TABLE_TYPES = ['BASE TABLE', 'FOREIGN', 'FOREIGN TABLE', 'VIEW'] as const;
 
 /**
  * SQL value list for `SELECTABLE_TABLE_TYPES`, ready to be inlined into an
- * `table_type IN (...)` clause, e.g. `'BASE TABLE', 'FOREIGN', 'FOREIGN TABLE'`.
+ * `table_type IN (...)` clause, e.g. `'BASE TABLE', 'FOREIGN', 'FOREIGN TABLE', 'VIEW'`.
  */
 export const SELECTABLE_TABLE_TYPES_SQL = SELECTABLE_TABLE_TYPES.map(t => `'${t}'`).join(', ');
+
+/** Schemas that should never appear in the table tree / pickers. */
+const SYSTEM_SCHEMAS_SQL = `'pg_catalog', 'information_schema', 'pg_toast'`;
+
+/**
+ * Build a query that lists all selectable relations as `(table_schema,
+ * table_name)` across all non-system schemas.
+ *
+ * In addition to the relations reported by `information_schema.tables` (tables,
+ * foreign tables and regular views) it also includes **materialized views**,
+ * which PostgreSQL does NOT expose through `information_schema` — they are read
+ * from `pg_matviews` and merged in via `UNION`.
+ */
+export function buildRelationListQuery(): string {
+    return `SELECT table_schema, table_name FROM (
+                SELECT table_schema, table_name
+                FROM information_schema.tables
+                WHERE table_type IN (${SELECTABLE_TABLE_TYPES_SQL})
+                UNION
+                SELECT schemaname AS table_schema, matviewname AS table_name
+                FROM pg_matviews
+            ) rels
+            WHERE table_schema NOT IN (${SYSTEM_SCHEMAS_SQL})
+            ORDER BY table_schema, table_name`;
+}
+
+/**
+ * Build a query that lists the selectable relation names within a single schema
+ * (bound to parameter `$1`). Like {@link buildRelationListQuery} it also
+ * includes materialized views from `pg_matviews`.
+ */
+export function buildSchemaRelationListQuery(): string {
+    return `SELECT table_name FROM (
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = $1 AND table_type IN (${SELECTABLE_TABLE_TYPES_SQL})
+                UNION
+                SELECT matviewname AS table_name
+                FROM pg_matviews
+                WHERE schemaname = $1
+            ) rels
+            ORDER BY table_name`;
+}
 
 // NOTE: Keep in sync with POSTGRES_RESERVED_KEYWORDS in src/webview/tableView.js
 const POSTGRES_RESERVED_KEYWORDS = new Set([
@@ -202,13 +247,7 @@ export class QueryRunner {
      * to let the user add more tables.
      */
     async listAllTables(): Promise<Array<{ schema: string; table: string }>> {
-        const rows = await this.connectionManager.queryMetadata(
-            `SELECT table_schema, table_name
-             FROM information_schema.tables
-             WHERE table_type IN (${SELECTABLE_TABLE_TYPES_SQL})
-               AND table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-             ORDER BY table_schema, table_name`
-        );
+        const rows = await this.connectionManager.queryMetadata(buildRelationListQuery());
         return rows.map((row: any) => ({ schema: row.table_schema, table: row.table_name }));
     }
 

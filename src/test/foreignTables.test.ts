@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import {
     QueryRunner,
     SELECTABLE_TABLE_TYPES,
-    SELECTABLE_TABLE_TYPES_SQL
+    SELECTABLE_TABLE_TYPES_SQL,
+    buildRelationListQuery,
+    buildSchemaRelationListQuery
 } from '../queryRunner';
 
 function createRunner(metadataHandler?: (sql: string, params?: any[]) => Promise<any[]> | any[]) {
@@ -31,8 +33,12 @@ test('SELECTABLE_TABLE_TYPES contains both foreign-table spellings', () => {
     assert.ok(SELECTABLE_TABLE_TYPES.includes('BASE TABLE'));
 });
 
+test('SELECTABLE_TABLE_TYPES includes views', () => {
+    assert.ok(SELECTABLE_TABLE_TYPES.includes('VIEW'));
+});
+
 test('SELECTABLE_TABLE_TYPES_SQL renders a quoted value list', () => {
-    assert.equal(SELECTABLE_TABLE_TYPES_SQL, "'BASE TABLE', 'FOREIGN', 'FOREIGN TABLE'");
+    assert.equal(SELECTABLE_TABLE_TYPES_SQL, "'BASE TABLE', 'FOREIGN', 'FOREIGN TABLE', 'VIEW'");
 });
 
 test('listAllTables filters on all selectable table types including foreign tables', async () => {
@@ -44,6 +50,24 @@ test('listAllTables filters on all selectable table types including foreign tabl
     assert.ok(sql.includes(`table_type IN (${SELECTABLE_TABLE_TYPES_SQL})`));
     assert.ok(sql.includes("'FOREIGN TABLE'"));
     assert.ok(sql.includes("'FOREIGN'"));
+    assert.ok(sql.includes("'VIEW'"));
+    assert.ok(sql.includes('pg_matviews'));
+});
+
+test('buildRelationListQuery merges information_schema relations with materialized views', () => {
+    const sql = buildRelationListQuery();
+    assert.ok(sql.includes('information_schema.tables'));
+    assert.ok(sql.includes('FROM pg_matviews'));
+    assert.ok(sql.includes('matviewname'));
+    assert.ok(sql.includes("table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')"));
+});
+
+test('buildSchemaRelationListQuery filters both sources by schema parameter and includes materialized views', () => {
+    const sql = buildSchemaRelationListQuery();
+    assert.ok(sql.includes('information_schema.tables'));
+    assert.ok(sql.includes('table_schema = $1'));
+    assert.ok(sql.includes('FROM pg_matviews'));
+    assert.ok(sql.includes('schemaname = $1'));
 });
 
 test('listAllTables returns foreign tables reported as either FOREIGN or FOREIGN TABLE', async () => {
@@ -58,5 +82,31 @@ test('listAllTables returns foreign tables reported as either FOREIGN or FOREIGN
         { schema: 'public', table: 'local_table' },
         { schema: 'ext', table: 'foreign_modern' },
         { schema: 'ext', table: 'foreign_legacy' }
+    ]);
+});
+
+test('listAllTables returns views alongside tables', async () => {
+    const { runner } = createRunner(() => [
+        { table_schema: 'public', table_name: 'users' },
+        { table_schema: 'public', table_name: 'active_users_view' }
+    ]);
+
+    const tables = await runner.listAllTables();
+    assert.deepEqual(tables, [
+        { schema: 'public', table: 'users' },
+        { schema: 'public', table: 'active_users_view' }
+    ]);
+});
+
+test('listAllTables returns materialized views merged from pg_matviews', async () => {
+    const { runner } = createRunner(() => [
+        { table_schema: 'public', table_name: 'orders' },
+        { table_schema: 'reporting', table_name: 'daily_sales_mv' }
+    ]);
+
+    const tables = await runner.listAllTables();
+    assert.deepEqual(tables, [
+        { schema: 'public', table: 'orders' },
+        { schema: 'reporting', table: 'daily_sales_mv' }
     ]);
 });
