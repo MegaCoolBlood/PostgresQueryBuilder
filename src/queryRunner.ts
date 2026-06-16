@@ -465,25 +465,65 @@ export class QueryRunner {
     private async isSchemaInSearchPath(schema: string): Promise<boolean> {
         const lowerSchema = schema.toLowerCase();
 
-        // The authoritative source for whether a schema needs qualification is
-        // PostgreSQL's *runtime* search_path. The connection's configured
-        // `schemas` list is only a display filter for the table explorer (it may
-        // contain schemas that are NOT on the search_path, e.g. a "_dev" schema
-        // of foreign tables shown alongside the local one). Using that list here
-        // would wrongly suppress the schema prefix and resolve `SELECT * FROM t`
-        // against whichever same-named table actually is on the search_path.
-        const result = await this.connectionManager.query('SELECT current_schemas(false) AS schemas');
-        const schemas = result.rows[0]?.schemas;
-        const schemaList = Array.isArray(schemas) ? schemas.map((s: string) => String(s)) : [];
+        // We read the configured search_path via `current_setting('search_path')`
+        // (identical to `SHOW search_path`) instead of `current_schemas(false)`:
+        // the latter only reflects the *currently executing* session's resolved
+        // path and was observed to return an empty list on pooled connections
+        // where the configured path had not (yet) been applied, even though the
+        // schema clearly exists and is on the path.
+        const result = await this.connectionManager.query(
+            'SELECT current_setting(\'search_path\') AS search_path, current_user AS current_user'
+        );
+        const rawSearchPath: string = result.rows[0]?.search_path ?? '';
+        const currentUser: string = result.rows[0]?.current_user ?? '';
+        const schemaList = QueryRunner.parseSearchPath(rawSearchPath, currentUser);
         const schemaSet = new Set(schemaList.map((s: string) => s.toLowerCase()));
         const found = schemaSet.has(lowerSchema);
 
         Logger.log(
             'queryRunner',
-            `Retrieved search_path = [${schemaList.join(', ')}]; schema "${schema}" ${found ? 'is' : 'is NOT'} on the search_path`
+            `Retrieved search_path = "${rawSearchPath}" (current_user="${currentUser}") -> [${schemaList.join(', ')}]; ` +
+            `schema "${schema}" ${found ? 'is' : 'is NOT'} on the search_path`
         );
 
         return found;
+    }
+
+    /**
+     * Parse a PostgreSQL `search_path` setting string (as returned by
+     * `SHOW search_path` / `current_setting('search_path')`) into the list of
+     * effective schema names.
+     *
+     * Handles:
+     * - comma separation and surrounding whitespace,
+     * - double-quoted identifiers (incl. escaped `""`), which preserve case,
+     * - the special `$user` / `"$user"` entry, which is replaced with the
+     *   current user name (dropped if no user is given),
+     * - empty entries, which are skipped.
+     */
+    static parseSearchPath(rawSearchPath: string, currentUser: string): string[] {
+        const result: string[] = [];
+        for (let part of rawSearchPath.split(',')) {
+            part = part.trim();
+            if (part === '') {
+                continue;
+            }
+            // Strip a single layer of surrounding double quotes and unescape "".
+            let unquoted: string;
+            if (part.startsWith('"') && part.endsWith('"') && part.length >= 2) {
+                unquoted = part.slice(1, -1).replace(/""/g, '"');
+            } else {
+                unquoted = part;
+            }
+            if (unquoted === '$user') {
+                if (currentUser) {
+                    result.push(currentUser);
+                }
+                continue;
+            }
+            result.push(unquoted);
+        }
+        return result;
     }
 
     private formatIdentifier(identifier: string, alwaysQuote: boolean): string {

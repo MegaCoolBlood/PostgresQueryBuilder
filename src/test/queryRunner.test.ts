@@ -43,6 +43,71 @@ function createRunner({
     return { runner, queryCalls, metadataCalls };
 }
 
+test('parseSearchPath splits a plain comma-separated search_path', () => {
+    assert.deepEqual(
+        QueryRunner.parseSearchPath('leda, leda_types, oracle', 'leda'),
+        ['leda', 'leda_types', 'oracle']
+    );
+});
+
+test('parseSearchPath replaces $user with the current user name', () => {
+    assert.deepEqual(
+        QueryRunner.parseSearchPath('"$user", public', 'alice'),
+        ['alice', 'public']
+    );
+});
+
+test('parseSearchPath handles unquoted $user and drops it when no user is given', () => {
+    assert.deepEqual(QueryRunner.parseSearchPath('$user, public', ''), ['public']);
+});
+
+test('parseSearchPath strips surrounding double quotes and unescapes ""', () => {
+    assert.deepEqual(
+        QueryRunner.parseSearchPath('"My Schema", "a""b", public', 'u'),
+        ['My Schema', 'a"b', 'public']
+    );
+});
+
+test('parseSearchPath skips empty entries and trims whitespace', () => {
+    assert.deepEqual(QueryRunner.parseSearchPath('  leda ,, , oracle ', 'u'), ['leda', 'oracle']);
+});
+
+test('parseSearchPath returns an empty list for an empty search_path', () => {
+    assert.deepEqual(QueryRunner.parseSearchPath('', 'u'), []);
+});
+
+test('getSelectBuildInfo finds the schema via SHOW search_path even when current_schemas would be empty', async () => {
+    // Regression: a pooled connection reported current_schemas(false) = [] even
+    // though `SHOW search_path` correctly listed the schema. We now rely on
+    // current_setting('search_path'), so the schema must be recognised.
+    const { runner } = createRunner({
+        activeConnectionConfig: { schemas: ['leda', 'leda_dev', 'leda_qa'] },
+        queryHandler: (sql: string) => {
+            if (sql.includes('current_setting')) {
+                return { rows: [{ search_path: 'leda, leda_types, oracle', current_user: 'leda' }] };
+            }
+            throw new Error(`Unexpected query: ${sql}`);
+        }
+    });
+
+    const buildInfo = await runner.getSelectBuildInfo('leda', 'bos_benutzer');
+    assert.deepEqual(buildInfo, { alwaysQuote: false, tableReference: 'bos_benutzer' });
+});
+
+test('getSelectBuildInfo resolves a $user entry in the search_path to the current user', async () => {
+    const { runner } = createRunner({
+        queryHandler: (sql: string) => {
+            if (sql.includes('current_setting')) {
+                return { rows: [{ search_path: '"$user", public', current_user: 'leda' }] };
+            }
+            throw new Error(`Unexpected query: ${sql}`);
+        }
+    });
+
+    const buildInfo = await runner.getSelectBuildInfo('leda', 'bos_benutzer');
+    assert.deepEqual(buildInfo, { alwaysQuote: false, tableReference: 'bos_benutzer' });
+});
+
 test('getSelectBuildInfo qualifies schema even when it is in the connection display schemas but not on the search path', async () => {
     // The connection's configured `schemas` is only a display filter for the
     // tree (here both `leda` and `leda_dev` are shown). Only `leda` is on the
@@ -51,8 +116,8 @@ test('getSelectBuildInfo qualifies schema even when it is in the connection disp
     const { runner, queryCalls } = createRunner({
         activeConnectionConfig: { schemas: ['leda', 'leda_dev'] },
         queryHandler: (sql: string) => {
-            if (sql.includes('current_schemas')) {
-                return { rows: [{ schemas: ['leda', 'leda_types', 'oracle', 'public'] }] };
+            if (sql.includes('current_setting')) {
+                return { rows: [{ search_path: 'leda, leda_types, oracle, public', current_user: 'leda' }] };
             }
             throw new Error(`Unexpected query: ${sql}`);
         }
@@ -62,15 +127,15 @@ test('getSelectBuildInfo qualifies schema even when it is in the connection disp
 
     assert.deepEqual(buildInfo, { alwaysQuote: false, tableReference: 'leda_dev.persons' });
     assert.equal(queryCalls.length, 1);
-    assert.ok(queryCalls[0].sql.includes('current_schemas'));
+    assert.ok(queryCalls[0].sql.includes('current_setting'));
 });
 
 test('getSelectBuildInfo does not qualify a schema that is on the runtime search path', async () => {
     const { runner, queryCalls } = createRunner({
         activeConnectionConfig: { schemas: ['leda', 'leda_dev'] },
         queryHandler: (sql: string) => {
-            if (sql.includes('current_schemas')) {
-                return { rows: [{ schemas: ['leda', 'leda_types', 'oracle', 'public'] }] };
+            if (sql.includes('current_setting')) {
+                return { rows: [{ search_path: 'leda, leda_types, oracle, public', current_user: 'leda' }] };
             }
             throw new Error(`Unexpected query: ${sql}`);
         }
@@ -85,8 +150,8 @@ test('getSelectBuildInfo does not qualify a schema that is on the runtime search
 test('getSelectBuildInfo uses runtime search path when connection schemas are not configured', async () => {
     const { runner } = createRunner({
         queryHandler: (sql: string) => {
-            if (sql.includes('current_schemas')) {
-                return { rows: [{ schemas: ['public', 'audit'] }] };
+            if (sql.includes('current_setting')) {
+                return { rows: [{ search_path: 'public, audit', current_user: 'postgres' }] };
             }
             throw new Error(`Unexpected query: ${sql}`);
         }
@@ -99,8 +164,8 @@ test('getSelectBuildInfo uses runtime search path when connection schemas are no
 test('fetchRows qualifies schema when schema is outside search path', async () => {
     const { runner, queryCalls } = createRunner({
         queryHandler: (sql: string) => {
-            if (sql.includes('current_schemas')) {
-                return { rows: [{ schemas: ['public'] }] };
+            if (sql.includes('current_setting')) {
+                return { rows: [{ search_path: 'public', current_user: 'postgres' }] };
             }
             if (sql.includes('SELECT *')) {
                 return { rows: [{ id: 1 }] };
@@ -353,7 +418,7 @@ test('getSelectTableReference always qualifies when alwaysQualifySchema is true'
 
     await runner.fetchRows('public', 'users', 0, 10);
 
-    // Should NOT call current_schemas since alwaysQualifySchema is true
+    // Should NOT call current_setting since alwaysQualifySchema is true
     assert.equal(queryCalls.length, 1);
     assert.equal(queryCalls[0].sql, 'SELECT * FROM public.users LIMIT $1 OFFSET $2');
 });
