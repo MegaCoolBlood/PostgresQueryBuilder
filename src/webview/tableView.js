@@ -596,7 +596,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let customQueryOffset = 0;
     let customQueryAppendPending = false;
     const PAGE_SIZE = 50;
-    // NOTE: Keep in sync with POSTGRES_RESERVED_KEYWORDS in src/queryRunner.ts
+    // NOTE: Single source of truth is src/reservedKeywords.ts. This browser
+    // script is injected as a plain string and cannot import it at runtime;
+    // src/test/reservedKeywords.test.ts enforces that this copy stays in sync.
     const POSTGRES_RESERVED_KEYWORDS = new Set([
         'all', 'analyse', 'analyze', 'and', 'any', 'array', 'as', 'asc', 'asymmetric',
         'authorization', 'between', 'binary', 'both', 'case', 'cast', 'check', 'collate',

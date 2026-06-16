@@ -1,5 +1,7 @@
 import { ConnectionManager } from './connectionManager';
 import { Logger } from './logger';
+import { escapeSqlLiteral } from './sqlUtils';
+import { POSTGRES_RESERVED_KEYWORDS } from './reservedKeywords';
 
 /**
  * Table types from `information_schema.tables` that the extension treats as
@@ -73,23 +75,6 @@ export function buildSchemaRelationListQuery(): string {
             ) rels
             ORDER BY table_name`;
 }
-
-// NOTE: Keep in sync with POSTGRES_RESERVED_KEYWORDS in src/webview/tableView.js
-const POSTGRES_RESERVED_KEYWORDS = new Set([
-    'all', 'analyse', 'analyze', 'and', 'any', 'array', 'as', 'asc', 'asymmetric',
-    'authorization', 'between', 'binary', 'both', 'case', 'cast', 'check', 'collate',
-    'column', 'concurrently', 'constraint', 'create', 'cross', 'current_catalog',
-    'current_date', 'current_role', 'current_schema', 'current_time', 'current_timestamp',
-    'current_user', 'default', 'deferrable', 'desc', 'distinct', 'do', 'else', 'end',
-    'except', 'false', 'fetch', 'for', 'foreign', 'from', 'freeze', 'full', 'grant',
-    'group', 'having', 'ilike', 'in', 'initially', 'inner', 'intersect', 'into', 'is',
-    'isnull', 'join', 'lateral', 'leading', 'left', 'like', 'limit', 'localtime',
-    'localtimestamp', 'natural', 'not', 'notnull', 'null', 'offset', 'on', 'only', 'or',
-    'order', 'outer', 'overlaps', 'placing', 'primary', 'references', 'returning', 'right',
-    'select', 'session_user', 'similar', 'some', 'symmetric', 'table', 'then', 'to',
-    'trailing', 'true', 'union', 'unique', 'user', 'using', 'variadic', 'verbose', 'when',
-    'where', 'window', 'with'
-]);
 
 export interface ColumnInfo {
     name: string;
@@ -469,8 +454,7 @@ export class QueryRunner {
         if (typeof val === 'boolean') {
             return val ? 'TRUE' : 'FALSE';
         }
-        // Escape single quotes for SQL strings
-        return `'${String(val).replace(/'/g, "''")}'`;
+        return escapeSqlLiteral(String(val));
     }
 
     private getSelectOptions(): { alwaysQualifySchema: boolean; alwaysQuote: boolean } {

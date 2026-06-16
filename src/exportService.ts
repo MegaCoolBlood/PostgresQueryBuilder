@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { escapeSqlLiteral } from './sqlUtils';
 
 export interface ExportOptions {
     format: 'insert' | 'csv' | 'json' | 'xml' | 'excel';
@@ -202,7 +203,7 @@ export class ExportService {
         if (value === null || value === undefined) return 'NULL';
         if (typeof value === 'number') return String(value);
         if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
-        return "'" + String(value).replace(/'/g, "''") + "'";
+        return escapeSqlLiteral(String(value));
     }
 
     private async exportExcel(rows: any[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {

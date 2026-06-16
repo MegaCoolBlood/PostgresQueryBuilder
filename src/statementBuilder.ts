@@ -1,3 +1,5 @@
+import { escapeSqlLiteral } from './sqlUtils';
+
 export type StatementKind = 'name' | 'insert' | 'delete' | 'update' | 'select' | 'join';
 
 /**
@@ -130,7 +132,7 @@ function formatLiteralValue(value: string): string {
     if (/^-?\d+(\.\d+)?$/.test(value)) {
         return value;
     }
-    return `'${String(value).replace(/'/g, "''")}'`;
+    return escapeSqlLiteral(value);
 }
 
 /**

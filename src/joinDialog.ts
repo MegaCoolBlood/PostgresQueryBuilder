@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { buildJoinSelect, JoinClause, JoinTableSpec, JoinType } from './statementBuilder';
+import { getNonce, buildCsp } from './webviewUtils';
 
 export interface JoinDialogTable {
     schema: string;
@@ -111,7 +112,7 @@ export function showJoinDialog(
             }
         });
 
-        const nonce = String(Math.random()).slice(2);
+        const nonce = getNonce();
         panel.webview.html = getHtml(
             panel.webview,
             nonce,
@@ -129,7 +130,7 @@ function getHtml(
 ): string {
     const data = JSON.stringify(initial).replace(/</g, '\\u003c');
     const joinTypes = JSON.stringify(JOIN_TYPES);
-    const csp = `default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';`;
+    const csp = buildCsp(webview, nonce);
 
     return `<!DOCTYPE html>
 <html lang="en">

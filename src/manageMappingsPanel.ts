@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ColumnMappingManager, CustomColumnMapping, MappingScope } from './columnMappingManager';
+import { getNonce } from './webviewUtils';
 
 export class ManageMappingsPanel {
     public static readonly viewType = 'postgresManageMappings';
@@ -111,7 +112,7 @@ export class ManageMappingsPanel {
     }
 
     private getHtml(): string {
-        const nonce = Date.now().toString(36) + Math.random().toString(36).substring(2, 9);
+        const nonce = getNonce();
         return `<!DOCTYPE html>
 <html>
 <head>
