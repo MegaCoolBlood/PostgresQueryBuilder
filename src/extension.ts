@@ -55,6 +55,31 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.commands.registerCommand('postgresQueryBuilder.refreshExplorer', () => {
                 tableExplorer?.refresh();
             }),
+            vscode.commands.registerCommand('postgresQueryBuilder.editSearchPath', async () => {
+                if (!connectionManager.isConnected()) {
+                    vscode.window.showWarningMessage('No active PostgreSQL connection.');
+                    return;
+                }
+                try {
+                    const current = await connectionManager.getSearchPath();
+                    const input = await vscode.window.showInputBox({
+                        title: 'PostgreSQL search_path',
+                        prompt: 'Edit the search_path for the active connection (comma-separated schemas). Leave empty to restore the server default.',
+                        value: current,
+                        ignoreFocusOut: true
+                    });
+                    if (input === undefined) {
+                        return; // cancelled
+                    }
+                    await connectionManager.setSearchPath(input);
+                    const effective = await connectionManager.getSearchPath();
+                    tableExplorer.refresh();
+                    vscode.window.showInformationMessage(`search_path is now: ${effective}`);
+                } catch (err: any) {
+                    outputChannel.appendLine(`[editSearchPath] ${err?.stack || err}`);
+                    vscode.window.showErrorMessage(`Failed to update search_path: ${err?.message || err}`);
+                }
+            }),
             vscode.commands.registerCommand('postgresQueryBuilder.openTable', (schema: string, table: string) => {
                 // VS Code fires a tree item's command on a single click, but the
                 // data view should only open on a double click. Detect a second

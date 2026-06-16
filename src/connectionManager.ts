@@ -33,8 +33,48 @@ export class ConnectionManager {
     private _onConnectionChanged = new vscode.EventEmitter<void>();
     public readonly onConnectionChanged = this._onConnectionChanged.event;
 
+    /**
+     * A user-selected `search_path` that overrides the server default for the
+     * active connection. When set, it is (re)applied to every physical
+     * connection the pool opens. `null` means "use the server default".
+     */
+    private searchPathOverride: string | null = null;
+    /** The pool configuration of the active connection, kept so the pool can be
+     *  rebuilt when the search_path override changes. */
+    private currentPoolConfig: PoolConfig | null = null;
+
     constructor(context: vscode.ExtensionContext) {
         this.context = context;
+    }
+
+    /**
+     * Normalize raw user input for a `search_path`. Returns the trimmed value,
+     * or `null` when the input is empty/whitespace (meaning: use the server
+     * default, i.e. no override).
+     */
+    static normalizeSearchPath(input: string): string | null {
+        const trimmed = (input ?? '').trim();
+        return trimmed === '' ? null : trimmed;
+    }
+
+    /**
+     * Create a connection pool and, when a `search_path` override is active,
+     * register a handler that applies it to every new physical connection.
+     * `set_config('search_path', <value>, false)` is used with the value passed
+     * as a bound parameter so the comma-separated schema list is handled safely
+     * (no SQL injection, no manual quoting). Because queries are serialized per
+     * client, the override runs before any query issued on that client.
+     */
+    private createPool(poolConfig: PoolConfig): Pool {
+        const pool = new Pool(poolConfig);
+        const override = this.searchPathOverride;
+        if (override) {
+            pool.on('connect', (client) => {
+                client.query("SELECT set_config('search_path', $1, false)", [override])
+                    .catch((err: unknown) => Logger.error('searchPath', err));
+            });
+        }
+        return pool;
     }
 
     /**
@@ -211,6 +251,8 @@ export class ConnectionManager {
             await this.pool.end();
         }
         this.clearMetadataCache();
+        // A new connection starts with the server's default search_path.
+        this.searchPathOverride = null;
 
         // Resolve hostname via OS resolver (respects hosts file)
         let resolvedHost = config.host;
@@ -240,7 +282,7 @@ export class ConnectionManager {
             connectionTimeoutMillis: 5000
         };
 
-        this.pool = new Pool(poolConfig);
+        this.pool = this.createPool(poolConfig);
 
         try {
             const client = await this.pool.connect();
@@ -251,7 +293,7 @@ export class ConnectionManager {
                 console.log(`[PG] SSL not supported, retrying without SSL`);
                 await this.pool.end();
                 delete poolConfig.ssl;
-                this.pool = new Pool(poolConfig);
+                this.pool = this.createPool(poolConfig);
                 const client = await this.pool.connect();
                 client.release();
             } else {
@@ -260,6 +302,7 @@ export class ConnectionManager {
         }
 
         this.activeConfig = config;
+        this.currentPoolConfig = poolConfig;
         this._onConnectionChanged.fire();
 
         // Log the server's effective search_path so it is visible which schemas
@@ -278,10 +321,47 @@ export class ConnectionManager {
             await this.pool.end();
             this.pool = null;
             this.activeConfig = null;
+            this.currentPoolConfig = null;
+            this.searchPathOverride = null;
             this.clearMetadataCache();
             this._onConnectionChanged.fire();
             vscode.window.showInformationMessage('Disconnected from PostgreSQL');
         }
+    }
+
+    /** Return the effective `search_path` of the active connection (raw string). */
+    async getSearchPath(): Promise<string> {
+        const result = await this.query('SHOW search_path');
+        return result.rows[0]?.search_path ?? '';
+    }
+
+    /**
+     * Override the `search_path` for the active connection. An empty/whitespace
+     * value clears the override and restores the server default. The pool is
+     * rebuilt so the new value applies to every (current and future) connection;
+     * the metadata cache is cleared because table resolution depends on it.
+     */
+    async setSearchPath(value: string): Promise<void> {
+        if (!this.pool || !this.currentPoolConfig) {
+            throw new Error('Not connected to a database');
+        }
+        this.searchPathOverride = ConnectionManager.normalizeSearchPath(value);
+
+        const oldPool = this.pool;
+        this.pool = this.createPool(this.currentPoolConfig);
+        await oldPool.end();
+        this.clearMetadataCache();
+
+        // Open a fresh connection so the override is applied and verified, then
+        // read back the effective search_path for logging.
+        const effective = await this.getSearchPath();
+        Logger.log(
+            'searchPath',
+            this.searchPathOverride === null
+                ? `search_path override cleared; server default = ${effective}`
+                : `search_path set to "${this.searchPathOverride}"; effective = ${effective}`
+        );
+        this._onConnectionChanged.fire();
     }
 
     private getSavedConnections(): ConnectionConfig[] {

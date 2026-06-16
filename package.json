@@ -63,6 +63,12 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "postgresQueryBuilder.editSearchPath",
+        "title": "Show / Edit search_path",
+        "category": "PostgreSQL",
+        "icon": "$(list-tree)"
+      },
+      {
         "command": "postgresQueryBuilder.openTable",
         "title": "Open Table",
         "category": "PostgreSQL"
@@ -107,6 +113,11 @@
       "view/title": [
         {
           "command": "postgresQueryBuilder.refreshExplorer",
+          "when": "view == postgresTableExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "postgresQueryBuilder.editSearchPath",
           "when": "view == postgresTableExplorer",
           "group": "navigation"
         },
