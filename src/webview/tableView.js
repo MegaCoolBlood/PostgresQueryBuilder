@@ -439,6 +439,129 @@ function formatSql(sql) {
     return lines.join('\n');
 }
 
+// Map a filter mode keyword to its SQL comparison operator.
+function filterOperatorForMode(mode) {
+    switch (mode) {
+        case 'not_equals': return '!=';
+        case 'gt': return '>';
+        case 'gte': return '>=';
+        case 'lt': return '<';
+        case 'lte': return '<=';
+        default: return '=';
+    }
+}
+
+// Build the SQL WHERE-clause fragment for a single column filter, or return
+// null when the filter does not constrain the query. `fmtCol` is the already
+// quoted/qualified column identifier and `operator` is the comparison operator
+// for single-value numeric/date filters.
+function buildFilterClause(fmtCol, val, filterType, isExact, operator, thousandSeparator) {
+    if (val === null || val === undefined || val === '') return null;
+
+    if (isExact) {
+        return `${fmtCol} = ${formatExactMatchValue(val, filterType, thousandSeparator)}`;
+    }
+
+    if (typeof val === 'object' && val.from !== undefined) {
+        const fromRaw = val.from ? normalizeFilterInputValue(val.from, filterType, thousandSeparator) : '';
+        const toRaw = val.to ? normalizeFilterInputValue(val.to, filterType, thousandSeparator) : '';
+        if (filterType === 'numeric') {
+            const fromNum = fromRaw !== '' ? Number(fromRaw) : null;
+            const toNum = toRaw !== '' ? Number(toRaw) : null;
+            const from = fromNum !== null && !isNaN(fromNum) ? String(fromNum) : '';
+            const to = toNum !== null && !isNaN(toNum) ? String(toNum) : '';
+            if (from && to) return `${fmtCol} BETWEEN ${from} AND ${to}`;
+            if (from) return `${fmtCol} >= ${from}`;
+            if (to) return `${fmtCol} <= ${to}`;
+            return null;
+        }
+        const from = escapeSqlString(fromRaw);
+        const to = escapeSqlString(toRaw);
+        if (from && to) return `${fmtCol} BETWEEN '${from}' AND '${to}'`;
+        if (from) return `${fmtCol} >= '${from}'`;
+        if (to) return `${fmtCol} <= '${to}'`;
+        return null;
+    }
+
+    if (filterType === 'numeric') {
+        const numericValue = Number(normalizeFilterInputValue(val, filterType, thousandSeparator));
+        if (isNaN(numericValue)) return null;
+        return `${fmtCol} ${operator} ${numericValue}`;
+    }
+
+    if (filterType === 'date') {
+        return `${fmtCol} ${operator} '${escapeSqlString(val)}'`;
+    }
+
+    return `${fmtCol}::text ILIKE '%${escapeSqlString(val)}%'`;
+}
+
+// Predicate for local (in-memory) row filtering. Returns true when `cellVal`
+// passes the given column filter. A filter that cannot constrain the data
+// (empty range, invalid number) matches every row.
+function rowValueMatchesFilter(cellVal, filterVal, filterType, mode, thousandSeparator) {
+    if (typeof filterVal === 'object' && filterVal !== null && filterVal.from !== undefined) {
+        const from = filterVal.from;
+        const to = filterVal.to;
+        if (!from && !to) return true;
+        if (filterType === 'numeric') {
+            const fromNum = from ? Number(normalizeFilterInputValue(from, 'numeric', thousandSeparator)) : null;
+            const toNum = to ? Number(normalizeFilterInputValue(to, 'numeric', thousandSeparator)) : null;
+            if ((fromNum !== null && isNaN(fromNum)) || (toNum !== null && isNaN(toNum))) return true;
+            const cell = Number(cellVal);
+            if (isNaN(cell)) return false;
+            if (fromNum !== null && toNum !== null) return cell >= fromNum && cell <= toNum;
+            if (fromNum !== null) return cell >= fromNum;
+            return cell <= toNum;
+        }
+        if (cellVal === null || cellVal === undefined) return false;
+        const val = String(cellVal);
+        if (from && to) return val >= from && val <= to;
+        if (from) return val >= from;
+        return val <= to;
+    }
+
+    if ((filterType === 'numeric' || filterType === 'date') && mode && mode !== 'equals') {
+        if (cellVal === null || cellVal === undefined) return false;
+        const a = filterType === 'numeric' ? Number(cellVal) : String(cellVal);
+        const normalizedFilterVal = normalizeFilterInputValue(filterVal, filterType, thousandSeparator);
+        const b = filterType === 'numeric' ? Number(normalizedFilterVal) : String(normalizedFilterVal);
+        switch (mode) {
+            case 'not_equals': return a !== b;
+            case 'gt': return a > b;
+            case 'gte': return a >= b;
+            case 'lt': return a < b;
+            case 'lte': return a <= b;
+            default: return a === b;
+        }
+    }
+
+    if (cellVal === null || cellVal === undefined) return false;
+    return String(cellVal).toLowerCase().includes(String(filterVal).toLowerCase());
+}
+
+// Comparator for sorting two cell values. Nulls always sort last. `direction`
+// is 'asc' or 'desc'.
+function compareCellValues(valA, valB, direction) {
+    if (valA === null) return 1;
+    if (valB === null) return -1;
+    if (typeof valA === 'number' && typeof valB === 'number') {
+        return direction === 'asc' ? valA - valB : valB - valA;
+    }
+    const cmp = String(valA).localeCompare(String(valB));
+    return direction === 'asc' ? cmp : -cmp;
+}
+
+// Trim and (for numeric columns) normalize a raw edited cell value into the
+// canonical string stored in the change set.
+function normalizeCellInput(rawText, isNumeric, thousandSeparator) {
+    const newValue = (rawText || '').trim();
+    if (isNumeric && newValue !== '') {
+        return normalizeNumericInput(newValue, thousandSeparator);
+    }
+    return newValue;
+}
+
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 (function() {
     const vscode = acquireVsCodeApi();
@@ -1069,15 +1192,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function getFilterOperator(col) {
-        const mode = filterModes[col] || 'equals';
-        switch (mode) {
-            case 'not_equals': return '!=';
-            case 'gt': return '>';
-            case 'gte': return '>=';
-            case 'lt': return '<';
-            case 'lte': return '<=';
-            default: return '=';
-        }
+        return filterOperatorForMode(filterModes[col] || 'equals');
     }
 
     function renderTable() {
@@ -1245,57 +1360,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const newClausesByCol = {};
         for (const [col, val] of Object.entries(filters)) {
             if (!val) continue;
-            const fmtCol = formatIdentifier(col);
             const colMeta = columns.find(c => c.name === col);
             const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
-            let clause = null;
-
-            if (exactFilters[col]) {
-                // Exact match for FK navigation — no cast
-                const formatted = formatExactMatchValue(val, filterType, thousandSeparator);
-                clause = `${fmtCol} = ${formatted}`;
-            } else if (typeof val === 'object' && val !== null && val.from !== undefined) {
-                // Between mode
-                const fromRaw = val.from ? normalizeFilterInputValue(val.from, filterType, thousandSeparator) : '';
-                const toRaw = val.to ? normalizeFilterInputValue(val.to, filterType, thousandSeparator) : '';
-                if (filterType === 'numeric') {
-                    const fromNum = fromRaw !== '' ? Number(fromRaw) : null;
-                    const toNum = toRaw !== '' ? Number(toRaw) : null;
-                    const from = fromNum !== null && !isNaN(fromNum) ? String(fromNum) : '';
-                    const to = toNum !== null && !isNaN(toNum) ? String(toNum) : '';
-                    if (from && to) {
-                        clause = `${fmtCol} BETWEEN ${from} AND ${to}`;
-                    } else if (from) {
-                        clause = `${fmtCol} >= ${from}`;
-                    } else if (to) {
-                        clause = `${fmtCol} <= ${to}`;
-                    }
-                } else {
-                    const from = escapeSqlString(fromRaw);
-                    const to = escapeSqlString(toRaw);
-                    if (from && to) {
-                        clause = `${fmtCol} BETWEEN '${from}' AND '${to}'`;
-                    } else if (from) {
-                        clause = `${fmtCol} >= '${from}'`;
-                    } else if (to) {
-                        clause = `${fmtCol} <= '${to}'`;
-                    }
-                }
-            } else if (filterType === 'numeric') {
-                const normalized = normalizeFilterInputValue(val, filterType, thousandSeparator);
-                const numericValue = Number(normalized);
-                if (isNaN(numericValue)) continue;
-                const op = getFilterOperator(col);
-                clause = `${fmtCol} ${op} ${numericValue}`;
-            } else if (filterType === 'date') {
-                const escaped = escapeSqlString(val);
-                const op = getFilterOperator(col);
-                clause = `${fmtCol} ${op} '${escaped}'`;
-            } else {
-                const escaped = escapeSqlString(val);
-                clause = `${fmtCol}::text ILIKE '%${escaped}%'`;
-            }
-
+            const clause = buildFilterClause(
+                formatIdentifier(col), val, filterType,
+                !!exactFilters[col], getFilterOperator(col), thousandSeparator
+            );
             if (clause) newClausesByCol[col] = clause;
         }
 
@@ -1596,81 +1666,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (!filterVal) continue;
             const colMeta = columns.find(c => c.name === col);
             const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
-
-            if (typeof filterVal === 'object' && filterVal !== null && filterVal.from !== undefined) {
-                // Between mode — filter locally by range
-                const from = filterVal.from;
-                const to = filterVal.to;
-                if (!from && !to) continue;
-                if (filterType === 'numeric') {
-                    const fromNum = from ? Number(normalizeFilterInputValue(from, 'numeric', thousandSeparator)) : null;
-                    const toNum = to ? Number(normalizeFilterInputValue(to, 'numeric', thousandSeparator)) : null;
-                    if ((fromNum !== null && isNaN(fromNum)) || (toNum !== null && isNaN(toNum))) {
-                        continue;
-                    }
-                    rows = rows.filter(row => {
-                        const cellVal = Number(row[col]);
-                        if (isNaN(cellVal)) return false;
-                        if (fromNum !== null && toNum !== null) return cellVal >= fromNum && cellVal <= toNum;
-                        if (fromNum !== null) return cellVal >= fromNum;
-                        return cellVal <= toNum;
-                    });
-                } else {
-                    rows = rows.filter(row => {
-                        const cellVal = row[col];
-                        if (cellVal === null || cellVal === undefined) return false;
-                        const val = String(cellVal);
-                        if (from && to) return val >= from && val <= to;
-                        if (from) return val >= from;
-                        return val <= to;
-                    });
-                }
-            } else {
-                const mode = filterModes[col];
-
-                if ((filterType === 'numeric' || filterType === 'date') && mode && mode !== 'equals') {
-                    // Comparison operator mode
-                    rows = rows.filter(row => {
-                        const cellVal = row[col];
-                        if (cellVal === null || cellVal === undefined) return false;
-                        const a = filterType === 'numeric' ? Number(cellVal) : String(cellVal);
-                        const normalizedFilterVal = normalizeFilterInputValue(filterVal, filterType, thousandSeparator);
-                        const b = filterType === 'numeric' ? Number(normalizedFilterVal) : String(normalizedFilterVal);
-                        switch (mode) {
-                            case 'not_equals': return a !== b;
-                            case 'gt': return a > b;
-                            case 'gte': return a >= b;
-                            case 'lt': return a < b;
-                            case 'lte': return a <= b;
-                            default: return a === b;
-                        }
-                    });
-                } else {
-                    const lowerFilter = String(filterVal).toLowerCase();
-                    rows = rows.filter(row => {
-                        const cellVal = row[col];
-                        if (cellVal === null || cellVal === undefined) return false;
-                        return String(cellVal).toLowerCase().includes(lowerFilter);
-                    });
-                }
-            }
+            const mode = filterModes[col];
+            rows = rows.filter(row =>
+                rowValueMatchesFilter(row[col], filterVal, filterType, mode, thousandSeparator)
+            );
         }
 
         if (sortColumn) {
-            rows.sort((a, b) => {
-                let valA = a[sortColumn];
-                let valB = b[sortColumn];
-                if (valA === null) return 1;
-                if (valB === null) return -1;
-
-                if (typeof valA === 'number' && typeof valB === 'number') {
-                    return sortDirection === 'asc' ? valA - valB : valB - valA;
-                }
-                valA = String(valA);
-                valB = String(valB);
-                const cmp = valA.localeCompare(valB);
-                return sortDirection === 'asc' ? cmp : -cmp;
-            });
+            rows.sort((a, b) => compareCellValues(a[sortColumn], b[sortColumn], sortDirection));
         }
 
         return rows;
@@ -1678,6 +1681,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function renderBody() {
         displayedRows = getFilteredAndSortedRows();
+        tableBody.innerHTML = buildTableHtml();
+        wireTableListeners();
+        updateChangeIndicator();
+    }
+
+    // Build the full <tbody> HTML for the current displayedRows plus any
+    // inserted/duplicated rows, interleaving them next to their anchor rows.
+    function buildTableHtml() {
         let html = '';
         let rowNum = 0;
 
@@ -1690,22 +1701,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const topInserts = [];
         const orphanInserts = [];
         const displayedIdxSet = new Set(displayedRows.map(r => r._originalIndex));
-        insertedRows.forEach((entry, iIdx) => {
-            const wrapped = { kind: 'insert', iIdx };
+        const placeWrapped = (entry, wrapped) => {
             if (entry.anchor == null) topInserts.push(wrapped);
             else if (displayedIdxSet.has(entry.anchor)) {
                 if (!insertsByAnchor.has(entry.anchor)) insertsByAnchor.set(entry.anchor, []);
                 insertsByAnchor.get(entry.anchor).push(wrapped);
             } else orphanInserts.push(wrapped);
-        });
-        duplicatedRows.forEach((entry, dIdx) => {
-            const wrapped = { kind: 'dup', dIdx };
-            if (entry.anchor == null) topInserts.push(wrapped);
-            else if (displayedIdxSet.has(entry.anchor)) {
-                if (!insertsByAnchor.has(entry.anchor)) insertsByAnchor.set(entry.anchor, []);
-                insertsByAnchor.get(entry.anchor).push(wrapped);
-            } else orphanInserts.push(wrapped);
-        });
+        };
+        insertedRows.forEach((entry, iIdx) => placeWrapped(entry, { kind: 'insert', iIdx }));
+        duplicatedRows.forEach((entry, dIdx) => placeWrapped(entry, { kind: 'dup', dIdx }));
 
         function emitInsertRow(w) {
             rowNum++;
@@ -1797,8 +1801,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // Orphan inserts whose anchor row is filtered out
         orphanInserts.forEach(emitInsertRow);
 
-        tableBody.innerHTML = html;
+        return html;
+    }
 
+    // Attach all event listeners for the freshly-rendered <tbody>.
+    function wireTableListeners() {
         // Live formatting for numeric cells during editing.
         // `editable` is the contenteditable element (a .cell-content span for existing rows,
         // or the td itself for inserted/duplicated rows).
@@ -1903,8 +1910,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 selectedRowIdx = idx;
             });
         });
-
-        updateChangeIndicator();
     }
 
     function handleCellEdit(e) {
@@ -1915,14 +1920,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const colName = td.getAttribute('data-col');
         const originalStr = td.getAttribute('data-original');
         const original = originalStr === '__NULL__' ? null : originalStr;
-        // Text content of the editable span (FK button is now a sibling)
-        let newValue = span.textContent.trim();
 
-        // Strip thousand separators and normalize decimal comma for numeric columns
         const colMeta = columns.find(c => c.name === colName);
-        if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric' && newValue !== '' && newValue !== null) {
-            newValue = normalizeNumericInput(newValue, thousandSeparator);
-        }
+        const isNumeric = !!colMeta && getColumnFilterType(colMeta.dataType) === 'numeric';
+        let newValue = normalizeCellInput(span.textContent, isNumeric, thousandSeparator);
 
         if (newValue === '' && original === null) {
             newValue = null;
@@ -1939,7 +1940,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         // Re-format display for numeric columns
-        if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric') {
+        if (isNumeric) {
             const displayValue = modifiedCells.has(modKey) ? modifiedCells.get(modKey) : (original === null ? null : original);
             if (displayValue !== null) {
                 span.textContent = formatNumberDisplay(displayValue, thousandSeparator);
@@ -1958,30 +1959,24 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         updateChangeIndicator();
     }
 
-    function handleInsertCellEdit(e) {
+    // Shared handler for editable cells in inserted/duplicated rows. `rows` is
+    // the backing array and `idxAttr` the data attribute holding its index.
+    function applyDataRowCellEdit(e, rows, idxAttr) {
         const td = e.target;
-        const iIdx = parseInt(td.getAttribute('data-insert'));
+        const idx = parseInt(td.getAttribute(idxAttr));
         const colName = td.getAttribute('data-col');
-        let newValue = td.textContent.trim() || '';
         const colMeta = columns.find(c => c.name === colName);
-        if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric' && newValue !== '') {
-            newValue = normalizeNumericInput(newValue, thousandSeparator);
-        }
-        insertedRows[iIdx].row[colName] = newValue;
+        const isNumeric = !!colMeta && getColumnFilterType(colMeta.dataType) === 'numeric';
+        rows[idx].row[colName] = normalizeCellInput(td.textContent, isNumeric, thousandSeparator);
         updateChangeIndicator();
     }
 
+    function handleInsertCellEdit(e) {
+        applyDataRowCellEdit(e, insertedRows, 'data-insert');
+    }
+
     function handleDupCellEdit(e) {
-        const td = e.target;
-        const dIdx = parseInt(td.getAttribute('data-dup'));
-        const colName = td.getAttribute('data-col');
-        let newValue = td.textContent.trim() || '';
-        const colMeta = columns.find(c => c.name === colName);
-        if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric' && newValue !== '') {
-            newValue = normalizeNumericInput(newValue, thousandSeparator);
-        }
-        duplicatedRows[dIdx].row[colName] = newValue;
-        updateChangeIndicator();
+        applyDataRowCellEdit(e, duplicatedRows, 'data-dup');
     }
 
     function hasModifications(rowIdx) {
@@ -2652,6 +2647,27 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         const isDeleted = deletedRows.has(idx);
         const rowData = allRows[idx];
+
+        recordDialogBody.innerHTML = buildRecordRowsHtml(idx, isDeleted, rowData);
+
+        // Restore the scroll position captured at the start of this render.
+        // We do this synchronously (innerHTML assignment is synchronous and
+        // the body has a fixed height, so the scroll range is already valid).
+        recordDialogBody.scrollTop = savedScrollTop;
+
+        const parts = [];
+        if (isDeleted) parts.push('row marked for deletion (read-only)');
+        if (Array.from(modifiedCells.keys()).some(k => k.startsWith(idx + ':'))) {
+            const count = Array.from(modifiedCells.keys()).filter(k => k.startsWith(idx + ':')).length;
+            parts.push(count + ' field' + (count === 1 ? '' : 's') + ' modified');
+        }
+        recordDialogStatus.textContent = parts.join(' \u2014 ');
+
+        wireRecordDialogListeners(idx);
+    }
+
+    // Build the per-field HTML for the record dialog body.
+    function buildRecordRowsHtml(idx, isDeleted, rowData) {
         let html = '';
 
         columns.forEach(col => {
@@ -2728,21 +2744,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             '</div>';
         });
 
-        recordDialogBody.innerHTML = html;
+        return html;
+    }
 
-        // Restore the scroll position captured at the start of this render.
-        // We do this synchronously (innerHTML assignment is synchronous and
-        // the body has a fixed height, so the scroll range is already valid).
-        recordDialogBody.scrollTop = savedScrollTop;
-
-        const parts = [];
-        if (isDeleted) parts.push('row marked for deletion (read-only)');
-        if (Array.from(modifiedCells.keys()).some(k => k.startsWith(idx + ':'))) {
-            const count = Array.from(modifiedCells.keys()).filter(k => k.startsWith(idx + ':')).length;
-            parts.push(count + ' field' + (count === 1 ? '' : 's') + ' modified');
-        }
-        recordDialogStatus.textContent = parts.join(' \u2014 ');
-
+    // Wire textarea edit / reset / FK-jump listeners for the record dialog body.
+    function wireRecordDialogListeners(idx) {
         recordDialogBody.querySelectorAll('.record-row').forEach(rowEl => {
             const colName = rowEl.getAttribute('data-col');
             const textarea = rowEl.querySelector('.record-value');
@@ -2797,12 +2803,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (deletedRows.has(rowIdx)) return;
         const originalVal = allRows[rowIdx][colName];
         const colMeta = columns.find(c => c.name === colName);
-        let newValue = (rawText == null) ? '' : String(rawText).trim();
-
-        // Strip thousand separators / normalize decimal for numeric columns
-        if (colMeta && getColumnFilterType(colMeta.dataType) === 'numeric' && newValue !== '') {
-            newValue = normalizeNumericInput(newValue, thousandSeparator);
-        }
+        const isNumeric = !!colMeta && getColumnFilterType(colMeta.dataType) === 'numeric';
+        const newValue = normalizeCellInput(rawText, isNumeric, thousandSeparator);
 
         // Empty -> NULL
         const finalValue = newValue === '' ? null : newValue;
@@ -3143,6 +3145,11 @@ if (typeof module !== 'undefined' && module.exports) {
         collapseSqlWhitespace,
         splitTopLevelCommas,
         splitTopLevelClauses,
-        formatSql
+        formatSql,
+        filterOperatorForMode,
+        buildFilterClause,
+        rowValueMatchesFilter,
+        compareCellValues,
+        normalizeCellInput
     };
 }
