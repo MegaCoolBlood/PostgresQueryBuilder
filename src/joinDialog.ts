@@ -563,8 +563,9 @@ function getHtml(
                         '</div>';
                 });
                 (j.literals || []).forEach((l, li) => {
-                    html += '<div class="cond-row cond-literal" title="Condition from a custom mapping">' +
+                    html += '<div class="cond-row cond-literal" title="Condition from a custom mapping — click Edit to change it">' +
                         '<span class="lit-text">' + escapeHtml(aliases[l.litOrig] + '.' + l.litColumn + ' ' + l.operator + ' ' + fmtLiteral(l.value)) + '</span>' +
+                        '<button data-editlit="' + oi + ':' + li + '">Edit</button>' +
                         '<button data-rmlit="' + oi + ':' + li + '">Remove</button>' +
                         '</div>';
                 });
@@ -640,6 +641,17 @@ function getHtml(
         document.querySelectorAll('[data-rmlit]').forEach(b => b.onclick = () => {
             const [oi, li] = b.dataset.rmlit.split(':').map(Number);
             if (joins[oi] && joins[oi].literals) joins[oi].literals.splice(li, 1);
+            render();
+        });
+        document.querySelectorAll('[data-editlit]').forEach(b => b.onclick = () => {
+            // Promote a read-only custom-mapping literal into an editable fixed
+            // condition: append it to the join's custom conditions and drop it
+            // from the literals so it is not rendered twice or re-derived.
+            const [oi, li] = b.dataset.editlit.split(':').map(Number);
+            const lit = joins[oi] && joins[oi].literals && joins[oi].literals[li];
+            if (!lit) return;
+            ensureCustom(oi).push(literalToCustomCondition(lit));
+            joins[oi].literals.splice(li, 1);
             render();
         });
         document.querySelectorAll('[data-addcond]').forEach(b => b.onclick = () => {

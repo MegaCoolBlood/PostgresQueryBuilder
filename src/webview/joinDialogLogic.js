@@ -103,7 +103,6 @@ function computeAutoJoinClause(newOrig, order, tables, identityEdges) {
 
 /** Operators offered for fixed/custom join conditions. */
 const CUSTOM_OPERATORS = ['=', '<>', '<', '<=', '>', '>=', 'LIKE', 'ILIKE', 'BETWEEN', 'IS NULL', 'IS NOT NULL'];
-
 /** Operators that take no right-hand operand. */
 function isUnaryOperator(operator) {
     const op = (operator || '').toUpperCase();
@@ -170,6 +169,37 @@ function formatCustomCondition(cond) {
     return left + ' ' + op + ' ' + right;
 }
 
+/**
+ * Format a value as a SQL literal: numbers are emitted bare, everything else is
+ * single-quoted with embedded quotes doubled. Mirrors the webview's `fmtLiteral`
+ * and the builder's literal formatting so converted conditions render the same.
+ */
+function formatSqlLiteral(value) {
+    const s = String(value);
+    if (/^-?\d+(\.\d+)?$/.test(s)) {
+        return s;
+    }
+    return "'" + s.replace(/'/g, "''") + "'";
+}
+
+/**
+ * Convert a read-only custom-mapping literal condition
+ * `{ litOrig, litColumn, operator, value }` into the editable fixed-condition
+ * shape used by the dialog. The left operand becomes a column reference (kept by
+ * original table index so it survives reordering); the right operand becomes a
+ * raw value formatted as a SQL literal, so the user can freely edit it.
+ *
+ * @param {{litOrig:number,litColumn:string,operator:string,value:string}} literal
+ * @returns {{operator:string,left:object,right:object}}
+ */
+function literalToCustomCondition(literal) {
+    return {
+        operator: literal.operator || '=',
+        left: { kind: 'column', orig: literal.litOrig, column: literal.litColumn },
+        right: { kind: 'raw', text: formatSqlLiteral(literal.value) }
+    };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         uniqueAlias,
@@ -178,6 +208,8 @@ if (typeof module !== 'undefined' && module.exports) {
         isUnaryOperator,
         isBetweenOperator,
         formatOperand,
-        formatCustomCondition
+        formatCustomCondition,
+        formatSqlLiteral,
+        literalToCustomCondition
     };
 }

@@ -9,7 +9,9 @@ const {
     isUnaryOperator,
     isBetweenOperator,
     formatOperand,
-    formatCustomCondition
+    formatCustomCondition,
+    formatSqlLiteral,
+    literalToCustomCondition
 } = require(
     path.join(__dirname, '../../src/webview/joinDialogLogic.js')
 );
@@ -229,4 +231,52 @@ test('formatCustomCondition uppercases a lowercase word operator', () => {
         }),
         "t.name LIKE 'A%'"
     );
+});
+
+// ===== editing read-only custom-mapping conditions =====
+
+test('formatSqlLiteral leaves numbers bare and quotes other values', () => {
+    assert.equal(formatSqlLiteral('5'), '5');
+    assert.equal(formatSqlLiteral('-3.14'), '-3.14');
+    assert.equal(formatSqlLiteral('active'), "'active'");
+    assert.equal(formatSqlLiteral("O'Brien"), "'O''Brien'");
+});
+
+test('literalToCustomCondition converts a string literal into an editable column = value row', () => {
+    const cond = literalToCustomCondition({
+        litOrig: 2, litColumn: 'status', operator: '=', value: 'active'
+    });
+    assert.deepEqual(cond, {
+        operator: '=',
+        left: { kind: 'column', orig: 2, column: 'status' },
+        right: { kind: 'raw', text: "'active'" }
+    });
+});
+
+test('literalToCustomCondition keeps numeric values unquoted', () => {
+    const cond = literalToCustomCondition({
+        litOrig: 0, litColumn: 'priority', operator: '>', value: '5'
+    });
+    assert.equal(cond.right.text, '5');
+    assert.equal(cond.operator, '>');
+    assert.deepEqual(cond.left, { kind: 'column', orig: 0, column: 'priority' });
+});
+
+test('literalToCustomCondition round-trips through formatCustomCondition', () => {
+    // The converted, still-unedited condition must render to the same SQL the
+    // read-only literal produced, only resolving the column via its alias.
+    const cond = literalToCustomCondition({
+        litOrig: 1, litColumn: 'type', operator: '=', value: 'TGB'
+    });
+    const resolved = {
+        operator: cond.operator,
+        left: { kind: 'column', ref: 'a.' + cond.left.column },
+        right: cond.right
+    };
+    assert.equal(formatCustomCondition(resolved), "a.type = 'TGB'");
+});
+
+test('literalToCustomCondition defaults the operator when missing', () => {
+    const cond = literalToCustomCondition({ litOrig: 0, litColumn: 'x', value: 'y' });
+    assert.equal(cond.operator, '=');
 });
