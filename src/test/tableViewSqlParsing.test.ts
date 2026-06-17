@@ -9,7 +9,8 @@ const {
     splitWhereByAnd,
     whereClauseTargetsColumn,
     parseSqlForOrder,
-    formatSql
+    formatSql,
+    buildNullConstraintClause
 } = require(path.join(__dirname, '../../src/webview/tableView.js'));
 
 // ===== 0.2.0: "Load More" for custom queries (stripTrailingLimitOffset) =====
@@ -252,3 +253,32 @@ test('formatSql is idempotent', () => {
     const once = formatSql('SELECT a, b FROM t WHERE a = 1 AND b = 2');
     assert.equal(formatSql(once), once);
 });
+
+// ===== 1.3.0: IS (NOT) NULL constraint from the column header menu =====
+
+test('buildNullConstraintClause builds an IS NULL clause', () => {
+    assert.equal(buildNullConstraintClause('"status"', true), '"status" IS NULL');
+});
+
+test('buildNullConstraintClause builds an IS NOT NULL clause', () => {
+    assert.equal(buildNullConstraintClause('"status"', false), '"status" IS NOT NULL');
+});
+
+test('IS NULL clause merges into a query without an existing WHERE', () => {
+    const parsed = parseSqlForWhere('SELECT * FROM t');
+    const clauses = parsed.where ? splitWhereByAnd(parsed.where) : [];
+    clauses.push(buildNullConstraintClause('"status"', true));
+    assert.equal(`${parsed.base} WHERE ${clauses.join(' AND ')}`, 'SELECT * FROM t WHERE "status" IS NULL');
+});
+
+test('IS NOT NULL clause replaces an existing constraint on the same column', () => {
+    const parsed = parseSqlForWhere(`SELECT * FROM t WHERE "status" IS NULL AND "other" = 1`);
+    let clauses = parsed.where ? splitWhereByAnd(parsed.where) : [];
+    clauses = clauses.filter((c: string) => !whereClauseTargetsColumn(c, 'status'));
+    clauses.push(buildNullConstraintClause('"status"', false));
+    assert.equal(
+        `${parsed.base} WHERE ${clauses.join(' AND ')}`,
+        `SELECT * FROM t WHERE "other" = 1 AND "status" IS NOT NULL`
+    );
+});
+

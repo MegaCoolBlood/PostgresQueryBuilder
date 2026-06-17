@@ -496,6 +496,13 @@ function buildFilterClause(fmtCol, val, filterType, isExact, operator, thousandS
     return `${fmtCol}::text ILIKE '%${escapeSqlString(val)}%'`;
 }
 
+// Build an `IS NULL` / `IS NOT NULL` WHERE clause for an already-formatted
+// column identifier. `isNull` true yields `<col> IS NULL`, false yields
+// `<col> IS NOT NULL`.
+function buildNullConstraintClause(fmtCol, isNull) {
+    return `${fmtCol} IS ${isNull ? 'NULL' : 'NOT NULL'}`;
+}
+
 // Predicate for local (in-memory) row filtering. Returns true when `cellVal`
 // passes the given column filter. A filter that cannot constrain the data
 // (empty range, invalid number) matches every row.
@@ -1156,6 +1163,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         runCustomQuery();
     }
 
+    function applyNullConstraint(colName, isNull) {
+        const fmtCol = formatIdentifier(colName);
+        const clause = buildNullConstraintClause(fmtCol, isNull);
+        mergeWhereClausesIntoQuery({ [colName]: clause });
+        runCustomQuery();
+    }
+
     function mergeWhereClausesIntoQuery(clausesByCol) {
         const baseSql = (queryInput.value || '').trim() || `SELECT * FROM ${getDefaultTableReference()}`;
         const parsed = parseSqlForWhere(baseSql);
@@ -1562,6 +1576,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (!colInOrderBy) items.push({ separator: true });
             items.push({ label: 'Remove ORDER BY', action: clearOrderBy });
         }
+
+        items.push({ separator: true });
+        items.push({ label: `Add ${colName} IS NULL to WHERE`, action: () => applyNullConstraint(colName, true) });
+        items.push({ label: `Add ${colName} IS NOT NULL to WHERE`, action: () => applyNullConstraint(colName, false) });
 
         showContextMenu(e, items);
     }
@@ -3225,6 +3243,7 @@ if (typeof module !== 'undefined' && module.exports) {
         formatSql,
         filterOperatorForMode,
         buildFilterClause,
+        buildNullConstraintClause,
         rowValueMatchesFilter,
         compareCellValues,
         normalizeCellInput,
