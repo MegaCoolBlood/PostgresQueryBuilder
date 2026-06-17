@@ -125,6 +125,31 @@ test('computeAutoJoinClause carries extra literal conditions from a custom mappi
     ]);
 });
 
+test('computeAutoJoinClause builds a composite ON clause from multiple edges between the same tables', () => {
+    const tables = [
+        { schema: 'public', table: 'orders' },
+        { schema: 'public', table: 'order_lines' }
+    ];
+    // A multi-column custom mapping yields one identity edge per column pair.
+    const edges = [
+        {
+            fromSchema: 'public', fromTable: 'order_lines', fromColumn: 'order_id',
+            toSchema: 'public', toTable: 'orders', toColumn: 'id'
+        },
+        {
+            fromSchema: 'public', fromTable: 'order_lines', fromColumn: 'tenant_id',
+            toSchema: 'public', toTable: 'orders', toColumn: 'tenant_id'
+        }
+    ];
+    const clause = computeAutoJoinClause(1, [0, 1], tables, edges);
+    assert.equal(clause.type, 'INNER JOIN');
+    assert.deepEqual(clause.conditions, [
+        { leftOrig: 0, leftColumn: 'id', rightColumn: 'order_id' },
+        { leftOrig: 0, leftColumn: 'tenant_id', rightColumn: 'tenant_id' }
+    ]);
+    assert.deepEqual(clause.literals, []);
+});
+
 test('computeAutoJoinClause only considers tables before the new one', () => {
     // The related table sits AFTER the new table in the order, so it is not a
     // valid (earlier) partner: result is a CROSS JOIN.

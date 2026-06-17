@@ -9,6 +9,12 @@ export interface MappingCondition {
     value: string;
 }
 
+/** An additional source-column/target-column equality used for composite-key matches. */
+export interface ColumnPair {
+    sourceColumn: string;
+    targetColumn: string;
+}
+
 export type MappingScope = 'workspace' | 'global';
 
 export interface CustomColumnMapping {
@@ -22,6 +28,12 @@ export interface CustomColumnMapping {
     conditions: MappingCondition[];
     isDefault: boolean;
     label?: string;
+    /**
+     * Extra source/target column equalities for multi-column (composite-key)
+     * matches. The primary pair lives in `sourceColumn`/`targetColumn`; these are
+     * ANDed onto it when deriving joins.
+     */
+    additionalColumnPairs?: ColumnPair[];
     /** Storage scope. 'workspace' mappings live in a JSON file committed to git. */
     scope?: MappingScope;
     /** True when this mapping is a synthesized reverse view of a user-defined mapping. */
@@ -38,6 +50,25 @@ interface WorkspaceMappingsFile {
 
 const DEFAULT_WORKSPACE_FILE = '.vscode/postgres-query-builder.mappings.json';
 const FILE_VERSION = 1;
+
+/**
+ * Sanitize the additional column pairs of a mapping: keep only well-formed
+ * entries where both the source and target column are non-empty strings.
+ */
+export function normalizeColumnPairs(pairs: unknown): ColumnPair[] {
+    if (!Array.isArray(pairs)) {
+        return [];
+    }
+    const result: ColumnPair[] = [];
+    for (const p of pairs) {
+        const sourceColumn = typeof p?.sourceColumn === 'string' ? p.sourceColumn.trim() : '';
+        const targetColumn = typeof p?.targetColumn === 'string' ? p.targetColumn.trim() : '';
+        if (sourceColumn && targetColumn) {
+            result.push({ sourceColumn, targetColumn });
+        }
+    }
+    return result;
+}
 
 export class ColumnMappingManager {
     private static readonly STORAGE_KEY = 'customColumnMappings';
@@ -312,7 +343,7 @@ export class ColumnMappingManager {
     }
 
     private normalizeIncoming(m: CustomColumnMapping): CustomColumnMapping {
-        return {
+        const normalized: CustomColumnMapping = {
             id: m.id || this.generateId(),
             sourceSchema: m.sourceSchema,
             sourceTable: m.sourceTable,
@@ -324,10 +355,15 @@ export class ColumnMappingManager {
             isDefault: !!m.isDefault,
             label: m.label
         };
+        const pairs = normalizeColumnPairs(m.additionalColumnPairs);
+        if (pairs.length) {
+            normalized.additionalColumnPairs = pairs;
+        }
+        return normalized;
     }
 
     private reverseMapping(m: CustomColumnMapping): CustomColumnMapping {
-        return {
+        const reversed: CustomColumnMapping = {
             id: `rev:${m.id}`,
             sourceSchema: m.targetSchema,
             sourceTable: m.targetTable,
@@ -342,6 +378,14 @@ export class ColumnMappingManager {
             reversed: true,
             originalId: m.id
         };
+        const pairs = normalizeColumnPairs(m.additionalColumnPairs);
+        if (pairs.length) {
+            reversed.additionalColumnPairs = pairs.map(p => ({
+                sourceColumn: p.targetColumn,
+                targetColumn: p.sourceColumn
+            }));
+        }
+        return reversed;
     }
 
     private evaluateConditions(conditions: MappingCondition[], rowData: Record<string, any>): boolean {

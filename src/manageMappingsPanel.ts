@@ -97,7 +97,8 @@ export class ManageMappingsPanel {
                 targetSchema: m.targetSchema,
                 targetTable: m.targetTable,
                 targetColumn: m.targetColumn,
-                conditions: m.conditions
+                conditions: m.conditions,
+                additionalColumnPairs: m.additionalColumnPairs
             }));
         const fileUri = this.manager.getWorkspaceFileUri();
         const filePath = fileUri ? vscode.workspace.asRelativePath(fileUri) : '';
@@ -285,13 +286,16 @@ export class ManageMappingsPanel {
                     const cond = (m.conditions && m.conditions.length)
                         ? '<div class="cond">IF ' + m.conditions.map(c => escapeHtml(c.column) + ' ' + escapeHtml(c.operator) + " '" + escapeHtml(c.value) + "'").join(' AND ') + '</div>'
                         : '';
+                    const pairs = (m.additionalColumnPairs && m.additionalColumnPairs.length)
+                        ? '<div class="cond">+ ' + m.additionalColumnPairs.map(p => escapeHtml(p.sourceColumn) + ' = ' + escapeHtml(p.targetColumn)).join(' AND ') + '</div>'
+                        : '';
                     const label = m.label ? '<div>' + escapeHtml(m.label) + '</div>' : '';
                     return '<tr class="' + (isSel ? 'selected' : '') + '" data-id="' + escapeHtml(m.id) + '">'
                         + '<td><input type="checkbox" class="row-cb"' + (isSel ? ' checked' : '') + ' /></td>'
                         + '<td>' + scopeBadge + defBadge + '</td>'
                         + '<td class="mono">' + escapeHtml(m.sourceSchema) + '.' + escapeHtml(m.sourceTable) + '.' + escapeHtml(m.sourceColumn) + '</td>'
                         + '<td class="mono">' + escapeHtml(m.targetSchema) + '.' + escapeHtml(m.targetTable) + '.' + escapeHtml(m.targetColumn) + '</td>'
-                        + '<td>' + label + cond + (label || cond ? '' : '<span style="color:var(--vscode-descriptionForeground);">—</span>') + '</td>'
+                        + '<td>' + label + cond + pairs + (label || cond || pairs ? '' : '<span style="color:var(--vscode-descriptionForeground);">—</span>') + '</td>'
                         + '<td><button class="secondary row-btn edit-btn" title="Edit this mapping">Edit</button></td>'
                         + '</tr>';
                 }).join('');

@@ -2481,6 +2481,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const mappingTargetColumn = document.getElementById('mappingTargetColumn');
     const mappingConditions = document.getElementById('mappingConditions');
     const mappingAddCondition = document.getElementById('mappingAddCondition');
+    const mappingColumnPairs = document.getElementById('mappingColumnPairs');
+    const mappingAddColumnPair = document.getElementById('mappingAddColumnPair');
     const mappingIsDefault = document.getElementById('mappingIsDefault');
     const mappingShareWorkspace = document.getElementById('mappingShareWorkspace');
 
@@ -2591,6 +2593,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     mappingDialogSave.addEventListener('click', saveMappingFromDialog);
     mappingDialogDelete.addEventListener('click', deleteCurrentMapping);
     mappingAddCondition.addEventListener('click', addConditionRow);
+    mappingAddColumnPair.addEventListener('click', () => addColumnPairRow());
 
     manageMappingsClose.addEventListener('click', closeManageMappingsDialog);
     manageMappingsCloseBtn.addEventListener('click', closeManageMappingsDialog);
@@ -2950,6 +2953,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             });
         }
 
+        // Populate additional column matches (composite key)
+        mappingColumnPairs.innerHTML = '';
+        if (existingMapping && Array.isArray(existingMapping.additionalColumnPairs)) {
+            existingMapping.additionalColumnPairs.forEach(pair => {
+                addColumnPairRow(pair);
+            });
+        }
+
         // Request tables for typeahead
         requestTablesForTypeahead();
 
@@ -3005,6 +3016,41 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         mappingConditions.appendChild(row);
     }
 
+    // Add a source-column/target-column equality row (composite-key match).
+    // Reuses the same constraint-row style as the Build JOIN dialog.
+    function addColumnPairRow(existing) {
+        const row = document.createElement('div');
+        row.className = 'mapping-condition-row';
+
+        let colOpts = '';
+        columns.forEach(col => {
+            const selected = existing && existing.sourceColumn === col.name;
+            colOpts += `<option value="${escapeAttr(col.name)}"${selected ? ' selected' : ''}>${escapeHtml(col.name)}</option>`;
+        });
+
+        const targetVal = existing ? existing.targetColumn : '';
+        row.innerHTML = `
+            <select class="pair-source-column">${colOpts}</select>
+            <span class="pair-eq">=</span>
+            <span class="typeahead-wrapper"><input type="text" class="pair-target-column" placeholder="target column" autocomplete="off" value="${escapeAttr(targetVal)}" /></span>
+            <button class="btn-remove-condition" title="Remove column match">&times;</button>
+        `;
+
+        row.querySelector('.btn-remove-condition').addEventListener('click', () => {
+            row.remove();
+        });
+
+        // Typeahead on the target column, fed by the selected target table's columns.
+        const targetInput = row.querySelector('.pair-target-column');
+        setupTypeahead(targetInput, (val) => {
+            return typeaheadColumns
+                .filter(c => c.toLowerCase().includes(val))
+                .map(c => ({ value: c, label: c }));
+        }, null);
+
+        mappingColumnPairs.appendChild(row);
+    }
+
     function gatherMappingFromDialog() {
         const conditions = [];
         mappingConditions.querySelectorAll('.mapping-condition-row').forEach(row => {
@@ -3016,7 +3062,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             }
         });
 
-        return {
+        const additionalColumnPairs = [];
+        mappingColumnPairs.querySelectorAll('.mapping-condition-row').forEach(row => {
+            const sourceColumn = row.querySelector('.pair-source-column').value;
+            const targetColumn = row.querySelector('.pair-target-column').value.trim();
+            if (sourceColumn && targetColumn) {
+                additionalColumnPairs.push({ sourceColumn, targetColumn });
+            }
+        });
+
+        const mapping = {
             sourceSchema: mappingSourceSchema.value.trim(),
             sourceTable: mappingSourceTable.value.trim(),
             sourceColumn: mappingSourceColumn.value,
@@ -3027,6 +3082,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             isDefault: mappingIsDefault.checked,
             label: mappingLabel.value.trim() || undefined
         };
+        if (additionalColumnPairs.length > 0) {
+            mapping.additionalColumnPairs = additionalColumnPairs;
+        }
+        return mapping;
     }
 
     function saveMappingFromDialog() {
@@ -3098,6 +3157,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (mapping.conditions && mapping.conditions.length > 0) {
                 const condStr = mapping.conditions.map(c => `${c.column} ${c.operator} '${c.value}'`).join(', ');
                 badges += `<span class="mapping-badge">IF ${condStr}</span>`;
+            }
+            if (Array.isArray(mapping.additionalColumnPairs) && mapping.additionalColumnPairs.length > 0) {
+                const pairStr = mapping.additionalColumnPairs.map(p => `${p.sourceColumn} = ${p.targetColumn}`).join(' AND ');
+                badges += `<span class="mapping-badge" title="Composite-key match: ${escapeAttr(pairStr)}">+${mapping.additionalColumnPairs.length} col</span>`;
             }
             const actions = mapping.reversed
                 ? '<span class="mapping-item-note" title="Edit this mapping on the originating table">read-only</span>'

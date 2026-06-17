@@ -219,16 +219,6 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
             if (!src || !tgt) {
                 continue;
             }
-            const fromCol = quoteCol(src, m.sourceColumn);
-            const toCol = quoteCol(tgt, m.targetColumn);
-            if (!fromCol || !toCol) {
-                continue;
-            }
-            const sig = `${m.sourceSchema}.${m.sourceTable}.${fromCol}->${m.targetSchema}.${m.targetTable}.${toCol}`;
-            if (seen.has(sig)) {
-                continue;
-            }
-            seen.add(sig);
             // A mapping condition references a column on the mapping's source
             // table. Resolve it to its quoted form so it matches the join columns.
             const extraConditions = (m.conditions ?? [])
@@ -239,15 +229,38 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
                         : undefined;
                 })
                 .filter((c): c is NonNullable<typeof c> => !!c);
-            edges.push({
-                fromSchema: m.sourceSchema,
-                fromTable: m.sourceTable,
-                fromColumn: fromCol,
-                toSchema: m.targetSchema,
-                toTable: m.targetTable,
-                toColumn: toCol,
-                extraConditions: extraConditions.length ? extraConditions : undefined
-            });
+
+            // The primary pair plus any additional pairs form a composite-key
+            // match. Each pair becomes its own identity edge so the join dialog
+            // ANDs them together (e.g. a.c1 = b.c1 AND a.c2 = b.c2). The literal
+            // conditions are attached only to the first edge to avoid repetition.
+            const pairs = [
+                { sourceColumn: m.sourceColumn, targetColumn: m.targetColumn },
+                ...(m.additionalColumnPairs ?? [])
+            ];
+            let attachedConditions = false;
+            for (const pair of pairs) {
+                const fromCol = quoteCol(src, pair.sourceColumn);
+                const toCol = quoteCol(tgt, pair.targetColumn);
+                if (!fromCol || !toCol) {
+                    continue;
+                }
+                const sig = `${m.sourceSchema}.${m.sourceTable}.${fromCol}->${m.targetSchema}.${m.targetTable}.${toCol}`;
+                if (seen.has(sig)) {
+                    continue;
+                }
+                seen.add(sig);
+                edges.push({
+                    fromSchema: m.sourceSchema,
+                    fromTable: m.sourceTable,
+                    fromColumn: fromCol,
+                    toSchema: m.targetSchema,
+                    toTable: m.targetTable,
+                    toColumn: toCol,
+                    extraConditions: !attachedConditions && extraConditions.length ? extraConditions : undefined
+                });
+                attachedConditions = true;
+            }
         }
         return edges;
     }

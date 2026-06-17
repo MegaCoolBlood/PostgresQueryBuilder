@@ -806,6 +806,26 @@ td.has-fk-btn > .fk-btn {
     padding: 0 4px;
 }
 
+.mapping-condition-row select.pair-source-column {
+    flex: 2;
+    min-width: 120px;
+    width: auto;
+}
+
+.mapping-condition-row .pair-eq {
+    color: var(--vscode-descriptionForeground);
+    padding: 0 2px;
+}
+
+.mapping-condition-row .typeahead-wrapper {
+    flex: 2;
+    position: relative;
+}
+
+.mapping-condition-row .typeahead-wrapper input.pair-target-column {
+    width: 100%;
+}
+
 .btn-sm {
     font-size: 11px;
     padding: 2px 8px;

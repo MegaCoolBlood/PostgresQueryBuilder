@@ -230,6 +230,12 @@
                     </div>
                 </fieldset>
                 <fieldset class="mapping-fieldset">
+                    <legend>Additional column matches (optional)</legend>
+                    <p class="mapping-hint">For composite keys, match more source columns to target columns. All matches are combined with AND.</p>
+                    <div id="mappingColumnPairs"></div>
+                    <button class="btn btn-default btn-sm" id="mappingAddColumnPair">+ Add column match</button>
+                </fieldset>
+                <fieldset class="mapping-fieldset">
                     <legend>Conditions (optional)</legend>
                     <p class="mapping-hint">Only apply this mapping when these conditions are met on the current row.</p>
                     <div id="mappingConditions"></div>

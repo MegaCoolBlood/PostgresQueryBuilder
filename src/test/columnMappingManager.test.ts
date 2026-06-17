@@ -276,3 +276,61 @@ test('generated ids are unique', async () => {
 
     assert.notEqual(m1.id, m2.id);
 });
+
+// ===== Multi-column (composite-key) mapping tests =====
+
+test('addMapping preserves additionalColumnPairs', async () => {
+    const manager = new ColumnMappingManager(createMockContext());
+    const mapping = await manager.addMapping(createSampleMapping({
+        additionalColumnPairs: [
+            { sourceColumn: 'tenant_id', targetColumn: 'tenant_id' },
+            { sourceColumn: 'region', targetColumn: 'region' }
+        ]
+    }));
+
+    assert.deepEqual(mapping.additionalColumnPairs, [
+        { sourceColumn: 'tenant_id', targetColumn: 'tenant_id' },
+        { sourceColumn: 'region', targetColumn: 'region' }
+    ]);
+});
+
+test('reverse mapping swaps source/target of additional column pairs', async () => {
+    const manager = new ColumnMappingManager(createMockContext());
+    await manager.addMapping(createSampleMapping({
+        additionalColumnPairs: [
+            { sourceColumn: 'tenant_id', targetColumn: 'org_id' }
+        ]
+    }));
+
+    // public.cars is the target, so it gets a reversed view of the mapping.
+    const reversed = manager.getMappingsForTable('public', 'cars').filter(m => m.reversed);
+    assert.equal(reversed.length, 1);
+    assert.equal(reversed[0].sourceColumn, 'id');
+    assert.equal(reversed[0].targetColumn, 'item_id');
+    assert.deepEqual(reversed[0].additionalColumnPairs, [
+        { sourceColumn: 'org_id', targetColumn: 'tenant_id' }
+    ]);
+});
+
+test('normalizeColumnPairs drops malformed entries', () => {
+    const { normalizeColumnPairs } = require('../columnMappingManager');
+    const result = normalizeColumnPairs([
+        { sourceColumn: 'a', targetColumn: 'b' },
+        { sourceColumn: '', targetColumn: 'b' },
+        { sourceColumn: 'c', targetColumn: '' },
+        { sourceColumn: '  d  ', targetColumn: '  e  ' },
+        { foo: 'bar' },
+        null
+    ]);
+    assert.deepEqual(result, [
+        { sourceColumn: 'a', targetColumn: 'b' },
+        { sourceColumn: 'd', targetColumn: 'e' }
+    ]);
+});
+
+test('normalizeColumnPairs returns empty array for non-array input', () => {
+    const { normalizeColumnPairs } = require('../columnMappingManager');
+    assert.deepEqual(normalizeColumnPairs(undefined), []);
+    assert.deepEqual(normalizeColumnPairs(null), []);
+    assert.deepEqual(normalizeColumnPairs('nope'), []);
+});
