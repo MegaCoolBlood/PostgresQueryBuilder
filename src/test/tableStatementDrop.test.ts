@@ -287,3 +287,76 @@ test('buildJoinSelect lets a duplicate table use its own CROSS JOIN', () => {
         'SELECT\n  t1.id,\n  t2.id\nFROM items t1\nCROSS JOIN items t2;'
     );
 });
+
+// ===== 1.3.0: fixed (raw) conditions on a JOIN clause =====
+
+test('buildJoinSelect appends raw conditions after the key conditions', () => {
+    const tables = [
+        { alias: 't', tableReference: 'thing', columns: ['id'] },
+        { alias: 'x', tableReference: 'other', columns: ['t_id'] }
+    ];
+    const joins = [{
+        type: 'INNER JOIN' as const,
+        conditions: [{ leftAlias: 't', leftColumn: 'id', rightColumn: 't_id' }],
+        rawConditions: [
+            'CURRENT_TIMESTAMP BETWEEN t.valid_from AND t.valid_to',
+            "t.type = 'TGB'"
+        ]
+    }];
+    assert.equal(
+        buildJoinSelect(tables, joins),
+        "SELECT\n  t.id,\n  x.t_id\nFROM thing t\n"
+        + "INNER JOIN other x ON x.t_id = t.id"
+        + " AND CURRENT_TIMESTAMP BETWEEN t.valid_from AND t.valid_to AND t.type = 'TGB';"
+    );
+});
+
+test('buildJoinSelect uses a raw condition as the sole ON predicate', () => {
+    const tables = [
+        { alias: 'a', tableReference: 'a', columns: ['id'] },
+        { alias: 'b', tableReference: 'b', columns: ['id'] }
+    ];
+    const joins = [{
+        type: 'LEFT JOIN' as const,
+        conditions: [],
+        rawConditions: ['a.region = b.region']
+    }];
+    assert.equal(
+        buildJoinSelect(tables, joins),
+        'SELECT\n  a.id,\n  b.id\nFROM a a\nLEFT JOIN b b ON a.region = b.region;'
+    );
+});
+
+test('buildJoinSelect ignores blank raw conditions', () => {
+    const tables = [
+        { alias: 'a', tableReference: 'a', columns: ['id'] },
+        { alias: 'b', tableReference: 'b', columns: ['a_id'] }
+    ];
+    const joins = [{
+        type: 'INNER JOIN' as const,
+        conditions: [{ leftAlias: 'a', leftColumn: 'id', rightColumn: 'a_id' }],
+        rawConditions: ['', '   ']
+    }];
+    assert.equal(
+        buildJoinSelect(tables, joins),
+        'SELECT\n  a.id,\n  b.a_id\nFROM a a\nINNER JOIN b b ON b.a_id = a.id;'
+    );
+});
+
+test('buildJoinSelect combines literal and raw conditions on the ON clause', () => {
+    const tables = [
+        { alias: 'a', tableReference: 'a', columns: ['id'] },
+        { alias: 'b', tableReference: 'b', columns: ['a_id'] }
+    ];
+    const joins = [{
+        type: 'INNER JOIN' as const,
+        conditions: [{ leftAlias: 'a', leftColumn: 'id', rightColumn: 'a_id' }],
+        literalConditions: [{ literalAlias: 'a', literalColumn: 'status', operator: '=', value: 'active' }],
+        rawConditions: ['a.priority > 5']
+    }];
+    assert.equal(
+        buildJoinSelect(tables, joins),
+        "SELECT\n  a.id,\n  b.a_id\nFROM a a\n"
+        + "INNER JOIN b b ON b.a_id = a.id AND a.status = 'active' AND a.priority > 5;"
+    );
+});

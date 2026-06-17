@@ -101,6 +101,83 @@ function computeAutoJoinClause(newOrig, order, tables, identityEdges) {
     return { type: 'INNER JOIN', conditions, literals };
 }
 
+/** Operators offered for fixed/custom join conditions. */
+const CUSTOM_OPERATORS = ['=', '<>', '<', '<=', '>', '>=', 'LIKE', 'ILIKE', 'BETWEEN', 'IS NULL', 'IS NOT NULL'];
+
+/** Operators that take no right-hand operand. */
+function isUnaryOperator(operator) {
+    const op = (operator || '').toUpperCase();
+    return op === 'IS NULL' || op === 'IS NOT NULL';
+}
+
+/** Operator that takes two right-hand operands joined by AND. */
+function isBetweenOperator(operator) {
+    return (operator || '').toUpperCase() === 'BETWEEN';
+}
+
+/**
+ * Render a single resolved operand of a fixed condition to SQL text. A
+ * `column` operand uses its pre-resolved qualified reference (e.g. `t.id`); a
+ * `raw` operand is emitted verbatim (e.g. `CURRENT_TIMESTAMP` or `'TGB'`).
+ */
+function formatOperand(op) {
+    if (!op) {
+        return '';
+    }
+    if (op.kind === 'column') {
+        return (op.ref || '').trim();
+    }
+    return (op.text || '').trim();
+}
+
+/**
+ * Build the SQL text for a fixed/custom join condition from its resolved
+ * operands. Returns an empty string when required operands are missing, so
+ * incomplete rows can be skipped.
+ *
+ * Supported shapes:
+ *  - `<left> <op> <right>`              (=, <>, <, <=, >, >=, LIKE, ILIKE)
+ *  - `<left> BETWEEN <right> AND <r2>`  (BETWEEN)
+ *  - `<left> IS NULL` / `IS NOT NULL`   (unary)
+ *
+ * @param {{operator:string,left:object,right?:object,right2?:object}} cond
+ * @returns {string}
+ */
+function formatCustomCondition(cond) {
+    if (!cond) {
+        return '';
+    }
+    const op = (cond.operator || '').toUpperCase();
+    const left = formatOperand(cond.left);
+    if (!left) {
+        return '';
+    }
+    if (isUnaryOperator(op)) {
+        return left + ' ' + op;
+    }
+    if (isBetweenOperator(op)) {
+        const r1 = formatOperand(cond.right);
+        const r2 = formatOperand(cond.right2);
+        if (!r1 || !r2) {
+            return '';
+        }
+        return left + ' BETWEEN ' + r1 + ' AND ' + r2;
+    }
+    const right = formatOperand(cond.right);
+    if (!right) {
+        return '';
+    }
+    return left + ' ' + op + ' ' + right;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { uniqueAlias, computeAutoJoinClause };
+    module.exports = {
+        uniqueAlias,
+        computeAutoJoinClause,
+        CUSTOM_OPERATORS,
+        isUnaryOperator,
+        isBetweenOperator,
+        formatOperand,
+        formatCustomCondition
+    };
 }

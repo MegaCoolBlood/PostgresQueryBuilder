@@ -125,6 +125,12 @@ export interface JoinClause {
     conditions: JoinCondition[];
     /** Extra literal conditions (e.g. from custom mappings) added to the ON clause. */
     literalConditions?: JoinLiteralCondition[];
+    /**
+     * Free-form fixed conditions appended verbatim to the ON clause, e.g.
+     * `CURRENT_TIMESTAMP BETWEEN t.valid_from AND t.valid_to` or `t.type = 'TGB'`.
+     * The caller is responsible for producing valid SQL fragments.
+     */
+    rawConditions?: string[];
 }
 
 /** Format a custom-mapping condition value as a SQL literal. */
@@ -170,6 +176,11 @@ export function buildJoinSelect(tables: JoinTableSpec[], joins: JoinClause[]): s
         );
         for (const lc of join.literalConditions ?? []) {
             parts.push(`${lc.literalAlias}.${lc.literalColumn} ${lc.operator} ${formatLiteralValue(lc.value)}`);
+        }
+        for (const rc of join.rawConditions ?? []) {
+            if (rc && rc.trim()) {
+                parts.push(rc.trim());
+            }
         }
         const on = parts.join(' AND ');
         lines.push(`${join.type} ${t.tableReference} ${t.alias} ON ${on}`);

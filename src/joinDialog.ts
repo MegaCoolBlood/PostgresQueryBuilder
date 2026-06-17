@@ -177,6 +177,7 @@ function getHtml(
     input.alias { width: 90px; }
     .cond-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
     .cond-literal .lit-text { font-family: var(--vscode-editor-font-family, monospace); opacity: 0.85; }
+    .cust-raw { width: 160px; font-family: var(--vscode-editor-font-family, monospace); }
     .join-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
     pre {
         background: var(--vscode-textCodeBlock-background); padding: 10px; border-radius: 4px;
@@ -197,7 +198,7 @@ function getHtml(
     }`;
     const body = `
     <h2>Build JOIN SELECT</h2>
-    <div class="hint">Reorder tables, rename aliases and adjust join conditions. Joins were pre-filled from existing primary/foreign keys where possible.</div>
+    <div class="hint">Reorder tables, rename aliases and adjust join conditions. Joins were pre-filled from existing primary/foreign keys where possible. Use “+ Add fixed condition” to add extra ON predicates such as <code>CURRENT_TIMESTAMP BETWEEN t.valid_from AND t.valid_to</code> or <code>t.type = 'TGB'</code>.</div>
 
     <div class="section-title">Tables (order)</div>
     <div id="tables"></div>
@@ -234,6 +235,11 @@ function getHtml(
     // Join type per ORIGINAL table index, kept independently of the current
     // order so it is not lost while a table temporarily sits in the FROM slot.
     let typeByOrig = {};
+    // Fixed/custom ON conditions per ORIGINAL table index. Each entry is a
+    // structured row { operator, left, right, right2 }, where each operand is
+    // { kind:'column', orig, column } or { kind:'raw', text }. Kept separate
+    // from the rebuilt joins map so it survives reordering/normalization.
+    let customByOrig = {};
     data.joins.forEach((j, idx) => {
         const oi = idx + 1;
         typeByOrig[oi] = j.type;
@@ -329,7 +335,7 @@ function getHtml(
                 litSeen.add(sig);
                 lits.push({ litOrig: ll.litOrig, otherOrig: ll.otherOrig, litColumn: ll.litColumn, operator: ll.operator, value: ll.value });
             }
-            rebuilt[oi] = { type: typeByOrig[oi] || 'INNER JOIN', conditions: conds, literals: lits };
+            rebuilt[oi] = { type: typeByOrig[oi] || 'INNER JOIN', conditions: conds, literals: lits, custom: customByOrig[oi] || [] };
         }
         joins = rebuilt;
     }
@@ -371,6 +377,7 @@ function getHtml(
         order.splice(pos, 1);
         delete joins[oi];
         delete typeByOrig[oi];
+        delete customByOrig[oi];
         Object.keys(joins).forEach(k => {
             const j = joins[k];
             if (j && j.conditions) {
@@ -385,7 +392,70 @@ function getHtml(
     function ensureJoin(origIdx) {
         if (!joins[origIdx]) joins[origIdx] = { type: 'INNER JOIN', conditions: [], literals: [] };
         if (!joins[origIdx].literals) joins[origIdx].literals = [];
+        if (!joins[origIdx].custom) joins[origIdx].custom = customByOrig[origIdx] || [];
         return joins[origIdx];
+    }
+
+    function ensureCustom(origIdx) {
+        if (!customByOrig[origIdx]) customByOrig[origIdx] = [];
+        return customByOrig[origIdx];
+    }
+
+    // All currently visible tables' columns as operand options for fixed
+    // conditions: { orig, alias, column }. Any table in the join may be
+    // referenced (not only earlier ones), since a fixed condition can compare
+    // arbitrary columns.
+    function allColumnOptions() {
+        const opts = [];
+        order.forEach(oi => {
+            const t = data.tables[oi];
+            for (const c of t.columns) opts.push({ orig: oi, alias: aliases[oi], column: c });
+        });
+        return opts;
+    }
+
+    // Resolve a stored operand into the shape expected by formatCustomCondition
+    // (column → qualified ref using the current alias; raw → verbatim text).
+    function resolveOperand(op) {
+        if (!op) return { kind: 'raw', text: '' };
+        if (op.kind === 'column') return { kind: 'column', ref: aliases[op.orig] + '.' + op.column };
+        return { kind: 'raw', text: op.text || '' };
+    }
+
+    function resolveCustom(c) {
+        return {
+            operator: c.operator,
+            left: resolveOperand(c.left),
+            right: resolveOperand(c.right),
+            right2: c.right2 ? resolveOperand(c.right2) : undefined
+        };
+    }
+
+    function customConditionText(c) {
+        return formatCustomCondition(resolveCustom(c));
+    }
+
+    // Render the dropdown + optional text input for one operand of a fixed
+    // condition. The dropdown lists every column of every joined table plus a
+    // "Custom value…" entry that switches the operand to a free-text input
+    // (for literals like 'TGB' or expressions like CURRENT_TIMESTAMP).
+    function operandControls(oi, ci, side, operand) {
+        const cols = allColumnOptions();
+        const op = operand || { kind: 'raw', text: '' };
+        const colOpts = cols.map(o => {
+            const v = 'c\u0001' + o.orig + '\u0001' + o.column;
+            const sel = op.kind === 'column' && op.orig === o.orig && op.column === o.column;
+            return '<option value="' + escapeHtml(v) + '" ' + (sel ? 'selected' : '') + '>' + escapeHtml(o.alias + '.' + o.column) + '</option>';
+        }).join('');
+        const rawSel = op.kind === 'raw' ? 'selected' : '';
+        const sel = '<select class="operand-kind" data-cust-op="' + oi + ':' + ci + ':' + side + '">' +
+            colOpts +
+            '<option value="__raw__" ' + rawSel + '>Custom value…</option>' +
+            '</select>';
+        const rawInput = op.kind === 'raw'
+            ? '<input class="cust-raw" data-cust-raw="' + oi + ':' + ci + ':' + side + '" value="' + escapeHtml(op.text || '') + '" placeholder="value / expression">'
+            : '';
+        return sel + rawInput;
     }
 
     function earlierColumnOptions(pos) {
@@ -427,6 +497,10 @@ function getHtml(
             const parts = j.conditions.map(c => t.alias + '.' + c.rightColumn + ' = ' + aliases[c.leftOrig] + '.' + c.leftColumn);
             (j.literals || []).forEach(l => {
                 parts.push(aliases[l.litOrig] + '.' + l.litColumn + ' ' + l.operator + ' ' + fmtLiteral(l.value));
+            });
+            (customByOrig[oi] || []).forEach(c => {
+                const txt = customConditionText(c);
+                if (txt) parts.push(txt);
             });
             const on = parts.join(' AND ');
             lines.push(j.type + ' ' + t.tableReference + ' ' + t.alias + ' ON ' + on);
@@ -494,7 +568,27 @@ function getHtml(
                         '<button data-rmlit="' + oi + ':' + li + '">Remove</button>' +
                         '</div>';
                 });
-                html += '<div class="cond-row"><button data-addcond="' + oi + '">+ Add condition</button></div>';
+                (customByOrig[oi] || []).forEach((c, ci) => {
+                    const operatorOpts = CUSTOM_OPERATORS.map(o =>
+                        '<option ' + (o === c.operator ? 'selected' : '') + '>' + o + '</option>'
+                    ).join('');
+                    let row = '<div class="cond-row cond-custom" title="Fixed condition">' +
+                        operandControls(oi, ci, 'left', c.left) +
+                        '<select class="operand-operator" data-cust-operator="' + oi + ':' + ci + '">' + operatorOpts + '</select>';
+                    if (isBetweenOperator(c.operator)) {
+                        row += operandControls(oi, ci, 'right', c.right) +
+                            '<span>AND</span>' +
+                            operandControls(oi, ci, 'right2', c.right2);
+                    } else if (!isUnaryOperator(c.operator)) {
+                        row += operandControls(oi, ci, 'right', c.right);
+                    }
+                    row += '<button data-rmcustom="' + oi + ':' + ci + '">Remove</button></div>';
+                    html += row;
+                });
+                html += '<div class="cond-row">' +
+                    '<button data-addcond="' + oi + '">+ Add condition</button>' +
+                    '<button data-addcustom="' + oi + '">+ Add fixed condition</button>' +
+                    '</div>';
             }
 
             block.innerHTML = html;
@@ -558,6 +652,63 @@ function getHtml(
                 leftOrig: left.orig, leftColumn: left.column, rightColumn: t.columns[0] || ''
             });
             render();
+        });
+        document.querySelectorAll('[data-addcustom]').forEach(b => b.onclick = () => {
+            const oi = +b.dataset.addcustom;
+            const first = allColumnOptions()[0];
+            const left = first
+                ? { kind: 'column', orig: first.orig, column: first.column }
+                : { kind: 'raw', text: '' };
+            ensureCustom(oi).push({ operator: '=', left, right: { kind: 'raw', text: '' } });
+            render();
+        });
+        document.querySelectorAll('[data-rmcustom]').forEach(b => b.onclick = () => {
+            const [oi, ci] = b.dataset.rmcustom.split(':').map(Number);
+            if (customByOrig[oi]) customByOrig[oi].splice(ci, 1);
+            render();
+        });
+        document.querySelectorAll('[data-cust-operator]').forEach(sel => {
+            sel.onchange = () => {
+                const [oi, ci] = sel.dataset.custOperator.split(':').map(Number);
+                const c = customByOrig[oi][ci];
+                c.operator = sel.value;
+                // Ensure operands exist for the new operator shape.
+                if (isUnaryOperator(c.operator)) {
+                    delete c.right; delete c.right2;
+                } else if (isBetweenOperator(c.operator)) {
+                    if (!c.right) c.right = { kind: 'raw', text: '' };
+                    if (!c.right2) c.right2 = { kind: 'raw', text: '' };
+                } else {
+                    if (!c.right) c.right = { kind: 'raw', text: '' };
+                    delete c.right2;
+                }
+                render();
+            };
+        });
+        document.querySelectorAll('[data-cust-op]').forEach(sel => {
+            sel.onchange = () => {
+                const [oi, ci, side] = sel.dataset.custOp.split(':');
+                const c = customByOrig[+oi][+ci];
+                const raw = sel.value;
+                let operand;
+                if (raw === '__raw__') {
+                    operand = { kind: 'raw', text: '' };
+                } else {
+                    const parts = raw.split('\u0001');
+                    operand = { kind: 'column', orig: Number(parts[1]), column: parts[2] };
+                }
+                c[side] = operand;
+                render();
+            };
+        });
+        document.querySelectorAll('[data-cust-raw]').forEach(inp => {
+            inp.oninput = () => {
+                const [oi, ci, side] = inp.dataset.custRaw.split(':');
+                const c = customByOrig[+oi][+ci];
+                if (!c[side] || c[side].kind !== 'raw') c[side] = { kind: 'raw', text: '' };
+                c[side].text = inp.value;
+                document.getElementById('preview').textContent = buildPreview();
+            };
         });
     }
 
@@ -676,7 +827,10 @@ function getHtml(
                     literalColumn: l.litColumn,
                     operator: l.operator,
                     value: l.value
-                }))
+                })),
+                rawConditions: (customByOrig[oi] || [])
+                    .map(c => customConditionText(c))
+                    .filter(s => s && s.length > 0)
             });
         }
         const aliasMap = order.map(oi => ({
