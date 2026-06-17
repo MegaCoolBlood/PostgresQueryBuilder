@@ -799,6 +799,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     discardBtn.addEventListener('click', discardChanges);
     insertRowBtn.addEventListener('click', insertRow);
     loadMoreBtn.addEventListener('click', loadMore);
+    // Recompute the sticky filter-row offset when the header may rewrap.
+    window.addEventListener('resize', updateStickyFilterOffset);
     sqlDialogCancel.addEventListener('click', closeSqlDialog);
     sqlDialogClose.addEventListener('click', closeSqlDialog);
     sqlDialogExecute.addEventListener('click', executePendingChanges);
@@ -1403,6 +1405,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         html += '</tr>';
 
         tableHead.innerHTML = html;
+        updateStickyFilterOffset();
 
         tableHead.querySelectorAll('tr:first-child th[data-col]').forEach(th => {
             th.addEventListener('click', () => {
@@ -1493,6 +1496,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 renderHeader();
             });
         });
+    }
+
+    // Pin the sticky filter row directly below the (variable-height, two-line)
+    // column header row. The header height isn't fixed — it depends on the
+    // column name/data-type text and wrapping — so measure the first header row
+    // and expose its height as a CSS variable that the filter row's `top` uses.
+    function updateStickyFilterOffset() {
+        const headerRow = tableHead.querySelector('tr:first-child');
+        if (!headerRow) return;
+        const height = headerRow.getBoundingClientRect().height;
+        if (height > 0) {
+            tableHead.style.setProperty('--header-row-height', `${Math.round(height)}px`);
+        }
     }
 
     function applyFiltersToQuery() {

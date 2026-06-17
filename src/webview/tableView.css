@@ -362,6 +362,9 @@ th {
     z-index: 2;
     cursor: pointer;
     user-select: none;
+    /* With border-collapse the real borders scroll away; a sticky box-shadow
+       keeps a visible separating line under the pinned header row. */
+    box-shadow: inset 0 -1px 0 var(--vscode-panel-border);
 }
 
 th:hover {
@@ -381,10 +384,11 @@ th.sorted-desc::after {
 /* Filter row */
 .filter-row th {
     position: sticky;
-    top: 26px;
+    top: var(--header-row-height, 26px);
     z-index: 1;
     padding: 2px 4px;
     background: var(--vscode-editorWidget-background);
+    box-shadow: inset 0 -1px 0 var(--vscode-panel-border);
 }
 
 .filter-cell {
