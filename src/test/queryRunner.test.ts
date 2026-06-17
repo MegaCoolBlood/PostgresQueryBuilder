@@ -349,6 +349,93 @@ test('commitChanges rolls back and releases client when a statement fails', asyn
     assert.equal(client.releaseCalled, true);
 });
 
+test('commitChanges identifies rows by all columns (with IS NULL) when there is no primary key', async () => {
+    const statements: Array<{ sql: string; params?: any[] }> = [];
+    const client = {
+        query: async (sql: string, params?: any[]) => {
+            statements.push({ sql, params });
+            return {};
+        },
+        releaseCalled: false,
+        release() { this.releaseCalled = true; }
+    };
+
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        pool: { connect: async () => client }
+    });
+
+    await runner.commitChanges('public', 'log', {
+        updates: [{ primaryKey: { ts: '2026-01-01', level: 'info', note: null }, changes: { level: 'warn' } }],
+        inserts: [],
+        deletes: [{ ts: '2026-01-02', level: 'error', note: null }]
+    });
+
+    assert.deepEqual(statements.map(s => s.sql), [
+        'BEGIN',
+        'UPDATE public.log SET level = $1 WHERE ts = $2 AND level = $3 AND note IS NULL',
+        'DELETE FROM public.log WHERE ts = $1 AND level = $2 AND note IS NULL',
+        'COMMIT'
+    ]);
+    // Null identity columns are emitted as IS NULL and contribute no params.
+    assert.deepEqual(statements[1].params, ['warn', '2026-01-01', 'info']);
+    assert.deepEqual(statements[2].params, ['2026-01-02', 'error']);
+    assert.equal(client.releaseCalled, true);
+});
+
+test('commitChanges refuses an UPDATE with an empty row identity', async () => {
+    const statements: string[] = [];
+    const client = {
+        query: async (sql: string) => { statements.push(sql); return {}; },
+        releaseCalled: false,
+        release() { this.releaseCalled = true; }
+    };
+
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        pool: { connect: async () => client }
+    });
+
+    await assert.rejects(
+        () => runner.commitChanges('public', 'log', {
+            updates: [{ primaryKey: {}, changes: { level: 'warn' } }],
+            inserts: [],
+            deletes: []
+        }),
+        /no columns available to identify the row/
+    );
+    // The bad UPDATE must never reach the database; the transaction rolls back.
+    assert.ok(!statements.some(s => s.startsWith('UPDATE')));
+    assert.ok(statements.includes('ROLLBACK'));
+    assert.equal(client.releaseCalled, true);
+});
+
+test('commitChanges refuses a DELETE with an empty row identity', async () => {
+    const statements: string[] = [];
+    const client = {
+        query: async (sql: string) => { statements.push(sql); return {}; },
+        releaseCalled: false,
+        release() { this.releaseCalled = true; }
+    };
+
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        pool: { connect: async () => client }
+    });
+
+    await assert.rejects(
+        () => runner.commitChanges('public', 'log', {
+            updates: [],
+            inserts: [],
+            deletes: [{}]
+        }),
+        /no columns available to identify the row/
+    );
+    assert.ok(!statements.some(s => s.startsWith('DELETE')));
+    assert.ok(statements.includes('ROLLBACK'));
+    assert.equal(client.releaseCalled, true);
+});
+
 test('generateSQL formats NULL values correctly', () => {
     const { runner } = createRunner({
         options: { alwaysQualifySchema: true, alwaysQuote: false }
@@ -361,6 +448,46 @@ test('generateSQL formats NULL values correctly', () => {
     });
 
     assert.equal(sql, "UPDATE public.users SET name = NULL, score = NULL WHERE id = 1;");
+});
+
+test('generateSQL builds a full-row WHERE clause when the table has no primary key', () => {
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false }
+    });
+
+    // Without a primary key the webview sends every column as the row identity.
+    const sql = runner.generateSQL('public', 'log', {
+        updates: [{
+            primaryKey: { ts: '2026-01-01', level: 'info', msg: "it's fine" },
+            changes: { level: 'warn' }
+        }],
+        inserts: [],
+        deletes: [{ ts: '2026-01-02', level: 'error', msg: 'boom' }]
+    });
+
+    assert.equal(
+        sql,
+        "UPDATE public.log SET level = 'warn' WHERE ts = '2026-01-01' AND level = 'info' AND msg = 'it''s fine';\n\n" +
+            "DELETE FROM public.log WHERE ts = '2026-01-02' AND level = 'error' AND msg = 'boom';"
+    );
+});
+
+test('generateSQL emits IS NULL for null identity columns in UPDATE and DELETE', () => {
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false }
+    });
+
+    const sql = runner.generateSQL('public', 'log', {
+        updates: [{ primaryKey: { a: 1, note: null }, changes: { note: 'set' } }],
+        inserts: [],
+        deletes: [{ a: 2, note: null }]
+    });
+
+    assert.equal(
+        sql,
+        "UPDATE public.log SET note = 'set' WHERE a = 1 AND note IS NULL;\n\n" +
+            "DELETE FROM public.log WHERE a = 2 AND note IS NULL;"
+    );
 });
 
 test('generateSQL skips inserts where all fields are empty or null', () => {

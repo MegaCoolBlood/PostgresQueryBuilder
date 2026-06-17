@@ -7,7 +7,8 @@ const {
     hasSqlComment,
     collapseSqlWhitespace,
     splitTopLevelCommas,
-    splitTopLevelClauses
+    splitTopLevelClauses,
+    buildRowIdentity
 } = require(path.join(__dirname, '../../src/webview/tableView.js'));
 
 // ===== cellToString =====
@@ -165,3 +166,34 @@ test('splitTopLevelClauses places GROUP BY, ORDER BY and LIMIT on their own segm
         ]
     );
 });
+
+// ===== buildRowIdentity =====
+
+test('buildRowIdentity uses only the primary key columns when a PK exists', () => {
+    const row = { id: 7, name: 'Alice', age: 30 };
+    assert.deepEqual(buildRowIdentity(['id'], ['id', 'name', 'age'], row), { id: 7 });
+});
+
+test('buildRowIdentity supports composite primary keys', () => {
+    const row = { a: 1, b: 2, c: 3 };
+    assert.deepEqual(buildRowIdentity(['a', 'b'], ['a', 'b', 'c'], row), { a: 1, b: 2 });
+});
+
+test('buildRowIdentity falls back to all columns when there is no primary key', () => {
+    const row = { ts: '2026-01-01', level: 'info', msg: 'hi' };
+    assert.deepEqual(
+        buildRowIdentity([], ['ts', 'level', 'msg'], row),
+        { ts: '2026-01-01', level: 'info', msg: 'hi' }
+    );
+});
+
+test('buildRowIdentity keeps null values in the full-row fallback', () => {
+    const row = { a: 1, note: null };
+    assert.deepEqual(buildRowIdentity([], ['a', 'note'], row), { a: 1, note: null });
+});
+
+test('buildRowIdentity treats a missing primaryKeys argument as no primary key', () => {
+    const row = { a: 1, b: 2 };
+    assert.deepEqual(buildRowIdentity(undefined, ['a', 'b'], row), { a: 1, b: 2 });
+});
+

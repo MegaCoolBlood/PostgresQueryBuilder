@@ -342,9 +342,19 @@ export class QueryRunner {
 
                 const whereClauses: string[] = [];
                 for (const [col, val] of Object.entries(update.primaryKey)) {
-                    whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
-                    values.push(val);
-                    paramIndex++;
+                    if (val === null || val === undefined) {
+                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
+                    } else {
+                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
+                        values.push(val);
+                        paramIndex++;
+                    }
+                }
+
+                if (whereClauses.length === 0) {
+                    throw new Error(
+                        `Cannot UPDATE rows in ${schema}.${table}: no columns available to identify the row.`
+                    );
                 }
 
                 await client.query(
@@ -372,9 +382,19 @@ export class QueryRunner {
                 let paramIndex = 1;
 
                 for (const [col, val] of Object.entries(del)) {
-                    whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
-                    values.push(val);
-                    paramIndex++;
+                    if (val === null || val === undefined) {
+                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
+                    } else {
+                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
+                        values.push(val);
+                        paramIndex++;
+                    }
+                }
+
+                if (whereClauses.length === 0) {
+                    throw new Error(
+                        `Cannot DELETE rows from ${schema}.${table}: no columns available to identify the row.`
+                    );
                 }
 
                 await client.query(
@@ -414,7 +434,11 @@ export class QueryRunner {
 
             const whereClauses: string[] = [];
             for (const [col, val] of Object.entries(update.primaryKey)) {
-                whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
+                if (val === null || val === undefined) {
+                    whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
+                } else {
+                    whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
+                }
             }
 
             statements.push(
@@ -435,7 +459,11 @@ export class QueryRunner {
         for (const del of changes.deletes) {
             const whereClauses: string[] = [];
             for (const [col, val] of Object.entries(del)) {
-                whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
+                if (val === null || val === undefined) {
+                    whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
+                } else {
+                    whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
+                }
             }
             statements.push(
                 `DELETE FROM ${tableRef} WHERE ${whereClauses.join(' AND ')};`

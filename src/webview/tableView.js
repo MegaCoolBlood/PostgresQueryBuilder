@@ -562,6 +562,24 @@ function normalizeCellInput(rawText, isNumeric, thousandSeparator) {
     return newValue;
 }
 
+// Build the set of column/value pairs that uniquely identifies a row for an
+// UPDATE/DELETE WHERE clause. Tables with a primary key use only the PK
+// columns. Tables WITHOUT a primary key fall back to matching every column of
+// the row, so edits and deletes still target the correct row(s) instead of
+// producing an empty WHERE clause (which would fail or affect all rows).
+//
+// `columnNames` is the ordered list of all column names; `row` is the source
+// row object. NULL values are kept in the identity so the caller can emit
+// `IS NULL` for them.
+function buildRowIdentity(primaryKeys, columnNames, row) {
+    const id = {};
+    const keys = (primaryKeys && primaryKeys.length > 0) ? primaryKeys : (columnNames || []);
+    keys.forEach(col => {
+        id[col] = row ? row[col] : undefined;
+    });
+    return id;
+}
+
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 (function() {
     const vscode = acquireVsCodeApi();
@@ -2099,10 +2117,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         for (const [rowIdx, changedCols] of rowUpdates.entries()) {
-            const pk = {};
-            primaryKeys.forEach(pkCol => {
-                pk[pkCol] = allRows[rowIdx][pkCol];
-            });
+            const pk = buildRowIdentity(primaryKeys, columns.map(c => c.name), allRows[rowIdx]);
             changes.updates.push({ primaryKey: pk, changes: changedCols });
         }
 
@@ -2119,10 +2134,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
 
         for (const rowIdx of deletedRows) {
-            const pk = {};
-            primaryKeys.forEach(pkCol => {
-                pk[pkCol] = allRows[rowIdx][pkCol];
-            });
+            const pk = buildRowIdentity(primaryKeys, columns.map(c => c.name), allRows[rowIdx]);
             changes.deletes.push(pk);
         }
 
@@ -3152,6 +3164,7 @@ if (typeof module !== 'undefined' && module.exports) {
         buildFilterClause,
         rowValueMatchesFilter,
         compareCellValues,
-        normalizeCellInput
+        normalizeCellInput,
+        buildRowIdentity
     };
 }
