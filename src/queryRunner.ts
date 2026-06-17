@@ -117,19 +117,21 @@ export class QueryRunner {
         this.selectOptionsProvider = selectOptionsProvider ?? this.getDefaultSelectOptions;
     }
 
-    async fetchRows(schema: string, table: string, offset: number, limit: number): Promise<QueryResultRow[]> {
+    async fetchRows(schema: string, table: string, offset: number, limit: number, where?: string): Promise<QueryResultRow[]> {
         const tableReference = await this.getSelectTableReference(schema, table);
+        const whereSql = where && where.trim() ? ` WHERE ${where.trim()}` : '';
         const result = await this.connectionManager.query(
-            `SELECT * FROM ${tableReference} LIMIT $1 OFFSET $2`,
+            `SELECT * FROM ${tableReference}${whereSql} LIMIT $1 OFFSET $2`,
             [limit, offset]
         );
         return result.rows;
     }
 
-    async getRowCount(schema: string, table: string): Promise<number> {
+    async getRowCount(schema: string, table: string, where?: string): Promise<number> {
         const tableReference = await this.getSelectTableReference(schema, table);
+        const whereSql = where && where.trim() ? ` WHERE ${where.trim()}` : '';
         const result = await this.connectionManager.query(
-            `SELECT COUNT(*) as count FROM ${tableReference}`
+            `SELECT COUNT(*) as count FROM ${tableReference}${whereSql}`
         );
         return parseInt(result.rows[0].count, 10);
     }

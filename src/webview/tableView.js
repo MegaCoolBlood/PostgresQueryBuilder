@@ -503,6 +503,77 @@ function buildNullConstraintClause(fmtCol, isNull) {
     return `${fmtCol} IS ${isNull ? 'NULL' : 'NOT NULL'}`;
 }
 
+// Operators offered in the permanent-constraint editor. Mirrors the Join
+// dialog's fixed-condition operators so both editors behave identically.
+const CONSTRAINT_OPERATORS = ['=', '<>', '<', '<=', '>', '>=', 'LIKE', 'ILIKE', 'BETWEEN', 'IS NULL', 'IS NOT NULL'];
+
+// True for operators that take no right-hand operand.
+function constraintIsUnary(operator) {
+    const op = (operator || '').toUpperCase();
+    return op === 'IS NULL' || op === 'IS NOT NULL';
+}
+
+// True for the BETWEEN operator (two right-hand operands joined by AND).
+function constraintIsBetween(operator) {
+    return (operator || '').toUpperCase() === 'BETWEEN';
+}
+
+// Render a single constraint operand to SQL text. A `column` operand is quoted
+// via the supplied `formatCol` callback; a `raw` operand is emitted verbatim.
+function formatConstraintOperand(op, formatCol) {
+    if (!op) {
+        return '';
+    }
+    if (op.kind === 'column') {
+        const col = (op.column || '').trim();
+        if (!col) {
+            return '';
+        }
+        return formatCol ? formatCol(col) : col;
+    }
+    return (op.text || '').trim();
+}
+
+// Build the SQL text for one permanent constraint condition. Returns an empty
+// string when required operands are missing, so incomplete rows are skipped.
+function formatConstraintCondition(cond, formatCol) {
+    if (!cond) {
+        return '';
+    }
+    const op = (cond.operator || '').toUpperCase();
+    const left = formatConstraintOperand(cond.left, formatCol);
+    if (!left) {
+        return '';
+    }
+    if (constraintIsUnary(op)) {
+        return `${left} ${op}`;
+    }
+    if (constraintIsBetween(op)) {
+        const r1 = formatConstraintOperand(cond.right, formatCol);
+        const r2 = formatConstraintOperand(cond.right2, formatCol);
+        if (!r1 || !r2) {
+            return '';
+        }
+        return `${left} BETWEEN ${r1} AND ${r2}`;
+    }
+    const right = formatConstraintOperand(cond.right, formatCol);
+    if (!right) {
+        return '';
+    }
+    return `${left} ${op} ${right}`;
+}
+
+// Join all permanent constraint conditions into a single WHERE clause body.
+function buildConstraintWhere(conditions, formatCol) {
+    if (!Array.isArray(conditions)) {
+        return '';
+    }
+    return conditions
+        .map((c) => formatConstraintCondition(c, formatCol))
+        .filter((s) => s)
+        .join(' AND ');
+}
+
 // Predicate for local (in-memory) row filtering. Returns true when `cellVal`
 // passes the given column filter. A filter that cannot constrain the data
 // (empty range, invalid number) matches every row.
@@ -605,6 +676,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let thousandSeparator = ' ';
     let totalCount = 0;
     let currentOffset = 0;
+    // Permanent per-table WHERE constraints (array of ConstraintCondition).
+    // Applied to the default table view's query every time it loads.
+    let permanentConstraints = [];
     let lastUsedConnection = '';
     let currentConnection = '';
     // Read-only mode: set when the view is opened for an ad-hoc SELECT (e.g.
@@ -904,6 +978,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         table = msg.table;
         tableReference = msg.tableReference || '';
         alwaysQuote = Boolean(msg.alwaysQuote);
+        permanentConstraints = Array.isArray(msg.permanentConstraints) ? msg.permanentConstraints : [];
         if (msg.thousandSeparator !== undefined) { thousandSeparator = msg.thousandSeparator; }
         if (typeof msg.connectionName === 'string') {
             currentConnection = msg.connectionName;
@@ -922,10 +997,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         tableName.textContent = `${schema}.${table}`;
-        setQueryText(`SELECT * FROM ${getDefaultTableReference()}`);
+        setQueryText(getDefaultQuery());
         // Standard table view: load the table and its relation metadata.
         metaLoading.classList.remove('hidden');
-        vscode.postMessage({ command: 'loadData', offset: 0, limit: PAGE_SIZE });
+        postDefaultLoadData(0);
         vscode.postMessage({ command: 'getQueryHistory' });
     }
 
@@ -962,7 +1037,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         tableName.textContent = `${schema}.${table}`;
-        setQueryText(`SELECT * FROM ${getDefaultTableReference()}`);
+        setQueryText(getDefaultQuery());
         dataLoading.classList.add('hidden');
         updateRowCount();
         renderTable();
@@ -2088,7 +2163,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             return;
         }
         currentOffset += PAGE_SIZE;
-        vscode.postMessage({ command: 'loadData', offset: currentOffset, limit: PAGE_SIZE });
+        postDefaultLoadData(currentOffset);
     }
 
     function updateChangeIndicator() {
@@ -2222,7 +2297,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         insertedRows = [];
         duplicatedRows = [];
         currentOffset = 0;
-        vscode.postMessage({ command: 'loadData', offset: 0, limit: PAGE_SIZE });
+        postDefaultLoadData(0);
     }
 
     function discardChanges() {
@@ -2231,7 +2306,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         insertedRows = [];
         duplicatedRows = [];
         currentOffset = 0;
-        vscode.postMessage({ command: 'loadData', offset: 0, limit: PAGE_SIZE });
+        postDefaultLoadData(0);
         updateChangeIndicator();
     }
 
@@ -2242,6 +2317,156 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             changeCount.style.color = '';
             updateChangeIndicator();
         }, 5000);
+    }
+
+    // ===== Permanent Constraints Dialog Logic =====
+    const constraintsBtn = document.getElementById('constraintsBtn');
+    const constraintsDialogOverlay = document.getElementById('constraintsDialogOverlay');
+    const constraintsDialogClose = document.getElementById('constraintsDialogClose');
+    const constraintsList = document.getElementById('constraintsList');
+    const constraintsAdd = document.getElementById('constraintsAdd');
+    const constraintsSave = document.getElementById('constraintsSave');
+    const constraintsCancel = document.getElementById('constraintsCancel');
+    const constraintsPreview = document.getElementById('constraintsPreview');
+
+    // Working copy edited in the dialog; committed to permanentConstraints on Save.
+    let constraintDraft = [];
+
+    if (constraintsBtn) constraintsBtn.addEventListener('click', openConstraintsDialog);
+    if (constraintsDialogClose) constraintsDialogClose.addEventListener('click', closeConstraintsDialog);
+    if (constraintsCancel) constraintsCancel.addEventListener('click', closeConstraintsDialog);
+    if (constraintsAdd) constraintsAdd.addEventListener('click', () => {
+        const cols = columns || [];
+        const left = cols.length ? { kind: 'column', column: cols[0].name } : { kind: 'raw', text: '' };
+        constraintDraft.push({ operator: '=', left, right: { kind: 'raw', text: '' } });
+        renderConstraintRows();
+    });
+    if (constraintsSave) constraintsSave.addEventListener('click', saveConstraints);
+
+    function openConstraintsDialog() {
+        // Deep-clone current constraints into a draft so Cancel discards edits.
+        constraintDraft = JSON.parse(JSON.stringify(permanentConstraints || []));
+        renderConstraintRows();
+        constraintsDialogOverlay.style.display = 'flex';
+    }
+
+    function closeConstraintsDialog() {
+        constraintsDialogOverlay.style.display = 'none';
+    }
+
+    // Render the dropdown + optional text input for one operand of a constraint.
+    // Mirrors the Join dialog's fixed-condition operandControls design.
+    function constraintOperandControls(ci, side, operand) {
+        const cols = columns || [];
+        const op = operand || { kind: 'raw', text: '' };
+        const colOpts = cols.map(c => {
+            const sel = op.kind === 'column' && op.column === c.name;
+            return '<option value="c\u0001' + escapeAttr(c.name) + '" ' + (sel ? 'selected' : '') + '>' + escapeHtml(c.name) + '</option>';
+        }).join('');
+        const rawSel = op.kind === 'raw' ? 'selected' : '';
+        const sel = '<select class="operand-kind" data-cons-op="' + ci + ':' + side + '">' +
+            colOpts +
+            '<option value="__raw__" ' + rawSel + '>Custom value…</option>' +
+            '</select>';
+        const rawInput = op.kind === 'raw'
+            ? '<input class="cust-raw" data-cons-raw="' + ci + ':' + side + '" value="' + escapeAttr(op.text || '') + '" placeholder="value / expression">'
+            : '';
+        return sel + rawInput;
+    }
+
+    function renderConstraintRows() {
+        let html = '';
+        constraintDraft.forEach((c, ci) => {
+            const operatorOpts = CONSTRAINT_OPERATORS.map(o =>
+                '<option ' + (o === c.operator ? 'selected' : '') + '>' + o + '</option>'
+            ).join('');
+            let row = '<div class="cond-row">' +
+                constraintOperandControls(ci, 'left', c.left) +
+                '<select class="operand-operator" data-cons-operator="' + ci + '">' + operatorOpts + '</select>';
+            if (constraintIsBetween(c.operator)) {
+                row += constraintOperandControls(ci, 'right', c.right) +
+                    '<span>AND</span>' +
+                    constraintOperandControls(ci, 'right2', c.right2);
+            } else if (!constraintIsUnary(c.operator)) {
+                row += constraintOperandControls(ci, 'right', c.right);
+            }
+            row += '<button class="btn btn-default" data-cons-rm="' + ci + '">Remove</button></div>';
+            html += row;
+        });
+        constraintsList.innerHTML = html;
+        bindConstraintRows();
+        updateConstraintPreview();
+    }
+
+    function bindConstraintRows() {
+        constraintsList.querySelectorAll('[data-cons-operator]').forEach(seln => {
+            seln.onchange = () => {
+                const ci = Number(seln.dataset.consOperator);
+                const c = constraintDraft[ci];
+                c.operator = seln.value;
+                if (constraintIsUnary(c.operator)) {
+                    delete c.right; delete c.right2;
+                } else if (constraintIsBetween(c.operator)) {
+                    if (!c.right) c.right = { kind: 'raw', text: '' };
+                    if (!c.right2) c.right2 = { kind: 'raw', text: '' };
+                } else {
+                    if (!c.right) c.right = { kind: 'raw', text: '' };
+                    delete c.right2;
+                }
+                renderConstraintRows();
+            };
+        });
+        constraintsList.querySelectorAll('[data-cons-op]').forEach(seln => {
+            seln.onchange = () => {
+                const parts = seln.dataset.consOp.split(':');
+                const c = constraintDraft[Number(parts[0])];
+                const side = parts[1];
+                const raw = seln.value;
+                let operand;
+                if (raw === '__raw__') {
+                    operand = { kind: 'raw', text: '' };
+                } else {
+                    const si = raw.indexOf('\u0001');
+                    operand = { kind: 'column', column: raw.slice(si + 1) };
+                }
+                c[side] = operand;
+                renderConstraintRows();
+            };
+        });
+        constraintsList.querySelectorAll('[data-cons-raw]').forEach(inp => {
+            inp.oninput = () => {
+                const parts = inp.dataset.consRaw.split(':');
+                const c = constraintDraft[Number(parts[0])];
+                const side = parts[1];
+                if (!c[side] || c[side].kind !== 'raw') c[side] = { kind: 'raw', text: '' };
+                c[side].text = inp.value;
+                updateConstraintPreview();
+            };
+        });
+        constraintsList.querySelectorAll('[data-cons-rm]').forEach(b => {
+            b.onclick = () => {
+                constraintDraft.splice(Number(b.dataset.consRm), 1);
+                renderConstraintRows();
+            };
+        });
+    }
+
+    function updateConstraintPreview() {
+        const where = buildConstraintWhere(constraintDraft, formatIdentifier);
+        constraintsPreview.textContent = where
+            ? `SELECT * FROM ${getDefaultTableReference()} WHERE ${where}`
+            : `SELECT * FROM ${getDefaultTableReference()}`;
+    }
+
+    function saveConstraints() {
+        // Drop incomplete rows so persisted constraints always format to SQL.
+        permanentConstraints = constraintDraft.filter(c => formatConstraintCondition(c, formatIdentifier));
+        vscode.postMessage({ command: 'savePermanentConstraints', conditions: permanentConstraints });
+        closeConstraintsDialog();
+        setQueryText(getDefaultQuery());
+        currentOffset = 0;
+        dataLoading.classList.remove('hidden');
+        postDefaultLoadData(0);
     }
 
     // ===== Export Dialog Logic =====
@@ -2434,6 +2659,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         return `${formatIdentifier(schema)}.${formattedTable}`;
+    }
+
+    // SQL WHERE body for the permanent constraints, or '' when none apply.
+    function getDefaultWhere() {
+        return buildConstraintWhere(permanentConstraints, formatIdentifier);
+    }
+
+    // The default table-view query including any permanent WHERE constraints.
+    function getDefaultQuery() {
+        const where = getDefaultWhere();
+        return `SELECT * FROM ${getDefaultTableReference()}${where ? ` WHERE ${where}` : ''}`;
+    }
+
+    // Post a default-path loadData request carrying the permanent WHERE so the
+    // extension applies it to fetchRows/getRowCount.
+    function postDefaultLoadData(offset) {
+        vscode.postMessage({ command: 'loadData', offset: offset, limit: PAGE_SIZE, where: getDefaultWhere() });
     }
 
     // NOTE: Keep in sync with formatIdentifier/needsQuoting in src/queryRunner.ts
@@ -3244,6 +3486,12 @@ if (typeof module !== 'undefined' && module.exports) {
         filterOperatorForMode,
         buildFilterClause,
         buildNullConstraintClause,
+        CONSTRAINT_OPERATORS,
+        constraintIsUnary,
+        constraintIsBetween,
+        formatConstraintOperand,
+        formatConstraintCondition,
+        buildConstraintWhere,
         rowValueMatchesFilter,
         compareCellValues,
         normalizeCellInput,

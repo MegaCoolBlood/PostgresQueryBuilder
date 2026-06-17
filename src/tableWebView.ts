@@ -3,6 +3,7 @@ import { ConnectionManager } from './connectionManager';
 import { QueryRunner, buildRelationListQuery } from './queryRunner';
 import { ExportService } from './exportService';
 import { ColumnMappingManager } from './columnMappingManager';
+import { PermanentConstraintManager } from './permanentConstraintManager';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
 import { getErrorMessage } from './logger';
 import * as path from 'path';
@@ -25,13 +26,15 @@ export class TableWebViewManager {
     private connectionManager: ConnectionManager;
     private exportService: ExportService;
     private columnMappingManager: ColumnMappingManager;
+    private permanentConstraintManager: PermanentConstraintManager;
     private modifyHistoryStore?: ModifyHistoryStore;
 
-    constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager, columnMappingManager: ColumnMappingManager, modifyHistoryStore?: ModifyHistoryStore) {
+    constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager, columnMappingManager: ColumnMappingManager, permanentConstraintManager: PermanentConstraintManager, modifyHistoryStore?: ModifyHistoryStore) {
         this.context = context;
         this.connectionManager = connectionManager;
         this.exportService = new ExportService(context);
         this.columnMappingManager = columnMappingManager;
+        this.permanentConstraintManager = permanentConstraintManager;
         this.modifyHistoryStore = modifyHistoryStore;
 
         // Push refreshed mappings to every open panel when the underlying store
@@ -108,7 +111,8 @@ export class TableWebViewManager {
             alwaysQuote: alwaysQuote,
             tableReference: tableReference,
             thousandSeparator: thousandSeparator,
-            connectionName: this.getConnectionName()
+            connectionName: this.getConnectionName(),
+            permanentConstraints: this.permanentConstraintManager.getConstraints(schema, table)
         });
 
         // Push connection updates to the webview while it's open
@@ -158,6 +162,7 @@ export class TableWebViewManager {
         addCustomMapping: this.handleAddCustomMapping,
         updateCustomMapping: this.handleUpdateCustomMapping,
         deleteCustomMapping: this.handleDeleteCustomMapping,
+        savePermanentConstraints: this.handleSavePermanentConstraints,
         getTablesForTypeahead: this.handleGetTablesForTypeahead,
         getColumnsForTypeahead: this.handleGetColumnsForTypeahead,
         browseExportLocation: this.handleBrowseExportLocation,
@@ -170,6 +175,9 @@ export class TableWebViewManager {
         const { panel, schema, table, key, message, queryRunner } = ctx;
         const selectBuildInfo = await queryRunner.getSelectBuildInfo(schema, table);
 
+        // Optional permanent WHERE constraint applied to the default table view.
+        const where = typeof message.where === 'string' ? message.where : '';
+
         // Start metadata fetches in parallel with data fetch
         const pkPromise = queryRunner.getPrimaryKeys(schema, table);
         const fkPromise = queryRunner.getForeignKeys(schema, table);
@@ -178,9 +186,9 @@ export class TableWebViewManager {
         // Fetch rows + columns (fast essentials)
         const columns = await queryRunner.getColumns(schema, table);
         const data = await queryRunner.fetchRows(
-            schema, table, message.offset || 0, message.limit || 50
+            schema, table, message.offset || 0, message.limit || 50, where
         );
-        const totalCount = await queryRunner.getRowCount(schema, table);
+        const totalCount = await queryRunner.getRowCount(schema, table, where);
 
         panel.webview.postMessage({
             command: 'dataLoaded',
@@ -348,6 +356,13 @@ export class TableWebViewManager {
 
     private async handleDeleteCustomMapping(ctx: MessageContext): Promise<void> {
         await this.columnMappingManager.deleteMapping(ctx.message.mappingId);
+    }
+
+    private async handleSavePermanentConstraints(ctx: MessageContext): Promise<void> {
+        const { schema, table, message } = ctx;
+        await this.permanentConstraintManager.setConstraints(
+            schema, table, Array.isArray(message.conditions) ? message.conditions : []
+        );
     }
 
     private async handleGetTablesForTypeahead(ctx: MessageContext): Promise<void> {

@@ -20,6 +20,7 @@
                 <button class="btn btn-primary" id="insertRowBtn" title="Insert new row">+ Insert Row</button>
                 <button class="btn btn-success" id="commitBtn" title="Save all changes" disabled>Save</button>
                 <button class="btn btn-warning" id="discardBtn" title="Discard all changes" disabled>Discard Changes</button>
+                <button class="btn btn-default" id="constraintsBtn" title="Add permanent constraints applied every time this table is viewed">Constraints</button>
                 <button class="btn btn-default" id="exportBtn" title="Export data">Export</button>
                 <button class="btn btn-default" id="loadMoreBtn" title="Load more rows">Load More</button>
             </div>
@@ -289,6 +290,30 @@
             <div class="sql-dialog-footer">
                 <span class="record-dialog-status" id="recordDialogStatus"></span>
                 <button class="btn btn-default" id="recordDialogCloseBtn">Close</button>
+            </div>
+        </div>
+    </div>
+    <!-- Permanent Constraints Dialog -->
+    <div class="sql-dialog-overlay" id="constraintsDialogOverlay" style="display:none;">
+        <div class="sql-dialog constraints-dialog">
+            <div class="sql-dialog-header">
+                <span>Permanent Constraints</span>
+                <button class="sql-dialog-close" id="constraintsDialogClose">&times;</button>
+            </div>
+            <div class="constraints-dialog-content">
+                <p class="mapping-hint">These conditions are applied to the WHERE clause every time you open this table.</p>
+                <div id="constraintsList"></div>
+                <div class="cond-row">
+                    <button class="btn btn-default" id="constraintsAdd">+ Add fixed condition</button>
+                </div>
+                <div class="constraints-preview-wrap">
+                    <label>Preview:</label>
+                    <pre class="constraints-preview" id="constraintsPreview"></pre>
+                </div>
+            </div>
+            <div class="sql-dialog-footer">
+                <button class="btn btn-primary" id="constraintsSave">Save &amp; Apply</button>
+                <button class="btn btn-default" id="constraintsCancel">Cancel</button>
             </div>
         </div>
     </div>

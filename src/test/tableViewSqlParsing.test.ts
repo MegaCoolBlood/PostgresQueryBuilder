@@ -10,7 +10,12 @@ const {
     whereClauseTargetsColumn,
     parseSqlForOrder,
     formatSql,
-    buildNullConstraintClause
+    buildNullConstraintClause,
+    constraintIsUnary,
+    constraintIsBetween,
+    formatConstraintOperand,
+    formatConstraintCondition,
+    buildConstraintWhere
 } = require(path.join(__dirname, '../../src/webview/tableView.js'));
 
 // ===== 0.2.0: "Load More" for custom queries (stripTrailingLimitOffset) =====
@@ -281,4 +286,77 @@ test('IS NOT NULL clause replaces an existing constraint on the same column', ()
         `SELECT * FROM t WHERE "other" = 1 AND "status" IS NOT NULL`
     );
 });
+
+// ===== 1.3.0: permanent per-table constraints (fixed-condition design) =====
+
+// Quote-everything column formatter, matching the webview's alwaysQuote mode.
+const fmtCol = (c: string) => `"${String(c).replace(/"/g, '""')}"`;
+
+test('constraintIsUnary recognises IS NULL / IS NOT NULL', () => {
+    assert.equal(constraintIsUnary('IS NULL'), true);
+    assert.equal(constraintIsUnary('is not null'), true);
+    assert.equal(constraintIsUnary('='), false);
+});
+
+test('constraintIsBetween recognises BETWEEN', () => {
+    assert.equal(constraintIsBetween('BETWEEN'), true);
+    assert.equal(constraintIsBetween('between'), true);
+    assert.equal(constraintIsBetween('='), false);
+});
+
+test('formatConstraintOperand quotes a column operand via the formatter', () => {
+    assert.equal(formatConstraintOperand({ kind: 'column', column: 'valid_from' }, fmtCol), '"valid_from"');
+});
+
+test('formatConstraintOperand emits a raw operand verbatim', () => {
+    assert.equal(formatConstraintOperand({ kind: 'raw', text: 'CURRENT_TIMESTAMP' }, fmtCol), 'CURRENT_TIMESTAMP');
+});
+
+test('formatConstraintCondition builds a binary condition', () => {
+    const cond = { operator: '=', left: { kind: 'column', column: 'status' }, right: { kind: 'raw', text: "'active'" } };
+    assert.equal(formatConstraintCondition(cond, fmtCol), `"status" = 'active'`);
+});
+
+test('formatConstraintCondition builds an IS NOT NULL condition', () => {
+    const cond = { operator: 'IS NOT NULL', left: { kind: 'column', column: 'deleted_at' } };
+    assert.equal(formatConstraintCondition(cond, fmtCol), '"deleted_at" IS NOT NULL');
+});
+
+test('formatConstraintCondition builds a BETWEEN condition', () => {
+    const cond = {
+        operator: 'BETWEEN',
+        left: { kind: 'raw', text: 'CURRENT_TIMESTAMP' },
+        right: { kind: 'column', column: 'valid_from' },
+        right2: { kind: 'column', column: 'valid_to' }
+    };
+    assert.equal(formatConstraintCondition(cond, fmtCol), 'CURRENT_TIMESTAMP BETWEEN "valid_from" AND "valid_to"');
+});
+
+test('formatConstraintCondition returns empty string when an operand is missing', () => {
+    assert.equal(formatConstraintCondition({ operator: '=', left: { kind: 'column', column: 'a' } }, fmtCol), '');
+    assert.equal(formatConstraintCondition({ operator: 'BETWEEN', left: { kind: 'column', column: 'a' }, right: { kind: 'raw', text: '1' } }, fmtCol), '');
+});
+
+test('buildConstraintWhere joins multiple conditions with AND and skips incomplete rows', () => {
+    const conditions = [
+        { operator: '=', left: { kind: 'column', column: 'status' }, right: { kind: 'raw', text: "'active'" } },
+        { operator: '=', left: { kind: 'column', column: 'incomplete' } },
+        {
+            operator: 'BETWEEN',
+            left: { kind: 'raw', text: 'CURRENT_TIMESTAMP' },
+            right: { kind: 'column', column: 'valid_from' },
+            right2: { kind: 'column', column: 'valid_to' }
+        }
+    ];
+    assert.equal(
+        buildConstraintWhere(conditions, fmtCol),
+        `"status" = 'active' AND CURRENT_TIMESTAMP BETWEEN "valid_from" AND "valid_to"`
+    );
+});
+
+test('buildConstraintWhere returns empty string for no conditions', () => {
+    assert.equal(buildConstraintWhere([], fmtCol), '');
+    assert.equal(buildConstraintWhere(undefined, fmtCol), '');
+});
+
 

@@ -746,6 +746,45 @@ td.has-fk-btn > .fk-btn {
     max-height: 65vh;
 }
 
+/* Permanent Constraints Dialog (reuses Join dialog fixed-condition design) */
+.constraints-dialog {
+    max-width: 640px;
+}
+
+.constraints-dialog-content {
+    padding: 14px;
+    overflow-y: auto;
+    flex: 1;
+    max-height: 65vh;
+}
+
+.constraints-dialog-content .cond-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+}
+
+.constraints-dialog-content .cust-raw {
+    width: 160px;
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.constraints-preview-wrap {
+    margin-top: 12px;
+}
+
+.constraints-preview {
+    background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.1));
+    padding: 8px;
+    border-radius: 4px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-height: 1.2em;
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+
 .mapping-fieldset {
     border: 1px solid var(--vscode-panel-border);
     border-radius: 4px;

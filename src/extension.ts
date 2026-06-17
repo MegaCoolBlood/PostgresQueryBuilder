@@ -7,6 +7,7 @@ import { SearchViewProvider } from './searchViewProvider';
 import { ModifyHistoryStore } from './modifyHistoryStore';
 import { ModifyHistoryViewProvider } from './modifyHistoryViewProvider';
 import { ColumnMappingManager } from './columnMappingManager';
+import { PermanentConstraintManager } from './permanentConstraintManager';
 import { ManageMappingsPanel } from './manageMappingsPanel';
 import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore } from './tableStatementDrop';
@@ -18,6 +19,7 @@ let tableWebViewManager: TableWebViewManager;
 let sqlEditorManager: SqlEditorManager;
 let modifyHistoryStore: ModifyHistoryStore;
 let columnMappingManager: ColumnMappingManager;
+let permanentConstraintManager: PermanentConstraintManager;
 let viewDataFromSelect: ViewDataFromSelect;
 let statusBarItem: vscode.StatusBarItem;
 let outputChannel: vscode.OutputChannel;
@@ -195,7 +197,8 @@ export function activate(context: vscode.ExtensionContext) {
         tableExplorer = new TableExplorerProvider(connectionManager);
         modifyHistoryStore = new ModifyHistoryStore(context);
         columnMappingManager = new ColumnMappingManager(context);
-        tableWebViewManager = new TableWebViewManager(context, connectionManager, columnMappingManager, modifyHistoryStore);
+        permanentConstraintManager = new PermanentConstraintManager(context);
+        tableWebViewManager = new TableWebViewManager(context, connectionManager, columnMappingManager, permanentConstraintManager, modifyHistoryStore);
         sqlEditorManager = new SqlEditorManager(context, connectionManager, modifyHistoryStore);
         viewDataFromSelect = new ViewDataFromSelect(context, connectionManager, tableWebViewManager);
 
