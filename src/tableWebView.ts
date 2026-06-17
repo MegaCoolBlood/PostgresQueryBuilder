@@ -185,6 +185,21 @@ export class TableWebViewManager {
 
         // Fetch rows + columns (fast essentials)
         const columns = await queryRunner.getColumns(schema, table);
+
+        // Push the column list to the webview as soon as it is available so the
+        // table header renders immediately — even while the (potentially slow)
+        // row and count queries are still running. This lets the user add a
+        // permanent constraint before the data has finished loading.
+        panel.webview.postMessage({
+            command: 'columnsLoaded',
+            columns: columns,
+            schema: schema,
+            table: table,
+            alwaysQuote: selectBuildInfo.alwaysQuote,
+            tableReference: selectBuildInfo.tableReference,
+            offset: message.offset || 0
+        });
+
         const data = await queryRunner.fetchRows(
             schema, table, message.offset || 0, message.limit || 50, where
         );

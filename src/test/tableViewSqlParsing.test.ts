@@ -15,7 +15,8 @@ const {
     constraintIsBetween,
     formatConstraintOperand,
     formatConstraintCondition,
-    buildConstraintWhere
+    buildConstraintWhere,
+    shouldRenderEarlyColumns
 } = require(path.join(__dirname, '../../src/webview/tableView.js'));
 
 // ===== 0.2.0: "Load More" for custom queries (stripTrailingLimitOffset) =====
@@ -358,5 +359,22 @@ test('buildConstraintWhere returns empty string for no conditions', () => {
     assert.equal(buildConstraintWhere([], fmtCol), '');
     assert.equal(buildConstraintWhere(undefined, fmtCol), '');
 });
+
+// ===== 1.3.0: early column rendering while data is still loading =====
+
+test('shouldRenderEarlyColumns is true for the initial page of a table view', () => {
+    assert.equal(shouldRenderEarlyColumns(0, false), true);
+    assert.equal(shouldRenderEarlyColumns(undefined, false), true);
+});
+
+test('shouldRenderEarlyColumns is false for paged "Load More" requests', () => {
+    assert.equal(shouldRenderEarlyColumns(50, false), false);
+    assert.equal(shouldRenderEarlyColumns(100, false), false);
+});
+
+test('shouldRenderEarlyColumns is false while a custom query is active', () => {
+    assert.equal(shouldRenderEarlyColumns(0, true), false);
+});
+
 
 

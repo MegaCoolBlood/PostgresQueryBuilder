@@ -574,6 +574,17 @@ function buildConstraintWhere(conditions, formatCol) {
         .join(' AND ');
 }
 
+// Decide whether an early `columnsLoaded` message should render the header.
+// Only the initial page (offset 0) of a standard table view qualifies: paged
+// "Load More" requests already have columns, and custom-query results must keep
+// their own column list.
+function shouldRenderEarlyColumns(offset, customQueryActive) {
+    if (customQueryActive) {
+        return false;
+    }
+    return !offset || offset <= 0;
+}
+
 // Predicate for local (in-memory) row filtering. Returns true when `cellVal`
 // passes the given column filter. A filter that cannot constrain the data
 // (empty range, invalid number) matches every row.
@@ -917,6 +928,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'dataLoaded':
                 handleDataLoaded(msg);
                 break;
+            case 'columnsLoaded':
+                handleColumnsLoaded(msg);
+                break;
             case 'primaryKeysLoaded':
                 handlePrimaryKeysLoaded(msg);
                 break;
@@ -1009,6 +1023,24 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         [insertRowBtn, commitBtn, discardBtn].forEach(btn => {
             if (btn) btn.style.display = 'none';
         });
+    }
+
+    function handleColumnsLoaded(msg) {
+        // Columns arrive before the (possibly slow) row/count queries finish.
+        // Render the header right away so the grid structure and the
+        // "Constraints" editor become usable while data is still loading.
+        // Ignore for paged "Load More" requests (columns already known) and for
+        // custom-query results (don't clobber their column list).
+        if (!shouldRenderEarlyColumns(msg.offset, customQueryActive)) {
+            return;
+        }
+        columns = msg.columns || [];
+        schema = msg.schema;
+        table = msg.table;
+        tableReference = msg.tableReference || '';
+        alwaysQuote = Boolean(msg.alwaysQuote);
+        tableName.textContent = `${schema}.${table}`;
+        renderHeader();
     }
 
     function handleDataLoaded(msg) {
@@ -3492,6 +3524,7 @@ if (typeof module !== 'undefined' && module.exports) {
         formatConstraintOperand,
         formatConstraintCondition,
         buildConstraintWhere,
+        shouldRenderEarlyColumns,
         rowValueMatchesFilter,
         compareCellValues,
         normalizeCellInput,
