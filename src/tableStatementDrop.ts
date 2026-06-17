@@ -346,23 +346,28 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
             if (candidates.length === 0) {
                 return undefined;
             }
-            const newOnes = candidates.filter(
+            // The same table may be added again as another instance (with its
+            // own alias and join clause), so duplicates are not filtered out.
+            // Only genuinely new tables need their metadata fetched; build a
+            // de-duplicated set for the join-data query.
+            const trulyNew = candidates.filter(
                 d => !currentSet.some(c => c.schema === d.schema && c.table === d.table)
             );
-            if (newOnes.length === 0) {
-                return undefined;
+            const uniqueCombined: DraggedTable[] = [];
+            for (const t of [...currentSet, ...trulyNew]) {
+                if (!uniqueCombined.some(u => u.schema === t.schema && u.table === t.table)) {
+                    uniqueCombined.push(t);
+                }
             }
-
-            const combined = [...currentSet, ...newOnes];
             let combinedData: Awaited<ReturnType<QueryRunner['getMultiTableJoinData']>>;
             try {
-                combinedData = await this.queryRunner.getMultiTableJoinData(combined);
+                combinedData = await this.queryRunner.getMultiTableJoinData(uniqueCombined);
             } catch (err: unknown) {
                 vscode.window.showErrorMessage(`Failed to add tables to JOIN: ${getErrorMessage(err)}`);
                 return undefined;
             }
 
-            const newDialogTables: JoinDialogTable[] = newOnes.map(n => {
+            const newDialogTables: JoinDialogTable[] = candidates.map(n => {
                 const td = combinedData.tables.find(t => t.schema === n.schema && t.table === n.table)!;
                 return {
                     schema: td.schema,
@@ -393,7 +398,7 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
                 }
             }
 
-            currentSet.push(...newOnes);
+            currentSet.push(...candidates);
             return { tables: newDialogTables, fkEdges: edges };
         };
 
@@ -418,8 +423,10 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
     }
 
     /**
-     * Show a multi-select quick pick of all tables not already in the join,
-     * used when the user clicks the dialog's "Add tables…" affordance.
+     * Show a multi-select quick pick of all tables, used when the user clicks
+     * the dialog's "Add tables…" affordance. Tables already in the join are
+     * included too, so the same table can be added again as another instance
+     * with its own alias and join clause (e.g. a self-join).
      */
     private async promptForTables(
         current: ReadonlyArray<DraggedTable>
@@ -431,15 +438,19 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
             vscode.window.showErrorMessage(`Failed to list tables: ${getErrorMessage(err)}`);
             return [];
         }
-        const available = all.filter(
-            t => !current.some(c => c.schema === t.schema && c.table === t.table)
-        );
-        if (available.length === 0) {
-            vscode.window.showInformationMessage('No further tables available to add.');
+        if (all.length === 0) {
+            vscode.window.showInformationMessage('No tables available to add.');
             return [];
         }
+        const inJoin = (t: { schema: string; table: string }) =>
+            current.some(c => c.schema === t.schema && c.table === t.table);
         const picks = await vscode.window.showQuickPick(
-            available.map(t => ({ label: `${t.schema}.${t.table}`, schema: t.schema, table: t.table })),
+            all.map(t => ({
+                label: `${t.schema}.${t.table}`,
+                description: inJoin(t) ? 'already in join — adds another instance' : undefined,
+                schema: t.schema,
+                table: t.table
+            })),
             {
                 canPickMany: true,
                 title: 'Add tables to JOIN',

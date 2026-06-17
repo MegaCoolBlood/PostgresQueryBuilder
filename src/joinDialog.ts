@@ -1,6 +1,19 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { buildJoinSelect, JoinClause, JoinTableSpec, JoinType } from './statementBuilder';
 import { getNonce, buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
+
+/**
+ * Source of the shared join-dialog helper logic, inlined into the webview
+ * script so the browser side and the unit tests use the exact same code.
+ * Located under `src/webview` (shipped with the extension); resolved relative
+ * to the compiled `out/` directory.
+ */
+function loadJoinDialogLogic(): string {
+    const file = path.join(__dirname, '..', 'src', 'webview', 'joinDialogLogic.js');
+    return fs.readFileSync(file, 'utf8');
+}
 
 export interface JoinDialogTable {
     schema: string;
@@ -206,6 +219,8 @@ function getHtml(
     const JOIN_TYPES = ${joinTypes};
     const data = ${data};
 
+    ${loadJoinDialogLogic()}
+
     // order: array of original table indices in display order
     let order = data.tables.map((_, i) => i);
     // aliases keyed by original index
@@ -255,10 +270,6 @@ function getHtml(
             });
         }
     });
-
-    function origIdxByName(schema, table) {
-        return data.tables.findIndex(t => t.schema === schema && t.table === table);
-    }
 
     function sameEdge(a, b) {
         return a.fromSchema === b.fromSchema && a.fromTable === b.fromTable && a.fromColumn === b.fromColumn
@@ -591,49 +602,13 @@ function getHtml(
     }
 
     // Auto-derive a join clause for a newly added table from known FK edges to
-    // tables that already precede it in the current order.
+    // tables that already precede it in the current order. Delegates to the
+    // shared, name-based helper so duplicate table instances get the same ON
+    // conditions that were offered when the table was first added.
     function computeAutoJoin(origIdx) {
-        const pos = order.indexOf(origIdx);
-        const earlier = new Set(order.slice(0, pos));
-        const conn = identityEdges.filter(e => {
-            const fi = origIdxByName(e.fromSchema, e.fromTable);
-            const ti = origIdxByName(e.toSchema, e.toTable);
-            return (fi === origIdx && earlier.has(ti)) || (ti === origIdx && earlier.has(fi));
-        });
-        if (!conn.length) { joins[origIdx] = { type: 'CROSS JOIN', conditions: [], literals: [] }; typeByOrig[origIdx] = 'CROSS JOIN'; return; }
-        let partner = -1, partnerPos = Infinity;
-        for (const e of conn) {
-            const fi = origIdxByName(e.fromSchema, e.fromTable);
-            const ti = origIdxByName(e.toSchema, e.toTable);
-            const other = (fi === origIdx) ? ti : fi;
-            const op = order.indexOf(other);
-            if (op < partnerPos) { partnerPos = op; partner = other; }
-        }
-        const conditions = conn.filter(e => {
-            const fi = origIdxByName(e.fromSchema, e.fromTable);
-            const ti = origIdxByName(e.toSchema, e.toTable);
-            const other = (fi === origIdx) ? ti : fi;
-            return other === partner;
-        }).map(e => {
-            const fi = origIdxByName(e.fromSchema, e.fromTable);
-            if (fi === origIdx) {
-                // New table holds the FK column, partner is referenced.
-                return { leftOrig: partner, leftColumn: e.toColumn, rightColumn: e.fromColumn };
-            }
-            // Partner holds the FK column, new table is referenced.
-            return { leftOrig: partner, leftColumn: e.fromColumn, rightColumn: e.toColumn };
-        });
-        const literals = conn.filter(e => {
-            const fi = origIdxByName(e.fromSchema, e.fromTable);
-            const ti = origIdxByName(e.toSchema, e.toTable);
-            const other = (fi === origIdx) ? ti : fi;
-            return other === partner;
-        }).flatMap(e => (e.extraConditions || []).map(ec => {
-            const litOrig = origIdxByName(ec.schema, ec.table);
-            return { litOrig, otherOrig: (litOrig === origIdx ? partner : origIdx), litColumn: ec.column, operator: ec.operator, value: ec.value };
-        }).filter(l => l.litOrig >= 0));
-        typeByOrig[origIdx] = 'INNER JOIN';
-        joins[origIdx] = { type: 'INNER JOIN', conditions, literals };
+        const clause = computeAutoJoinClause(origIdx, order, data.tables, identityEdges);
+        typeByOrig[origIdx] = clause.type;
+        joins[origIdx] = clause;
     }
 
     // Append tables (and their FK edges) pushed by the extension after the user
@@ -645,24 +620,13 @@ function getHtml(
         });
         let added = false;
         (payload.tables || []).forEach(nt => {
-            const existingIdx = data.tables.findIndex(t => t.schema === nt.schema && t.table === nt.table);
-            if (existingIdx >= 0) {
-                // Table data already exists. If it was previously removed (not in
-                // the current order), re-add it to the end; otherwise skip it.
-                if (order.indexOf(existingIdx) === -1) {
-                    order.push(existingIdx);
-                    computeAutoJoin(existingIdx);
-                    added = true;
-                }
-                return;
-            }
-            let alias = nt.alias || nt.table;
-            const used = new Set(aliases);
-            if (used.has(alias)) {
-                let n = 2;
-                while (used.has(alias + n)) n++;
-                alias = alias + n;
-            }
+            // Always add the table as a new instance (its own original index),
+            // even if the same schema.table is already present. This lets the
+            // same table appear multiple times with distinct aliases and their
+            // own join clauses (e.g. a self-join). The alias is made unique
+            // against the currently visible tables only, so a suffix freed by
+            // removing a table is reused instead of ever-increasing.
+            const alias = uniqueAlias(nt.alias || nt.table, order.map(oi => aliases[oi]));
             const origIdx = data.tables.length;
             data.tables.push(nt);
             aliases.push(alias);

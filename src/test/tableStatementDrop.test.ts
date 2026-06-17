@@ -228,3 +228,62 @@ test('buildJoinSelect escapes single quotes inside string literal conditions', (
         "SELECT\n  a.id,\n  b.a_id\nFROM a a\nINNER JOIN b b ON b.a_id = a.id AND a.owner = 'O''Brien';"
     );
 });
+
+// ===== 1.3.0: JOIN dialog allows the same table multiple times =====
+
+test('buildJoinSelect builds a self-join of the same table with distinct aliases', () => {
+    // The same table reference appears twice with different aliases, joined on
+    // a self-referencing key (e.g. employee -> manager).
+    const tables = [
+        { alias: 'e', tableReference: 'employees', columns: ['id', 'mgr_id', 'name'] },
+        { alias: 'm', tableReference: 'employees', columns: ['id', 'mgr_id', 'name'] }
+    ];
+    const joins = [
+        {
+            type: 'LEFT JOIN' as const,
+            conditions: [{ leftAlias: 'e', leftColumn: 'mgr_id', rightColumn: 'id' }]
+        }
+    ];
+    assert.equal(
+        buildJoinSelect(tables, joins),
+        'SELECT\n  e.id,\n  e.mgr_id,\n  e.name,\n  m.id,\n  m.mgr_id,\n  m.name\n'
+        + 'FROM employees e\nLEFT JOIN employees m ON m.id = e.mgr_id;'
+    );
+});
+
+test('buildJoinSelect supports three instances of the same table', () => {
+    const tables = [
+        { alias: 'a', tableReference: 'node', columns: ['id', 'parent_id'] },
+        { alias: 'b', tableReference: 'node', columns: ['id', 'parent_id'] },
+        { alias: 'c', tableReference: 'node', columns: ['id', 'parent_id'] }
+    ];
+    const joins = [
+        {
+            type: 'INNER JOIN' as const,
+            conditions: [{ leftAlias: 'a', leftColumn: 'parent_id', rightColumn: 'id' }]
+        },
+        {
+            type: 'INNER JOIN' as const,
+            conditions: [{ leftAlias: 'b', leftColumn: 'parent_id', rightColumn: 'id' }]
+        }
+    ];
+    assert.equal(
+        buildJoinSelect(tables, joins),
+        'SELECT\n  a.id,\n  a.parent_id,\n  b.id,\n  b.parent_id,\n  c.id,\n  c.parent_id\n'
+        + 'FROM node a\nINNER JOIN node b ON b.id = a.parent_id\nINNER JOIN node c ON c.id = b.parent_id;'
+    );
+});
+
+test('buildJoinSelect lets a duplicate table use its own CROSS JOIN', () => {
+    // A second instance of the same table can be added without a relationship,
+    // yielding a CROSS JOIN that the user can refine later.
+    const tables = [
+        { alias: 't1', tableReference: 'items', columns: ['id'] },
+        { alias: 't2', tableReference: 'items', columns: ['id'] }
+    ];
+    const joins = [{ type: 'CROSS JOIN' as const, conditions: [] }];
+    assert.equal(
+        buildJoinSelect(tables, joins),
+        'SELECT\n  t1.id,\n  t2.id\nFROM items t1\nCROSS JOIN items t2;'
+    );
+});
