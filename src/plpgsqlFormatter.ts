@@ -975,6 +975,18 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
             continue;
         }
 
+        // %TYPE / %ROWTYPE attribute references attach to the preceding name (no spaces).
+        if (t.text === '%' && cur !== '') {
+            const nx = toks[i + 1];
+            if (nx && nx.type === 'word' && (nx.text.toLowerCase() === 'type' || nx.text.toLowerCase() === 'rowtype')) {
+                const r = applyCase(nx.text, opt.keywordCase);
+                cur += '%' + r;
+                prev = { text: r, isKeyword: true, type: 'word' };
+                i++;
+                continue;
+            }
+        }
+
         // Generic punctuation / operators / literals
         emit(t.text, { text: t.text, isKeyword: false, type: t.type });
         continue;

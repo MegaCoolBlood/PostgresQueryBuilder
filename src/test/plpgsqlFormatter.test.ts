@@ -192,6 +192,13 @@ test('keeps a type modifier attached to its data type (no space)', () => {
     assert.ok(out.includes('y NUMERIC(10, 2);'), out);
 });
 
+test('attaches %TYPE / %ROWTYPE to the name without spaces (but keeps modulo spaced)', () => {
+    const out = formatSql('declare v_mitRec bos_mitarbeiter%ROWTYPE; x t.c%TYPE; begin end;');
+    assert.ok(out.includes('v_mitRec bos_mitarbeiter%ROWTYPE;'), out);
+    assert.ok(out.includes('x t.c%TYPE;'), out);
+    assert.equal(formatSql('select a % b from t;'), 'SELECT a % b FROM t;');
+});
+
 test('does not treat FROM/FOR inside a function call as SQL clauses', () => {
     const out = formatSql("select substring(SQLERRM from 1 for 500);");
     assert.equal(out, 'SELECT substring(SQLERRM FROM 1 FOR 500);');
