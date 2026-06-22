@@ -647,7 +647,7 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
                 // stays attached to that line instead of moving to a new one.
                 out[out.length - 1] = (out[out.length - 1] + '  ' + t.text).replace(/\s+$/, '');
             }
-            else { lineIndent = pendingIndent; out.push((indentStr(lineIndent) + t.text).replace(/\s+$/, '')); }
+            else { insertBlanks(blanks); lineIndent = pendingIndent; out.push((indentStr(lineIndent) + t.text).replace(/\s+$/, '')); }
             prev = null;
             continue;
         }
@@ -947,6 +947,10 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
             }
             if (w === 'between' && inSql) betweenPending++;
 
+            // A word that starts a fresh line (e.g. CREATE / UPDATE / INSERT at the
+            // start of a statement) is not routed through startLine, so insert any
+            // authored blank lines here to preserve them.
+            if (cur === '') insertBlanks(blanks);
             emit(rendered, meta);
             lastWord = w;
             continue;

@@ -141,6 +141,13 @@ test('collapses blank lines when blankLines is collapse', () => {
     assert.equal(out, ['SELECT 1;', '', 'SELECT 2;'].join('\n'));
 });
 
+test('preserves authored blank lines before a non-clause statement (e.g. CREATE)', () => {
+    assert.equal(
+        formatSql('create table a(x int);\n\n\ncreate table b(y int);'),
+        'CREATE TABLE a(x INT);\n\n\nCREATE TABLE b(y INT);'
+    );
+});
+
 test('preserves a trailing newline when present', () => {
     assert.equal(formatSql('select 1\n'), 'SELECT 1\n');
     assert.equal(formatSql('select 1'), 'SELECT 1');
@@ -262,6 +269,14 @@ test('keeps a trailing line comment on the same line (after a semicolon)', () =>
     assert.equal(routine, 'CREATE FUNCTION pk.g() RETURNS VARCHAR LANGUAGE SQL STABLE AS $$ SELECT f(1); $$;  --x');
     // A comment authored on its own line still gets its own line.
     assert.equal(formatSql('select 1;\n-- standalone\nselect 2;'), 'SELECT 1;\n-- standalone\nSELECT 2;');
+});
+
+test('preserves an authored blank line before a standalone comment', () => {
+    const out = formatSql('declare\n  a int := 1;\n\n  -- group\n  b int := 2;\nbegin end;');
+    assert.equal(
+        out,
+        ['DECLARE', '  a INT := 1;', '', '  -- group', '  b INT := 2;', 'BEGIN', 'END;'].join('\n')
+    );
 });
 
 test('keeps a CREATE FUNCTION written on a single line on one line', () => {
