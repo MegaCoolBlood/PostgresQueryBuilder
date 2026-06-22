@@ -254,6 +254,16 @@ test('wraps a routine parameter list when it has many parameters', () => {
     assert.equal(lines[5], ') RETURNS INT');
 });
 
+test('keeps a trailing line comment on the same line (after a semicolon)', () => {
+    assert.equal(formatSql('select 1; -- note'), 'SELECT 1;  -- note');
+    const routine = formatSql(
+        "CREATE FUNCTION pk.g() RETURNS VARCHAR LANGUAGE SQL STABLE AS $$ SELECT f(1); $$; --x"
+    );
+    assert.equal(routine, 'CREATE FUNCTION pk.g() RETURNS VARCHAR LANGUAGE SQL STABLE AS $$ SELECT f(1); $$;  --x');
+    // A comment authored on its own line still gets its own line.
+    assert.equal(formatSql('select 1;\n-- standalone\nselect 2;'), 'SELECT 1;\n-- standalone\nSELECT 2;');
+});
+
 test('keeps a CREATE FUNCTION written on a single line on one line', () => {
     const out = formatSql(
         "CREATE FUNCTION pk.g_pair() RETURNS varchar LANGUAGE SQL IMMUTABLE AS $$ SELECT 'X'; $$;"

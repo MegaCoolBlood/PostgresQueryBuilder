@@ -642,6 +642,11 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
         // --- Comments -------------------------------------------------------
         if (t.type === 'lineComment') {
             if (cur !== '') { cur += '  ' + t.text; flush(); }
+            else if (t.nlBefore === 0 && out.length > 0) {
+                // A trailing comment authored on the same line (e.g. after `;`)
+                // stays attached to that line instead of moving to a new one.
+                out[out.length - 1] = (out[out.length - 1] + '  ' + t.text).replace(/\s+$/, '');
+            }
             else { lineIndent = pendingIndent; out.push((indentStr(lineIndent) + t.text).replace(/\s+$/, '')); }
             prev = null;
             continue;
