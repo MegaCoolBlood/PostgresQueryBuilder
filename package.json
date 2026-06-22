@@ -266,6 +266,11 @@
           "default": 4,
           "minimum": 2,
           "description": "A function/procedure call or parameter list with at least this many arguments is always wrapped onto multiple lines. Counts between this and argsInlineMax keep the layout authored in the source."
+        },
+        "postgresQueryBuilder.format.normalizeDataTypes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Replace verbose multi-word type names with their short form when formatting (e.g. 'character varying' -> 'varchar', 'timestamp without time zone' -> 'timestamp', 'timestamp with time zone' -> 'timestamptz')."
         }
       }
     }

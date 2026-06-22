@@ -42,6 +42,8 @@ export interface FormatOptions {
     argsInlineMax: number;
     /** Argument/parameter count from which a call/parameter list always wraps. Default: 4. */
     argsMultilineMin: number;
+    /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
+    normalizeDataTypes: boolean;
 }
 
 export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
@@ -54,7 +56,8 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     blankLines: 'preserve',
     simpleSelectSingleLine: true,
     argsInlineMax: 1,
-    argsMultilineMin: 4
+    argsMultilineMin: 4,
+    normalizeDataTypes: true
 };
 
 /**
@@ -74,6 +77,7 @@ export function coerceFormatOptions(raw: {
     simpleSelectSingleLine?: unknown;
     argsInlineMax?: unknown;
     argsMultilineMin?: unknown;
+    normalizeDataTypes?: unknown;
 }): FormatOptions {
     const pick = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
         typeof value === 'string' && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
@@ -95,7 +99,10 @@ export function coerceFormatOptions(raw: {
             ? raw.simpleSelectSingleLine
             : DEFAULT_FORMAT_OPTIONS.simpleSelectSingleLine,
         argsInlineMax: inlineMax,
-        argsMultilineMin: multilineMin
+        argsMultilineMin: multilineMin,
+        normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
+            ? raw.normalizeDataTypes
+            : DEFAULT_FORMAT_OPTIONS.normalizeDataTypes
     };
 }
 
@@ -147,6 +154,46 @@ const DATATYPES = new Set([
     'circle', 'tsvector', 'tsquery', 'name', 'regclass', 'oid', 'void',
     'record', 'anyelement', 'anyarray', 'trigger'
 ]);
+
+/**
+ * Verbose multi-word type phrases mapped to a canonical short form, applied when
+ * `normalizeDataTypes` is enabled. Listed longest-first so the longest phrase wins.
+ */
+const TYPE_PHRASE_ALIASES: { words: string[]; canonical: string }[] = [
+    { words: ['timestamp', 'without', 'time', 'zone'], canonical: 'timestamp' },
+    { words: ['timestamp', 'with', 'time', 'zone'], canonical: 'timestamptz' },
+    { words: ['time', 'without', 'time', 'zone'], canonical: 'time' },
+    { words: ['time', 'with', 'time', 'zone'], canonical: 'timetz' },
+    { words: ['character', 'varying'], canonical: 'varchar' },
+    { words: ['bit', 'varying'], canonical: 'varbit' }
+];
+
+/** Merge verbose multi-word type phrases (e.g. `character varying`) into a single short-form token. */
+function normalizeTypePhrases(toks: Tok[]): Tok[] {
+    const out: Tok[] = [];
+    for (let i = 0; i < toks.length; i++) {
+        const t = toks[i];
+        let matched = false;
+        if (t.type === 'word') {
+            for (const { words, canonical } of TYPE_PHRASE_ALIASES) {
+                if (i + words.length > toks.length) continue;
+                let ok = true;
+                for (let k = 0; k < words.length; k++) {
+                    const tk = toks[i + k];
+                    if (tk.type !== 'word' || tk.text.toLowerCase() !== words[k]) { ok = false; break; }
+                }
+                if (ok) {
+                    out.push({ type: 'word', text: canonical, nlBefore: t.nlBefore });
+                    i += words.length - 1;
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        if (!matched) out.push(t);
+    }
+    return out;
+}
 
 /** Clause keywords that start a fresh line within a SQL statement. */
 const CLAUSE_NEWLINE = new Set([
@@ -335,7 +382,7 @@ interface BlockFrame { type: 'declare' | 'begin' | 'if' | 'loop' | 'case'; head:
 export function formatSql(input: string, options?: Partial<FormatOptions>): string {
     const opt: FormatOptions = { ...DEFAULT_FORMAT_OPTIONS, ...(options || {}) };
     const trailingNewline = /\n\s*$/.test(input);
-    const toks = tokenize(input);
+    const toks = opt.normalizeDataTypes ? normalizeTypePhrases(tokenize(input)) : tokenize(input);
     const depths = computeDepths(toks);
 
     // --- Pre-scan: classify every parenthesis -------------------------------

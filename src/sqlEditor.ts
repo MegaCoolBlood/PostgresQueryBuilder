@@ -58,7 +58,8 @@ export class SqlEditorManager {
                         blankLines: cfg.get('format.blankLines'),
                         simpleSelectSingleLine: cfg.get('format.simpleSelectSingleLine'),
                         argsInlineMax: cfg.get('format.argsInlineMax'),
-                        argsMultilineMin: cfg.get('format.argsMultilineMin')
+                        argsMultilineMin: cfg.get('format.argsMultilineMin'),
+                        normalizeDataTypes: cfg.get('format.normalizeDataTypes')
                     });
                     this.panel?.webview.postMessage({ command: 'formatted', sql: formatSql(message.sql, options) });
                 } catch (err: unknown) {

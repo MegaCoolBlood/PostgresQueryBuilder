@@ -177,7 +177,8 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         blankLines: 'preserve',
         simpleSelectSingleLine: true,
         argsInlineMax: 1,
-        argsMultilineMin: 4
+        argsMultilineMin: 4,
+        normalizeDataTypes: true
     });
 });
 
@@ -197,6 +198,22 @@ test('attaches %TYPE / %ROWTYPE to the name without spaces (but keeps modulo spa
     assert.ok(out.includes('v_mitRec bos_mitarbeiter%ROWTYPE;'), out);
     assert.ok(out.includes('x t.c%TYPE;'), out);
     assert.equal(formatSql('select a % b from t;'), 'SELECT a % b FROM t;');
+});
+
+test('normalizes verbose data type names to their short form', () => {
+    const out = formatSql('declare a character varying(500); b timestamp without time zone; c timestamp with time zone; begin end;');
+    assert.ok(out.includes('a VARCHAR(500);'), out);
+    assert.ok(out.includes('b TIMESTAMP;'), out);
+    assert.ok(out.includes('c TIMESTAMPTZ;'), out);
+    assert.equal(
+        formatSql('select cast(x as character varying) from t;'),
+        'SELECT CAST (x AS VARCHAR) FROM t;'
+    );
+});
+
+test('normalizeDataTypes can be disabled', () => {
+    const out = formatSql('declare a character varying(500); begin end;', { normalizeDataTypes: false });
+    assert.ok(out.includes('a CHARACTER VARYING(500);'), out);
 });
 
 test('does not treat FROM/FOR inside a function call as SQL clauses', () => {
