@@ -13,6 +13,7 @@ import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore } from './tableStatementDrop';
 import { ViewDataFromSelect } from './viewDataFromSelect';
 import { Logger, getErrorMessage, getErrorStack } from './logger';
+import { formatSql, coerceFormatOptions, FormatOptions } from './plpgsqlFormatter';
 let connectionManager: ConnectionManager;
 let tableExplorer: TableExplorerProvider;
 let tableWebViewManager: TableWebViewManager;
@@ -28,6 +29,27 @@ let outputChannel: vscode.OutputChannel;
 const DOUBLE_CLICK_MS = 500;
 /** Tracks the last table click to detect double clicks in the explorer. */
 let lastTableClick: { key: string; time: number } = { key: '', time: 0 };
+
+/** Language IDs the PL/pgSQL formatter applies to. */
+const FORMATTER_LANGUAGES = ['sql', 'postgres', 'pgsql'];
+
+/** Read the formatter settings from configuration. */
+function getFormatOptions(): FormatOptions {
+    const cfg = vscode.workspace.getConfiguration('postgresQueryBuilder');
+    return coerceFormatOptions({
+        keywordCase: cfg.get('format.keywordCase'),
+        identifierCase: cfg.get('format.identifierCase'),
+        dataTypeCase: cfg.get('format.dataTypeCase'),
+        indentStyle: cfg.get('format.indentStyle'),
+        indentSize: cfg.get('format.indentSize'),
+        commaStyle: cfg.get('format.commaStyle')
+    });
+}
+
+/** Whether the formatter is enabled (master toggle). */
+function isFormatterEnabled(): boolean {
+    return vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('format.enable', true);
+}
 
 export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('PostgreSQL Query Builder');
@@ -190,6 +212,33 @@ export function activate(context: vscode.ExtensionContext) {
                     outputChannel.appendLine(`[viewDataFromSelect] ${getErrorStack(err)}`);
                     vscode.window.showErrorMessage(`View Data failed: ${getErrorMessage(err)}`);
                 }
+            }),
+            vscode.commands.registerCommand('postgresQueryBuilder.formatSql', async () => {
+                const editor = vscode.window.activeTextEditor;
+                if (!editor) {
+                    vscode.window.showWarningMessage('No active editor to format.');
+                    return;
+                }
+                if (!isFormatterEnabled()) {
+                    vscode.window.showWarningMessage('The PL/pgSQL formatter is disabled (postgresQueryBuilder.format.enable).');
+                    return;
+                }
+                try {
+                    const opts = getFormatOptions();
+                    const sel = editor.selection;
+                    const hasSelection = !sel.isEmpty;
+                    const range = hasSelection
+                        ? new vscode.Range(sel.start, sel.end)
+                        : new vscode.Range(
+                            editor.document.positionAt(0),
+                            editor.document.positionAt(editor.document.getText().length)
+                        );
+                    const formatted = formatSql(editor.document.getText(range), opts);
+                    await editor.edit((b) => b.replace(range, formatted));
+                } catch (err: unknown) {
+                    outputChannel.appendLine(`[formatSql] ${getErrorStack(err)}`);
+                    vscode.window.showErrorMessage(`Format failed: ${getErrorMessage(err)}`);
+                }
             })
         );
 
@@ -225,6 +274,50 @@ export function activate(context: vscode.ExtensionContext) {
                 '*',
                 new TableStatementDropProvider(dropQueryRunner, qualifierStore, columnMappingManager)
             )
+        );
+
+        // PL/pgSQL document formatter (full document + selection range).
+        const formattingProvider: vscode.DocumentFormattingEditProvider & vscode.DocumentRangeFormattingEditProvider = {
+            provideDocumentFormattingEdits(document) {
+                if (!isFormatterEnabled()) return [];
+                const fullRange = new vscode.Range(
+                    document.positionAt(0),
+                    document.positionAt(document.getText().length)
+                );
+                return [vscode.TextEdit.replace(fullRange, formatSql(document.getText(), getFormatOptions()))];
+            },
+            provideDocumentRangeFormattingEdits(document, range) {
+                if (!isFormatterEnabled()) return [];
+                return [vscode.TextEdit.replace(range, formatSql(document.getText(range), getFormatOptions()))];
+            }
+        };
+        for (const lang of FORMATTER_LANGUAGES) {
+            context.subscriptions.push(
+                vscode.languages.registerDocumentFormattingEditProvider(lang, formattingProvider),
+                vscode.languages.registerDocumentRangeFormattingEditProvider(lang, formattingProvider)
+            );
+        }
+
+        // Optional format-on-save, controlled by our own setting (default off).
+        context.subscriptions.push(
+            vscode.workspace.onWillSaveTextDocument((e) => {
+                const cfg = vscode.workspace.getConfiguration('postgresQueryBuilder');
+                if (!cfg.get<boolean>('format.enable', true)) return;
+                if (!cfg.get<boolean>('format.formatOnSave', false)) return;
+                if (!FORMATTER_LANGUAGES.includes(e.document.languageId)) return;
+                e.waitUntil(Promise.resolve().then(() => {
+                    try {
+                        const fullRange = new vscode.Range(
+                            e.document.positionAt(0),
+                            e.document.positionAt(e.document.getText().length)
+                        );
+                        return [vscode.TextEdit.replace(fullRange, formatSql(e.document.getText(), getFormatOptions()))];
+                    } catch (err: unknown) {
+                        outputChannel.appendLine(`[formatOnSave] ${getErrorStack(err)}`);
+                        return [];
+                    }
+                }));
+            })
         );
 
         const searchViewProvider = new SearchViewProvider();

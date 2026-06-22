@@ -4,6 +4,7 @@ import { QueryRunner } from './queryRunner';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
 import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
 import { getErrorMessage } from './logger';
+import { formatSql, coerceFormatOptions } from './plpgsqlFormatter';
 
 export class SqlEditorManager {
     private panel: vscode.WebviewPanel | null = null;
@@ -40,6 +41,27 @@ export class SqlEditorManager {
         this.panel.webview.html = this.getHtml(this.panel.webview);
 
         this.panel.webview.onDidReceiveMessage(async (message) => {
+            if (message.command === 'formatSQL') {
+                const cfg = vscode.workspace.getConfiguration('postgresQueryBuilder');
+                if (cfg.get<boolean>('format.enable', true) === false) {
+                    vscode.window.showWarningMessage('The PL/pgSQL formatter is disabled (postgresQueryBuilder.format.enable).');
+                    return;
+                }
+                try {
+                    const options = coerceFormatOptions({
+                        keywordCase: cfg.get('format.keywordCase'),
+                        identifierCase: cfg.get('format.identifierCase'),
+                        dataTypeCase: cfg.get('format.dataTypeCase'),
+                        indentStyle: cfg.get('format.indentStyle'),
+                        indentSize: cfg.get('format.indentSize'),
+                        commaStyle: cfg.get('format.commaStyle')
+                    });
+                    this.panel?.webview.postMessage({ command: 'formatted', sql: formatSql(message.sql, options) });
+                } catch (err: unknown) {
+                    vscode.window.showErrorMessage(`Format failed: ${getErrorMessage(err)}`);
+                }
+                return;
+            }
             if (message.command === 'executeSQL') {
                 const queryRunner = new QueryRunner(this.connectionManager);
                 try {
@@ -116,6 +138,11 @@ export class SqlEditorManager {
         button:hover {
             background: var(--vscode-button-hoverBackground);
         }
+        .toolbar button + button {
+            margin-left: 8px;
+            background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+            color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+        }
         .result-container {
             flex: 1;
             overflow: auto;
@@ -157,6 +184,7 @@ export class SqlEditorManager {
         </div>
         <div class="toolbar">
             <button id="executeBtn">▶ Execute (Ctrl+Enter)</button>
+            <button id="formatBtn">Format PL/pgSQL</button>
         </div>
         <div class="result-container" id="resultContainer"></div>
     </div>`;
@@ -166,9 +194,15 @@ export class SqlEditorManager {
         const vscode = acquireVsCodeApi();
         const sqlInput = document.getElementById('sqlInput');
         const executeBtn = document.getElementById('executeBtn');
+        const formatBtn = document.getElementById('formatBtn');
         const resultContainer = document.getElementById('resultContainer');
 
         executeBtn.addEventListener('click', executeQuery);
+        formatBtn.addEventListener('click', () => {
+            const sql = sqlInput.value;
+            if (!sql.trim()) return;
+            vscode.postMessage({ command: 'formatSQL', sql });
+        });
         sqlInput.addEventListener('keydown', (e) => {
             if (e.ctrlKey && e.key === 'Enter') {
                 executeQuery();
@@ -184,6 +218,10 @@ export class SqlEditorManager {
 
         window.addEventListener('message', (event) => {
             const msg = event.data;
+            if (msg.command === 'formatted') {
+                sqlInput.value = msg.sql;
+                return;
+            }
             if (msg.command === 'sqlResult') {
                 let html = '<div class="result-info">' + msg.rowCount + ' row(s) affected/returned</div>';
                 if (msg.fields.length > 0 && msg.rows.length > 0) {
