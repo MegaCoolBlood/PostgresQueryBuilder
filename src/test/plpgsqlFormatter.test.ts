@@ -13,33 +13,35 @@ test('uppercases keywords and breaks a SELECT into clauses with a column list', 
             '  c',
             'FROM foo f',
             'JOIN bar b ON b.id = f.bid',
-            'WHERE a = 1 AND b > 2',
+            'WHERE a = 1',
+            '  AND b > 2',
             'ORDER BY a'
         ].join('\n')
     );
 });
 
-test('keeps SELECT * on a single line', () => {
-    assert.equal(formatSql('select * from t;'), 'SELECT *\nFROM t;');
+test('keeps a simple SELECT * on a single line', () => {
+    assert.equal(formatSql('select * from t;'), 'SELECT * FROM t;');
 });
 
 test('formats a PL/pgSQL function body with DECLARE/BEGIN/IF/LOOP blocks', () => {
     const out = formatSql(
-        "create function f(p int) returns void as $$ declare x int; begin if x>0 then perform do_it(x); else raise notice 'no'; end if; end; $$ language plpgsql;"
+        "create function f(p int) returns void as $$ declare x int;\nbegin if x>0 then perform do_it(x); else raise notice 'no'; end if; end; $$ language plpgsql;"
     );
     assert.equal(
         out,
         [
-            'CREATE FUNCTION f(p INT) RETURNS VOID AS $$',
-            '  DECLARE',
-            '    x INT;',
-            '  BEGIN',
-            '    IF x > 0 THEN',
-            '      PERFORM do_it(x);',
-            '    ELSE',
-            "      RAISE NOTICE 'no';",
-            '    END IF;',
-            '  END;',
+            'CREATE FUNCTION f(p INT) RETURNS VOID',
+            'AS $$',
+            'DECLARE',
+            '  x INT;',
+            'BEGIN',
+            '  IF x > 0 THEN',
+            '    PERFORM do_it(x);',
+            '  ELSE',
+            "    RAISE NOTICE 'no';",
+            '  END IF;',
+            'END;',
             '$$ LANGUAGE plpgsql;'
         ].join('\n')
     );
@@ -81,11 +83,9 @@ test('indents subqueries inside parentheses', () => {
     assert.equal(
         out,
         [
-            'SELECT',
-            '  a',
+            'SELECT a',
             'FROM (',
-            '  SELECT',
-            '    x',
+            '  SELECT x',
             '  FROM inner_t',
             '  WHERE x > 0',
             ') sub;'
@@ -117,7 +117,7 @@ test('respects indentSize and tab indentation', () => {
 });
 
 test('keywordCase lower and identifierCase preserve', () => {
-    assert.equal(formatSql('SELECT Foo FROM Bar', { keywordCase: 'lower' }), 'select\n  Foo\nfrom Bar');
+    assert.equal(formatSql('SELECT Foo FROM Bar', { keywordCase: 'lower' }), 'select Foo from Bar');
 });
 
 test('dataTypeCase is applied independently of keywordCase', () => {
@@ -131,14 +131,19 @@ test('preserves string and comment contents verbatim', () => {
     assert.ok(out.includes('/* note: from where */'));
 });
 
-test('preserves an authored blank line between statements', () => {
+test('preserves authored blank lines between statements (1:1)', () => {
     const out = formatSql('select 1;\n\n\nselect 2;');
-    assert.equal(out, ['SELECT', '  1;', '', 'SELECT', '  2;'].join('\n'));
+    assert.equal(out, ['SELECT 1;', '', '', 'SELECT 2;'].join('\n'));
+});
+
+test('collapses blank lines when blankLines is collapse', () => {
+    const out = formatSql('select 1;\n\n\nselect 2;', { blankLines: 'collapse' });
+    assert.equal(out, ['SELECT 1;', '', 'SELECT 2;'].join('\n'));
 });
 
 test('preserves a trailing newline when present', () => {
-    assert.equal(formatSql('select 1\n'), 'SELECT\n  1\n');
-    assert.equal(formatSql('select 1'), 'SELECT\n  1');
+    assert.equal(formatSql('select 1\n'), 'SELECT 1\n');
+    assert.equal(formatSql('select 1'), 'SELECT 1');
 });
 
 test('is idempotent (re-formatting yields the same result)', () => {
@@ -168,6 +173,136 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         dataTypeCase: 'upper',
         indentStyle: 'space',
         indentSize: 2,
-        commaStyle: 'trailing'
+        commaStyle: 'trailing',
+        blankLines: 'preserve',
+        simpleSelectSingleLine: true,
+        argsInlineMax: 1,
+        argsMultilineMin: 4
     });
+});
+
+test('does not break before IF in CREATE SCHEMA IF NOT EXISTS', () => {
+    assert.equal(formatSql('CREATE SCHEMA IF NOT EXISTS pk_x;'), 'CREATE SCHEMA IF NOT EXISTS pk_x;');
+    assert.equal(formatSql('drop table if exists t;'), 'DROP TABLE IF EXISTS t;');
+});
+
+test('keeps a type modifier attached to its data type (no space)', () => {
+    const out = formatSql('declare x varchar(500); y numeric(10,2); begin end;');
+    assert.ok(out.includes('x VARCHAR(500);'), out);
+    assert.ok(out.includes('y NUMERIC(10, 2);'), out);
+});
+
+test('does not treat FROM/FOR inside a function call as SQL clauses', () => {
+    const out = formatSql("select substring(SQLERRM from 1 for 500);");
+    assert.equal(out, 'SELECT substring(SQLERRM FROM 1 FOR 500);');
+});
+
+test('keeps commas inside ARRAY[...] on one line', () => {
+    const out = formatSql('select array[1, 2, 3, 4, 5];');
+    assert.equal(out, 'SELECT ARRAY[1, 2, 3, 4, 5];');
+});
+
+test('formats a CREATE PROCEDURE header (params inline, characteristics own lines)', () => {
+    const out = formatSql(
+        'create or replace procedure p.add_text(inout po text, in pi text) language plpgsql as $procedure$ begin\n po := po || pi; end; $procedure$;'
+    );
+    assert.equal(
+        out,
+        [
+            'CREATE OR REPLACE PROCEDURE p.add_text(INOUT po TEXT, IN pi TEXT)',
+            '  LANGUAGE plpgsql',
+            'AS $procedure$',
+            'BEGIN',
+            '  po := po || pi;',
+            'END;',
+            '$procedure$;'
+        ].join('\n')
+    );
+});
+
+test('wraps a routine parameter list when it has many parameters', () => {
+    const out = formatSql(
+        'create function f(a int, b int, c int, d int) returns int language sql as $f$ begin\n return 1; end; $f$;'
+    );
+    const lines = out.split('\n');
+    assert.equal(lines[0], 'CREATE FUNCTION f(');
+    assert.equal(lines[1], '  a INT,');
+    assert.equal(lines[5], ') RETURNS INT');
+});
+
+test('keeps a CREATE FUNCTION written on a single line on one line', () => {
+    const out = formatSql(
+        "CREATE FUNCTION pk.g_pair() RETURNS varchar LANGUAGE SQL IMMUTABLE AS $$ SELECT 'X'; $$;"
+    );
+    assert.equal(out, "CREATE FUNCTION pk.g_pair() RETURNS VARCHAR LANGUAGE SQL IMMUTABLE AS $$ SELECT 'X'; $$;");
+});
+
+test('still expands a CREATE FUNCTION that the author wrote across lines', () => {
+    const out = formatSql(
+        "create function pk.g_pair() returns varchar language sql immutable as $$\nselect 'X';\n$$;"
+    );
+    assert.ok(out.includes('\n'), out);
+    assert.ok(out.startsWith('CREATE FUNCTION pk.g_pair() RETURNS VARCHAR'), out);
+});
+
+test('formats an EXCEPTION ... WHEN block', () => {
+    const out = formatSql(
+        "begin perform 1; exception when no_data_found then raise exception 'x'; when others then null; end;"
+    );
+    assert.equal(
+        out,
+        [
+            'BEGIN',
+            '  PERFORM 1;',
+            'EXCEPTION',
+            '  WHEN no_data_found THEN',
+            "    RAISE EXCEPTION 'x';",
+            '  WHEN OTHERS THEN',
+            '    NULL;',
+            'END;'
+        ].join('\n')
+    );
+});
+
+test('argsInlineMax / argsMultilineMin control call wrapping', () => {
+    assert.equal(formatSql('call f(a);'), 'CALL f(a);');
+    assert.equal(formatSql('call f(a, b, c);'), 'CALL f(a, b, c);');
+    const four = formatSql('call f(a, b, c, d);');
+    assert.equal(four, ['CALL f(', '  a,', '  b,', '  c,', '  d', ');'].join('\n'));
+    // Threshold of 2 forces two-argument calls to wrap.
+    const two = formatSql('call f(a, b);', { argsMultilineMin: 2 });
+    assert.equal(two, ['CALL f(', '  a,', '  b', ');'].join('\n'));
+});
+
+test('simpleSelectSingleLine can be disabled', () => {
+    assert.equal(formatSql('select a from t;', { simpleSelectSingleLine: false }), 'SELECT a\nFROM t;');
+    assert.equal(formatSql('select a from t;'), 'SELECT a FROM t;');
+});
+
+test('keeps a single SELECT item on the SELECT line but splits multiple', () => {
+    assert.equal(
+        formatSql('select 1 into strict v from t where a = 1;'),
+        ['SELECT 1', 'INTO STRICT v', 'FROM t', 'WHERE a = 1;'].join('\n')
+    );
+    assert.equal(
+        formatSql('select a, b into x, y from t;'),
+        ['SELECT', '  a,', '  b', 'INTO', '  x,', '  y', 'FROM t;'].join('\n')
+    );
+});
+
+test('puts each AND on its own indented line, except the AND of BETWEEN', () => {
+    assert.equal(
+        formatSql('select x from t where a = 1 and b between 2 and 5 and c = 3;'),
+        [
+            'SELECT x',
+            'FROM t',
+            'WHERE a = 1',
+            '  AND b BETWEEN 2 AND 5',
+            '  AND c = 3;'
+        ].join('\n')
+    );
+});
+
+test('keeps INSERT INTO on one line (does not break before INTO)', () => {
+    assert.equal(formatSql('insert into t (a) values (1);'), 'INSERT INTO t(a)\nVALUES (1);');
 });

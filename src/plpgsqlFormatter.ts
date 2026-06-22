@@ -19,6 +19,7 @@
 export type CaseStyle = 'upper' | 'lower' | 'preserve';
 export type IndentStyle = 'space' | 'tab';
 export type CommaStyle = 'trailing' | 'leading';
+export type BlankLineStyle = 'preserve' | 'collapse';
 
 export interface FormatOptions {
     /** Case for SQL/PL keywords (SELECT, BEGIN, IF, ...). Default: 'upper'. */
@@ -33,6 +34,14 @@ export interface FormatOptions {
     indentSize: number;
     /** Comma placement in broken column lists. Default: 'trailing'. */
     commaStyle: CommaStyle;
+    /** How to handle authored blank lines. Default: 'preserve' (keep 1:1). */
+    blankLines: BlankLineStyle;
+    /** Keep a simple SELECT (1 column, <=1 table, <=1 WHERE) on one line. Default: true. */
+    simpleSelectSingleLine: boolean;
+    /** Argument/parameter count up to which a call/parameter list stays inline. Default: 1. */
+    argsInlineMax: number;
+    /** Argument/parameter count from which a call/parameter list always wraps. Default: 4. */
+    argsMultilineMin: number;
 }
 
 export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
@@ -41,7 +50,11 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     dataTypeCase: 'upper',
     indentStyle: 'space',
     indentSize: 2,
-    commaStyle: 'trailing'
+    commaStyle: 'trailing',
+    blankLines: 'preserve',
+    simpleSelectSingleLine: true,
+    argsInlineMax: 1,
+    argsMultilineMin: 4
 };
 
 /**
@@ -57,19 +70,32 @@ export function coerceFormatOptions(raw: {
     indentStyle?: unknown;
     indentSize?: unknown;
     commaStyle?: unknown;
+    blankLines?: unknown;
+    simpleSelectSingleLine?: unknown;
+    argsInlineMax?: unknown;
+    argsMultilineMin?: unknown;
 }): FormatOptions {
     const pick = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
         typeof value === 'string' && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
-    const size = typeof raw.indentSize === 'number' && raw.indentSize >= 1 && raw.indentSize <= 8
-        ? Math.floor(raw.indentSize)
-        : DEFAULT_FORMAT_OPTIONS.indentSize;
+    const num = (value: unknown, min: number, max: number, fallback: number): number =>
+        typeof value === 'number' && value >= min && value <= max ? Math.floor(value) : fallback;
+    const size = num(raw.indentSize, 1, 8, DEFAULT_FORMAT_OPTIONS.indentSize);
+    const inlineMax = num(raw.argsInlineMax, 0, 50, DEFAULT_FORMAT_OPTIONS.argsInlineMax);
+    let multilineMin = num(raw.argsMultilineMin, 2, 100, DEFAULT_FORMAT_OPTIONS.argsMultilineMin);
+    if (multilineMin <= inlineMax) multilineMin = inlineMax + 1;
     return {
         keywordCase: pick(raw.keywordCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.keywordCase),
         identifierCase: pick(raw.identifierCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.identifierCase),
         dataTypeCase: pick(raw.dataTypeCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.dataTypeCase),
         indentStyle: pick(raw.indentStyle, ['space', 'tab'], DEFAULT_FORMAT_OPTIONS.indentStyle),
         indentSize: size,
-        commaStyle: pick(raw.commaStyle, ['trailing', 'leading'], DEFAULT_FORMAT_OPTIONS.commaStyle)
+        commaStyle: pick(raw.commaStyle, ['trailing', 'leading'], DEFAULT_FORMAT_OPTIONS.commaStyle),
+        blankLines: pick(raw.blankLines, ['preserve', 'collapse'], DEFAULT_FORMAT_OPTIONS.blankLines),
+        simpleSelectSingleLine: typeof raw.simpleSelectSingleLine === 'boolean'
+            ? raw.simpleSelectSingleLine
+            : DEFAULT_FORMAT_OPTIONS.simpleSelectSingleLine,
+        argsInlineMax: inlineMax,
+        argsMultilineMin: multilineMin
     };
 }
 
@@ -97,7 +123,16 @@ const KEYWORDS = new Set([
     'vacuum', 'copy', 'explain', 'refresh', 'temporary', 'temp', 'unlogged',
     'immutable', 'stable', 'volatile', 'security', 'definer', 'invoker',
     'cursor', 'open', 'close', 'move', 'array', 'cascade', 'restrict',
-    'new', 'old', 'before', 'after', 'instead', 'each', 'statement'
+    'new', 'old', 'before', 'after', 'instead', 'each', 'statement',
+    'leakproof', 'parallel', 'cost', 'support', 'called', 'external',
+    'setof', 'inout', 'out', 'variadic', 'using', 'errcode'
+]);
+
+/** Routine characteristic keywords that each start their own line in a CREATE header. */
+const ROUTINE_CHARACTERISTICS = new Set([
+    'language', 'stable', 'immutable', 'volatile', 'strict', 'leakproof',
+    'security', 'cost', 'rows', 'parallel', 'support', 'window', 'set',
+    'transform', 'called', 'external'
 ]);
 
 /** Data type names that are case-normalised with `dataTypeCase`. */
@@ -118,6 +153,13 @@ const CLAUSE_NEWLINE = new Set([
     'select', 'from', 'where', 'group', 'order', 'having', 'limit', 'offset',
     'fetch', 'window', 'returning', 'values', 'union', 'intersect', 'except',
     'with', 'set'
+]);
+
+/** Disqualifies a SELECT from being kept on a single line. */
+const SIMPLE_SELECT_BREAKERS = new Set([
+    'group', 'having', 'order', 'limit', 'offset', 'fetch', 'window',
+    'union', 'intersect', 'except', 'distinct', 'and', 'or', 'into',
+    'join', 'inner', 'left', 'right', 'full', 'cross', 'natural'
 ]);
 
 /** Words that introduce a JOIN and therefore begin a new line. */
@@ -283,6 +325,10 @@ function applyCase(text: string, style: CaseStyle): string {
     return text;
 }
 
+type ParenKind = 'subquery' | 'paramlist' | 'call' | 'group' | 'typemod';
+interface ParenInfo { match: number; kind: ParenKind; argCount: number; multiline: boolean; }
+interface BlockFrame { type: 'declare' | 'begin' | 'if' | 'loop' | 'case'; head: number; exception?: boolean; }
+
 /**
  * Format a PL/pgSQL / SQL string according to `options`.
  */
@@ -292,6 +338,74 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
     const toks = tokenize(input);
     const depths = computeDepths(toks);
 
+    // --- Pre-scan: classify every parenthesis -------------------------------
+    const sig = (idx: number, dir: -1 | 1): Tok | null => {
+        let j = idx + dir;
+        while (j >= 0 && j < toks.length && (toks[j].type === 'lineComment' || toks[j].type === 'blockComment')) j += dir;
+        return j >= 0 && j < toks.length ? toks[j] : null;
+    };
+
+    // Parens that open a CREATE FUNCTION/PROCEDURE parameter list.
+    const routineParenSet = new Set<number>();
+    {
+        let sawCreate = false;
+        let sawRoutine = false;
+        for (let i = 0; i < toks.length; i++) {
+            const tk = toks[i];
+            if (tk.type === 'word') {
+                const w = tk.text.toLowerCase();
+                if (w === 'create') { sawCreate = true; }
+                else if ((w === 'function' || w === 'procedure') && sawCreate) { sawRoutine = true; }
+            } else if (tk.text === '(') {
+                if (sawRoutine) { routineParenSet.add(i); sawRoutine = false; sawCreate = false; }
+            } else if (tk.text === ';') { sawCreate = false; sawRoutine = false; }
+        }
+    }
+
+    const parenInfo = new Map<number, ParenInfo>();
+    {
+        const stack: number[] = [];
+        const match = new Map<number, number>();
+        for (let i = 0; i < toks.length; i++) {
+            if (toks[i].text === '(') stack.push(i);
+            else if (toks[i].text === ')') { const o = stack.pop(); if (o != null) match.set(o, i); }
+        }
+        for (const [open, close] of match) {
+            let kind: ParenKind;
+            if (routineParenSet.has(open)) kind = 'paramlist';
+            else {
+                const ns = sig(open, 1);
+                const ps = sig(open, -1);
+                if (ns && ns.type === 'word' && ['select', 'with', 'values'].includes(ns.text.toLowerCase())) kind = 'subquery';
+                else if (ps && ps.type === 'word' && DATATYPES.has(ps.text.toLowerCase())) kind = 'typemod';
+                else if (ps && ((ps.type === 'word' && !KEYWORDS.has(ps.text.toLowerCase())) || ps.type === 'quotedIdent' || ps.type === 'param' || ps.text === ')' || ps.text === ']')) kind = 'call';
+                else kind = 'group';
+            }
+            let localP = 0, localB = 0, args = 0, hasTok = false, srcMulti = false;
+            for (let k = open + 1; k < close; k++) {
+                const tk = toks[k];
+                if (tk.nlBefore >= 1) srcMulti = true;
+                if (tk.type === 'lineComment' || tk.type === 'blockComment') { hasTok = true; continue; }
+                hasTok = true;
+                if (tk.text === '(') localP++;
+                else if (tk.text === ')') localP--;
+                else if (tk.text === '[') localB++;
+                else if (tk.text === ']') localB--;
+                else if (tk.text === ',' && localP === 0 && localB === 0) args++;
+            }
+            if (toks[close].nlBefore >= 1) srcMulti = true;
+            const argCount = hasTok ? args + 1 : 0;
+            let multiline = false;
+            if (kind === 'subquery') multiline = true;
+            else if (kind === 'call' || kind === 'paramlist') {
+                if (argCount <= opt.argsInlineMax) multiline = false;
+                else if (argCount >= opt.argsMultilineMin) multiline = true;
+                else multiline = srcMulti;
+            }
+            parenInfo.set(open, { match: close, kind, argCount, multiline });
+        }
+    }
+
     const out: string[] = [];
     let cur = '';
     let prev: TokMeta | null = null;
@@ -300,9 +414,14 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
     let blockIndent = 0;
     let lastWord = '';
     let expectThen = false;
-    const blocks: string[] = [];
+    let exceptionThen = false;
+    let exceptionBodyIndent = 0;
+    let inRoutineTrailer = false;
+    let bracketDepth = 0;
+    let betweenPending = 0;
+    const blocks: BlockFrame[] = [];
     const lists: { depth: number; indent: number }[] = [];
-    const parens: { subquery: boolean; indent: number }[] = [];
+    const parenStack: { kind: ParenKind; multiline: boolean; openIndent: number }[] = [];
 
     const indentStr = (level: number): string =>
         opt.indentStyle === 'tab' ? '\t'.repeat(Math.max(0, level)) : ' '.repeat(Math.max(0, level) * opt.indentSize);
@@ -315,13 +434,18 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
         }
     };
 
-    const blankLine = (): void => {
-        if (out.length === 0 || out[out.length - 1].trim() !== '') out.push('');
+    const insertBlanks = (n: number): void => {
+        for (let k = 0; k < n; k++) { if (out.length > 0) out.push(''); }
     };
 
-    const startLine = (indent: number, blank: boolean): void => {
+    const blanksFor = (tk: Tok): number => {
+        const b = Math.max(0, tk.nlBefore - 1);
+        return opt.blankLines === 'collapse' ? Math.min(1, b) : b;
+    };
+
+    const startLine = (indent: number, blanks: number): void => {
         flush();
-        if (blank) blankLine();
+        insertBlanks(blanks);
         lineIndent = indent;
         pendingIndent = indent;
     };
@@ -351,11 +475,7 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
         prev = meta;
     };
 
-    const nextSignificant = (idx: number): Tok | null => {
-        let j = idx + 1;
-        while (j < toks.length && (toks[j].type === 'lineComment' || toks[j].type === 'blockComment')) j++;
-        return j < toks.length ? toks[j] : null;
-    };
+    const nextSignificant = (idx: number): Tok | null => sig(idx, 1);
 
     const popLists = (pd: number): void => {
         while (lists.length && lists[lists.length - 1].depth >= pd) lists.pop();
@@ -369,10 +489,108 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
         return CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w) || w === 'into';
     };
 
+    const nearestBegin = (): BlockFrame | null => {
+        for (let k = blocks.length - 1; k >= 0; k--) if (blocks[k].type === 'begin') return blocks[k];
+        return null;
+    };
+    const nearestIf = (): BlockFrame | null => {
+        for (let k = blocks.length - 1; k >= 0; k--) {
+            if (blocks[k].type === 'if') return blocks[k];
+            if (blocks[k].type === 'begin' || blocks[k].type === 'loop') return null;
+        }
+        return null;
+    };
+
+    /** Does this IF start a PL/pgSQL block (has a top-level THEN) vs. `IF [NOT] EXISTS`? */
+    const ifIsBlock = (idx: number): boolean => {
+        let d = 0;
+        for (let k = idx + 1; k < toks.length; k++) {
+            const tk = toks[k];
+            if (tk.text === '(') d++;
+            else if (tk.text === ')') { if (d === 0) return false; d--; }
+            else if (d === 0) {
+                if (tk.text === ';') return false;
+                if (tk.type === 'word') {
+                    const w = tk.text.toLowerCase();
+                    if (w === 'then') return true;
+                    if (w === 'loop' || w === 'begin' || w === 'end') return false;
+                }
+            }
+        }
+        return false;
+    };
+
+    /** If a `CREATE FUNCTION/PROCEDURE` at `idx` is written entirely on one source line, return its `;` index; else -1. */
+    const singleLineRoutineEnd = (idx: number): number => {
+        let sawRoutine = false;
+        let d = 0;
+        for (let k = idx + 1; k < toks.length; k++) {
+            const tk = toks[k];
+            if (tk.nlBefore >= 1) return -1;
+            if (tk.text.includes('\n')) return -1;
+            if (!sawRoutine) {
+                if (tk.type === 'word') {
+                    const w = tk.text.toLowerCase();
+                    if (w === 'function' || w === 'procedure') sawRoutine = true;
+                    else if (w !== 'or' && w !== 'replace') return -1;
+                } else if (tk.text === '(') return -1;
+            }
+            if (tk.text === '(') d++;
+            else if (tk.text === ')') d--;
+            else if (tk.text === ';' && d === 0) return sawRoutine ? k : -1;
+        }
+        return -1;
+    };
+
+    /** If a simple one-line SELECT starts at `idx`, return the index of its `;` (or last token); else -1. */
+    const simpleSelectEnd = (idx: number): number => {
+        let d = 0;
+        let b = 0;
+        for (let k = idx + 1; k < toks.length; k++) {
+            const tk = toks[k];
+            if (tk.type === 'lineComment' || tk.type === 'blockComment') return -1;
+            if (tk.text === '(') {
+                const inf = parenInfo.get(k);
+                if (inf && (inf.kind === 'subquery' || inf.multiline)) return -1;
+                d++;
+            } else if (tk.text === ')') { if (d === 0) return -1; d--; }
+            else if (tk.text === '[') b++;
+            else if (tk.text === ']') { if (b > 0) b--; }
+            else if (d === 0 && b === 0) {
+                if (tk.text === ';') return k;
+                if (tk.text === ',') return -1;
+                if (tk.type === 'word' && SIMPLE_SELECT_BREAKERS.has(tk.text.toLowerCase())) return -1;
+            }
+        }
+        return toks.length - 1;
+    };
+
+    /** Does the comma-separated list starting after `idx` have more than one top-level item? */
+    const listHasMultipleItems = (idx: number): boolean => {
+        let d = 0, b = 0;
+        for (let k = idx + 1; k < toks.length; k++) {
+            const tk = toks[k];
+            if (tk.text === '(') d++;
+            else if (tk.text === ')') { if (d === 0) return false; d--; }
+            else if (tk.text === '[') b++;
+            else if (tk.text === ']') { if (b > 0) b--; }
+            else if (d === 0 && b === 0) {
+                if (tk.text === ',') return true;
+                if (tk.text === ';') return false;
+                if (tk.type === 'word') {
+                    const w = tk.text.toLowerCase();
+                    if (CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w) || w === 'into' || w === 'from') return false;
+                }
+            }
+        }
+        return false;
+    };
+
     for (let i = 0; i < toks.length; i++) {
         const t = toks[i];
-        const blank = t.nlBefore >= 2;
+        const blanks = blanksFor(t);
         const pd = depths[i];
+        const inSql = parenStack.length === 0 ? true : parenStack[parenStack.length - 1].kind === 'subquery';
 
         // --- Comments -------------------------------------------------------
         if (t.type === 'lineComment') {
@@ -384,7 +602,7 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
         if (t.type === 'blockComment') {
             if (t.text.includes('\n')) {
                 flush();
-                if (blank) blankLine();
+                insertBlanks(blanks);
                 lineIndent = pendingIndent;
                 const ls = t.text.split('\n');
                 out.push((indentStr(lineIndent) + ls[0]).replace(/\s+$/, ''));
@@ -406,7 +624,7 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
                 emit(tag, { text: tag, isKeyword: false, type: 'operator' });
                 flush();
                 const innerFmt = formatSql(inner.replace(/^\s*\n/, '').replace(/\s+$/, ''), opt);
-                const bodyIndent = blockIndent + 1;
+                const bodyIndent = blockIndent;
                 for (const ln of innerFmt.split('\n')) {
                     out.push(ln === '' ? '' : indentStr(bodyIndent) + ln);
                 }
@@ -432,16 +650,54 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
                     : applyCase(t.text, opt.identifierCase);
             const meta: TokMeta = { text: rendered, isKeyword: cat !== 'ident', type: 'word' };
 
+            // Keep a CREATE FUNCTION/PROCEDURE that the author wrote on a single line intact.
+            if (w === 'create' && pd === 0 && parenStack.length === 0 && cur === '') {
+                const end = singleLineRoutineEnd(i);
+                if (end >= 0) {
+                    startLine(blockIndent, blanks);
+                    for (let k = i; k <= end; k++) emitInline(toks[k]);
+                    flush();
+                    pendingIndent = blockIndent;
+                    lastWord = ''; i = end; continue;
+                }
+            }
+
+            // CREATE FUNCTION/PROCEDURE header trailer (RETURNS / characteristics / AS)
+            if (inRoutineTrailer && pd === 0) {
+                if (w === 'as') {
+                    startLine(0, blanks); emit(rendered, meta);
+                    inRoutineTrailer = false; lastWord = w; continue;
+                }
+                if (w === 'returns') { emit(rendered, meta); lastWord = w; continue; }
+                if (ROUTINE_CHARACTERISTICS.has(w)) {
+                    startLine(1, blanks); emit(rendered, meta); lastWord = w; continue;
+                }
+                emit(rendered, meta); lastWord = w; continue;
+            }
+
+            // Simple single-line SELECT
+            if (w === 'select' && pd === 0 && parenStack.length === 0 && cur === ''
+                && opt.simpleSelectSingleLine) {
+                const end = simpleSelectEnd(i);
+                if (end >= 0) {
+                    startLine(blockIndent, blanks);
+                    for (let k = i; k <= end; k++) emitInline(toks[k]);
+                    flush();
+                    pendingIndent = blockIndent;
+                    lastWord = ''; i = end; continue;
+                }
+            }
+
             // PL/pgSQL block structure (top level only)
             if (pd === 0) {
                 // Track CASE *expressions* so their WHEN/ELSE/END are not
                 // mistaken for IF/block control flow.
                 if (w === 'case') {
-                    blocks.push('case');
+                    blocks.push({ type: 'case', head: blockIndent });
                     emit(rendered, meta);
                     lastWord = w; continue;
                 }
-                if (blocks[blocks.length - 1] === 'case') {
+                if (blocks[blocks.length - 1]?.type === 'case') {
                     if (w === 'end') {
                         blocks.pop();
                         emit(rendered, meta);
@@ -453,27 +709,47 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
                         }
                         lastWord = w; continue;
                     }
-                    // WHEN / THEN / ELSE inside a CASE expression stay inline.
                     if (w === 'when' || w === 'then' || w === 'else') {
                         emit(rendered, meta);
                         lastWord = w; continue;
                     }
                 }
+                // EXCEPTION block (start of an exception handler section)
+                if (w === 'exception' && cur === '') {
+                    const bf = nearestBegin();
+                    if (bf) {
+                        bf.exception = true;
+                        startLine(bf.head, blanks); emit(rendered, meta); flush();
+                        blockIndent = bf.head + 1; pendingIndent = blockIndent;
+                        lastWord = w; continue;
+                    }
+                }
+                // WHEN inside an EXCEPTION section
+                if (w === 'when' && cur === '') {
+                    const bf = nearestBegin();
+                    if (bf && bf.exception) {
+                        startLine(bf.head + 1, blanks); emit(rendered, meta);
+                        exceptionThen = true; exceptionBodyIndent = bf.head + 2;
+                        lastWord = w; continue;
+                    }
+                }
                 if (w === 'declare') {
-                    startLine(blockIndent, blank); emit(rendered, meta); flush();
-                    blockIndent++; pendingIndent = blockIndent; blocks.push('declare');
+                    startLine(blockIndent, blanks); emit(rendered, meta); flush();
+                    blocks.push({ type: 'declare', head: blockIndent });
+                    blockIndent++; pendingIndent = blockIndent;
                     lastWord = w; continue;
                 }
                 if (w === 'begin') {
-                    if (blocks[blocks.length - 1] === 'declare') { blocks.pop(); blockIndent = Math.max(0, blockIndent - 1); }
-                    startLine(blockIndent, blank); emit(rendered, meta); flush();
-                    blockIndent++; pendingIndent = blockIndent; blocks.push('begin');
+                    if (blocks[blocks.length - 1]?.type === 'declare') { const d = blocks.pop()!; blockIndent = d.head; }
+                    startLine(blockIndent, blanks); emit(rendered, meta); flush();
+                    blocks.push({ type: 'begin', head: blockIndent });
+                    blockIndent++; pendingIndent = blockIndent;
                     lists.length = 0; lastWord = w; continue;
                 }
                 if (w === 'end') {
-                    blockIndent = Math.max(0, blockIndent - 1);
-                    if (blocks.length) blocks.pop();
-                    startLine(blockIndent, blank); emit(rendered, meta);
+                    const frame = blocks.pop();
+                    blockIndent = frame ? frame.head : Math.max(0, blockIndent - 1);
+                    startLine(blockIndent, blanks); emit(rendered, meta);
                     pendingIndent = blockIndent;
                     const nx = toks[i + 1];
                     if (nx && nx.type === 'word' && ['if', 'loop', 'case'].includes(nx.text.toLowerCase())) {
@@ -483,46 +759,55 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
                     }
                     lastWord = w; continue;
                 }
-                if (w === 'if') {
-                    startLine(blockIndent, blank); emit(rendered, meta);
-                    expectThen = true; blocks.push('if'); lastWord = w; continue;
+                if (w === 'if' && ifIsBlock(i)) {
+                    startLine(blockIndent, blanks); emit(rendered, meta);
+                    expectThen = true; blocks.push({ type: 'if', head: blockIndent });
+                    lastWord = w; continue;
                 }
-                if (w === 'elsif' || w === 'elseif') {
-                    blockIndent = Math.max(0, blockIndent - 1);
-                    startLine(blockIndent, blank); emit(rendered, meta);
+                if ((w === 'elsif' || w === 'elseif') && nearestIf()) {
+                    const f = nearestIf()!;
+                    startLine(f.head, blanks); emit(rendered, meta);
                     expectThen = true; lastWord = w; continue;
                 }
-                if (w === 'else') {
-                    blockIndent = Math.max(0, blockIndent - 1);
-                    startLine(blockIndent, blank); emit(rendered, meta); flush();
-                    blockIndent++; pendingIndent = blockIndent; lastWord = w; continue;
+                if (w === 'else' && nearestIf()) {
+                    const f = nearestIf()!;
+                    startLine(f.head, blanks); emit(rendered, meta); flush();
+                    blockIndent = f.head + 1; pendingIndent = blockIndent; lastWord = w; continue;
+                }
+                if (w === 'then' && exceptionThen) {
+                    emit(rendered, meta); flush();
+                    blockIndent = exceptionBodyIndent; pendingIndent = blockIndent;
+                    exceptionThen = false; lastWord = w; continue;
                 }
                 if (w === 'then' && expectThen) {
+                    const f = nearestIf();
                     emit(rendered, meta); flush();
-                    blockIndent++; pendingIndent = blockIndent; expectThen = false; lastWord = w; continue;
+                    blockIndent = (f ? f.head : blockIndent) + 1; pendingIndent = blockIndent;
+                    expectThen = false; lastWord = w; continue;
                 }
                 if (w === 'loop') {
                     emit(rendered, meta); flush();
-                    blockIndent++; pendingIndent = blockIndent; blocks.push('loop'); lastWord = w; continue;
+                    blocks.push({ type: 'loop', head: blockIndent });
+                    blockIndent++; pendingIndent = blockIndent; lastWord = w; continue;
                 }
             }
 
-            // JOINs
-            if (JOIN_WORDS.has(w)) {
+            // JOINs (only inside an actual SQL context)
+            if (JOIN_WORDS.has(w) && inSql) {
                 popLists(pd);
                 if (JOIN_WORDS.has(lastWord) || lastWord === 'outer') emit(rendered, meta);
-                else { startLine(blockIndent + pd, blank); emit(rendered, meta); }
+                else { startLine(blockIndent + pd, blanks); emit(rendered, meta); }
                 lastWord = w; continue;
             }
 
-            // SQL clause keywords
-            if (CLAUSE_NEWLINE.has(w)) {
+            // SQL clause keywords (only inside an actual SQL context)
+            if (CLAUSE_NEWLINE.has(w) && inSql) {
                 const clauseIndent = blockIndent + pd;
                 popLists(pd);
-                startLine(clauseIndent, blank); emit(rendered, meta);
+                betweenPending = 0;
+                startLine(clauseIndent, blanks); emit(rendered, meta);
 
                 if (w === 'select') {
-                    // Keep DISTINCT / ALL (and DISTINCT ON (...)) on the SELECT line.
                     while (true) {
                         const nx = toks[i + 1];
                         if (nx && nx.type === 'word' && ['distinct', 'all'].includes(nx.text.toLowerCase())) {
@@ -532,7 +817,6 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
                             if (isDistinct && toks[i + 1] && toks[i + 1].type === 'word' && toks[i + 1].text.toLowerCase() === 'on') {
                                 emit(applyCase(toks[i + 1].text, opt.keywordCase), { text: 'on', isKeyword: true, type: 'word' });
                                 i++;
-                                // consume balanced (...)
                                 if (toks[i + 1] && toks[i + 1].text === '(') {
                                     let depth = 0;
                                     let j = i + 1;
@@ -549,11 +833,15 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
                         }
                         break;
                     }
-                    // `SELECT *` (bare star) stays on one line.
                     const star = toks[i + 1];
                     if (star && star.text === '*' && isClauseOrEnd(nextSignificant(i + 1))) {
                         emit('*', { text: '*', isKeyword: false, type: 'operator' });
                         i++;
+                        pendingIndent = clauseIndent + 1;
+                        lastWord = w; continue;
+                    }
+                    if (!listHasMultipleItems(i)) {
+                        // Single select-item: keep it on the SELECT line.
                         pendingIndent = clauseIndent + 1;
                         lastWord = w; continue;
                     }
@@ -574,7 +862,38 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
                 lastWord = w; continue;
             }
 
-            if (w === 'into') popLists(pd);
+            if (w === 'into' && inSql && lastWord !== 'insert') {
+                // SELECT ... INTO / RETURNING ... INTO: INTO starts its own line.
+                const clauseIndent = blockIndent + pd;
+                popLists(pd);
+                betweenPending = 0;
+                startLine(clauseIndent, blanks); emit(rendered, meta);
+                const nx = toks[i + 1];
+                if (nx && nx.type === 'word' && nx.text.toLowerCase() === 'strict') {
+                    emit(applyCase(nx.text, opt.keywordCase), { text: nx.text, isKeyword: true, type: 'word' });
+                    i++;
+                }
+                if (listHasMultipleItems(i)) {
+                    lists.push({ depth: pd, indent: clauseIndent + 1 });
+                    pendingIndent = clauseIndent + 1;
+                    flush();
+                } else {
+                    pendingIndent = clauseIndent + 1;
+                }
+                lastWord = 'into'; continue;
+            }
+            if (w === 'into' && inSql) popLists(pd);
+
+            // AND on its own line within a SQL condition (except the AND that belongs to BETWEEN).
+            if (w === 'and' && inSql) {
+                if (betweenPending > 0) {
+                    betweenPending--;
+                    emit(rendered, meta); lastWord = w; continue;
+                }
+                startLine(blockIndent + pd + 1, blanks); emit(rendered, meta);
+                lastWord = w; continue;
+            }
+            if (w === 'between' && inSql) betweenPending++;
 
             emit(rendered, meta);
             lastWord = w;
@@ -584,7 +903,7 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
         // --- Punctuation ----------------------------------------------------
         if (t.text === ',') {
             const top = lists[lists.length - 1];
-            if (top && top.depth === pd) {
+            if (top && top.depth === pd && bracketDepth === 0) {
                 if (opt.commaStyle === 'leading') {
                     flush();
                     lineIndent = top.indent;
@@ -604,36 +923,55 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
 
         if (t.text === ';') {
             popLists(pd);
+            betweenPending = 0;
             emit(';', { text: ';', isKeyword: false, type: 'punct' });
             if (pd === 0) {
                 flush();
                 pendingIndent = blockIndent;
                 lastWord = '';
+                inRoutineTrailer = false;
             }
             continue;
         }
 
+        if (t.text === '[') { emit('[', { text: '[', isKeyword: false, type: 'punct' }); bracketDepth++; continue; }
+        if (t.text === ']') { emit(']', { text: ']', isKeyword: false, type: 'punct' }); bracketDepth = Math.max(0, bracketDepth - 1); continue; }
+
         if (t.text === '(') {
-            const sub = (() => {
-                const ns = nextSignificant(i);
-                return !!(ns && ns.type === 'word' && ['select', 'with', 'values'].includes(ns.text.toLowerCase()));
-            })();
-            emit('(', { text: '(', isKeyword: false, type: 'punct' });
+            const info = parenInfo.get(i);
+            const kind: ParenKind = info ? info.kind : 'group';
+            const multiline = info ? info.multiline : false;
+            if (kind === 'typemod' && cur !== '') {
+                // No space between a data type and its modifier, e.g. VARCHAR(500).
+                cur += '(';
+                prev = { text: '(', isKeyword: false, type: 'punct' };
+            } else {
+                emit('(', { text: '(', isKeyword: false, type: 'punct' });
+            }
             const openIndent = lineIndent;
-            parens.push({ subquery: sub, indent: openIndent });
-            if (sub) { flush(); pendingIndent = openIndent; }
+            parenStack.push({ kind, multiline, openIndent });
+            if (multiline) {
+                if (kind === 'subquery') {
+                    flush(); pendingIndent = openIndent;
+                } else {
+                    flush();
+                    pendingIndent = openIndent + 1;
+                    lists.push({ depth: depths[i] + 1, indent: openIndent + 1 });
+                }
+            }
             continue;
         }
 
         if (t.text === ')') {
-            const frame = parens.pop();
+            const frame = parenStack.pop();
             popLists(pd + 1);
-            if (frame && frame.subquery) {
-                startLine(frame.indent, false);
+            if (frame && frame.multiline) {
+                startLine(frame.openIndent, 0);
                 emit(')', { text: ')', isKeyword: false, type: 'punct' });
             } else {
                 emit(')', { text: ')', isKeyword: false, type: 'punct' });
             }
+            if (frame && frame.kind === 'paramlist') inRoutineTrailer = true;
             continue;
         }
 
@@ -662,7 +1000,7 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
     }
 
     let result = out.join('\n').replace(/[ \t]+$/gm, '');
-    // Collapse 3+ consecutive blank lines down to a single blank line.
-    result = result.replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '').replace(/\n+$/, '');
+    if (opt.blankLines === 'collapse') result = result.replace(/\n{3,}/g, '\n\n');
+    result = result.replace(/^\n+/, '').replace(/\n+$/, '');
     return trailingNewline ? result + '\n' : result;
 }
