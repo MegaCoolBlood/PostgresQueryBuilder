@@ -565,7 +565,7 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
     const nearestIf = (): BlockFrame | null => {
         for (let k = blocks.length - 1; k >= 0; k--) {
             if (blocks[k].type === 'if') return blocks[k];
-            if (blocks[k].type === 'begin' || blocks[k].type === 'loop') return null;
+            if (blocks[k].type === 'begin' || blocks[k].type === 'loop' || blocks[k].type === 'case') return null;
         }
         return null;
     };
@@ -628,7 +628,26 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
             else if (d === 0 && b === 0) {
                 if (tk.text === ';') return k;
                 if (tk.text === ',') return -1;
-                if (tk.type === 'word' && SIMPLE_SELECT_BREAKERS.has(tk.text.toLowerCase())) return -1;
+                if (tk.type === 'word') {
+                    const lw = tk.text.toLowerCase();
+                    if (lw === 'case') {
+                        // A multiline CASE must not be collapsed; a single-line CASE is
+                        // skipped wholesale so its inner words don't trip the breakers.
+                        let cd = 0, nl = false, m = k;
+                        for (; m < toks.length; m++) {
+                            const mt = toks[m];
+                            if (m > k && mt.nlBefore >= 1) nl = true;
+                            if (mt.type === 'word') {
+                                const mw = mt.text.toLowerCase();
+                                if (mw === 'case') cd++;
+                                else if (mw === 'end') { cd--; if (cd === 0) break; }
+                            }
+                        }
+                        if (nl) return -1;
+                        k = m; continue;
+                    }
+                    if (SIMPLE_SELECT_BREAKERS.has(lw)) return -1;
+                }
             }
         }
         return toks.length - 1;
@@ -653,6 +672,148 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
             }
         }
         return false;
+    };
+
+    // --- CASE expression helpers -------------------------------------------
+    /**
+     * Index of the `END` that closes the `CASE` at `caseIdx` (block-aware).
+     * Accounts for nested `IF`/`LOOP`/`BEGIN`/`CASE` blocks so that a statement-form
+     * `CASE … END CASE` whose branches contain `IF … END IF;` etc. is matched correctly
+     * (its closing `END` is followed by `CASE`).
+     */
+    const caseMatchEnd = (caseIdx: number): number => {
+        let depth = 0;
+        for (let k = caseIdx; k < toks.length; k++) {
+            const tk = toks[k];
+            if (tk.type !== 'word') continue;
+            const w = tk.text.toLowerCase();
+            if (w === 'case' || w === 'if' || w === 'loop' || w === 'begin') {
+                depth++;
+            } else if (w === 'end') {
+                depth--;
+                if (depth === 0) return k;
+                const nx = toks[k + 1];
+                const nw = nx && nx.type === 'word' ? nx.text.toLowerCase() : '';
+                if (nw === 'if' || nw === 'loop' || nw === 'case') k++; // consume nested-end qualifier
+            }
+        }
+        return toks.length - 1;
+    };
+    /** Does any token in [a..b] start a new source line? */
+    const rangeHasNewline = (a: number, b: number): boolean => {
+        for (let k = a; k <= b; k++) if (k >= 0 && k < toks.length && toks[k].nlBefore >= 1) return true;
+        return false;
+    };
+    /** Next CASE keyword in `names` at the top level (ignoring parens and nested CASE) within [from..to]. */
+    const findCaseKeyword = (from: number, to: number, names: Set<string>): number => {
+        let pd = 0, cd = 0;
+        for (let k = from; k <= to; k++) {
+            const tk = toks[k];
+            if (tk.text === '(') pd++;
+            else if (tk.text === ')') pd--;
+            else if (tk.type === 'word' && pd === 0) {
+                const w = tk.text.toLowerCase();
+                if (w === 'case') cd++;
+                else if (w === 'end') cd--;
+                else if (cd === 0 && names.has(w)) return k;
+            }
+        }
+        return -1;
+    };
+    /** Does the condition in [a..b] contain a top-level AND/OR (not the AND of a BETWEEN)? */
+    const condHasTopLevelAndOr = (a: number, b: number): boolean => {
+        let pd = 0, cd = 0, between = 0;
+        for (let k = a; k <= b; k++) {
+            const tk = toks[k];
+            if (tk.text === '(') pd++;
+            else if (tk.text === ')') pd--;
+            else if (tk.type === 'word' && pd === 0) {
+                const w = tk.text.toLowerCase();
+                if (w === 'case') cd++;
+                else if (w === 'end') cd--;
+                else if (cd === 0) {
+                    if (w === 'between') between++;
+                    else if (w === 'or') return true;
+                    else if (w === 'and') { if (between > 0) between--; else return true; }
+                }
+            }
+        }
+        return false;
+    };
+    /** Emit tokens [a..b] inline (with normal spacing/casing). */
+    const emitRange = (a: number, b: number): void => {
+        for (let k = a; k <= b; k++) emitInline(toks[k]);
+    };
+    /** Emit a multi-condition WHEN clause, breaking before each top-level AND/OR. */
+    const renderCondMulti = (a: number, b: number, indent: number): void => {
+        let pd = 0, cd = 0, between = 0;
+        for (let k = a; k <= b; k++) {
+            const tk = toks[k];
+            let isBreak = false;
+            if (tk.type === 'word' && pd === 0) {
+                const w = tk.text.toLowerCase();
+                if (w === 'case') cd++;
+                else if (w === 'end') cd--;
+                else if (cd === 0) {
+                    if (w === 'between') between++;
+                    else if (w === 'or') isBreak = true;
+                    else if (w === 'and') { if (between > 0) between--; else isBreak = true; }
+                }
+            }
+            if (tk.text === '(') pd++;
+            else if (tk.text === ')') pd--;
+            if (isBreak) startLine(indent, 0);
+            emitInline(tk);
+        }
+    };
+    /** Render a multiline CASE expression (caseIdx..caseEnd) as structured lines. */
+    const renderCaseBody = (caseIdx: number, caseEnd: number): void => {
+        emitInline(toks[caseIdx]); // CASE (attaches to the current line)
+        const caseIndent = lineIndent;
+        const whenIndent = caseIndent + 1;
+        const deepIndent = caseIndent + 2;
+        let k = caseIdx + 1;
+        while (k < caseEnd) {
+            const tk = toks[k];
+            const w = tk.type === 'word' ? tk.text.toLowerCase() : '';
+            if (w === 'when') {
+                const thenIdx = findCaseKeyword(k + 1, caseEnd, new Set(['then']));
+                const clauseEnd = thenIdx >= 0 ? findCaseKeyword(thenIdx + 1, caseEnd, new Set(['when', 'else'])) : -1;
+                const resEnd = (clauseEnd >= 0 ? clauseEnd : caseEnd) - 1;
+                const multiCond = thenIdx > k + 1 && condHasTopLevelAndOr(k + 1, thenIdx - 1);
+                const clauseSingle = !rangeHasNewline(k + 1, resEnd);
+                startLine(whenIndent, blanksFor(tk));
+                emitInline(tk); // WHEN
+                if (thenIdx < 0) { emitRange(k + 1, resEnd); k = clauseEnd >= 0 ? clauseEnd : caseEnd; continue; }
+                if (multiCond) {
+                    renderCondMulti(k + 1, thenIdx - 1, deepIndent);
+                    startLine(whenIndent, 0); emitInline(toks[thenIdx]); // THEN on its own line
+                    startLine(deepIndent, 0); emitRange(thenIdx + 1, resEnd);
+                } else {
+                    emitRange(k + 1, thenIdx - 1); // condition inline
+                    emitInline(toks[thenIdx]); // THEN inline
+                    if (clauseSingle) emitRange(thenIdx + 1, resEnd);
+                    else { startLine(deepIndent, 0); emitRange(thenIdx + 1, resEnd); }
+                }
+                k = clauseEnd >= 0 ? clauseEnd : caseEnd;
+            } else if (w === 'else') {
+                const resEnd = caseEnd - 1;
+                startLine(whenIndent, blanksFor(tk));
+                emitInline(tk); // ELSE
+                if (!rangeHasNewline(k + 1, resEnd)) emitRange(k + 1, resEnd);
+                else { startLine(deepIndent, 0); emitRange(k + 1, resEnd); }
+                k = caseEnd;
+            } else if (tk.type === 'lineComment' || tk.type === 'blockComment') {
+                startLine(whenIndent, blanksFor(tk));
+                out.push((indentStr(whenIndent) + tk.text).replace(/\s+$/, ''));
+                prev = null; pendingIndent = whenIndent;
+                k++;
+            } else {
+                emitInline(tk); k++;
+            }
+        }
+        startLine(caseIndent, blanksFor(toks[caseEnd]));
+        emitInline(toks[caseEnd]); // END (left in `cur` so a trailing alias attaches)
     };
 
     for (let i = 0; i < toks.length; i++) {
@@ -762,29 +923,58 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
                 }
             }
 
+            // CASE *expressions*: a single-line CASE stays inline; a multiline CASE
+            // is formatted (WHEN per line, etc.). The PL/pgSQL `CASE … END CASE`
+            // statement form is left to the block handling below.
+            if (w === 'case') {
+                const caseEnd = caseMatchEnd(i);
+                const after = toks[caseEnd + 1];
+                const stmtForm = !!after && after.type === 'word' && after.text.toLowerCase() === 'case';
+                if (!stmtForm) {
+                    if (rangeHasNewline(i + 1, caseEnd)) renderCaseBody(i, caseEnd);
+                    else emitRange(i, caseEnd);
+                    i = caseEnd; lastWord = 'end'; continue;
+                }
+            }
+
             // PL/pgSQL block structure (top level only)
             if (pd === 0) {
-                // Track CASE *expressions* so their WHEN/ELSE/END are not
-                // mistaken for IF/block control flow.
+                // CASE *statement* form (`CASE … END CASE` with statement bodies).
+                // CASE/END CASE sit at the block indent, each WHEN/ELSE one level
+                // deeper, and the branch body (assignments, nested IF/LOOP, …) one
+                // level deeper still — with the body starting on the line after THEN.
                 if (w === 'case') {
+                    startLine(blockIndent, blanks); emit(rendered, meta);
                     blocks.push({ type: 'case', head: blockIndent });
-                    emit(rendered, meta);
                     lastWord = w; continue;
                 }
                 if (blocks[blocks.length - 1]?.type === 'case') {
+                    const f = blocks[blocks.length - 1];
+                    if (w === 'when') {
+                        startLine(f.head + 1, blanks); emit(rendered, meta);
+                        lastWord = w; continue;
+                    }
+                    if (w === 'then') {
+                        emit(rendered, meta); flush();
+                        blockIndent = f.head + 2; pendingIndent = blockIndent;
+                        lastWord = w; continue;
+                    }
+                    if (w === 'else') {
+                        startLine(f.head + 1, blanks); emit(rendered, meta); flush();
+                        blockIndent = f.head + 2; pendingIndent = blockIndent;
+                        lastWord = w; continue;
+                    }
                     if (w === 'end') {
                         blocks.pop();
-                        emit(rendered, meta);
+                        blockIndent = f.head;
+                        startLine(blockIndent, blanks); emit(rendered, meta);
                         const nx = toks[i + 1];
                         if (nx && nx.type === 'word' && nx.text.toLowerCase() === 'case') {
                             const rj = applyCase(nx.text, opt.keywordCase);
                             emit(rj, { text: rj, isKeyword: true, type: 'word' });
                             i++;
                         }
-                        lastWord = w; continue;
-                    }
-                    if (w === 'when' || w === 'then' || w === 'else') {
-                        emit(rendered, meta);
+                        pendingIndent = blockIndent;
                         lastWord = w; continue;
                     }
                 }

@@ -78,6 +78,136 @@ test('treats CASE as an expression (does not break on its ELSE/END)', () => {
     );
 });
 
+test('keeps a single-line CASE expression on one line', () => {
+    const out = formatSql("select case when a and b then 1 else 0 end from t;");
+    assert.equal(out, 'SELECT CASE WHEN a AND b THEN 1 ELSE 0 END FROM t;');
+});
+
+test('formats a multiline CASE with one WHEN per line', () => {
+    const out = formatSql([
+        'select',
+        'case',
+        "when x > 1 then 'a'",
+        "when y = 2 then 'b'",
+        "else 'c'",
+        'end as label',
+        'from t;'
+    ].join('\n'));
+    assert.equal(
+        out,
+        [
+            'SELECT CASE',
+            "  WHEN x > 1 THEN 'a'",
+            "  WHEN y = 2 THEN 'b'",
+            "  ELSE 'c'",
+            'END AS label',
+            'FROM t;'
+        ].join('\n')
+    );
+});
+
+test('breaks a multi-condition WHEN clause (BETWEEN AND stays inline)', () => {
+    const out = formatSql([
+        'select',
+        'case',
+        "when a = b and c between d and g then 'x'",
+        "when z = 1 then 'y'",
+        "else 'n'",
+        'end',
+        'from t;'
+    ].join('\n'));
+    assert.equal(
+        out,
+        [
+            'SELECT CASE',
+            '  WHEN a = b',
+            '    AND c BETWEEN d AND g',
+            '  THEN',
+            "    'x'",
+            "  WHEN z = 1 THEN 'y'",
+            "  ELSE 'n'",
+            'END',
+            'FROM t;'
+        ].join('\n')
+    );
+});
+
+test('puts the result on its own line when a CASE clause spans lines', () => {
+    const out = formatSql([
+        'select case',
+        'when x = 1 then',
+        '  some_long_function(a, b)',
+        'else other',
+        'end from t;'
+    ].join('\n'));
+    assert.equal(
+        out,
+        [
+            'SELECT CASE',
+            '  WHEN x = 1 THEN',
+            '    some_long_function(a, b)',
+            '  ELSE other',
+            'END',
+            'FROM t;'
+        ].join('\n')
+    );
+});
+
+test('does not collapse a CASE statement (END CASE) with nested IF blocks', () => {
+    const out = formatSql([
+        'CASE',
+        "WHEN pi_import_name = 'ImpAccAssign' THEN  -- emplNo given?",
+        'IF pi_param1 IS NOT NULL THEN',
+        'v_text := v_column_line;',
+        'END IF;',
+        'END CASE;'
+    ].join('\n'));
+    // The branch body must NOT be swallowed into the trailing comment.
+    assert.ok(out.includes('-- emplNo given?'), 'trailing comment is preserved');
+    assert.ok(/IF pi_param1 IS NOT NULL THEN/.test(out), 'nested IF is kept as code');
+    assert.ok(/^\s*v_text := v_column_line;$/m.test(out), 'assignment stays on its own line');
+    assert.ok(/END IF;/.test(out) && /END CASE;/.test(out), 'block terminators preserved');
+    // Nothing after the comment marker on its line (i.e. it is a trailing comment, not swallowing code).
+    const commentLine = out.split('\n').find(l => l.includes('-- emplNo given?'))!;
+    assert.ok(!/IF pi_param1/.test(commentLine), 'code is not pulled onto the comment line');
+});
+
+test('indents a CASE statement and breaks the body after THEN', () => {
+    const out = formatSql([
+        'BEGIN',
+        'CASE',
+        "WHEN pi_import_name = 'ImpCostCateg' THEN",
+        'v_text := v_column_line;',
+        'IF pi_param1 IS NOT NULL THEN',
+        'v_prefix := v_text || pi_param1;',
+        'ELSE',
+        'v_prefix := v_text;',
+        'END IF;',
+        'ELSE',
+        'v_retwert := v_unknown;  --Unknown message type',
+        'END CASE;',
+        'END;'
+    ].join('\n'));
+    assert.equal(
+        out,
+        [
+            'BEGIN',
+            '  CASE',
+            "    WHEN pi_import_name = 'ImpCostCateg' THEN",
+            '      v_text := v_column_line;',
+            '      IF pi_param1 IS NOT NULL THEN',
+            '        v_prefix := v_text || pi_param1;',
+            '      ELSE',
+            '        v_prefix := v_text;',
+            '      END IF;',
+            '    ELSE',
+            '      v_retwert := v_unknown;  --Unknown message type',
+            '  END CASE;',
+            'END;'
+        ].join('\n')
+    );
+});
+
 test('indents subqueries inside parentheses', () => {
     const out = formatSql('select a from (select x from inner_t where x>0) sub;');
     assert.equal(
