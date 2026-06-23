@@ -279,6 +279,16 @@ test('preserves an authored blank line before a standalone comment', () => {
     );
 });
 
+test('keeps prefixed string literals intact (E\'...\' / B\'...\' / X\'...\' / U&\'...\')', () => {
+    assert.equal(formatSql("select E'\\n';"), "SELECT E'\\n';");
+    assert.ok(formatSql("select e'\\t';").includes("e'\\t'"));
+    assert.ok(formatSql("select B'1010';").includes("B'1010'"));
+    assert.ok(formatSql("select x'1f';").includes("x'1f'"));
+    assert.ok(formatSql("select U&'\\0041';").includes("U&'\\0041'"));
+    // A normal identifier starting with E is unaffected.
+    assert.equal(formatSql('select each_col from t;'), 'SELECT each_col FROM t;');
+});
+
 test('keeps a CREATE FUNCTION written on a single line on one line', () => {
     const out = formatSql(
         "CREATE FUNCTION pk.g_pair() RETURNS varchar LANGUAGE SQL IMMUTABLE AS $$ SELECT 'X'; $$;"

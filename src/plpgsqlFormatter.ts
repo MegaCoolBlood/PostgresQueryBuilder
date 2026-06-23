@@ -265,6 +265,28 @@ function tokenize(input: string): Tok[] {
             toks.push({ type: 'blockComment', text: input.slice(i, j), nlBefore: nl });
             nl = 0; i = j; continue;
         }
+        // Prefixed string literal: E'...', B'...', X'...' and U&'...'
+        // (and their lowercase forms). Must be one token so no space is inserted
+        // between the prefix and the quote (e.g. E'\n', not E '\n').
+        {
+            const lc = c.toLowerCase();
+            let pfx = 0;
+            if ((lc === 'e' || lc === 'b' || lc === 'x') && c2 === "'") pfx = 1;
+            else if (lc === 'u' && c2 === '&' && input[i + 2] === "'") pfx = 2;
+            if (pfx) {
+                let j = i + pfx + 1;
+                while (j < n) {
+                    if (input[j] === '\\') { j += 2; continue; }
+                    if (input[j] === "'") {
+                        if (input[j + 1] === "'") { j += 2; continue; }
+                        j++; break;
+                    }
+                    j++;
+                }
+                toks.push({ type: 'string', text: input.slice(i, j), nlBefore: nl });
+                nl = 0; i = j; continue;
+            }
+        }
         // Single-quoted string
         if (c === "'") {
             let j = i + 1;
