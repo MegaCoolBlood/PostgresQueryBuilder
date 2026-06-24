@@ -282,6 +282,38 @@ test('produces stable output when formatted repeatedly (idempotent)', () => {
     assert.equal(formatSql(once), once);
 });
 
+test('moves THEN to its own line when an IF condition is broken across lines', () => {
+    const out = formatSql(
+        'BEGIN\nIF a.amount IS NULL OR a.amount = 0 THEN\ndo_something();\nEND IF;\nEND;'
+    );
+    assert.equal(
+        out,
+        [
+            'BEGIN',
+            '  IF a.amount IS NULL',
+            '    OR a.amount = 0',
+            '  THEN',
+            '    do_something();',
+            '  END IF;',
+            'END;'
+        ].join('\n')
+    );
+});
+
+test('keeps THEN inline for a single-line IF condition', () => {
+    const out = formatSql('BEGIN\nIF x > 1 THEN\ndo_it();\nEND IF;\nEND;');
+    assert.equal(
+        out,
+        [
+            'BEGIN',
+            '  IF x > 1 THEN',
+            '    do_it();',
+            '  END IF;',
+            'END;'
+        ].join('\n')
+    );
+});
+
 test('indents subqueries inside parentheses', () => {
     const out = formatSql('select a from (select x from inner_t where x>0) sub;');
     assert.equal(

@@ -510,6 +510,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     let blockIndent = 0;
     let lastWord = '';
     let expectThen = false;
+    let ifCondBroke = false;
     let exceptionThen = false;
     let exceptionBodyIndent = 0;
     let inRoutineTrailer = false;
@@ -1065,13 +1066,13 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 }
                 if (w === 'if' && ifIsBlock(i)) {
                     startLine(blockIndent, blanks); emit(rendered, meta);
-                    expectThen = true; blocks.push({ type: 'if', head: blockIndent });
+                    expectThen = true; ifCondBroke = false; blocks.push({ type: 'if', head: blockIndent });
                     lastWord = w; continue;
                 }
                 if ((w === 'elsif' || w === 'elseif') && nearestIf()) {
                     const f = nearestIf()!;
                     startLine(f.head, blanks); emit(rendered, meta);
-                    expectThen = true; lastWord = w; continue;
+                    expectThen = true; ifCondBroke = false; lastWord = w; continue;
                 }
                 if (w === 'else' && nearestIf()) {
                     const f = nearestIf()!;
@@ -1085,9 +1086,13 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 }
                 if (w === 'then' && expectThen) {
                     const f = nearestIf();
-                    emit(rendered, meta); flush();
-                    blockIndent = (f ? f.head : blockIndent) + 1; pendingIndent = blockIndent;
-                    expectThen = false; lastWord = w; continue;
+                    const head = (f ? f.head : blockIndent);
+                    // If the condition was broken across multiple lines (AND/OR on
+                    // their own lines), put THEN on its own line at the IF level.
+                    if (ifCondBroke) { startLine(head, blanks); emit(rendered, meta); flush(); }
+                    else { emit(rendered, meta); flush(); }
+                    blockIndent = head + 1; pendingIndent = blockIndent;
+                    expectThen = false; ifCondBroke = false; lastWord = w; continue;
                 }
                 // Query `FOR … IN <SELECT …> LOOP`: keep `FOR … IN` on its own line and
                 // indent the query (SELECT/FROM/WHERE/…) one level deeper. The matching
@@ -1214,11 +1219,13 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                     betweenPending--;
                     emit(rendered, meta); lastWord = w; continue;
                 }
+                if (expectThen) ifCondBroke = true;
                 startLine(blockIndent + pd + 1, blanks); emit(rendered, meta);
                 lastWord = w; continue;
             }
             // OR on its own line within a SQL condition (but not in CREATE OR REPLACE).
             if (w === 'or' && inSql && lastWord !== 'create') {
+                if (expectThen) ifCondBroke = true;
                 startLine(blockIndent + pd + 1, blanks); emit(rendered, meta);
                 lastWord = w; continue;
             }
