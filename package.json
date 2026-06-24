@@ -2,7 +2,7 @@
   "name": "postgres-query-builder",
   "displayName": "PostgreSQL Query Builder",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "publisher": "postgres-query-builder",
   "engines": {
     "vscode": "^1.85.0"
@@ -207,25 +207,40 @@
         },
         "postgresQueryBuilder.format.keywordCase": {
           "type": "string",
-          "enum": ["upper", "lower", "preserve"],
+          "enum": [
+            "upper",
+            "lower",
+            "preserve"
+          ],
           "default": "upper",
           "description": "Letter case applied to SQL/PL keywords (SELECT, BEGIN, IF, ...)."
         },
         "postgresQueryBuilder.format.identifierCase": {
           "type": "string",
-          "enum": ["preserve", "lower", "upper"],
+          "enum": [
+            "preserve",
+            "lower",
+            "upper"
+          ],
           "default": "preserve",
           "description": "Letter case applied to identifiers (table, column and variable names)."
         },
         "postgresQueryBuilder.format.dataTypeCase": {
           "type": "string",
-          "enum": ["upper", "lower", "preserve"],
+          "enum": [
+            "upper",
+            "lower",
+            "preserve"
+          ],
           "default": "upper",
           "description": "Letter case applied to data type names (integer, varchar, timestamp, ...)."
         },
         "postgresQueryBuilder.format.indentStyle": {
           "type": "string",
-          "enum": ["space", "tab"],
+          "enum": [
+            "space",
+            "tab"
+          ],
           "default": "space",
           "description": "Indentation character used by the formatter."
         },
@@ -236,13 +251,19 @@
         },
         "postgresQueryBuilder.format.commaStyle": {
           "type": "string",
-          "enum": ["trailing", "leading"],
+          "enum": [
+            "trailing",
+            "leading"
+          ],
           "default": "trailing",
           "description": "Comma placement in multi-line column lists: at the end of the line (trailing) or the start of the next line (leading)."
         },
         "postgresQueryBuilder.format.blankLines": {
           "type": "string",
-          "enum": ["preserve", "collapse"],
+          "enum": [
+            "preserve",
+            "collapse"
+          ],
           "default": "preserve",
           "enumDescriptions": [
             "Keep authored blank lines exactly as written (1:1).",
