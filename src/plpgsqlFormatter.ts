@@ -488,6 +488,7 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
     let inRoutineTrailer = false;
     let bracketDepth = 0;
     let betweenPending = 0;
+    let forHeaderIndent: number | null = null;
     const blocks: BlockFrame[] = [];
     const lists: { depth: number; indent: number }[] = [];
     const parenStack: { kind: ParenKind; multiline: boolean; openIndent: number }[] = [];
@@ -702,6 +703,18 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
     /** Does any token in [a..b] start a new source line? */
     const rangeHasNewline = (a: number, b: number): boolean => {
         for (let k = a; k <= b; k++) if (k >= 0 && k < toks.length && toks[k].nlBefore >= 1) return true;
+        return false;
+    };
+    /** Is this `FOR … IN <query> LOOP` a query loop (vs. an integer/range/array loop)? */
+    const forLoopIsQuery = (forIdx: number): boolean => {
+        for (let k = forIdx + 1; k < toks.length; k++) {
+            if (depths[k] !== 0) continue;
+            const tk = toks[k];
+            if (tk.type !== 'word') continue;
+            const w = tk.text.toLowerCase();
+            if (w === 'loop') return false;
+            if (w === 'select' || w === 'with' || w === 'values') return true;
+        }
         return false;
     };
     /** Next CASE keyword in `names` at the top level (ignoring parens and nested CASE) within [from..to]. */
@@ -1049,7 +1062,27 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
                     blockIndent = (f ? f.head : blockIndent) + 1; pendingIndent = blockIndent;
                     expectThen = false; lastWord = w; continue;
                 }
+                // Query `FOR … IN <SELECT …> LOOP`: keep `FOR … IN` on its own line and
+                // indent the query (SELECT/FROM/WHERE/…) one level deeper. The matching
+                // LOOP is dedented back to the FOR level by the LOOP handler below.
+                if (w === 'for' && cur === '' && forLoopIsQuery(i)) {
+                    startLine(blockIndent, blanks); emit(rendered, meta);
+                    forHeaderIndent = blockIndent;
+                    blockIndent++; pendingIndent = blockIndent;
+                    lastWord = w; continue;
+                }
                 if (w === 'loop') {
+                    if (forHeaderIndent !== null) {
+                        // Query `FOR … IN <SELECT …> LOOP`: dedent LOOP back to the
+                        // FOR level and put it on its own line (the query above it was
+                        // indented one level deeper).
+                        blockIndent = forHeaderIndent;
+                        startLine(blockIndent, blanks); emit(rendered, meta); flush();
+                        blocks.push({ type: 'loop', head: blockIndent });
+                        blockIndent++; pendingIndent = blockIndent;
+                        forHeaderIndent = null;
+                        lastWord = w; continue;
+                    }
                     emit(rendered, meta); flush();
                     blocks.push({ type: 'loop', head: blockIndent });
                     blockIndent++; pendingIndent = blockIndent; lastWord = w; continue;

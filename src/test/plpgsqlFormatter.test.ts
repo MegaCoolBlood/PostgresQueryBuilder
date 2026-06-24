@@ -208,6 +208,49 @@ test('indents a CASE statement and breaks the body after THEN', () => {
     );
 });
 
+test('formats a query FOR loop: indents the query and dedents LOOP', () => {
+    const out = formatSql([
+        'BEGIN',
+        'FOR v_item IN',
+        'SELECT *',
+        'FROM unnest(v_web.items) AS item',
+        'WHERE item.lei_id = v_err.row_id LOOP',
+        'v_web_item := v_item;',
+        'EXIT;  -- Take first match',
+        'END LOOP;',
+        'END;'
+    ].join('\n'));
+    assert.equal(
+        out,
+        [
+            'BEGIN',
+            '  FOR v_item IN',
+            '    SELECT *',
+            '    FROM unnest(v_web.items) AS item',
+            '    WHERE item.lei_id = v_err.row_id',
+            '  LOOP',
+            '    v_web_item := v_item;',
+            '    EXIT;  -- Take first match',
+            '  END LOOP;',
+            'END;'
+        ].join('\n')
+    );
+});
+
+test('keeps an integer FOR loop header compact', () => {
+    const out = formatSql('BEGIN\nFOR i IN 1..10 LOOP\ndo_it(i);\nEND LOOP;\nEND;');
+    assert.equal(
+        out,
+        [
+            'BEGIN',
+            '  FOR i IN 1..10 LOOP',
+            '    do_it(i);',
+            '  END LOOP;',
+            'END;'
+        ].join('\n')
+    );
+});
+
 test('indents subqueries inside parentheses', () => {
     const out = formatSql('select a from (select x from inner_t where x>0) sub;');
     assert.equal(
