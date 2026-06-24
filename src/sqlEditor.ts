@@ -61,6 +61,8 @@ export class SqlEditorManager {
                         argsMultilineMin: cfg.get('format.argsMultilineMin'),
                         insertColumnsInlineMax: cfg.get('format.insertColumnsInlineMax'),
                         insertColumnsMultilineMin: cfg.get('format.insertColumnsMultilineMin'),
+                        typeAttributesInlineMax: cfg.get('format.typeAttributesInlineMax'),
+                        typeAttributesMultilineMin: cfg.get('format.typeAttributesMultilineMin'),
                         normalizeDataTypes: cfg.get('format.normalizeDataTypes')
                     });
                     this.panel?.webview.postMessage({ command: 'formatted', sql: formatSql(message.sql, options) });

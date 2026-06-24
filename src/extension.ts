@@ -49,6 +49,8 @@ function getFormatOptions(): FormatOptions {
         argsMultilineMin: cfg.get('format.argsMultilineMin'),
         insertColumnsInlineMax: cfg.get('format.insertColumnsInlineMax'),
         insertColumnsMultilineMin: cfg.get('format.insertColumnsMultilineMin'),
+        typeAttributesInlineMax: cfg.get('format.typeAttributesInlineMax'),
+        typeAttributesMultilineMin: cfg.get('format.typeAttributesMultilineMin'),
         normalizeDataTypes: cfg.get('format.normalizeDataTypes')
     });
 }

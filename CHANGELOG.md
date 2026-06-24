@@ -3,6 +3,7 @@
 ## 2.0.2
 
 - **`INSERT`-Spalten- und `VALUES`-Liste einheitlich formatieren:** Spaltenliste und `VALUES`-Liste eines `INSERT` werden jetzt gemeinsam entschieden und immer gleich umbrochen. Bei höchstens zwei Spalten bleiben beide einzeilig, ab sechs Spalten werden beide mehrzeilig; bei drei bis fünf Spalten richtet sich das Layout danach, ob die Spalten- oder die `VALUES`-Liste in der Quelle bereits mehrzeilig war (sonst einzeilig). Die Schwellwerte sind über `postgresQueryBuilder.format.insertColumnsInlineMax` (`2`) und `postgresQueryBuilder.format.insertColumnsMultilineMin` (`6`) konfigurierbar.
+- **`CREATE TYPE`-Attributliste umbrechen:** Die Attribut-/Wertliste eines `CREATE TYPE … AS (…)` (zusammengesetzte Typen sowie `ENUM`/`RANGE`) wird jetzt anhand der Attributanzahl umbrochen: bei höchstens einem Attribut einzeilig, ab vier Attributen mehrzeilig (jedes Attribut in einer eigenen, eingerückten Zeile), dazwischen bleibt die im Quelltext gewählte Anordnung erhalten. Die Schwellwerte sind über `postgresQueryBuilder.format.typeAttributesInlineMax` (`1`) und `postgresQueryBuilder.format.typeAttributesMultilineMin` (`4`) konfigurierbar.
 
 ## 2.0.0
 

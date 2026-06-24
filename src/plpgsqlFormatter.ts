@@ -46,6 +46,10 @@ export interface FormatOptions {
     insertColumnsInlineMax: number;
     /** Column/value count from which an INSERT column & VALUES list always wraps. Default: 6. */
     insertColumnsMultilineMin: number;
+    /** Attribute count up to which a CREATE TYPE attribute list stays inline. Default: 1. */
+    typeAttributesInlineMax: number;
+    /** Attribute count from which a CREATE TYPE attribute list always wraps. Default: 4. */
+    typeAttributesMultilineMin: number;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
     normalizeDataTypes: boolean;
 }
@@ -63,6 +67,8 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     argsMultilineMin: 4,
     insertColumnsInlineMax: 2,
     insertColumnsMultilineMin: 6,
+    typeAttributesInlineMax: 1,
+    typeAttributesMultilineMin: 4,
     normalizeDataTypes: true
 };
 
@@ -85,6 +91,8 @@ export function coerceFormatOptions(raw: {
     argsMultilineMin?: unknown;
     insertColumnsInlineMax?: unknown;
     insertColumnsMultilineMin?: unknown;
+    typeAttributesInlineMax?: unknown;
+    typeAttributesMultilineMin?: unknown;
     normalizeDataTypes?: unknown;
 }): FormatOptions {
     const pick = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
@@ -98,6 +106,9 @@ export function coerceFormatOptions(raw: {
     const insColInlineMax = num(raw.insertColumnsInlineMax, 0, 50, DEFAULT_FORMAT_OPTIONS.insertColumnsInlineMax);
     let insColMultilineMin = num(raw.insertColumnsMultilineMin, 2, 100, DEFAULT_FORMAT_OPTIONS.insertColumnsMultilineMin);
     if (insColMultilineMin <= insColInlineMax) insColMultilineMin = insColInlineMax + 1;
+    const typeAttrInlineMax = num(raw.typeAttributesInlineMax, 0, 50, DEFAULT_FORMAT_OPTIONS.typeAttributesInlineMax);
+    let typeAttrMultilineMin = num(raw.typeAttributesMultilineMin, 2, 100, DEFAULT_FORMAT_OPTIONS.typeAttributesMultilineMin);
+    if (typeAttrMultilineMin <= typeAttrInlineMax) typeAttrMultilineMin = typeAttrInlineMax + 1;
     return {
         keywordCase: pick(raw.keywordCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.keywordCase),
         identifierCase: pick(raw.identifierCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.identifierCase),
@@ -113,6 +124,8 @@ export function coerceFormatOptions(raw: {
         argsMultilineMin: multilineMin,
         insertColumnsInlineMax: insColInlineMax,
         insertColumnsMultilineMin: insColMultilineMin,
+        typeAttributesInlineMax: typeAttrInlineMax,
+        typeAttributesMultilineMin: typeAttrMultilineMin,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
             : DEFAULT_FORMAT_OPTIONS.normalizeDataTypes
@@ -459,6 +472,24 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         }
     }
 
+    // Parens that open a CREATE TYPE attribute/value list (composite, ENUM, RANGE).
+    const typeParenSet = new Set<number>();
+    {
+        let sawCreate = false;
+        let sawType = false;
+        for (let i = 0; i < toks.length; i++) {
+            const tk = toks[i];
+            if (tk.type === 'word') {
+                const w = tk.text.toLowerCase();
+                if (w === 'create') { sawCreate = true; }
+                else if (w === 'type' && sawCreate) { sawType = true; }
+                else if (w !== 'type') { sawCreate = false; }
+            } else if (tk.text === '(') {
+                if (sawType) { typeParenSet.add(i); sawType = false; sawCreate = false; }
+            } else if (tk.text === ';') { sawCreate = false; sawType = false; }
+        }
+    }
+
     const parenInfo = new Map<number, ParenInfo>();
     {
         const stack: number[] = [];
@@ -470,6 +501,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         for (const [open, close] of match) {
             let kind: ParenKind;
             if (routineParenSet.has(open)) kind = 'paramlist';
+            else if (typeParenSet.has(open)) kind = 'call';
             else {
                 const ns = sig(open, 1);
                 const ps = sig(open, -1);
@@ -507,8 +539,11 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             let multiline = false;
             if (kind === 'subquery' || kind === 'boolgroup') multiline = true;
             else if (kind === 'call' || kind === 'paramlist') {
-                if (argCount <= opt.argsInlineMax) multiline = false;
-                else if (argCount >= opt.argsMultilineMin) multiline = true;
+                const isType = typeParenSet.has(open);
+                const inlineMax = isType ? opt.typeAttributesInlineMax : opt.argsInlineMax;
+                const multilineMin = isType ? opt.typeAttributesMultilineMin : opt.argsMultilineMin;
+                if (argCount <= inlineMax) multiline = false;
+                else if (argCount >= multilineMin) multiline = true;
                 else multiline = srcMulti;
             }
             parenInfo.set(open, { match: close, kind, argCount, multiline, srcMulti });

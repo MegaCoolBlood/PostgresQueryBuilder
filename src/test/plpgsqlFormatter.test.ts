@@ -372,6 +372,28 @@ test('wraps an INSERT with six or more columns even from a single source line', 
     );
 });
 
+test('wraps a CREATE TYPE attribute list with many attributes', () => {
+    const out = formatSql(
+        'CREATE TYPE s.tr_obj AS (travelid NUMERIC, employee tr_obj_employee, generalinfo tr_obj_travelgeneral, status tr_obj_status);'
+    );
+    assert.equal(
+        out,
+        [
+            'CREATE TYPE s.tr_obj AS (',
+            '  travelid NUMERIC,',
+            '  employee tr_obj_employee,',
+            '  generalinfo tr_obj_travelgeneral,',
+            '  status tr_obj_status',
+            ');'
+        ].join('\n')
+    );
+});
+
+test('keeps a small CREATE TYPE attribute list on one line', () => {
+    assert.equal(formatSql('CREATE TYPE t AS (a INTEGER);'), 'CREATE TYPE t AS (a INTEGER);');
+    assert.equal(formatSql('CREATE TYPE t AS (a INTEGER, b TEXT);'), 'CREATE TYPE t AS (a INTEGER, b TEXT);');
+});
+
 test('indents subqueries inside parentheses', () => {
     const out = formatSql('select a from (select x from inner_t where x>0) sub;');
     assert.equal(
@@ -481,6 +503,8 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         argsMultilineMin: 4,
         insertColumnsInlineMax: 2,
         insertColumnsMultilineMin: 6,
+        typeAttributesInlineMax: 1,
+        typeAttributesMultilineMin: 4,
         normalizeDataTypes: true
     });
 });

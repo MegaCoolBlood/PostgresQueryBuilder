@@ -300,6 +300,18 @@
           "minimum": 2,
           "description": "An INSERT whose column list (and matching VALUES list) has at least this many columns is always wrapped onto multiple lines. Counts between this and insertColumnsInlineMax keep the column and VALUES lists multi-line only if either was authored across multiple lines in the source. The column list and the VALUES list always use the same layout."
         },
+        "postgresQueryBuilder.format.typeAttributesInlineMax": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "description": "A CREATE TYPE attribute/value list with at most this many attributes is always kept on one line."
+        },
+        "postgresQueryBuilder.format.typeAttributesMultilineMin": {
+          "type": "number",
+          "default": 4,
+          "minimum": 2,
+          "description": "A CREATE TYPE attribute/value list (composite, ENUM, RANGE) with at least this many attributes is always wrapped onto multiple lines. Counts between this and typeAttributesInlineMax keep the layout authored in the source."
+        },
         "postgresQueryBuilder.format.normalizeDataTypes": {
           "type": "boolean",
           "default": true,
