@@ -251,6 +251,37 @@ test('keeps an integer FOR loop header compact', () => {
     );
 });
 
+test('breaks a parenthesised boolean group across lines', () => {
+    const out = formatSql(
+        "SELECT * FROM pg_proc WHERE pg_proc.pronamespace <> 'pg_catalog'::regnamespace AND (pg_proc.prorettype <> 'pg_catalog.trigger'::regtype OR pg_trigger.tgfoid IS NOT NULL);"
+    );
+    assert.equal(
+        out,
+        [
+            'SELECT *',
+            'FROM pg_proc',
+            "WHERE pg_proc.pronamespace <> 'pg_catalog'::regnamespace",
+            '  AND (',
+            "    pg_proc.prorettype <> 'pg_catalog.trigger'::regtype",
+            '    OR pg_trigger.tgfoid IS NOT NULL',
+            '  );'
+        ].join('\n')
+    );
+});
+
+test('keeps non-boolean groups inline (arithmetic, IN list, BETWEEN)', () => {
+    assert.equal(formatSql('select (a + b) * c from t;'), 'SELECT (a + b) * c FROM t;');
+    assert.equal(formatSql('select a from t where x in (1, 2, 3);'), 'SELECT a FROM t WHERE x IN (1, 2, 3);');
+    assert.equal(formatSql('select a from t where (x between 1 and 5);'), 'SELECT a FROM t WHERE (x BETWEEN 1 AND 5);');
+});
+
+test('produces stable output when formatted repeatedly (idempotent)', () => {
+    const src =
+        "SELECT * FROM pg_proc WHERE pg_proc.prolang = (SELECT lang.OID FROM pg_language lang WHERE lang.lanname = 'plpgsql') AND (pg_proc.prorettype <> 'pg_catalog.trigger'::regtype OR pg_trigger.tgfoid IS NOT NULL);";
+    const once = formatSql(src);
+    assert.equal(formatSql(once), once);
+});
+
 test('indents subqueries inside parentheses', () => {
     const out = formatSql('select a from (select x from inner_t where x>0) sub;');
     assert.equal(

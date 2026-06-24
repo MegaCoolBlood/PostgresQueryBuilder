@@ -394,14 +394,29 @@ function applyCase(text: string, style: CaseStyle): string {
     return text;
 }
 
-type ParenKind = 'subquery' | 'paramlist' | 'call' | 'group' | 'typemod';
+type ParenKind = 'subquery' | 'paramlist' | 'call' | 'group' | 'typemod' | 'boolgroup';
 interface ParenInfo { match: number; kind: ParenKind; argCount: number; multiline: boolean; }
 interface BlockFrame { type: 'declare' | 'begin' | 'if' | 'loop' | 'case'; head: number; exception?: boolean; }
 
 /**
  * Format a PL/pgSQL / SQL string according to `options`.
  */
+/**
+ * Formats SQL / PL/pgSQL source. The core pass is applied repeatedly (up to 10
+ * times) until the output stabilises, so that newly introduced line breaks
+ * (e.g. nested boolean groups) are themselves re-indented on a following pass.
+ */
 export function formatSql(input: string, options?: Partial<FormatOptions>): string {
+    let result = formatSqlOnce(input, options);
+    for (let pass = 1; pass < 10; pass++) {
+        const next = formatSqlOnce(result, options);
+        if (next === result) break;
+        result = next;
+    }
+    return result;
+}
+
+function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string {
     const opt: FormatOptions = { ...DEFAULT_FORMAT_OPTIONS, ...(options || {}) };
     const trailingNewline = /\n\s*$/.test(input);
     const toks = opt.normalizeDataTypes ? normalizeTypePhrases(tokenize(input)) : tokenize(input);
@@ -451,6 +466,7 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
                 else kind = 'group';
             }
             let localP = 0, localB = 0, args = 0, hasTok = false, srcMulti = false;
+            let between = 0, topBool = false;
             for (let k = open + 1; k < close; k++) {
                 const tk = toks[k];
                 if (tk.nlBefore >= 1) srcMulti = true;
@@ -460,12 +476,23 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
                 else if (tk.text === ')') localP--;
                 else if (tk.text === '[') localB++;
                 else if (tk.text === ']') localB--;
-                else if (tk.text === ',' && localP === 0 && localB === 0) args++;
+                else if (localP === 0 && localB === 0) {
+                    if (tk.text === ',') args++;
+                    else if (tk.type === 'word') {
+                        const lw = tk.text.toLowerCase();
+                        if (lw === 'between') between++;
+                        else if (lw === 'or') topBool = true;
+                        else if (lw === 'and') { if (between > 0) between--; else topBool = true; }
+                    }
+                }
             }
             if (toks[close].nlBefore >= 1) srcMulti = true;
+            // A plain group that joins conditions with top-level AND/OR becomes a
+            // multi-line boolean group (each operand / operator on its own line).
+            if (kind === 'group' && topBool) kind = 'boolgroup';
             const argCount = hasTok ? args + 1 : 0;
             let multiline = false;
-            if (kind === 'subquery') multiline = true;
+            if (kind === 'subquery' || kind === 'boolgroup') multiline = true;
             else if (kind === 'call' || kind === 'paramlist') {
                 if (argCount <= opt.argsInlineMax) multiline = false;
                 else if (argCount >= opt.argsMultilineMin) multiline = true;
@@ -833,7 +860,7 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
         const t = toks[i];
         const blanks = blanksFor(t);
         const pd = depths[i];
-        const inSql = parenStack.length === 0 ? true : parenStack[parenStack.length - 1].kind === 'subquery';
+        const inSql = parenStack.length === 0 ? true : (parenStack[parenStack.length - 1].kind === 'subquery' || parenStack[parenStack.length - 1].kind === 'boolgroup');
 
         // --- Comments -------------------------------------------------------
         if (t.type === 'lineComment') {
@@ -871,7 +898,7 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
             if (looksLikeCode) {
                 emit(tag, { text: tag, isKeyword: false, type: 'operator' });
                 flush();
-                const innerFmt = formatSql(inner.replace(/^\s*\n/, '').replace(/\s+$/, ''), opt);
+                const innerFmt = formatSqlOnce(inner.replace(/^\s*\n/, '').replace(/\s+$/, ''), opt);
                 const bodyIndent = blockIndent;
                 for (const ln of innerFmt.split('\n')) {
                     out.push(ln === '' ? '' : indentStr(bodyIndent) + ln);
@@ -1190,6 +1217,11 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
                 startLine(blockIndent + pd + 1, blanks); emit(rendered, meta);
                 lastWord = w; continue;
             }
+            // OR on its own line within a SQL condition (but not in CREATE OR REPLACE).
+            if (w === 'or' && inSql && lastWord !== 'create') {
+                startLine(blockIndent + pd + 1, blanks); emit(rendered, meta);
+                lastWord = w; continue;
+            }
             if (w === 'between' && inSql) betweenPending++;
 
             // A word that starts a fresh line (e.g. CREATE / UPDATE / INSERT at the
@@ -1254,6 +1286,10 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
             if (multiline) {
                 if (kind === 'subquery') {
                     flush(); pendingIndent = openIndent;
+                } else if (kind === 'boolgroup') {
+                    // Boolean group: operands/operators break onto their own lines,
+                    // indented one level under the opening parenthesis.
+                    flush(); pendingIndent = openIndent + 1;
                 } else {
                     flush();
                     pendingIndent = openIndent + 1;
