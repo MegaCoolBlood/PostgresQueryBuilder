@@ -47,6 +47,8 @@ function getFormatOptions(): FormatOptions {
         simpleSelectSingleLine: cfg.get('format.simpleSelectSingleLine'),
         argsInlineMax: cfg.get('format.argsInlineMax'),
         argsMultilineMin: cfg.get('format.argsMultilineMin'),
+        insertColumnsInlineMax: cfg.get('format.insertColumnsInlineMax'),
+        insertColumnsMultilineMin: cfg.get('format.insertColumnsMultilineMin'),
         normalizeDataTypes: cfg.get('format.normalizeDataTypes')
     });
 }

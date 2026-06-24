@@ -42,6 +42,10 @@ export interface FormatOptions {
     argsInlineMax: number;
     /** Argument/parameter count from which a call/parameter list always wraps. Default: 4. */
     argsMultilineMin: number;
+    /** Column/value count up to which an INSERT column & VALUES list stays inline. Default: 2. */
+    insertColumnsInlineMax: number;
+    /** Column/value count from which an INSERT column & VALUES list always wraps. Default: 6. */
+    insertColumnsMultilineMin: number;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
     normalizeDataTypes: boolean;
 }
@@ -57,6 +61,8 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     simpleSelectSingleLine: true,
     argsInlineMax: 1,
     argsMultilineMin: 4,
+    insertColumnsInlineMax: 2,
+    insertColumnsMultilineMin: 6,
     normalizeDataTypes: true
 };
 
@@ -77,6 +83,8 @@ export function coerceFormatOptions(raw: {
     simpleSelectSingleLine?: unknown;
     argsInlineMax?: unknown;
     argsMultilineMin?: unknown;
+    insertColumnsInlineMax?: unknown;
+    insertColumnsMultilineMin?: unknown;
     normalizeDataTypes?: unknown;
 }): FormatOptions {
     const pick = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
@@ -87,6 +95,9 @@ export function coerceFormatOptions(raw: {
     const inlineMax = num(raw.argsInlineMax, 0, 50, DEFAULT_FORMAT_OPTIONS.argsInlineMax);
     let multilineMin = num(raw.argsMultilineMin, 2, 100, DEFAULT_FORMAT_OPTIONS.argsMultilineMin);
     if (multilineMin <= inlineMax) multilineMin = inlineMax + 1;
+    const insColInlineMax = num(raw.insertColumnsInlineMax, 0, 50, DEFAULT_FORMAT_OPTIONS.insertColumnsInlineMax);
+    let insColMultilineMin = num(raw.insertColumnsMultilineMin, 2, 100, DEFAULT_FORMAT_OPTIONS.insertColumnsMultilineMin);
+    if (insColMultilineMin <= insColInlineMax) insColMultilineMin = insColInlineMax + 1;
     return {
         keywordCase: pick(raw.keywordCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.keywordCase),
         identifierCase: pick(raw.identifierCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.identifierCase),
@@ -100,6 +111,8 @@ export function coerceFormatOptions(raw: {
             : DEFAULT_FORMAT_OPTIONS.simpleSelectSingleLine,
         argsInlineMax: inlineMax,
         argsMultilineMin: multilineMin,
+        insertColumnsInlineMax: insColInlineMax,
+        insertColumnsMultilineMin: insColMultilineMin,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
             : DEFAULT_FORMAT_OPTIONS.normalizeDataTypes
@@ -395,7 +408,7 @@ function applyCase(text: string, style: CaseStyle): string {
 }
 
 type ParenKind = 'subquery' | 'paramlist' | 'call' | 'group' | 'typemod' | 'boolgroup';
-interface ParenInfo { match: number; kind: ParenKind; argCount: number; multiline: boolean; }
+interface ParenInfo { match: number; kind: ParenKind; argCount: number; multiline: boolean; srcMulti: boolean; }
 interface BlockFrame { type: 'declare' | 'begin' | 'if' | 'loop' | 'case'; head: number; exception?: boolean; }
 
 /**
@@ -498,7 +511,76 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 else if (argCount >= opt.argsMultilineMin) multiline = true;
                 else multiline = srcMulti;
             }
-            parenInfo.set(open, { match: close, kind, argCount, multiline });
+            parenInfo.set(open, { match: close, kind, argCount, multiline, srcMulti });
+        }
+    }
+
+    // --- INSERT: keep the column list and the VALUES list(s) consistent -------
+    // The decision (inline vs. multi-line) is taken once per INSERT from the
+    // column count and whether either side was authored across multiple lines,
+    // then applied to both the column list and every VALUES tuple.
+    {
+        const isWord = (idx: number, w: string): boolean =>
+            idx >= 0 && idx < toks.length && toks[idx].type === 'word' && toks[idx].text.toLowerCase() === w;
+        for (let i = 0; i < toks.length; i++) {
+            if (!isWord(i, 'insert')) continue;
+            // Find the column list paren (optional) and the VALUES keyword.
+            let colOpen: number | null = null;
+            let valuesIdx = -1;
+            let depth = 0;
+            for (let k = i + 1; k < toks.length; k++) {
+                const tk = toks[k];
+                if (tk.text === ';' && depth === 0) break;
+                if (tk.text === '(') {
+                    if (depth === 0 && colOpen === null && valuesIdx === -1) {
+                        const info = parenInfo.get(k);
+                        // Only treat as a column list if it is a plain comma list
+                        // (call/group), not a sub-SELECT.
+                        if (info && info.kind !== 'subquery') colOpen = k;
+                    }
+                    depth++;
+                } else if (tk.text === ')') {
+                    depth = Math.max(0, depth - 1);
+                } else if (depth === 0 && tk.type === 'word' && tk.text.toLowerCase() === 'values') {
+                    valuesIdx = k;
+                    break;
+                } else if (depth === 0 && tk.type === 'word' && tk.text.toLowerCase() === 'select') {
+                    break; // INSERT ... SELECT: no VALUES list to link.
+                }
+            }
+            // Collect the VALUES tuple parens (one or more, comma-separated).
+            const valueOpens: number[] = [];
+            if (valuesIdx !== -1) {
+                let depth2 = 0;
+                for (let k = valuesIdx + 1; k < toks.length; k++) {
+                    const tk = toks[k];
+                    if (tk.text === ';' && depth2 === 0) break;
+                    if (tk.text === '(') {
+                        if (depth2 === 0) valueOpens.push(k);
+                        depth2++;
+                    } else if (tk.text === ')') {
+                        depth2 = Math.max(0, depth2 - 1);
+                    } else if (depth2 === 0 && tk.type === 'word' && tk.text.toLowerCase() !== 'default') {
+                        break; // reached a clause keyword after the tuples
+                    }
+                }
+            }
+            const targets: number[] = [];
+            if (colOpen !== null) targets.push(colOpen);
+            for (const v of valueOpens) targets.push(v);
+            if (targets.length === 0) continue;
+            // Column count drives the decision; fall back to the first tuple.
+            const countInfo = parenInfo.get(colOpen !== null ? colOpen : valueOpens[0]);
+            const n = countInfo ? countInfo.argCount : 0;
+            const srcMulti = targets.some(t => { const inf = parenInfo.get(t); return !!inf && inf.srcMulti; });
+            let wantMulti: boolean;
+            if (n <= opt.insertColumnsInlineMax) wantMulti = false;
+            else if (n >= opt.insertColumnsMultilineMin) wantMulti = true;
+            else wantMulti = srcMulti;
+            for (const t of targets) {
+                const inf = parenInfo.get(t);
+                if (inf) parenInfo.set(t, { ...inf, multiline: wantMulti });
+            }
         }
     }
 

@@ -314,6 +314,64 @@ test('keeps THEN inline for a single-line IF condition', () => {
     );
 });
 
+test('wraps an INSERT VALUES list when the column list is multi-line', () => {
+    const out = formatSql(
+        'INSERT INTO t (\na,\nb,\nc,\nd\n) VALUES (\n1,\n2,\n3,\n4\n);'
+    );
+    assert.equal(
+        out,
+        [
+            'INSERT INTO t(',
+            '  a,',
+            '  b,',
+            '  c,',
+            '  d',
+            ')',
+            'VALUES (',
+            '  1,',
+            '  2,',
+            '  3,',
+            '  4',
+            ');'
+        ].join('\n')
+    );
+});
+
+test('keeps an INSERT with at most two columns on one line', () => {
+    const out = formatSql('INSERT INTO t (\na,\nb\n) VALUES (\n1,\n2\n);');
+    assert.equal(out, 'INSERT INTO t(a, b)\nVALUES (1, 2);');
+});
+
+test('keeps a single-line 3-5 column INSERT on one line', () => {
+    const out = formatSql('INSERT INTO t (a, b, c, d) VALUES (1, 2, 3, 4);');
+    assert.equal(out, 'INSERT INTO t(a, b, c, d)\nVALUES (1, 2, 3, 4);');
+});
+
+test('wraps an INSERT with six or more columns even from a single source line', () => {
+    const out = formatSql('INSERT INTO t (a, b, c, d, e, f) VALUES (1, 2, 3, 4, 5, 6);');
+    assert.equal(
+        out,
+        [
+            'INSERT INTO t(',
+            '  a,',
+            '  b,',
+            '  c,',
+            '  d,',
+            '  e,',
+            '  f',
+            ')',
+            'VALUES (',
+            '  1,',
+            '  2,',
+            '  3,',
+            '  4,',
+            '  5,',
+            '  6',
+            ');'
+        ].join('\n')
+    );
+});
+
 test('indents subqueries inside parentheses', () => {
     const out = formatSql('select a from (select x from inner_t where x>0) sub;');
     assert.equal(
@@ -421,6 +479,8 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         simpleSelectSingleLine: true,
         argsInlineMax: 1,
         argsMultilineMin: 4,
+        insertColumnsInlineMax: 2,
+        insertColumnsMultilineMin: 6,
         normalizeDataTypes: true
     });
 });

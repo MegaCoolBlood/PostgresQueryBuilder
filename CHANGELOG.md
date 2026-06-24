@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.2
+
+- **`INSERT`-Spalten- und `VALUES`-Liste einheitlich formatieren:** Spaltenliste und `VALUES`-Liste eines `INSERT` werden jetzt gemeinsam entschieden und immer gleich umbrochen. Bei höchstens zwei Spalten bleiben beide einzeilig, ab sechs Spalten werden beide mehrzeilig; bei drei bis fünf Spalten richtet sich das Layout danach, ob die Spalten- oder die `VALUES`-Liste in der Quelle bereits mehrzeilig war (sonst einzeilig). Die Schwellwerte sind über `postgresQueryBuilder.format.insertColumnsInlineMax` (`2`) und `postgresQueryBuilder.format.insertColumnsMultilineMin` (`6`) konfigurierbar.
+
 ## 2.0.0
 
 - **Konfigurierbarer PL/pgSQL-Formatierer:** Neuer Formatierer für SQL- und PL/pgSQL-Code, der über die VS-Code-Standardfunktion **„Format Document"** (`Shift+Alt+F`), den Befehl **„PostgreSQL: Format PL/pgSQL"** (Command Palette und Editor-Kontextmenü), einen **„Format PL/pgSQL"**-Button im SQL-Editor sowie optional beim Speichern erreichbar ist. Der Formatierer rückt PL/pgSQL-Blöcke (`DECLARE`/`BEGIN`/`END`, `IF`/`ELSIF`/`ELSE`, `LOOP`) ein, bricht SQL-Klauseln (`SELECT`/`FROM`/`WHERE`/`JOIN`/`ORDER BY` …) und Spaltenlisten strukturiert um, vereinheitlicht die Schreibweise von Schlüsselwörtern und Datentypen und behält dabei Zeichenketten, Kommentare und vom Benutzer gesetzte Leerzeilen unverändert bei. `CASE`-Ausdrücke werden korrekt als Ausdruck behandelt (kein fälschliches Aufbrechen an `ELSE`/`END`); Funktionsrümpfe in `$$ … $$` werden rekursiv formatiert. Die Ausgabe ist eine reine Neuformatierung der vorhandenen Token, sodass keine Bestandteile einer Anweisung verloren gehen, und sie ist idempotent (erneutes Formatieren ändert nichts mehr).
