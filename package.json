@@ -294,6 +294,7 @@
             "joinConditions": "1, 3",
             "ifConditions": "1, 3",
             "caseConditions": "1, 3",
+            "operatorChains": "1, 8",
             "caseWhenThen": "0, 3",
             "exceptionWhenThen": "0, 3",
             "ifElse": "0, 3"
@@ -373,6 +374,11 @@
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
               "description": "CASE ... WHEN-Bedingungen (AND/OR innerhalb einer WHEN-Bedingung) – \"inlineMax, multilineMin\": bei höchstens inlineMax Teilbedingungen einzeilig, ab multilineMin Teilbedingungen mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 2."
+            },
+            "operatorChains": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "Operator-Ketten (+, -, *, /, ||) in einem Ausdruck – \"inlineMax, multilineMin\": bei höchstens inlineMax Operanden einzeilig, ab multilineMin Operanden mehrzeilig (jeder Operator am Zeilenanfang), dazwischen wie im Quelltext. Standard: 1, 8."
             },
             "caseWhenThen": {
               "type": "string",

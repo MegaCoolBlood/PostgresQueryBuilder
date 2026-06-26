@@ -49,6 +49,7 @@ export type ConstructKey =
     | 'joinConditions'
     | 'ifConditions'
     | 'caseConditions'
+    | 'operatorChains'
     | 'caseWhenThen'
     | 'exceptionWhenThen'
     | 'ifElse';
@@ -76,6 +77,7 @@ export const DEFAULT_THRESHOLDS: Record<ConstructKey, ListThreshold> = {
     joinConditions: { inlineMax: 1, multilineMin: 2 },
     ifConditions: { inlineMax: 1, multilineMin: 2 },
     caseConditions: { inlineMax: 1, multilineMin: 2 },
+    operatorChains: { inlineMax: 1, multilineMin: 8 },
     caseWhenThen: { inlineMax: 0, multilineMin: 99 },
     exceptionWhenThen: { inlineMax: 0, multilineMin: 99 },
     ifElse: { inlineMax: 0, multilineMin: 99 }
@@ -1117,6 +1119,76 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         return count >= 1 && count <= t.inlineMax;
     };
 
+    // --- Operator chains (`+`, `-`, `*`, `/`, `||`) in an expression -----------
+    // A long chain of binary arithmetic/concatenation operators is broken so that
+    // each operator starts a new line (operator-leading), like a boolean group.
+    // `opChainBreak` holds the indices of the operator tokens that should break.
+    const opChainBreak = new Set<number>();
+    {
+        const isChainOp = (s: string): boolean =>
+            s === '+' || s === '-' || s === '*' || s === '/' || s === '||';
+        const endsOperand = (tk: Tok | null): boolean => {
+            if (!tk) return false;
+            if (tk.type === 'number' || tk.type === 'string' || tk.type === 'quotedIdent' || tk.type === 'param') return true;
+            if (tk.text === ')' || tk.text === ']') return true;
+            if (tk.type === 'word') {
+                const w = tk.text.toLowerCase();
+                if (w === 'end') return true;          // CASE … END
+                return !KEYWORDS.has(w) || DATATYPES.has(w);
+            }
+            return false;
+        };
+        const startsOperand = (tk: Tok | null): boolean => {
+            if (!tk) return false;
+            if (tk.type === 'number' || tk.type === 'string' || tk.type === 'quotedIdent' || tk.type === 'param') return true;
+            if (tk.text === '(') return true;
+            if (tk.type === 'word') {
+                const w = tk.text.toLowerCase();
+                if (w === 'case' || w === 'not') return true;
+                return !KEYWORDS.has(w) || DATATYPES.has(w);
+            }
+            return false;
+        };
+        type Acc = { ops: number[]; srcMulti: boolean };
+        const finalize = (acc: Acc): void => {
+            if (acc.ops.length >= 1 && wantsMultiline(acc.ops.length + 1, acc.srcMulti, 'operatorChains')) {
+                for (const idx of acc.ops) opChainBreak.add(idx);
+            }
+            acc.ops = []; acc.srcMulti = false;
+        };
+        const stack: Acc[] = [{ ops: [], srcMulti: false }];
+        for (let k = 0; k < toks.length; k++) {
+            const tk = toks[k];
+            if (tk.type === 'lineComment' || tk.type === 'blockComment') continue;
+            // Treat an expression `CASE … END` as a single opaque operand.
+            if (tk.type === 'word' && tk.text.toLowerCase() === 'case') { k = caseMatchEnd(k); continue; }
+            if (tk.text === '(' || tk.text === '[') { stack.push({ ops: [], srcMulti: false }); continue; }
+            if (tk.text === ')' || tk.text === ']') {
+                finalize(stack[stack.length - 1]);
+                if (stack.length > 1) stack.pop();
+                continue;
+            }
+            const acc = stack[stack.length - 1];
+            // A statement / list / clause boundary ends the current chain.
+            if (tk.text === ';' || tk.text === ',') { finalize(acc); continue; }
+            if (tk.type === 'word') {
+                const w = tk.text.toLowerCase();
+                if (CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w) || w === 'into') { finalize(acc); continue; }
+            }
+            if (isChainOp(tk.text)) {
+                if (endsOperand(sig(k, -1)) && startsOperand(sig(k, 1))) {
+                    const ns = sig(k, 1);
+                    if (tk.nlBefore >= 1 || (ns && ns.nlBefore >= 1)) acc.srcMulti = true;
+                    acc.ops.push(k);
+                } else {
+                    finalize(acc); // unary sign / `SELECT *` / etc. — not a chain operator
+                }
+                continue;
+            }
+        }
+        finalize(stack[0]);
+    }
+
     /** Does any token in [a..b] start a new source line? */
     const rangeHasNewline = (a: number, b: number): boolean => {
         for (let k = a; k <= b; k++) if (k >= 0 && k < toks.length && toks[k].nlBefore >= 1) return true;
@@ -1801,6 +1873,12 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         }
 
         // Generic punctuation / operators / literals
+        if (opChainBreak.has(i)) {
+            // Break a long operator chain so each operator leads its own line.
+            startLine(blockIndent + pd + 1, 0);
+            emit(t.text, { text: t.text, isKeyword: false, type: t.type });
+            continue;
+        }
         emit(t.text, { text: t.text, isKeyword: false, type: t.type });
         continue;
     }

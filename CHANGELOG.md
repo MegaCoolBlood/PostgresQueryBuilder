@@ -18,6 +18,7 @@
   - `joinConditions` – `JOIN … ON … AND …`-Bedingungen (`1, 2`)
   - `ifConditions` – `IF`-/`ELSIF`-Bedingungen (`1, 2`)
   - `caseConditions` – `CASE … WHEN`-Bedingungen (`AND`/`OR` innerhalb einer `WHEN`-Bedingung) (`1, 2`)
+  - `operatorChains` – Operator-Ketten (`+`, `-`, `*`, `/`, `||`) in einem Ausdruck (`1, 8`)
   - `caseWhenThen` – Zusammenklappen eines `CASE … WHEN … THEN`-Blocks (nur `inlineMax`; `0` = nie zusammenklappen)
   - `exceptionWhenThen` – Zusammenklappen eines `EXCEPTION WHEN … THEN`-Blocks (nur `inlineMax`; `0` = nie zusammenklappen)
   - `ifElse` – Zusammenklappen eines `IF … ELSE … END IF`-Blocks (nur `inlineMax`; `0` = nie zusammenklappen)
@@ -27,6 +28,7 @@
 - **`ARRAY[…]`-Literale umbrechen:** Element-Listen von `ARRAY[…]`-Literalen (inkl. verschachtelter Arrays) werden nach den `arrayLiterals`-Schwellwerten (Standard `4, 12`) umgebrochen; Index-Zugriffe (`arr[i]`) bleiben weiterhin einzeilig. (Hinweis: eine einfache `SELECT`-Anweisung mit nur einem ARRAY-Wert bleibt durch `simpleSelectSingleLine` weiterhin einzeilig.)
 - **`IN (…)`-Wertelisten umbrechen:** `IN`-Wertelisten werden nach den `inLists`-Schwellwerten (Standard `4, 12`) umgebrochen.
 - **Bedingungen je Konstrukt steuerbar:** Das Umbrechen von `AND`/`OR` lässt sich getrennt für `JOIN … ON …` (`joinConditions`), `IF`/`ELSIF` (`ifConditions`) und `CASE … WHEN` (`caseConditions`) konfigurieren. Mit den Standardwerten (`1, 2`) bleibt das bisherige Verhalten erhalten (ab zwei Teilbedingungen je `AND`/`OR` in einer eigenen Zeile); höhere Schwellwerte halten kurze Bedingungen einzeilig.
+- **Lange Operator-Ketten umbrechen:** Ein Ausdruck, der mit `+`, `-`, `*`, `/` oder `||` viele Operanden verkettet (z. B. eine lange Summe von `CASE … END`), wird nach den `operatorChains`-Schwellwerten (Standard `1, 8`) umgebrochen — jeder Operator beginnt eine eigene, eingerückte Zeile (operator-führend), analog zu booleschen Gruppen. Ein einzelnes `CASE … END` zählt dabei als ein Operand.
 - **`INSERT`-Spalten- und `VALUES`-Liste einheitlich formatieren:** Spaltenliste und `VALUES`-Liste eines `INSERT` werden gemeinsam entschieden und immer gleich umbrochen — nach den `insertColumns`-Schwellwerten (Standard `2, 6`).
 - **Strukturblöcke zusammenklappen (`caseWhenThen`, `exceptionWhenThen`, `ifElse`):** Kleine Strukturblöcke lassen sich auf eine Zeile zusammenklappen. Ein Block wird einzeilig dargestellt, wenn die Anzahl seiner Anweisungen (`;`) kleiner oder gleich `inlineMax` ist und der Rumpf weder Kommentare noch verschachtelte Blöcke (`IF`/`CASE`/`LOOP`/`BEGIN`/`DECLARE`/`EXCEPTION`) enthält:
   - `ifElse` – `IF … THEN … [ELSE …] END IF;` (z. B. `IF a THEN x := 1; END IF;`)

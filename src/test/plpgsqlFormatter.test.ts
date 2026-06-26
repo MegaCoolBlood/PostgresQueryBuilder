@@ -766,6 +766,24 @@ test('JOIN ON conditions follow the joinConditions threshold', () => {
     );
 });
 
+test('operator chain breaks per operatorChains threshold', () => {
+    // Default {1, 8}: a short chain on one source line stays inline.
+    assert.equal(
+        formatSql('do $$ begin x := a + b + c; end $$;'),
+        ['DO $$', 'BEGIN', '  x := a + b + c;', 'END', '$$;'].join('\n')
+    );
+    // Eight operands reach multilineMin and break, operator-leading.
+    assert.equal(
+        formatSql('do $$ begin select a + b + c + d + e + f + g + h into x; end $$;'),
+        ['DO $$', 'BEGIN', '  SELECT a', '    + b', '    + c', '    + d', '    + e', '    + f', '    + g', '    + h', '  INTO x;', 'END', '$$;'].join('\n')
+    );
+    // A lower multilineMin makes the short chain break too.
+    assert.equal(
+        formatSql('do $$ begin x := a + b + c; end $$;', { thresholds: { operatorChains: { inlineMax: 1, multilineMin: 3 } } }),
+        ['DO $$', 'BEGIN', '  x := a', '    + b', '    + c;', 'END', '$$;'].join('\n')
+    );
+});
+
 test('IF block collapses to one line per ifElse threshold', () => {
     const sql = 'do $$ begin if a then x := 1; end if; end $$;';
     // Default: structural blocks stay multiline.
