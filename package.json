@@ -276,17 +276,32 @@
           "default": true,
           "description": "Keep a simple SELECT (single column, at most one table, at most one WHERE condition, no JOIN/GROUP/ORDER) on a single line."
         },
-        "postgresQueryBuilder.format.listInlineMax": {
-          "type": "number",
-          "default": 2,
-          "minimum": 0,
-          "description": "Lower threshold for every 'should this list be multi-line?' decision (function/procedure call & parameter lists, INSERT columns & VALUES, CREATE TYPE attributes, FROM table lists). A list with at most this many items is always kept on one line."
-        },
-        "postgresQueryBuilder.format.listMultilineMin": {
-          "type": "number",
-          "default": 4,
-          "minimum": 2,
-          "description": "Upper threshold for every 'should this list be multi-line?' decision (function/procedure call & parameter lists, INSERT columns & VALUES, CREATE TYPE attributes, FROM table lists). A list with at least this many items is always wrapped onto multiple lines. For item counts between this and listInlineMax the source layout decides: a list authored on one line stays on one line, a list spread over several lines stays multi-line. For INSERT the column list and the matching VALUES list always use the same layout."
+        "postgresQueryBuilder.format.listThresholds": {
+          "type": "object",
+          "default": {
+            "functionCall": "1, 4",
+            "insert": "2, 6",
+            "createType": "1, 4"
+          },
+          "properties": {
+            "functionCall": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "Funktions-/Prozeduraufruf- und Parameterlisten – \"inlineMax, multilineMin\": bei höchstens inlineMax Argumenten einzeilig, ab multilineMin Argumenten mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+            },
+            "insert": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "INSERT-Spalten- und VALUES-Liste – \"inlineMax, multilineMin\": bei höchstens inlineMax Spalten einzeilig, ab multilineMin Spalten mehrzeilig, dazwischen wie im Quelltext. Spalten- und VALUES-Liste verwenden stets dasselbe Layout. Standard: 2, 6."
+            },
+            "createType": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "CREATE TYPE-Attributliste (zusammengesetzte Typen sowie ENUM/RANGE) – \"inlineMax, multilineMin\": bei höchstens inlineMax Attributen einzeilig, ab multilineMin Attributen mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+            }
+          },
+          "additionalProperties": false,
+          "markdownDescription": "Mehrzeilig-Schwellwerte pro Konstrukt als Tabelle. Jeder Wert ist das Paar `\"inlineMax, multilineMin\"`: eine Liste mit **höchstens** `inlineMax` Elementen bleibt immer einzeilig, eine Liste mit **mindestens** `multilineMin` Elementen wird immer mehrzeilig umbrochen, und dazwischen entscheidet das Layout im Quelltext (einzeilig bleibt einzeilig, mehrzeilig bleibt mehrzeilig)."
         },
         "postgresQueryBuilder.format.normalizeDataTypes": {
           "type": "boolean",

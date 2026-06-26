@@ -57,8 +57,7 @@ export class SqlEditorManager {
                         commaStyle: cfg.get('format.commaStyle'),
                         blankLines: cfg.get('format.blankLines'),
                         simpleSelectSingleLine: cfg.get('format.simpleSelectSingleLine'),
-                        listInlineMax: cfg.get('format.listInlineMax'),
-                        listMultilineMin: cfg.get('format.listMultilineMin'),
+                        listThresholds: cfg.get('format.listThresholds'),
                         normalizeDataTypes: cfg.get('format.normalizeDataTypes')
                     });
                     this.panel?.webview.postMessage({ command: 'formatted', sql: formatSql(message.sql, options) });

@@ -342,29 +342,14 @@ test('keeps an INSERT with at most two columns on one line', () => {
     assert.equal(out, 'INSERT INTO t(a, b)\nVALUES (1, 2);');
 });
 
-test('keeps a single-line three-column INSERT on one line', () => {
-    const out = formatSql('INSERT INTO t (a, b, c) VALUES (1, 2, 3);');
-    assert.equal(out, 'INSERT INTO t(a, b, c)\nVALUES (1, 2, 3);');
-});
-
-test('wraps a single-line INSERT once it reaches the upper threshold', () => {
-    const out = formatSql('INSERT INTO t (a, b, c, d) VALUES (1, 2, 3, 4);');
+test('keeps a single-line 3-5 column INSERT on one line', () => {
     assert.equal(
-        out,
-        [
-            'INSERT INTO t(',
-            '  a,',
-            '  b,',
-            '  c,',
-            '  d',
-            ')',
-            'VALUES (',
-            '  1,',
-            '  2,',
-            '  3,',
-            '  4',
-            ');'
-        ].join('\n')
+        formatSql('INSERT INTO t (a, b, c) VALUES (1, 2, 3);'),
+        'INSERT INTO t(a, b, c)\nVALUES (1, 2, 3);'
+    );
+    assert.equal(
+        formatSql('INSERT INTO t (a, b, c, d) VALUES (1, 2, 3, 4);'),
+        'INSERT INTO t(a, b, c, d)\nVALUES (1, 2, 3, 4);'
     );
 });
 
@@ -437,27 +422,24 @@ test('keeps a single-line comma FROM list on one line', () => {
     );
 });
 
-test('uses one shared threshold pair for every list (middle band follows the source)', () => {
-    // Three items sits in the middle band (listInlineMax 2 < 3 < listMultilineMin 4),
-    // so a single-line source stays inline and a multi-line source stays wrapped –
-    // the same rule for call lists, INSERT columns and FROM lists alike.
+test('applies separate thresholds per construct', () => {
+    // Function calls use {1, 4}: three args sit in the middle band and stay
+    // inline when the source is single-line, but wrap when it was multi-line.
     assert.equal(formatSql('call f(a, b, c);'), 'CALL f(a, b, c);');
     assert.equal(
         formatSql('call f(\na,\nb,\nc\n);'),
         ['CALL f(', '  a,', '  b,', '  c', ');'].join('\n')
     );
+    // INSERT uses {2, 6}: five columns stay inline from a single source line,
+    // six columns always wrap.
     assert.equal(
-        formatSql('INSERT INTO t (a, b, c) VALUES (1, 2, 3);'),
-        'INSERT INTO t(a, b, c)\nVALUES (1, 2, 3);'
+        formatSql('INSERT INTO t (a, b, c, d, e) VALUES (1, 2, 3, 4, 5);'),
+        'INSERT INTO t(a, b, c, d, e)\nVALUES (1, 2, 3, 4, 5);'
     );
+    // CREATE TYPE uses {1, 4}: four attributes always wrap.
     assert.equal(
-        formatSql('SELECT a FROM t1, t2, t3 WHERE t1.id = t2.id;'),
-        'SELECT a\nFROM t1, t2, t3\nWHERE t1.id = t2.id;'
-    );
-    // At/above the upper threshold everything wraps regardless of the source.
-    assert.equal(
-        formatSql('call f(a, b, c, d);'),
-        ['CALL f(', '  a,', '  b,', '  c,', '  d', ');'].join('\n')
+        formatSql('CREATE TYPE t AS (a INT, b INT, c INT, d INT);'),
+        ['CREATE TYPE t AS (', '  a INT,', '  b INT,', '  c INT,', '  d INT', ');'].join('\n')
     );
 });
 
@@ -566,8 +548,9 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         commaStyle: 'trailing',
         blankLines: 'preserve',
         simpleSelectSingleLine: true,
-        listInlineMax: 2,
-        listMultilineMin: 4,
+        functionCallThreshold: { inlineMax: 1, multilineMin: 4 },
+        insertThreshold: { inlineMax: 2, multilineMin: 6 },
+        createTypeThreshold: { inlineMax: 1, multilineMin: 4 },
         normalizeDataTypes: true
     });
 });
@@ -706,13 +689,13 @@ test('formats an EXCEPTION ... WHEN block', () => {
     );
 });
 
-test('listInlineMax / listMultilineMin control call wrapping', () => {
+test('functionCallThreshold controls call wrapping', () => {
     assert.equal(formatSql('call f(a);'), 'CALL f(a);');
     assert.equal(formatSql('call f(a, b, c);'), 'CALL f(a, b, c);');
     const four = formatSql('call f(a, b, c, d);');
     assert.equal(four, ['CALL f(', '  a,', '  b,', '  c,', '  d', ');'].join('\n'));
-    // Lowering both thresholds forces two-argument calls to wrap.
-    const two = formatSql('call f(a, b);', { listInlineMax: 1, listMultilineMin: 2 });
+    // Lowering the upper threshold forces two-argument calls to wrap.
+    const two = formatSql('call f(a, b);', { functionCallThreshold: { inlineMax: 1, multilineMin: 2 } });
     assert.equal(two, ['CALL f(', '  a,', '  b', ');'].join('\n'));
 });
 

@@ -21,6 +21,17 @@ export type IndentStyle = 'space' | 'tab';
 export type CommaStyle = 'trailing' | 'leading';
 export type BlankLineStyle = 'preserve' | 'collapse';
 
+/**
+ * A pair of thresholds for one "should this list be multi-line?" decision: a
+ * list with at most `inlineMax` items always stays on one line, a list with at
+ * least `multilineMin` items always wraps, and in between the source layout
+ * decides (single-line stays single, multi-line stays multi).
+ */
+export interface ListThreshold {
+    inlineMax: number;
+    multilineMin: number;
+}
+
 export interface FormatOptions {
     /** Case for SQL/PL keywords (SELECT, BEGIN, IF, ...). Default: 'upper'. */
     keywordCase: CaseStyle;
@@ -38,20 +49,12 @@ export interface FormatOptions {
     blankLines: BlankLineStyle;
     /** Keep a simple SELECT (1 column, <=1 table, <=1 WHERE) on one line. Default: true. */
     simpleSelectSingleLine: boolean;
-    /**
-     * Lower threshold for every "should this list be multi-line?" decision
-     * (function/parameter lists, INSERT columns & VALUES, CREATE TYPE attributes,
-     * FROM table lists). A list with at most this many items always stays on one
-     * line. Default: 2.
-     */
-    listInlineMax: number;
-    /**
-     * Upper threshold for every "should this list be multi-line?" decision. A
-     * list with at least this many items always wraps across multiple lines.
-     * Between the two thresholds the source layout decides (single-line stays
-     * single, multi-line stays multi). Default: 4.
-     */
-    listMultilineMin: number;
+    /** Wrap thresholds for function/procedure call & parameter lists. Default: {1, 4}. */
+    functionCallThreshold: ListThreshold;
+    /** Wrap thresholds for the INSERT column & VALUES list. Default: {2, 6}. */
+    insertThreshold: ListThreshold;
+    /** Wrap thresholds for the CREATE TYPE attribute list. Default: {1, 4}. */
+    createTypeThreshold: ListThreshold;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
     normalizeDataTypes: boolean;
 }
@@ -65,8 +68,9 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     commaStyle: 'trailing',
     blankLines: 'preserve',
     simpleSelectSingleLine: true,
-    listInlineMax: 2,
-    listMultilineMin: 4,
+    functionCallThreshold: { inlineMax: 1, multilineMin: 4 },
+    insertThreshold: { inlineMax: 2, multilineMin: 6 },
+    createTypeThreshold: { inlineMax: 1, multilineMin: 4 },
     normalizeDataTypes: true
 };
 
@@ -75,6 +79,11 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
  * values, falling back to {@link DEFAULT_FORMAT_OPTIONS} for anything missing or
  * invalid. Pure (no `vscode` dependency) so callers can read settings and pass
  * the plain values in.
+ *
+ * The per-construct thresholds are read from a single `listThresholds` table
+ * whose values are `"inlineMax, multilineMin"` strings (so the VS Code settings
+ * editor can render them as an editable table). A {@link ListThreshold} object
+ * is also accepted for programmatic callers.
  */
 export function coerceFormatOptions(raw: {
     keywordCase?: unknown;
@@ -85,8 +94,7 @@ export function coerceFormatOptions(raw: {
     commaStyle?: unknown;
     blankLines?: unknown;
     simpleSelectSingleLine?: unknown;
-    listInlineMax?: unknown;
-    listMultilineMin?: unknown;
+    listThresholds?: unknown;
     normalizeDataTypes?: unknown;
 }): FormatOptions {
     const pick = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
@@ -94,9 +102,27 @@ export function coerceFormatOptions(raw: {
     const num = (value: unknown, min: number, max: number, fallback: number): number =>
         typeof value === 'number' && value >= min && value <= max ? Math.floor(value) : fallback;
     const size = num(raw.indentSize, 1, 8, DEFAULT_FORMAT_OPTIONS.indentSize);
-    const listInlineMax = num(raw.listInlineMax, 0, 50, DEFAULT_FORMAT_OPTIONS.listInlineMax);
-    let listMultilineMin = num(raw.listMultilineMin, 2, 100, DEFAULT_FORMAT_OPTIONS.listMultilineMin);
-    if (listMultilineMin <= listInlineMax) listMultilineMin = listInlineMax + 1;
+    const table = (raw.listThresholds && typeof raw.listThresholds === 'object')
+        ? raw.listThresholds as Record<string, unknown>
+        : {};
+    // Accept either a "inlineMax, multilineMin" string (settings table) or a
+    // { inlineMax, multilineMin } object (programmatic callers); clamp & order.
+    const threshold = (value: unknown, def: ListThreshold): ListThreshold => {
+        let inlineMax = def.inlineMax;
+        let multilineMin = def.multilineMin;
+        if (typeof value === 'string') {
+            const nums = value.match(/-?\d+/g);
+            if (nums && nums.length >= 2) { inlineMax = Number(nums[0]); multilineMin = Number(nums[1]); }
+        } else if (value && typeof value === 'object') {
+            const o = value as Record<string, unknown>;
+            if (typeof o.inlineMax === 'number') inlineMax = o.inlineMax;
+            if (typeof o.multilineMin === 'number') multilineMin = o.multilineMin;
+        }
+        inlineMax = Math.min(50, Math.max(0, Math.floor(inlineMax)));
+        multilineMin = Math.min(100, Math.max(2, Math.floor(multilineMin)));
+        if (multilineMin <= inlineMax) multilineMin = inlineMax + 1;
+        return { inlineMax, multilineMin };
+    };
     return {
         keywordCase: pick(raw.keywordCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.keywordCase),
         identifierCase: pick(raw.identifierCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.identifierCase),
@@ -108,8 +134,9 @@ export function coerceFormatOptions(raw: {
         simpleSelectSingleLine: typeof raw.simpleSelectSingleLine === 'boolean'
             ? raw.simpleSelectSingleLine
             : DEFAULT_FORMAT_OPTIONS.simpleSelectSingleLine,
-        listInlineMax: listInlineMax,
-        listMultilineMin: listMultilineMin,
+        functionCallThreshold: threshold(table.functionCall, DEFAULT_FORMAT_OPTIONS.functionCallThreshold),
+        insertThreshold: threshold(table.insert, DEFAULT_FORMAT_OPTIONS.insertThreshold),
+        createTypeThreshold: threshold(table.createType, DEFAULT_FORMAT_OPTIONS.createTypeThreshold),
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
             : DEFAULT_FORMAT_OPTIONS.normalizeDataTypes
@@ -428,14 +455,12 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
 
 function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string {
     const opt: FormatOptions = { ...DEFAULT_FORMAT_OPTIONS, ...(options || {}) };
-    // Unified "should this list be multi-line?" decision used everywhere a count
-    // of items drives wrapping (call/parameter lists, INSERT columns & VALUES,
-    // CREATE TYPE attributes, FROM table lists): below the lower threshold it
-    // always stays inline, at/above the upper threshold it always wraps, and in
-    // between the source layout (single- vs. multi-line) decides.
-    const wantsMultiline = (count: number, srcMulti: boolean): boolean => {
-        if (count <= opt.listInlineMax) return false;
-        if (count >= opt.listMultilineMin) return true;
+    // Per-construct "should this list be multi-line?" decision: below the
+    // construct's lower threshold it always stays inline, at/above the upper
+    // threshold it always wraps, and in between the source layout decides.
+    const wantsMultiline = (count: number, srcMulti: boolean, t: ListThreshold): boolean => {
+        if (count <= t.inlineMax) return false;
+        if (count >= t.multilineMin) return true;
         return srcMulti;
     };
     const trailingNewline = /\n\s*$/.test(input);
@@ -533,7 +558,8 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             let multiline = false;
             if (kind === 'subquery' || kind === 'boolgroup') multiline = true;
             else if (kind === 'call' || kind === 'paramlist') {
-                multiline = wantsMultiline(argCount, srcMulti);
+                const t = typeParenSet.has(open) ? opt.createTypeThreshold : opt.functionCallThreshold;
+                multiline = wantsMultiline(argCount, srcMulti, t);
             }
             parenInfo.set(open, { match: close, kind, argCount, multiline, srcMulti });
         }
@@ -597,7 +623,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             const countInfo = parenInfo.get(colOpen !== null ? colOpen : valueOpens[0]);
             const n = countInfo ? countInfo.argCount : 0;
             const srcMulti = targets.some(t => { const inf = parenInfo.get(t); return !!inf && inf.srcMulti; });
-            const wantMulti = wantsMultiline(n, srcMulti);
+            const wantMulti = wantsMultiline(n, srcMulti, opt.insertThreshold);
             for (const t of targets) {
                 const inf = parenInfo.get(t);
                 if (inf) parenInfo.set(t, { ...inf, multiline: wantMulti });
@@ -1320,12 +1346,12 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                     lastWord = w; continue;
                 }
 
-                // Old-style comma FROM list (FROM a, b, c): the unified threshold
-                // rule decides whether to keep it on one line or break it across
-                // lines (with the source layout as the tie-breaker in between).
+                // Old-style comma FROM list (FROM a, b, c): keep it broken across
+                // lines only if the author already spread it over several source
+                // lines; a single-line list stays on one line.
                 if (w === 'from') {
                     const info = clauseListInfo(i);
-                    if (wantsMultiline(info.count, info.srcMulti)) {
+                    if (info.count > 1 && info.srcMulti) {
                         lists.push({ depth: pd, indent: clauseIndent + 1 });
                         pendingIndent = clauseIndent + 1;
                         flush();
