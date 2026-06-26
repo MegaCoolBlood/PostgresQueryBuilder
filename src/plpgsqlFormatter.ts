@@ -32,6 +32,53 @@ export interface ListThreshold {
     multilineMin: number;
 }
 
+/** Every construct whose multi-line wrapping is governed by a threshold pair. */
+export type ConstructKey =
+    | 'createFunction'
+    | 'createProcedure'
+    | 'createType'
+    | 'createTable'
+    | 'functionCall'
+    | 'selectColumns'
+    | 'fromTables'
+    | 'insertColumns'
+    | 'arrayLiterals'
+    | 'inLists'
+    | 'booleanGroups'
+    | 'joinConditions'
+    | 'ifConditions'
+    | 'caseConditions'
+    | 'caseWhenThen'
+    | 'exceptionWhenThen'
+    | 'ifElse';
+
+/**
+ * Default threshold per construct. Count-based constructs use a small inline /
+ * larger multi-line pair; structural blocks (`caseWhenThen`, `exceptionWhenThen`,
+ * `ifElse`) default to "follow the source" ({0, 99} => the in-between band covers
+ * every branch count, so a multi-line source stays multi-line — the normal case —
+ * while a single-line source may stay on one line).
+ */
+export const DEFAULT_THRESHOLDS: Record<ConstructKey, ListThreshold> = {
+    createFunction: { inlineMax: 1, multilineMin: 4 },
+    createProcedure: { inlineMax: 1, multilineMin: 4 },
+    createType: { inlineMax: 1, multilineMin: 4 },
+    createTable: { inlineMax: 1, multilineMin: 4 },
+    functionCall: { inlineMax: 1, multilineMin: 4 },
+    selectColumns: { inlineMax: 1, multilineMin: 2 },
+    fromTables: { inlineMax: 1, multilineMin: 4 },
+    insertColumns: { inlineMax: 2, multilineMin: 6 },
+    arrayLiterals: { inlineMax: 4, multilineMin: 12 },
+    inLists: { inlineMax: 4, multilineMin: 12 },
+    booleanGroups: { inlineMax: 1, multilineMin: 2 },
+    joinConditions: { inlineMax: 1, multilineMin: 2 },
+    ifConditions: { inlineMax: 1, multilineMin: 2 },
+    caseConditions: { inlineMax: 1, multilineMin: 2 },
+    caseWhenThen: { inlineMax: 0, multilineMin: 99 },
+    exceptionWhenThen: { inlineMax: 0, multilineMin: 99 },
+    ifElse: { inlineMax: 0, multilineMin: 99 }
+};
+
 export interface FormatOptions {
     /** Case for SQL/PL keywords (SELECT, BEGIN, IF, ...). Default: 'upper'. */
     keywordCase: CaseStyle;
@@ -49,12 +96,8 @@ export interface FormatOptions {
     blankLines: BlankLineStyle;
     /** Keep a simple SELECT (1 column, <=1 table, <=1 WHERE) on one line. Default: true. */
     simpleSelectSingleLine: boolean;
-    /** Wrap thresholds for function/procedure call & parameter lists. Default: {1, 4}. */
-    functionCallThreshold: ListThreshold;
-    /** Wrap thresholds for the INSERT column & VALUES list. Default: {2, 6}. */
-    insertThreshold: ListThreshold;
-    /** Wrap thresholds for the CREATE TYPE attribute list. Default: {1, 4}. */
-    createTypeThreshold: ListThreshold;
+    /** Per-construct multi-line wrapping thresholds. See {@link DEFAULT_THRESHOLDS}. */
+    thresholds: Partial<Record<ConstructKey, ListThreshold>>;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
     normalizeDataTypes: boolean;
 }
@@ -68,9 +111,7 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     commaStyle: 'trailing',
     blankLines: 'preserve',
     simpleSelectSingleLine: true,
-    functionCallThreshold: { inlineMax: 1, multilineMin: 4 },
-    insertThreshold: { inlineMax: 2, multilineMin: 6 },
-    createTypeThreshold: { inlineMax: 1, multilineMin: 4 },
+    thresholds: DEFAULT_THRESHOLDS,
     normalizeDataTypes: true
 };
 
@@ -123,6 +164,10 @@ export function coerceFormatOptions(raw: {
         if (multilineMin <= inlineMax) multilineMin = inlineMax + 1;
         return { inlineMax, multilineMin };
     };
+    const thresholds = {} as Record<ConstructKey, ListThreshold>;
+    (Object.keys(DEFAULT_THRESHOLDS) as ConstructKey[]).forEach(key => {
+        thresholds[key] = threshold(table[key], DEFAULT_THRESHOLDS[key]);
+    });
     return {
         keywordCase: pick(raw.keywordCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.keywordCase),
         identifierCase: pick(raw.identifierCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.identifierCase),
@@ -134,9 +179,7 @@ export function coerceFormatOptions(raw: {
         simpleSelectSingleLine: typeof raw.simpleSelectSingleLine === 'boolean'
             ? raw.simpleSelectSingleLine
             : DEFAULT_FORMAT_OPTIONS.simpleSelectSingleLine,
-        functionCallThreshold: threshold(table.functionCall, DEFAULT_FORMAT_OPTIONS.functionCallThreshold),
-        insertThreshold: threshold(table.insert, DEFAULT_FORMAT_OPTIONS.insertThreshold),
-        createTypeThreshold: threshold(table.createType, DEFAULT_FORMAT_OPTIONS.createTypeThreshold),
+        thresholds,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
             : DEFAULT_FORMAT_OPTIONS.normalizeDataTypes
@@ -455,10 +498,13 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
 
 function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string {
     const opt: FormatOptions = { ...DEFAULT_FORMAT_OPTIONS, ...(options || {}) };
+    // Deep-merge the threshold table so a caller may override individual keys.
+    opt.thresholds = { ...DEFAULT_THRESHOLDS, ...(options?.thresholds || {}) };
     // Per-construct "should this list be multi-line?" decision: below the
     // construct's lower threshold it always stays inline, at/above the upper
     // threshold it always wraps, and in between the source layout decides.
-    const wantsMultiline = (count: number, srcMulti: boolean, t: ListThreshold): boolean => {
+    const wantsMultiline = (count: number, srcMulti: boolean, key: ConstructKey): boolean => {
+        const t = opt.thresholds[key] ?? DEFAULT_THRESHOLDS[key];
         if (count <= t.inlineMax) return false;
         if (count >= t.multilineMin) return true;
         return srcMulti;
@@ -474,20 +520,23 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         return j >= 0 && j < toks.length ? toks[j] : null;
     };
 
-    // Parens that open a CREATE FUNCTION/PROCEDURE parameter list.
+    // Parens that open a CREATE FUNCTION/PROCEDURE parameter list, plus the
+    // construct each such paren belongs to (for per-construct thresholds).
     const routineParenSet = new Set<number>();
+    const parenConstruct = new Map<number, ConstructKey>();
     {
         let sawCreate = false;
-        let sawRoutine = false;
+        let routineKey: ConstructKey | null = null;
         for (let i = 0; i < toks.length; i++) {
             const tk = toks[i];
             if (tk.type === 'word') {
                 const w = tk.text.toLowerCase();
                 if (w === 'create') { sawCreate = true; }
-                else if ((w === 'function' || w === 'procedure') && sawCreate) { sawRoutine = true; }
+                else if (w === 'function' && sawCreate) { routineKey = 'createFunction'; }
+                else if (w === 'procedure' && sawCreate) { routineKey = 'createProcedure'; }
             } else if (tk.text === '(') {
-                if (sawRoutine) { routineParenSet.add(i); sawRoutine = false; sawCreate = false; }
-            } else if (tk.text === ';') { sawCreate = false; sawRoutine = false; }
+                if (routineKey) { routineParenSet.add(i); parenConstruct.set(i, routineKey); routineKey = null; sawCreate = false; }
+            } else if (tk.text === ';') { sawCreate = false; routineKey = null; }
         }
     }
 
@@ -504,8 +553,112 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 else if (w === 'type' && sawCreate) { sawType = true; }
                 else if (w !== 'type') { sawCreate = false; }
             } else if (tk.text === '(') {
-                if (sawType) { typeParenSet.add(i); sawType = false; sawCreate = false; }
+                if (sawType) { typeParenSet.add(i); parenConstruct.set(i, 'createType'); sawType = false; sawCreate = false; }
             } else if (tk.text === ';') { sawCreate = false; sawType = false; }
+        }
+    }
+
+    // Parens that open a CREATE TABLE column list (the first top-level paren
+    // after `CREATE [TEMP/UNLOGGED] TABLE [IF NOT EXISTS] name`).
+    const tableParenSet = new Set<number>();
+    {
+        let sawCreate = false;
+        let sawTable = false;
+        for (let i = 0; i < toks.length; i++) {
+            const tk = toks[i];
+            if (tk.type === 'word') {
+                const w = tk.text.toLowerCase();
+                if (w === 'create') { sawCreate = true; }
+                else if (w === 'table' && sawCreate) { sawTable = true; sawCreate = false; }
+                else if (w === 'as' && sawTable) { sawTable = false; } // CREATE TABLE ... AS SELECT
+            } else if (tk.text === '(') {
+                if (sawTable) { tableParenSet.add(i); parenConstruct.set(i, 'createTable'); sawTable = false; }
+            } else if (tk.text === ';') { sawCreate = false; sawTable = false; }
+        }
+    }
+
+    // Per-context AND/OR grouping for JOIN ON, IF/ELSIF and CASE WHEN conditions.
+    // Each condition's top-level AND/OR operators are counted once; if the
+    // construct's threshold says the group should stay inline, its operator
+    // token indices are recorded here so the renderer keeps them on one line.
+    // With the default thresholds ({1,2}) a group of >=2 conditions always
+    // wraps, so this set stays empty and the layout is unchanged.
+    const condInlineSet = new Set<number>();
+    {
+        const stack: string[] = [];
+        const topKind = () => stack[stack.length - 1];
+        const scanGroup = (start: number, key: ConstructKey, isEnd: (w: string) => boolean): void => {
+            let depth = 0, between = 0, srcMulti = false;
+            const ops: number[] = [];
+            for (let k = start + 1; k < toks.length; k++) {
+                const tk = toks[k];
+                if (tk.nlBefore >= 1 && depth === 0) srcMulti = true;
+                if (tk.text === '(') { depth++; continue; }
+                if (tk.text === ')') { if (depth === 0) break; depth--; continue; }
+                if (depth !== 0) continue;
+                if (tk.text === ';') break;
+                if (tk.type !== 'word') continue;
+                const w = tk.text.toLowerCase();
+                if (isEnd(w)) break;
+                if (w === 'between') between++;
+                else if (w === 'or') ops.push(k);
+                else if (w === 'and') { if (between > 0) between--; else ops.push(k); }
+            }
+            if (ops.length === 0) return;
+            if (!wantsMultiline(ops.length + 1, srcMulti, key)) {
+                for (const idx of ops) condInlineSet.add(idx);
+            }
+        };
+        const thenEnd = (w: string) => w === 'then';
+        const joinEnd = (w: string) => CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w) || w === 'loop' || w === 'then';
+        let prevWord = '';
+        for (let i = 0; i < toks.length; i++) {
+            const tk = toks[i];
+            if (tk.type !== 'word') { if (tk.type !== 'lineComment' && tk.type !== 'blockComment') prevWord = ''; continue; }
+            const w = tk.text.toLowerCase();
+            if (w === 'case' && prevWord !== 'end') stack.push('case');
+            else if (w === 'begin') stack.push('begin');
+            else if (w === 'loop' && prevWord !== 'end') stack.push('loop');
+            else if (w === 'if' && prevWord !== 'end') { stack.push('if'); scanGroup(i, 'ifConditions', thenEnd); }
+            else if (w === 'elsif' || w === 'elseif') scanGroup(i, 'ifConditions', thenEnd);
+            else if (w === 'when' && topKind() === 'case') scanGroup(i, 'caseConditions', thenEnd);
+            else if (w === 'on') scanGroup(i, 'joinConditions', joinEnd);
+            else if (w === 'end') stack.pop();
+            prevWord = w;
+        }
+    }
+
+    // Array literals (ARRAY[...] and nested element arrays): wrap their element
+    // list per the `arrayLiterals` threshold. Subscripts (arr[i]) stay inline.
+    const bracketInfo = new Map<number, { match: number; multiline: boolean }>();
+    {
+        const stack: { open: number; lit: boolean }[] = [];
+        for (let i = 0; i < toks.length; i++) {
+            const tk = toks[i];
+            if (tk.text === '[') {
+                const ps = sig(i, -1);
+                let lit = false;
+                if (ps && ps.type === 'word' && ps.text.toLowerCase() === 'array') lit = true;
+                else if (stack.length && stack[stack.length - 1].lit && ps && (ps.text === '[' || ps.text === ',')) lit = true;
+                stack.push({ open: i, lit });
+            } else if (tk.text === ']') {
+                const fr = stack.pop();
+                if (!fr || !fr.lit) continue;
+                let depth = 0, pdepth = 0, commas = 0, hasTok = false, srcMulti = false;
+                for (let k = fr.open + 1; k < i; k++) {
+                    const t2 = toks[k];
+                    if (depth === 0 && pdepth === 0 && t2.nlBefore >= 1) srcMulti = true;
+                    if (t2.type === 'lineComment' || t2.type === 'blockComment') { hasTok = true; continue; }
+                    if (t2.text === '[') { depth++; hasTok = true; continue; }
+                    if (t2.text === ']') { depth--; continue; }
+                    if (t2.text === '(') { pdepth++; hasTok = true; continue; }
+                    if (t2.text === ')') { pdepth--; continue; }
+                    hasTok = true;
+                    if (depth === 0 && pdepth === 0 && t2.text === ',') commas++;
+                }
+                const count = hasTok ? commas + 1 : 0;
+                bracketInfo.set(fr.open, { match: i, multiline: wantsMultiline(count, srcMulti, 'arrayLiterals') });
+            }
         }
     }
 
@@ -519,18 +672,20 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         }
         for (const [open, close] of match) {
             let kind: ParenKind;
+            let isInList = false;
             if (routineParenSet.has(open)) kind = 'paramlist';
-            else if (typeParenSet.has(open)) kind = 'call';
+            else if (typeParenSet.has(open) || tableParenSet.has(open)) kind = 'call';
             else {
                 const ns = sig(open, 1);
                 const ps = sig(open, -1);
                 if (ns && ns.type === 'word' && ['select', 'with', 'values'].includes(ns.text.toLowerCase())) kind = 'subquery';
+                else if (ps && ps.type === 'word' && ps.text.toLowerCase() === 'in') { kind = 'call'; isInList = true; }
                 else if (ps && ps.type === 'word' && DATATYPES.has(ps.text.toLowerCase())) kind = 'typemod';
                 else if (ps && ((ps.type === 'word' && !KEYWORDS.has(ps.text.toLowerCase())) || ps.type === 'quotedIdent' || ps.type === 'param' || ps.text === ')' || ps.text === ']')) kind = 'call';
                 else kind = 'group';
             }
             let localP = 0, localB = 0, args = 0, hasTok = false, srcMulti = false;
-            let between = 0, topBool = false;
+            let between = 0, topBool = false, boolOps = 0;
             for (let k = open + 1; k < close; k++) {
                 const tk = toks[k];
                 if (tk.nlBefore >= 1) srcMulti = true;
@@ -545,8 +700,8 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                     else if (tk.type === 'word') {
                         const lw = tk.text.toLowerCase();
                         if (lw === 'between') between++;
-                        else if (lw === 'or') topBool = true;
-                        else if (lw === 'and') { if (between > 0) between--; else topBool = true; }
+                        else if (lw === 'or') { topBool = true; boolOps++; }
+                        else if (lw === 'and') { if (between > 0) between--; else { topBool = true; boolOps++; } }
                     }
                 }
             }
@@ -556,10 +711,11 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             if (kind === 'group' && topBool) kind = 'boolgroup';
             const argCount = hasTok ? args + 1 : 0;
             let multiline = false;
-            if (kind === 'subquery' || kind === 'boolgroup') multiline = true;
+            if (kind === 'subquery') multiline = true;
+            else if (kind === 'boolgroup') multiline = wantsMultiline(boolOps + 1, srcMulti, 'booleanGroups');
             else if (kind === 'call' || kind === 'paramlist') {
-                const t = typeParenSet.has(open) ? opt.createTypeThreshold : opt.functionCallThreshold;
-                multiline = wantsMultiline(argCount, srcMulti, t);
+                const key: ConstructKey = parenConstruct.get(open) ?? (isInList ? 'inLists' : 'functionCall');
+                multiline = wantsMultiline(argCount, srcMulti, key);
             }
             parenInfo.set(open, { match: close, kind, argCount, multiline, srcMulti });
         }
@@ -623,7 +779,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             const countInfo = parenInfo.get(colOpen !== null ? colOpen : valueOpens[0]);
             const n = countInfo ? countInfo.argCount : 0;
             const srcMulti = targets.some(t => { const inf = parenInfo.get(t); return !!inf && inf.srcMulti; });
-            const wantMulti = wantsMultiline(n, srcMulti, opt.insertThreshold);
+            const wantMulti = wantsMultiline(n, srcMulti, 'insertColumns');
             for (const t of targets) {
                 const inf = parenInfo.get(t);
                 if (inf) parenInfo.set(t, { ...inf, multiline: wantMulti });
@@ -647,8 +803,9 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     let betweenPending = 0;
     let forHeaderIndent: number | null = null;
     const blocks: BlockFrame[] = [];
-    const lists: { depth: number; indent: number }[] = [];
+    const lists: { depth: number; indent: number; bdepth?: number }[] = [];
     const parenStack: { kind: ParenKind; multiline: boolean; openIndent: number }[] = [];
+    const bracketStack: { multiline: boolean; openIndent: number }[] = [];
 
     const indentStr = (level: number): string =>
         opt.indentStyle === 'tab' ? '\t'.repeat(Math.max(0, level)) : ' '.repeat(Math.max(0, level) * opt.indentSize);
@@ -838,7 +995,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
      * Used to keep an old-style comma `FROM a, b, c` list broken when the
      * author already spread it over several lines.
      */
-    const clauseListInfo = (idx: number): { count: number; srcMulti: boolean } => {
+    const clauseListInfo = (idx: number, stopAtFrom = false): { count: number; srcMulti: boolean } => {
         let d = 0, b = 0, commas = 0, hasTok = false, hasNewline = false;
         for (let k = idx + 1; k < toks.length; k++) {
             const tk = toks[k];
@@ -848,7 +1005,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 if (tk.text === ')' || tk.text === ';') break;
                 if (tk.type === 'word') {
                     const w = tk.text.toLowerCase();
-                    if (CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w) || w === 'into') break;
+                    if (CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w) || w === 'into' || (stopAtFrom && w === 'from')) break;
                 }
             }
             if (tk.nlBefore >= 1 && d === 0 && b === 0) hasNewline = true;
@@ -1328,7 +1485,8 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                         pendingIndent = clauseIndent + 1;
                         lastWord = w; continue;
                     }
-                    if (!listHasMultipleItems(i)) {
+                    const selInfo = clauseListInfo(i, true);
+                    if (!wantsMultiline(selInfo.count, selInfo.srcMulti, 'selectColumns')) {
                         // Single select-item: keep it on the SELECT line.
                         pendingIndent = clauseIndent + 1;
                         lastWord = w; continue;
@@ -1351,7 +1509,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 // lines; a single-line list stays on one line.
                 if (w === 'from') {
                     const info = clauseListInfo(i);
-                    if (info.count > 1 && info.srcMulti) {
+                    if (wantsMultiline(info.count, info.srcMulti, 'fromTables')) {
                         lists.push({ depth: pd, indent: clauseIndent + 1 });
                         pendingIndent = clauseIndent + 1;
                         flush();
@@ -1374,7 +1532,8 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                     emit(applyCase(nx.text, opt.keywordCase), { text: nx.text, isKeyword: true, type: 'word' });
                     i++;
                 }
-                if (listHasMultipleItems(i)) {
+                const intoInfo = clauseListInfo(i, true);
+                if (wantsMultiline(intoInfo.count, intoInfo.srcMulti, 'selectColumns')) {
                     lists.push({ depth: pd, indent: clauseIndent + 1 });
                     pendingIndent = clauseIndent + 1;
                     flush();
@@ -1391,12 +1550,14 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                     betweenPending--;
                     emit(rendered, meta); lastWord = w; continue;
                 }
+                if (condInlineSet.has(i)) { emit(rendered, meta); lastWord = w; continue; }
                 if (expectThen) ifCondBroke = true;
                 startLine(blockIndent + pd + 1, blanks); emit(rendered, meta);
                 lastWord = w; continue;
             }
             // OR on its own line within a SQL condition (but not in CREATE OR REPLACE).
             if (w === 'or' && inSql && lastWord !== 'create') {
+                if (condInlineSet.has(i)) { emit(rendered, meta); lastWord = w; continue; }
                 if (expectThen) ifCondBroke = true;
                 startLine(blockIndent + pd + 1, blanks); emit(rendered, meta);
                 lastWord = w; continue;
@@ -1415,7 +1576,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         // --- Punctuation ----------------------------------------------------
         if (t.text === ',') {
             const top = lists[lists.length - 1];
-            if (top && top.depth === pd && bracketDepth === 0) {
+            if (top && top.depth === pd && (top.bdepth ?? 0) === bracketDepth) {
                 if (opt.commaStyle === 'leading') {
                     flush();
                     lineIndent = top.indent;
@@ -1446,8 +1607,32 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             continue;
         }
 
-        if (t.text === '[') { emit('[', { text: '[', isKeyword: false, type: 'punct' }); bracketDepth++; continue; }
-        if (t.text === ']') { emit(']', { text: ']', isKeyword: false, type: 'punct' }); bracketDepth = Math.max(0, bracketDepth - 1); continue; }
+        if (t.text === '[') {
+            const info = bracketInfo.get(i);
+            const multiline = info ? info.multiline : false;
+            emit('[', { text: '[', isKeyword: false, type: 'punct' });
+            bracketDepth++;
+            const openIndent = lineIndent;
+            bracketStack.push({ multiline, openIndent });
+            if (multiline) {
+                flush();
+                pendingIndent = openIndent + 1;
+                lists.push({ depth: pd, indent: openIndent + 1, bdepth: bracketDepth });
+            }
+            continue;
+        }
+        if (t.text === ']') {
+            const frame = bracketStack.pop();
+            while (lists.length && (lists[lists.length - 1].bdepth ?? 0) === bracketDepth) lists.pop();
+            bracketDepth = Math.max(0, bracketDepth - 1);
+            if (frame && frame.multiline) {
+                startLine(frame.openIndent, 0);
+                emit(']', { text: ']', isKeyword: false, type: 'punct' });
+            } else {
+                emit(']', { text: ']', isKeyword: false, type: 'punct' });
+            }
+            continue;
+        }
 
         if (t.text === '(') {
             const info = parenInfo.get(i);

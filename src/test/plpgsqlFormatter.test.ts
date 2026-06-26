@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatSql, DEFAULT_FORMAT_OPTIONS } from '../plpgsqlFormatter';
+import { formatSql, DEFAULT_FORMAT_OPTIONS, DEFAULT_THRESHOLDS } from '../plpgsqlFormatter';
 
 test('uppercases keywords and breaks a SELECT into clauses with a column list', () => {
     const out = formatSql('select a,b ,c from foo f join bar b on b.id=f.bid where a=1 and b>2 order by a');
@@ -548,9 +548,7 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         commaStyle: 'trailing',
         blankLines: 'preserve',
         simpleSelectSingleLine: true,
-        functionCallThreshold: { inlineMax: 1, multilineMin: 4 },
-        insertThreshold: { inlineMax: 2, multilineMin: 6 },
-        createTypeThreshold: { inlineMax: 1, multilineMin: 4 },
+        thresholds: DEFAULT_THRESHOLDS,
         normalizeDataTypes: true
     });
 });
@@ -695,8 +693,52 @@ test('functionCallThreshold controls call wrapping', () => {
     const four = formatSql('call f(a, b, c, d);');
     assert.equal(four, ['CALL f(', '  a,', '  b,', '  c,', '  d', ');'].join('\n'));
     // Lowering the upper threshold forces two-argument calls to wrap.
-    const two = formatSql('call f(a, b);', { functionCallThreshold: { inlineMax: 1, multilineMin: 2 } });
+    const two = formatSql('call f(a, b);', { thresholds: { functionCall: { inlineMax: 1, multilineMin: 2 } } });
     assert.equal(two, ['CALL f(', '  a,', '  b', ');'].join('\n'));
+});
+
+test('CREATE TABLE column list wraps per createTable threshold', () => {
+    assert.equal(formatSql('create table t (a int, b int);'), 'CREATE TABLE t(a INT, b INT);');
+    assert.equal(
+        formatSql('create table t (a int, b int, c int, d int);'),
+        ['CREATE TABLE t(', '  a INT,', '  b INT,', '  c INT,', '  d INT', ');'].join('\n')
+    );
+});
+
+test('FROM comma list wraps per fromTables threshold', () => {
+    assert.equal(formatSql('select a from t1, t2;', { simpleSelectSingleLine: false }), 'SELECT a\nFROM t1, t2;');
+    assert.equal(
+        formatSql('select a from t1, t2, t3, t4;'),
+        ['SELECT a', 'FROM', '  t1,', '  t2,', '  t3,', '  t4;'].join('\n')
+    );
+});
+
+test('IN value list follows the inLists threshold', () => {
+    // Default {4, 12}: a short IN list stays inline.
+    assert.equal(formatSql('select a, b from t where x in (1, 2, 3);'),
+        ['SELECT', '  a,', '  b', 'FROM t', 'WHERE x IN (1, 2, 3);'].join('\n'));
+    // A lower threshold forces the list to wrap.
+    assert.equal(
+        formatSql('select a, b from t where x in (1, 2, 3);', { thresholds: { inLists: { inlineMax: 1, multilineMin: 2 } } }),
+        ['SELECT', '  a,', '  b', 'FROM t', 'WHERE x IN (', '  1,', '  2,', '  3', ');'].join('\n')
+    );
+});
+
+test('ARRAY literal wraps per arrayLiterals threshold', () => {
+    assert.equal(
+        formatSql('do $$ begin x := array[1, 2, 3, 4, 5]; end $$;', { thresholds: { arrayLiterals: { inlineMax: 2, multilineMin: 4 } } }),
+        ['DO $$', 'BEGIN', '  x := ARRAY[', '    1,', '    2,', '    3,', '    4,', '    5', '  ];', 'END', '$$;'].join('\n')
+    );
+});
+
+test('JOIN ON conditions follow the joinConditions threshold', () => {
+    const sql = 'select a from t join u on t.a = u.a and t.b = u.b;';
+    assert.equal(formatSql(sql),
+        ['SELECT a', 'FROM t', 'JOIN u ON t.a = u.a', '  AND t.b = u.b;'].join('\n'));
+    assert.equal(
+        formatSql(sql, { thresholds: { joinConditions: { inlineMax: 3, multilineMin: 5 } } }),
+        ['SELECT a', 'FROM t', 'JOIN u ON t.a = u.a AND t.b = u.b;'].join('\n')
+    );
 });
 
 test('simpleSelectSingleLine can be disabled', () => {

@@ -2,10 +2,31 @@
 
 ## 2.0.2
 
-- **Mehrzeilig-Schwellwerte pro Konstrukt als Tabelle konfigurierbar:** Die Schwellwerte für die „Ein- oder mehrzeilig?"-Entscheidung lassen sich jetzt im Einstellungsdialog in **einer Tabelle** je Konstrukt einstellen — Einstellung `postgresQueryBuilder.format.listThresholds`. Jede Zeile enthält das Paar `"inlineMax, multilineMin"`: bei **höchstens** `inlineMax` Elementen immer einzeilig, bei **mindestens** `multilineMin` Elementen immer mehrzeilig, dazwischen wie im Quelltext (einzeilig bleibt einzeilig, mehrzeilig bleibt mehrzeilig). Konstrukte und Standardwerte (wie vor der Vereinheitlichung): `functionCall` (Funktions-/Prozeduraufruf- und Parameterlisten) = `1, 4`, `insert` (`INSERT`-Spalten- und `VALUES`-Liste) = `2, 6`, `createType` (`CREATE TYPE`-Attributliste) = `1, 4`. Damit ersetzt diese eine Tabelle die zuvor zusammengeführte Einstellung wieder durch getrennte Schwellwerte pro Konstrukt.
-- **`INSERT`-Spalten- und `VALUES`-Liste einheitlich formatieren:** Spaltenliste und `VALUES`-Liste eines `INSERT` werden gemeinsam entschieden und immer gleich umbrochen — nach den `insert`-Schwellwerten (Standard `2, 6`) anhand der Spaltenanzahl bzw. der im Quelltext gewählten Anordnung.
-- **`CREATE TYPE`-Attributliste umbrechen:** Die Attribut-/Wertliste eines `CREATE TYPE … AS (…)` (zusammengesetzte Typen sowie `ENUM`/`RANGE`) wird nach den `createType`-Schwellwerten (Standard `1, 4`) umbrochen (jedes Attribut in einer eigenen, eingerückten Zeile, wenn mehrzeilig).
-- **Mehrzeilige Komma-`FROM`-Liste beibehalten:** Eine `FROM`-Klausel mit kommagetrennter Tabellenliste im alten Stil (`FROM a, b, c`) wird nicht in eine Zeile zusammengezogen, wenn sie im Quelltext bereits über mehrere Zeilen verteilt war — jede Tabelle steht dann in einer eigenen, eingerückten Zeile. Stand die Liste in der Quelle auf einer Zeile, bleibt sie einzeilig.
+- **Mehrzeilig-Schwellwerte für alle wichtigen Konstrukte als Tabelle konfigurierbar:** Die Schwellwerte für die „Ein- oder mehrzeilig?"-Entscheidung lassen sich jetzt im Einstellungsdialog in **einer Tabelle** je Konstrukt einstellen — Einstellung `postgresQueryBuilder.format.listThresholds`. Jede Zeile enthält das Paar `"inlineMax, multilineMin"`: bei **höchstens** `inlineMax` Elementen immer einzeilig, bei **mindestens** `multilineMin` Elementen immer mehrzeilig, dazwischen wie im Quelltext (einzeilig bleibt einzeilig, mehrzeilig bleibt mehrzeilig). Die Liste umfasst jetzt folgende Konstrukte (Standardwerte in Klammern):
+  - `createFunction` – `CREATE FUNCTION`-Parameterliste (`1, 4`)
+  - `createProcedure` – `CREATE PROCEDURE`-Parameterliste (`1, 4`)
+  - `createType` – `CREATE TYPE`-Attributliste (zusammengesetzte Typen sowie `ENUM`/`RANGE`) (`1, 4`)
+  - `createTable` – `CREATE TABLE`-Spaltenliste (`1, 4`)
+  - `functionCall` – Funktions-/Prozeduraufruf-Argumentliste (`1, 4`)
+  - `selectColumns` – `SELECT`-Spalten- und `INTO`-Zielliste (`1, 2`)
+  - `fromTables` – `FROM`-Tabellenliste im Komma-Stil (`FROM a, b, c`) (`1, 4`)
+  - `insertColumns` – `INSERT`-Spalten- und `VALUES`-Liste (`2, 6`)
+  - `arrayLiterals` – `ARRAY[…]`-Literale inkl. verschachtelter Element-Arrays (`4, 12`)
+  - `inLists` – `IN (…)`-Wertelisten (`4, 12`)
+  - `booleanGroups` – boolesche Gruppen in Klammern (`(a AND b OR c)`) (`1, 2`)
+  - `joinConditions` – `JOIN … ON … AND …`-Bedingungen (`1, 2`)
+  - `ifConditions` – `IF`-/`ELSIF`-Bedingungen (`1, 2`)
+  - `caseConditions` – `CASE … WHEN`-Bedingungen (`AND`/`OR` innerhalb einer `WHEN`-Bedingung) (`1, 2`)
+  - `caseWhenThen` – Struktur eines `CASE … WHEN … THEN`-Blocks (`0, 99`)
+  - `exceptionWhenThen` – Struktur eines `EXCEPTION WHEN … THEN`-Blocks (`0, 99`)
+  - `ifElse` – Struktur eines `IF … ELSE … END IF`-Blocks (`0, 99`)
+- **`CREATE TABLE`-Spaltenliste umbrechen:** Die Spaltenliste eines `CREATE TABLE … (…)` wird nach den `createTable`-Schwellwerten (Standard `1, 4`) umgebrochen.
+- **`SELECT`-Spalten und `FROM`-Tabellenliste nach Schwellwert:** Die `SELECT`-/`INTO`-Liste (`selectColumns`, Standard `1, 2`) und die kommagetrennte `FROM`-Tabellenliste im alten Stil (`fromTables`, Standard `1, 4`) richten sich jetzt nach ihren eigenen Schwellwerten statt allein nach der Quelltext-Anordnung.
+- **`ARRAY[…]`-Literale umbrechen:** Element-Listen von `ARRAY[…]`-Literalen (inkl. verschachtelter Arrays) werden nach den `arrayLiterals`-Schwellwerten (Standard `4, 12`) umgebrochen; Index-Zugriffe (`arr[i]`) bleiben weiterhin einzeilig. (Hinweis: eine einfache `SELECT`-Anweisung mit nur einem ARRAY-Wert bleibt durch `simpleSelectSingleLine` weiterhin einzeilig.)
+- **`IN (…)`-Wertelisten umbrechen:** `IN`-Wertelisten werden nach den `inLists`-Schwellwerten (Standard `4, 12`) umgebrochen.
+- **Bedingungen je Konstrukt steuerbar:** Das Umbrechen von `AND`/`OR` lässt sich getrennt für `JOIN … ON …` (`joinConditions`), `IF`/`ELSIF` (`ifConditions`) und `CASE … WHEN` (`caseConditions`) konfigurieren. Mit den Standardwerten (`1, 2`) bleibt das bisherige Verhalten erhalten (ab zwei Teilbedingungen je `AND`/`OR` in einer eigenen Zeile); höhere Schwellwerte halten kurze Bedingungen einzeilig.
+- **`INSERT`-Spalten- und `VALUES`-Liste einheitlich formatieren:** Spaltenliste und `VALUES`-Liste eines `INSERT` werden gemeinsam entschieden und immer gleich umbrochen — nach den `insertColumns`-Schwellwerten (Standard `2, 6`).
+- **Strukturblöcke (`caseWhenThen`, `exceptionWhenThen`, `ifElse`)** sind als Einträge vorhanden und folgen mit dem Standard `0, 99` dem Quelltext; sie werden derzeit grundsätzlich mehrzeilig dargestellt.
 
 ## 2.0.0
 

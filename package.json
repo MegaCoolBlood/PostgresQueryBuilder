@@ -279,29 +279,113 @@
         "postgresQueryBuilder.format.listThresholds": {
           "type": "object",
           "default": {
+            "createFunction": "1, 4",
+            "createProcedure": "1, 4",
+            "createType": "1, 4",
+            "createTable": "1, 4",
             "functionCall": "1, 4",
-            "insert": "2, 6",
-            "createType": "1, 4"
+            "selectColumns": "1, 2",
+            "fromTables": "1, 4",
+            "insertColumns": "2, 6",
+            "arrayLiterals": "4, 12",
+            "inLists": "4, 12",
+            "booleanGroups": "1, 2",
+            "joinConditions": "1, 2",
+            "ifConditions": "1, 2",
+            "caseConditions": "1, 2",
+            "caseWhenThen": "0, 99",
+            "exceptionWhenThen": "0, 99",
+            "ifElse": "0, 99"
           },
           "properties": {
-            "functionCall": {
+            "createFunction": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "Funktions-/Prozeduraufruf- und Parameterlisten – \"inlineMax, multilineMin\": bei höchstens inlineMax Argumenten einzeilig, ab multilineMin Argumenten mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+              "description": "CREATE FUNCTION-Parameterliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Parametern einzeilig, ab multilineMin Parametern mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
             },
-            "insert": {
+            "createProcedure": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "INSERT-Spalten- und VALUES-Liste – \"inlineMax, multilineMin\": bei höchstens inlineMax Spalten einzeilig, ab multilineMin Spalten mehrzeilig, dazwischen wie im Quelltext. Spalten- und VALUES-Liste verwenden stets dasselbe Layout. Standard: 2, 6."
+              "description": "CREATE PROCEDURE-Parameterliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Parametern einzeilig, ab multilineMin Parametern mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
             },
             "createType": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
               "description": "CREATE TYPE-Attributliste (zusammengesetzte Typen sowie ENUM/RANGE) – \"inlineMax, multilineMin\": bei höchstens inlineMax Attributen einzeilig, ab multilineMin Attributen mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+            },
+            "createTable": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "CREATE TABLE-Spaltenliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Spalten einzeilig, ab multilineMin Spalten mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+            },
+            "functionCall": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "Funktions-/Prozeduraufruf-Argumentliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Argumenten einzeilig, ab multilineMin Argumenten mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+            },
+            "selectColumns": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "SELECT-Spalten- und INTO-Zielliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Spalten einzeilig, ab multilineMin Spalten mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 2."
+            },
+            "fromTables": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "FROM-Tabellenliste im Komma-Stil (FROM a, b, c) – \"inlineMax, multilineMin\": bei höchstens inlineMax Tabellen einzeilig, ab multilineMin Tabellen mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+            },
+            "insertColumns": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "INSERT-Spalten- und VALUES-Liste – \"inlineMax, multilineMin\": bei höchstens inlineMax Spalten einzeilig, ab multilineMin Spalten mehrzeilig, dazwischen wie im Quelltext. Spalten- und VALUES-Liste verwenden stets dasselbe Layout. Standard: 2, 6."
+            },
+            "arrayLiterals": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "ARRAY-Literale (ARRAY[...] inkl. verschachtelter Element-Arrays; Index-Zugriffe arr[i] bleiben einzeilig) – \"inlineMax, multilineMin\": bei höchstens inlineMax Elementen einzeilig, ab multilineMin Elementen mehrzeilig, dazwischen wie im Quelltext. Standard: 4, 12."
+            },
+            "inLists": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "IN-Wertelisten (IN (...)) – \"inlineMax, multilineMin\": bei höchstens inlineMax Werten einzeilig, ab multilineMin Werten mehrzeilig, dazwischen wie im Quelltext. Standard: 4, 12."
+            },
+            "booleanGroups": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "Boolesche Gruppen in Klammern ((a AND b OR c)) – \"inlineMax, multilineMin\": bei höchstens inlineMax Operanden einzeilig, ab multilineMin Operanden mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 2."
+            },
+            "joinConditions": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "JOIN ... ON ... AND ...-Bedingungen – \"inlineMax, multilineMin\": bei höchstens inlineMax Teilbedingungen einzeilig, ab multilineMin Teilbedingungen mehrzeilig (jedes AND/OR auf eigener Zeile), dazwischen wie im Quelltext. Standard: 1, 2."
+            },
+            "ifConditions": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "IF-/ELSIF-Bedingungen – \"inlineMax, multilineMin\": bei höchstens inlineMax Teilbedingungen einzeilig, ab multilineMin Teilbedingungen mehrzeilig (jedes AND/OR auf eigener Zeile), dazwischen wie im Quelltext. Standard: 1, 2."
+            },
+            "caseConditions": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "CASE ... WHEN-Bedingungen (AND/OR innerhalb einer WHEN-Bedingung) – \"inlineMax, multilineMin\": bei höchstens inlineMax Teilbedingungen einzeilig, ab multilineMin Teilbedingungen mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 2."
+            },
+            "caseWhenThen": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "Struktur eines CASE ... WHEN ... THEN-Blocks – \"inlineMax, multilineMin\". Standard 0, 99: folgt dem Quelltext (mehrzeiliger Quelltext bleibt mehrzeilig). Hinweis: Strukturblöcke werden derzeit grundsätzlich mehrzeilig dargestellt."
+            },
+            "exceptionWhenThen": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "Struktur eines EXCEPTION WHEN ... THEN-Blocks – \"inlineMax, multilineMin\". Standard 0, 99: folgt dem Quelltext. Hinweis: Strukturblöcke werden derzeit grundsätzlich mehrzeilig dargestellt."
+            },
+            "ifElse": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "Struktur eines IF ... ELSE ... END IF-Blocks – \"inlineMax, multilineMin\". Standard 0, 99: folgt dem Quelltext. Hinweis: Strukturblöcke werden derzeit grundsätzlich mehrzeilig dargestellt."
             }
           },
           "additionalProperties": false,
-          "markdownDescription": "Mehrzeilig-Schwellwerte pro Konstrukt als Tabelle. Jeder Wert ist das Paar `\"inlineMax, multilineMin\"`: eine Liste mit **höchstens** `inlineMax` Elementen bleibt immer einzeilig, eine Liste mit **mindestens** `multilineMin` Elementen wird immer mehrzeilig umbrochen, und dazwischen entscheidet das Layout im Quelltext (einzeilig bleibt einzeilig, mehrzeilig bleibt mehrzeilig)."
+          "markdownDescription": "Mehrzeilig-Schwellwerte pro Konstrukt als Tabelle. Jeder Wert ist das Paar `\"inlineMax, multilineMin\"`: eine Liste mit **höchstens** `inlineMax` Elementen bleibt immer einzeilig, eine Liste mit **mindestens** `multilineMin` Elementen wird immer mehrzeilig umbrochen, und dazwischen entscheidet das Layout im Quelltext (einzeilig bleibt einzeilig, mehrzeilig bleibt mehrzeilig). Die drei Strukturblöcke `caseWhenThen`, `exceptionWhenThen` und `ifElse` folgen mit dem Standard `0, 99` dem Quelltext und werden derzeit immer mehrzeilig dargestellt."
         },
         "postgresQueryBuilder.format.normalizeDataTypes": {
           "type": "boolean",
