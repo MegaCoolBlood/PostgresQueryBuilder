@@ -1044,6 +1044,57 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         }
         return toks.length - 1;
     };
+
+    // --- Structural-block collapse (ifElse / caseWhenThen / exceptionWhenThen) ---
+    /**
+     * Index of the `END` that closes the block currently open at `idx`, where `idx`
+     * itself is NOT a block opener (e.g. the `EXCEPTION` keyword inside a `BEGIN`
+     * block). Returns the matching enclosing `END`.
+     */
+    const enclosingEnd = (idx: number): number => {
+        let depth = 0;
+        for (let k = idx + 1; k < toks.length; k++) {
+            const tk = toks[k];
+            if (tk.type !== 'word') continue;
+            const w2 = tk.text.toLowerCase();
+            if (w2 === 'case' || w2 === 'if' || w2 === 'loop' || w2 === 'begin') depth++;
+            else if (w2 === 'end') {
+                if (depth === 0) return k;
+                depth--;
+                const nx = toks[k + 1];
+                const nw = nx && nx.type === 'word' ? nx.text.toLowerCase() : '';
+                if (nw === 'if' || nw === 'loop' || nw === 'case') k++;
+            }
+        }
+        return toks.length - 1;
+    };
+    /** Count top-level `;` statement terminators in [a..b]. */
+    const countStmts = (a: number, b: number): number => {
+        let n = 0;
+        for (let k = a; k <= b; k++) if (k >= 0 && k < toks.length && toks[k].text === ';') n++;
+        return n;
+    };
+    /**
+     * A structural block cannot be collapsed to one line if its body contains a
+     * comment or a nested block construct (these forbidden keywords), because the
+     * inline renderer would flatten them ambiguously.
+     */
+    const COLLAPSE_FORBIDDEN = new Set(['if', 'loop', 'begin', 'declare', 'case', 'exception']);
+    const rangeBlocksCollapse = (a: number, b: number): boolean => {
+        for (let k = a; k <= b; k++) {
+            const tk = toks[k];
+            if (!tk) continue;
+            if (tk.type === 'lineComment' || tk.type === 'blockComment') return true;
+            if (tk.type === 'word' && COLLAPSE_FORBIDDEN.has(tk.text.toLowerCase())) return true;
+        }
+        return false;
+    };
+    /** Should a structural block with `count` statements collapse onto one line? */
+    const wantsCollapse = (count: number, key: ConstructKey): boolean => {
+        const t = opt.thresholds[key] ?? DEFAULT_THRESHOLDS[key];
+        return count >= 1 && count <= t.inlineMax;
+    };
+
     /** Does any token in [a..b] start a new source line? */
     const rangeHasNewline = (a: number, b: number): boolean => {
         for (let k = a; k <= b; k++) if (k >= 0 && k < toks.length && toks[k].nlBefore >= 1) return true;
@@ -1301,6 +1352,19 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 // deeper, and the branch body (assignments, nested IF/LOOP, …) one
                 // level deeper still — with the body starting on the line after THEN.
                 if (w === 'case') {
+                    // Collapse a small `CASE … END CASE;` statement onto one line when configured.
+                    const endKw = caseMatchEnd(i);
+                    let spanEnd = endKw;
+                    if (toks[endKw + 1]?.type === 'word' && toks[endKw + 1].text.toLowerCase() === 'case') spanEnd = endKw + 1;
+                    if (toks[spanEnd + 1]?.text === ';') spanEnd++;
+                    if (wantsCollapse(countStmts(i + 1, endKw - 1), 'caseWhenThen')
+                        && !rangeBlocksCollapse(i + 1, endKw - 1)) {
+                        startLine(blockIndent, blanks);
+                        for (let k = i; k <= spanEnd; k++) emitInline(toks[k]);
+                        flush();
+                        pendingIndent = blockIndent;
+                        lastWord = ''; i = spanEnd; continue;
+                    }
                     startLine(blockIndent, blanks); emit(rendered, meta);
                     blocks.push({ type: 'case', head: blockIndent });
                     lastWord = w; continue;
@@ -1339,6 +1403,18 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 if (w === 'exception' && cur === '') {
                     const bf = nearestBegin();
                     if (bf) {
+                        // Collapse a small exception section (`EXCEPTION WHEN … THEN …;`)
+                        // onto one line when configured. The enclosing BEGIN's END stays
+                        // on its own line and is handled by the normal END handler.
+                        const sectionEnd = enclosingEnd(i) - 1;
+                        if (wantsCollapse(countStmts(i + 1, sectionEnd), 'exceptionWhenThen')
+                            && !rangeBlocksCollapse(i + 1, sectionEnd)) {
+                            startLine(bf.head, blanks);
+                            for (let k = i; k <= sectionEnd; k++) emitInline(toks[k]);
+                            flush();
+                            blockIndent = bf.head; pendingIndent = blockIndent;
+                            lastWord = ''; i = sectionEnd; continue;
+                        }
                         bf.exception = true;
                         startLine(bf.head, blanks); emit(rendered, meta); flush();
                         blockIndent = bf.head + 1; pendingIndent = blockIndent;
@@ -1381,6 +1457,19 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                     lastWord = w; continue;
                 }
                 if (w === 'if' && ifIsBlock(i)) {
+                    // Collapse a small `IF … END IF;` onto one line when configured.
+                    const endKw = caseMatchEnd(i);
+                    let spanEnd = endKw;
+                    if (toks[endKw + 1]?.type === 'word' && toks[endKw + 1].text.toLowerCase() === 'if') spanEnd = endKw + 1;
+                    if (toks[spanEnd + 1]?.text === ';') spanEnd++;
+                    if (wantsCollapse(countStmts(i + 1, endKw - 1), 'ifElse')
+                        && !rangeBlocksCollapse(i + 1, endKw - 1)) {
+                        startLine(blockIndent, blanks);
+                        for (let k = i; k <= spanEnd; k++) emitInline(toks[k]);
+                        flush();
+                        pendingIndent = blockIndent;
+                        lastWord = ''; i = spanEnd; continue;
+                    }
                     startLine(blockIndent, blanks); emit(rendered, meta);
                     expectThen = true; ifCondBroke = false; blocks.push({ type: 'if', head: blockIndent });
                     lastWord = w; continue;

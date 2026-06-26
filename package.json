@@ -284,18 +284,18 @@
             "createType": "1, 4",
             "createTable": "1, 4",
             "functionCall": "1, 4",
-            "selectColumns": "1, 2",
+            "selectColumns": "1, 3",
             "fromTables": "1, 4",
             "insertColumns": "2, 6",
-            "arrayLiterals": "4, 12",
-            "inLists": "4, 12",
-            "booleanGroups": "1, 2",
-            "joinConditions": "1, 2",
-            "ifConditions": "1, 2",
-            "caseConditions": "1, 2",
-            "caseWhenThen": "0, 99",
-            "exceptionWhenThen": "0, 99",
-            "ifElse": "0, 99"
+            "arrayLiterals": "2, 12",
+            "inLists": "2, 6",
+            "booleanGroups": "1, 3",
+            "joinConditions": "1, 3",
+            "ifConditions": "1, 3",
+            "caseConditions": "1, 3",
+            "caseWhenThen": "0, 3",
+            "exceptionWhenThen": "0, 3",
+            "ifElse": "0, 3"
           },
           "properties": {
             "createFunction": {
@@ -371,21 +371,21 @@
             "caseWhenThen": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "Struktur eines CASE ... WHEN ... THEN-Blocks – \"inlineMax, multilineMin\". Standard 0, 99: folgt dem Quelltext (mehrzeiliger Quelltext bleibt mehrzeilig). Hinweis: Strukturblöcke werden derzeit grundsätzlich mehrzeilig dargestellt."
+              "description": "Zusammenklappen eines CASE ... WHEN ... THEN ... END CASE-Blocks – \"inlineMax, multilineMin\". Nur inlineMax ist wirksam: der Block wird einzeilig dargestellt, wenn die Anzahl seiner Anweisungen (;) <= inlineMax ist und der Rumpf keine Kommentare oder verschachtelten Blöcke enthält. inlineMax 0 = nie zusammenklappen."
             },
             "exceptionWhenThen": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "Struktur eines EXCEPTION WHEN ... THEN-Blocks – \"inlineMax, multilineMin\". Standard 0, 99: folgt dem Quelltext. Hinweis: Strukturblöcke werden derzeit grundsätzlich mehrzeilig dargestellt."
+              "description": "Zusammenklappen eines EXCEPTION WHEN ... THEN-Abschnitts – \"inlineMax, multilineMin\". Nur inlineMax ist wirksam: der Abschnitt wird einzeilig dargestellt, wenn die Anzahl seiner Anweisungen (;) <= inlineMax ist und keine Kommentare oder verschachtelten Blöcke enthält (das END des BEGIN bleibt in eigener Zeile). inlineMax 0 = nie zusammenklappen."
             },
             "ifElse": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "Struktur eines IF ... ELSE ... END IF-Blocks – \"inlineMax, multilineMin\". Standard 0, 99: folgt dem Quelltext. Hinweis: Strukturblöcke werden derzeit grundsätzlich mehrzeilig dargestellt."
+              "description": "Zusammenklappen eines IF ... [ELSE ...] END IF-Blocks – \"inlineMax, multilineMin\". Nur inlineMax ist wirksam: der Block wird einzeilig dargestellt, wenn die Anzahl seiner Anweisungen (;) <= inlineMax ist und der Rumpf keine Kommentare oder verschachtelten Blöcke enthält. inlineMax 0 = nie zusammenklappen."
             }
           },
           "additionalProperties": false,
-          "markdownDescription": "Mehrzeilig-Schwellwerte pro Konstrukt als Tabelle. Jeder Wert ist das Paar `\"inlineMax, multilineMin\"`: eine Liste mit **höchstens** `inlineMax` Elementen bleibt immer einzeilig, eine Liste mit **mindestens** `multilineMin` Elementen wird immer mehrzeilig umbrochen, und dazwischen entscheidet das Layout im Quelltext (einzeilig bleibt einzeilig, mehrzeilig bleibt mehrzeilig). Die drei Strukturblöcke `caseWhenThen`, `exceptionWhenThen` und `ifElse` folgen mit dem Standard `0, 99` dem Quelltext und werden derzeit immer mehrzeilig dargestellt."
+          "markdownDescription": "Mehrzeilig-Schwellwerte pro Konstrukt als Tabelle. Jeder Wert ist das Paar `\"inlineMax, multilineMin\"`: eine Liste mit **höchstens** `inlineMax` Elementen bleibt immer einzeilig, eine Liste mit **mindestens** `multilineMin` Elementen wird immer mehrzeilig umbrochen, und dazwischen entscheidet das Layout im Quelltext (einzeilig bleibt einzeilig, mehrzeilig bleibt mehrzeilig). Bei den drei Strukturblöcken `caseWhenThen`, `exceptionWhenThen` und `ifElse` ist nur `inlineMax` wirksam: ein kleiner Block wird auf eine Zeile zusammengeklappt, wenn seine Anzahl an Anweisungen (`;`) `<= inlineMax` ist und der Rumpf keine Kommentare oder verschachtelten Blöcke enthält (`inlineMax = 0` = nie zusammenklappen)."
         },
         "postgresQueryBuilder.format.normalizeDataTypes": {
           "type": "boolean",

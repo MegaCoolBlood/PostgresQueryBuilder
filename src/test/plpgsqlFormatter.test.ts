@@ -741,6 +741,59 @@ test('JOIN ON conditions follow the joinConditions threshold', () => {
     );
 });
 
+test('IF block collapses to one line per ifElse threshold', () => {
+    const sql = 'do $$ begin if a then x := 1; end if; end $$;';
+    // Default: structural blocks stay multiline.
+    assert.equal(
+        formatSql(sql),
+        ['DO $$', 'BEGIN', '  IF a THEN', '    x := 1;', '  END IF;', 'END', '$$;'].join('\n')
+    );
+    // inlineMax >= 1 collapses a single-statement IF onto one line.
+    assert.equal(
+        formatSql(sql, { thresholds: { ifElse: { inlineMax: 1, multilineMin: 2 } } }),
+        ['DO $$', 'BEGIN', '  IF a THEN x := 1; END IF;', 'END', '$$;'].join('\n')
+    );
+});
+
+test('IF/ELSE collapses only when the statement count fits inlineMax', () => {
+    const sql = 'do $$ begin if a then x := 1; else y := 2; end if; end $$;';
+    // Two statements: inlineMax 1 is too small, stays multiline.
+    assert.equal(
+        formatSql(sql, { thresholds: { ifElse: { inlineMax: 1, multilineMin: 2 } } }),
+        ['DO $$', 'BEGIN', '  IF a THEN', '    x := 1;', '  ELSE', '    y := 2;', '  END IF;', 'END', '$$;'].join('\n')
+    );
+    // inlineMax 2 fits both branches.
+    assert.equal(
+        formatSql(sql, { thresholds: { ifElse: { inlineMax: 2, multilineMin: 3 } } }),
+        ['DO $$', 'BEGIN', '  IF a THEN x := 1; ELSE y := 2; END IF;', 'END', '$$;'].join('\n')
+    );
+});
+
+test('a nested block prevents IF collapse', () => {
+    const sql = 'do $$ begin if a then if b then x := 1; end if; end if; end $$;';
+    // Outer IF body contains a nested IF, so it never collapses; the inner one does.
+    assert.equal(
+        formatSql(sql, { thresholds: { ifElse: { inlineMax: 5, multilineMin: 6 } } }),
+        ['DO $$', 'BEGIN', '  IF a THEN', '    IF b THEN x := 1; END IF;', '  END IF;', 'END', '$$;'].join('\n')
+    );
+});
+
+test('CASE statement collapses per caseWhenThen threshold', () => {
+    const sql = 'do $$ begin case when a then x := 1; when b then y := 2; end case; end $$;';
+    assert.equal(
+        formatSql(sql, { thresholds: { caseWhenThen: { inlineMax: 2, multilineMin: 3 } } }),
+        ['DO $$', 'BEGIN', '  CASE WHEN a THEN x := 1; WHEN b THEN y := 2; END CASE;', 'END', '$$;'].join('\n')
+    );
+});
+
+test('EXCEPTION section collapses per exceptionWhenThen threshold', () => {
+    const sql = 'do $$ begin x := 1; exception when others then y := 2; end $$;';
+    assert.equal(
+        formatSql(sql, { thresholds: { exceptionWhenThen: { inlineMax: 1, multilineMin: 2 } } }),
+        ['DO $$', 'BEGIN', '  x := 1;', 'EXCEPTION WHEN OTHERS THEN y := 2;', 'END', '$$;'].join('\n')
+    );
+});
+
 test('simpleSelectSingleLine can be disabled', () => {
     assert.equal(formatSql('select a from t;', { simpleSelectSingleLine: false }), 'SELECT a\nFROM t;');
     assert.equal(formatSql('select a from t;'), 'SELECT a FROM t;');

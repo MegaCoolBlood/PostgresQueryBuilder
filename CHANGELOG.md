@@ -17,16 +17,21 @@
   - `joinConditions` – `JOIN … ON … AND …`-Bedingungen (`1, 2`)
   - `ifConditions` – `IF`-/`ELSIF`-Bedingungen (`1, 2`)
   - `caseConditions` – `CASE … WHEN`-Bedingungen (`AND`/`OR` innerhalb einer `WHEN`-Bedingung) (`1, 2`)
-  - `caseWhenThen` – Struktur eines `CASE … WHEN … THEN`-Blocks (`0, 99`)
-  - `exceptionWhenThen` – Struktur eines `EXCEPTION WHEN … THEN`-Blocks (`0, 99`)
-  - `ifElse` – Struktur eines `IF … ELSE … END IF`-Blocks (`0, 99`)
+  - `caseWhenThen` – Zusammenklappen eines `CASE … WHEN … THEN`-Blocks (nur `inlineMax`; `0` = nie zusammenklappen)
+  - `exceptionWhenThen` – Zusammenklappen eines `EXCEPTION WHEN … THEN`-Blocks (nur `inlineMax`; `0` = nie zusammenklappen)
+  - `ifElse` – Zusammenklappen eines `IF … ELSE … END IF`-Blocks (nur `inlineMax`; `0` = nie zusammenklappen)
 - **`CREATE TABLE`-Spaltenliste umbrechen:** Die Spaltenliste eines `CREATE TABLE … (…)` wird nach den `createTable`-Schwellwerten (Standard `1, 4`) umgebrochen.
 - **`SELECT`-Spalten und `FROM`-Tabellenliste nach Schwellwert:** Die `SELECT`-/`INTO`-Liste (`selectColumns`, Standard `1, 2`) und die kommagetrennte `FROM`-Tabellenliste im alten Stil (`fromTables`, Standard `1, 4`) richten sich jetzt nach ihren eigenen Schwellwerten statt allein nach der Quelltext-Anordnung.
 - **`ARRAY[…]`-Literale umbrechen:** Element-Listen von `ARRAY[…]`-Literalen (inkl. verschachtelter Arrays) werden nach den `arrayLiterals`-Schwellwerten (Standard `4, 12`) umgebrochen; Index-Zugriffe (`arr[i]`) bleiben weiterhin einzeilig. (Hinweis: eine einfache `SELECT`-Anweisung mit nur einem ARRAY-Wert bleibt durch `simpleSelectSingleLine` weiterhin einzeilig.)
 - **`IN (…)`-Wertelisten umbrechen:** `IN`-Wertelisten werden nach den `inLists`-Schwellwerten (Standard `4, 12`) umgebrochen.
 - **Bedingungen je Konstrukt steuerbar:** Das Umbrechen von `AND`/`OR` lässt sich getrennt für `JOIN … ON …` (`joinConditions`), `IF`/`ELSIF` (`ifConditions`) und `CASE … WHEN` (`caseConditions`) konfigurieren. Mit den Standardwerten (`1, 2`) bleibt das bisherige Verhalten erhalten (ab zwei Teilbedingungen je `AND`/`OR` in einer eigenen Zeile); höhere Schwellwerte halten kurze Bedingungen einzeilig.
 - **`INSERT`-Spalten- und `VALUES`-Liste einheitlich formatieren:** Spaltenliste und `VALUES`-Liste eines `INSERT` werden gemeinsam entschieden und immer gleich umbrochen — nach den `insertColumns`-Schwellwerten (Standard `2, 6`).
-- **Strukturblöcke (`caseWhenThen`, `exceptionWhenThen`, `ifElse`)** sind als Einträge vorhanden und folgen mit dem Standard `0, 99` dem Quelltext; sie werden derzeit grundsätzlich mehrzeilig dargestellt.
+- **Strukturblöcke zusammenklappen (`caseWhenThen`, `exceptionWhenThen`, `ifElse`):** Kleine Strukturblöcke lassen sich auf eine Zeile zusammenklappen. Ein Block wird einzeilig dargestellt, wenn die Anzahl seiner Anweisungen (`;`) kleiner oder gleich `inlineMax` ist und der Rumpf weder Kommentare noch verschachtelte Blöcke (`IF`/`CASE`/`LOOP`/`BEGIN`/`DECLARE`/`EXCEPTION`) enthält:
+  - `ifElse` – `IF … THEN … [ELSE …] END IF;` (z. B. `IF a THEN x := 1; END IF;`)
+  - `caseWhenThen` – `CASE … WHEN … THEN … END CASE;`
+  - `exceptionWhenThen` – `EXCEPTION WHEN … THEN …;` (das `END` des umschließenden `BEGIN` bleibt in eigener Zeile)
+  
+  Mit dem Standard `inlineMax = 0` wird nie zusammengeklappt (das bisherige mehrzeilige Verhalten bleibt erhalten); ab `inlineMax ≥ 1` werden entsprechend kleine Blöcke einzeilig dargestellt.
 
 ## 2.0.0
 
