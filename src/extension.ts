@@ -45,12 +45,8 @@ function getFormatOptions(): FormatOptions {
         commaStyle: cfg.get('format.commaStyle'),
         blankLines: cfg.get('format.blankLines'),
         simpleSelectSingleLine: cfg.get('format.simpleSelectSingleLine'),
-        argsInlineMax: cfg.get('format.argsInlineMax'),
-        argsMultilineMin: cfg.get('format.argsMultilineMin'),
-        insertColumnsInlineMax: cfg.get('format.insertColumnsInlineMax'),
-        insertColumnsMultilineMin: cfg.get('format.insertColumnsMultilineMin'),
-        typeAttributesInlineMax: cfg.get('format.typeAttributesInlineMax'),
-        typeAttributesMultilineMin: cfg.get('format.typeAttributesMultilineMin'),
+        listInlineMax: cfg.get('format.listInlineMax'),
+        listMultilineMin: cfg.get('format.listMultilineMin'),
         normalizeDataTypes: cfg.get('format.normalizeDataTypes')
     });
 }

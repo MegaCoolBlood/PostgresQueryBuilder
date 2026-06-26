@@ -38,18 +38,20 @@ export interface FormatOptions {
     blankLines: BlankLineStyle;
     /** Keep a simple SELECT (1 column, <=1 table, <=1 WHERE) on one line. Default: true. */
     simpleSelectSingleLine: boolean;
-    /** Argument/parameter count up to which a call/parameter list stays inline. Default: 1. */
-    argsInlineMax: number;
-    /** Argument/parameter count from which a call/parameter list always wraps. Default: 4. */
-    argsMultilineMin: number;
-    /** Column/value count up to which an INSERT column & VALUES list stays inline. Default: 2. */
-    insertColumnsInlineMax: number;
-    /** Column/value count from which an INSERT column & VALUES list always wraps. Default: 6. */
-    insertColumnsMultilineMin: number;
-    /** Attribute count up to which a CREATE TYPE attribute list stays inline. Default: 1. */
-    typeAttributesInlineMax: number;
-    /** Attribute count from which a CREATE TYPE attribute list always wraps. Default: 4. */
-    typeAttributesMultilineMin: number;
+    /**
+     * Lower threshold for every "should this list be multi-line?" decision
+     * (function/parameter lists, INSERT columns & VALUES, CREATE TYPE attributes,
+     * FROM table lists). A list with at most this many items always stays on one
+     * line. Default: 2.
+     */
+    listInlineMax: number;
+    /**
+     * Upper threshold for every "should this list be multi-line?" decision. A
+     * list with at least this many items always wraps across multiple lines.
+     * Between the two thresholds the source layout decides (single-line stays
+     * single, multi-line stays multi). Default: 4.
+     */
+    listMultilineMin: number;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
     normalizeDataTypes: boolean;
 }
@@ -63,12 +65,8 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     commaStyle: 'trailing',
     blankLines: 'preserve',
     simpleSelectSingleLine: true,
-    argsInlineMax: 1,
-    argsMultilineMin: 4,
-    insertColumnsInlineMax: 2,
-    insertColumnsMultilineMin: 6,
-    typeAttributesInlineMax: 1,
-    typeAttributesMultilineMin: 4,
+    listInlineMax: 2,
+    listMultilineMin: 4,
     normalizeDataTypes: true
 };
 
@@ -87,12 +85,8 @@ export function coerceFormatOptions(raw: {
     commaStyle?: unknown;
     blankLines?: unknown;
     simpleSelectSingleLine?: unknown;
-    argsInlineMax?: unknown;
-    argsMultilineMin?: unknown;
-    insertColumnsInlineMax?: unknown;
-    insertColumnsMultilineMin?: unknown;
-    typeAttributesInlineMax?: unknown;
-    typeAttributesMultilineMin?: unknown;
+    listInlineMax?: unknown;
+    listMultilineMin?: unknown;
     normalizeDataTypes?: unknown;
 }): FormatOptions {
     const pick = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
@@ -100,15 +94,9 @@ export function coerceFormatOptions(raw: {
     const num = (value: unknown, min: number, max: number, fallback: number): number =>
         typeof value === 'number' && value >= min && value <= max ? Math.floor(value) : fallback;
     const size = num(raw.indentSize, 1, 8, DEFAULT_FORMAT_OPTIONS.indentSize);
-    const inlineMax = num(raw.argsInlineMax, 0, 50, DEFAULT_FORMAT_OPTIONS.argsInlineMax);
-    let multilineMin = num(raw.argsMultilineMin, 2, 100, DEFAULT_FORMAT_OPTIONS.argsMultilineMin);
-    if (multilineMin <= inlineMax) multilineMin = inlineMax + 1;
-    const insColInlineMax = num(raw.insertColumnsInlineMax, 0, 50, DEFAULT_FORMAT_OPTIONS.insertColumnsInlineMax);
-    let insColMultilineMin = num(raw.insertColumnsMultilineMin, 2, 100, DEFAULT_FORMAT_OPTIONS.insertColumnsMultilineMin);
-    if (insColMultilineMin <= insColInlineMax) insColMultilineMin = insColInlineMax + 1;
-    const typeAttrInlineMax = num(raw.typeAttributesInlineMax, 0, 50, DEFAULT_FORMAT_OPTIONS.typeAttributesInlineMax);
-    let typeAttrMultilineMin = num(raw.typeAttributesMultilineMin, 2, 100, DEFAULT_FORMAT_OPTIONS.typeAttributesMultilineMin);
-    if (typeAttrMultilineMin <= typeAttrInlineMax) typeAttrMultilineMin = typeAttrInlineMax + 1;
+    const listInlineMax = num(raw.listInlineMax, 0, 50, DEFAULT_FORMAT_OPTIONS.listInlineMax);
+    let listMultilineMin = num(raw.listMultilineMin, 2, 100, DEFAULT_FORMAT_OPTIONS.listMultilineMin);
+    if (listMultilineMin <= listInlineMax) listMultilineMin = listInlineMax + 1;
     return {
         keywordCase: pick(raw.keywordCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.keywordCase),
         identifierCase: pick(raw.identifierCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.identifierCase),
@@ -120,12 +108,8 @@ export function coerceFormatOptions(raw: {
         simpleSelectSingleLine: typeof raw.simpleSelectSingleLine === 'boolean'
             ? raw.simpleSelectSingleLine
             : DEFAULT_FORMAT_OPTIONS.simpleSelectSingleLine,
-        argsInlineMax: inlineMax,
-        argsMultilineMin: multilineMin,
-        insertColumnsInlineMax: insColInlineMax,
-        insertColumnsMultilineMin: insColMultilineMin,
-        typeAttributesInlineMax: typeAttrInlineMax,
-        typeAttributesMultilineMin: typeAttrMultilineMin,
+        listInlineMax: listInlineMax,
+        listMultilineMin: listMultilineMin,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
             : DEFAULT_FORMAT_OPTIONS.normalizeDataTypes
@@ -444,6 +428,16 @@ export function formatSql(input: string, options?: Partial<FormatOptions>): stri
 
 function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string {
     const opt: FormatOptions = { ...DEFAULT_FORMAT_OPTIONS, ...(options || {}) };
+    // Unified "should this list be multi-line?" decision used everywhere a count
+    // of items drives wrapping (call/parameter lists, INSERT columns & VALUES,
+    // CREATE TYPE attributes, FROM table lists): below the lower threshold it
+    // always stays inline, at/above the upper threshold it always wraps, and in
+    // between the source layout (single- vs. multi-line) decides.
+    const wantsMultiline = (count: number, srcMulti: boolean): boolean => {
+        if (count <= opt.listInlineMax) return false;
+        if (count >= opt.listMultilineMin) return true;
+        return srcMulti;
+    };
     const trailingNewline = /\n\s*$/.test(input);
     const toks = opt.normalizeDataTypes ? normalizeTypePhrases(tokenize(input)) : tokenize(input);
     const depths = computeDepths(toks);
@@ -539,12 +533,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             let multiline = false;
             if (kind === 'subquery' || kind === 'boolgroup') multiline = true;
             else if (kind === 'call' || kind === 'paramlist') {
-                const isType = typeParenSet.has(open);
-                const inlineMax = isType ? opt.typeAttributesInlineMax : opt.argsInlineMax;
-                const multilineMin = isType ? opt.typeAttributesMultilineMin : opt.argsMultilineMin;
-                if (argCount <= inlineMax) multiline = false;
-                else if (argCount >= multilineMin) multiline = true;
-                else multiline = srcMulti;
+                multiline = wantsMultiline(argCount, srcMulti);
             }
             parenInfo.set(open, { match: close, kind, argCount, multiline, srcMulti });
         }
@@ -608,10 +597,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             const countInfo = parenInfo.get(colOpen !== null ? colOpen : valueOpens[0]);
             const n = countInfo ? countInfo.argCount : 0;
             const srcMulti = targets.some(t => { const inf = parenInfo.get(t); return !!inf && inf.srcMulti; });
-            let wantMulti: boolean;
-            if (n <= opt.insertColumnsInlineMax) wantMulti = false;
-            else if (n >= opt.insertColumnsMultilineMin) wantMulti = true;
-            else wantMulti = srcMulti;
+            const wantMulti = wantsMultiline(n, srcMulti);
             for (const t of targets) {
                 const inf = parenInfo.get(t);
                 if (inf) parenInfo.set(t, { ...inf, multiline: wantMulti });
@@ -826,8 +812,8 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
      * Used to keep an old-style comma `FROM a, b, c` list broken when the
      * author already spread it over several lines.
      */
-    const clauseListSrcMultiline = (idx: number): boolean => {
-        let d = 0, b = 0, hasComma = false, hasNewline = false;
+    const clauseListInfo = (idx: number): { count: number; srcMulti: boolean } => {
+        let d = 0, b = 0, commas = 0, hasTok = false, hasNewline = false;
         for (let k = idx + 1; k < toks.length; k++) {
             const tk = toks[k];
             // A top-level clause/JOIN keyword, closing paren or `;` ends the list;
@@ -844,9 +830,10 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             else if (tk.text === ')') d--;
             else if (tk.text === '[') b++;
             else if (tk.text === ']') { if (b > 0) b--; }
-            else if (d === 0 && b === 0 && tk.text === ',') hasComma = true;
+            else if (d === 0 && b === 0 && tk.text === ',') commas++;
+            if (tk.type !== 'lineComment' && tk.type !== 'blockComment') hasTok = true;
         }
-        return hasComma && hasNewline;
+        return { count: hasTok ? commas + 1 : 0, srcMulti: hasNewline };
     };
 
     // --- CASE expression helpers -------------------------------------------
@@ -1333,13 +1320,17 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                     lastWord = w; continue;
                 }
 
-                // Old-style comma FROM list (FROM a, b, c): keep it broken across
-                // lines if the author already spread it over several source lines.
-                if (w === 'from' && clauseListSrcMultiline(i)) {
-                    lists.push({ depth: pd, indent: clauseIndent + 1 });
-                    pendingIndent = clauseIndent + 1;
-                    flush();
-                    lastWord = w; continue;
+                // Old-style comma FROM list (FROM a, b, c): the unified threshold
+                // rule decides whether to keep it on one line or break it across
+                // lines (with the source layout as the tie-breaker in between).
+                if (w === 'from') {
+                    const info = clauseListInfo(i);
+                    if (wantsMultiline(info.count, info.srcMulti)) {
+                        lists.push({ depth: pd, indent: clauseIndent + 1 });
+                        pendingIndent = clauseIndent + 1;
+                        flush();
+                        lastWord = w; continue;
+                    }
                 }
 
                 pendingIndent = clauseIndent + 1;

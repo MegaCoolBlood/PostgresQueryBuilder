@@ -276,41 +276,17 @@
           "default": true,
           "description": "Keep a simple SELECT (single column, at most one table, at most one WHERE condition, no JOIN/GROUP/ORDER) on a single line."
         },
-        "postgresQueryBuilder.format.argsInlineMax": {
-          "type": "number",
-          "default": 1,
-          "minimum": 0,
-          "description": "A function/procedure call or parameter list with at most this many arguments is always kept on one line."
-        },
-        "postgresQueryBuilder.format.argsMultilineMin": {
-          "type": "number",
-          "default": 4,
-          "minimum": 2,
-          "description": "A function/procedure call or parameter list with at least this many arguments is always wrapped onto multiple lines. Counts between this and argsInlineMax keep the layout authored in the source."
-        },
-        "postgresQueryBuilder.format.insertColumnsInlineMax": {
+        "postgresQueryBuilder.format.listInlineMax": {
           "type": "number",
           "default": 2,
           "minimum": 0,
-          "description": "An INSERT whose column list (and matching VALUES list) has at most this many columns is always kept on one line."
+          "description": "Lower threshold for every 'should this list be multi-line?' decision (function/procedure call & parameter lists, INSERT columns & VALUES, CREATE TYPE attributes, FROM table lists). A list with at most this many items is always kept on one line."
         },
-        "postgresQueryBuilder.format.insertColumnsMultilineMin": {
-          "type": "number",
-          "default": 6,
-          "minimum": 2,
-          "description": "An INSERT whose column list (and matching VALUES list) has at least this many columns is always wrapped onto multiple lines. Counts between this and insertColumnsInlineMax keep the column and VALUES lists multi-line only if either was authored across multiple lines in the source. The column list and the VALUES list always use the same layout."
-        },
-        "postgresQueryBuilder.format.typeAttributesInlineMax": {
-          "type": "number",
-          "default": 1,
-          "minimum": 0,
-          "description": "A CREATE TYPE attribute/value list with at most this many attributes is always kept on one line."
-        },
-        "postgresQueryBuilder.format.typeAttributesMultilineMin": {
+        "postgresQueryBuilder.format.listMultilineMin": {
           "type": "number",
           "default": 4,
           "minimum": 2,
-          "description": "A CREATE TYPE attribute/value list (composite, ENUM, RANGE) with at least this many attributes is always wrapped onto multiple lines. Counts between this and typeAttributesInlineMax keep the layout authored in the source."
+          "description": "Upper threshold for every 'should this list be multi-line?' decision (function/procedure call & parameter lists, INSERT columns & VALUES, CREATE TYPE attributes, FROM table lists). A list with at least this many items is always wrapped onto multiple lines. For item counts between this and listInlineMax the source layout decides: a list authored on one line stays on one line, a list spread over several lines stays multi-line. For INSERT the column list and the matching VALUES list always use the same layout."
         },
         "postgresQueryBuilder.format.normalizeDataTypes": {
           "type": "boolean",

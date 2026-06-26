@@ -342,9 +342,30 @@ test('keeps an INSERT with at most two columns on one line', () => {
     assert.equal(out, 'INSERT INTO t(a, b)\nVALUES (1, 2);');
 });
 
-test('keeps a single-line 3-5 column INSERT on one line', () => {
+test('keeps a single-line three-column INSERT on one line', () => {
+    const out = formatSql('INSERT INTO t (a, b, c) VALUES (1, 2, 3);');
+    assert.equal(out, 'INSERT INTO t(a, b, c)\nVALUES (1, 2, 3);');
+});
+
+test('wraps a single-line INSERT once it reaches the upper threshold', () => {
     const out = formatSql('INSERT INTO t (a, b, c, d) VALUES (1, 2, 3, 4);');
-    assert.equal(out, 'INSERT INTO t(a, b, c, d)\nVALUES (1, 2, 3, 4);');
+    assert.equal(
+        out,
+        [
+            'INSERT INTO t(',
+            '  a,',
+            '  b,',
+            '  c,',
+            '  d',
+            ')',
+            'VALUES (',
+            '  1,',
+            '  2,',
+            '  3,',
+            '  4',
+            ');'
+        ].join('\n')
+    );
 });
 
 test('wraps an INSERT with six or more columns even from a single source line', () => {
@@ -413,6 +434,30 @@ test('keeps a single-line comma FROM list on one line', () => {
     assert.equal(
         formatSql('SELECT a FROM t1, t2, t3 WHERE t1.id = t2.id;'),
         'SELECT a\nFROM t1, t2, t3\nWHERE t1.id = t2.id;'
+    );
+});
+
+test('uses one shared threshold pair for every list (middle band follows the source)', () => {
+    // Three items sits in the middle band (listInlineMax 2 < 3 < listMultilineMin 4),
+    // so a single-line source stays inline and a multi-line source stays wrapped –
+    // the same rule for call lists, INSERT columns and FROM lists alike.
+    assert.equal(formatSql('call f(a, b, c);'), 'CALL f(a, b, c);');
+    assert.equal(
+        formatSql('call f(\na,\nb,\nc\n);'),
+        ['CALL f(', '  a,', '  b,', '  c', ');'].join('\n')
+    );
+    assert.equal(
+        formatSql('INSERT INTO t (a, b, c) VALUES (1, 2, 3);'),
+        'INSERT INTO t(a, b, c)\nVALUES (1, 2, 3);'
+    );
+    assert.equal(
+        formatSql('SELECT a FROM t1, t2, t3 WHERE t1.id = t2.id;'),
+        'SELECT a\nFROM t1, t2, t3\nWHERE t1.id = t2.id;'
+    );
+    // At/above the upper threshold everything wraps regardless of the source.
+    assert.equal(
+        formatSql('call f(a, b, c, d);'),
+        ['CALL f(', '  a,', '  b,', '  c,', '  d', ');'].join('\n')
     );
 });
 
@@ -521,12 +566,8 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         commaStyle: 'trailing',
         blankLines: 'preserve',
         simpleSelectSingleLine: true,
-        argsInlineMax: 1,
-        argsMultilineMin: 4,
-        insertColumnsInlineMax: 2,
-        insertColumnsMultilineMin: 6,
-        typeAttributesInlineMax: 1,
-        typeAttributesMultilineMin: 4,
+        listInlineMax: 2,
+        listMultilineMin: 4,
         normalizeDataTypes: true
     });
 });
@@ -665,13 +706,13 @@ test('formats an EXCEPTION ... WHEN block', () => {
     );
 });
 
-test('argsInlineMax / argsMultilineMin control call wrapping', () => {
+test('listInlineMax / listMultilineMin control call wrapping', () => {
     assert.equal(formatSql('call f(a);'), 'CALL f(a);');
     assert.equal(formatSql('call f(a, b, c);'), 'CALL f(a, b, c);');
     const four = formatSql('call f(a, b, c, d);');
     assert.equal(four, ['CALL f(', '  a,', '  b,', '  c,', '  d', ');'].join('\n'));
-    // Threshold of 2 forces two-argument calls to wrap.
-    const two = formatSql('call f(a, b);', { argsMultilineMin: 2 });
+    // Lowering both thresholds forces two-argument calls to wrap.
+    const two = formatSql('call f(a, b);', { listInlineMax: 1, listMultilineMin: 2 });
     assert.equal(two, ['CALL f(', '  a,', '  b', ');'].join('\n'));
 });
 
