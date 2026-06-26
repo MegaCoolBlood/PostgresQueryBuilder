@@ -820,6 +820,35 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         return false;
     };
 
+    /**
+     * True if the clause list starting after `idx` contains more than one
+     * comma-separated item AND was authored across multiple source lines.
+     * Used to keep an old-style comma `FROM a, b, c` list broken when the
+     * author already spread it over several lines.
+     */
+    const clauseListSrcMultiline = (idx: number): boolean => {
+        let d = 0, b = 0, hasComma = false, hasNewline = false;
+        for (let k = idx + 1; k < toks.length; k++) {
+            const tk = toks[k];
+            // A top-level clause/JOIN keyword, closing paren or `;` ends the list;
+            // its own leading newline must not count as a break inside the list.
+            if (d === 0 && b === 0) {
+                if (tk.text === ')' || tk.text === ';') break;
+                if (tk.type === 'word') {
+                    const w = tk.text.toLowerCase();
+                    if (CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w) || w === 'into') break;
+                }
+            }
+            if (tk.nlBefore >= 1 && d === 0 && b === 0) hasNewline = true;
+            if (tk.text === '(') d++;
+            else if (tk.text === ')') d--;
+            else if (tk.text === '[') b++;
+            else if (tk.text === ']') { if (b > 0) b--; }
+            else if (d === 0 && b === 0 && tk.text === ',') hasComma = true;
+        }
+        return hasComma && hasNewline;
+    };
+
     // --- CASE expression helpers -------------------------------------------
     /**
      * Index of the `END` that closes the `CASE` at `caseIdx` (block-aware).
@@ -1298,6 +1327,15 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 }
 
                 if (w === 'set') {
+                    lists.push({ depth: pd, indent: clauseIndent + 1 });
+                    pendingIndent = clauseIndent + 1;
+                    flush();
+                    lastWord = w; continue;
+                }
+
+                // Old-style comma FROM list (FROM a, b, c): keep it broken across
+                // lines if the author already spread it over several source lines.
+                if (w === 'from' && clauseListSrcMultiline(i)) {
                     lists.push({ depth: pd, indent: clauseIndent + 1 });
                     pendingIndent = clauseIndent + 1;
                     flush();

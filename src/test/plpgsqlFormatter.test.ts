@@ -394,6 +394,28 @@ test('keeps a small CREATE TYPE attribute list on one line', () => {
     assert.equal(formatSql('CREATE TYPE t AS (a INTEGER, b TEXT);'), 'CREATE TYPE t AS (a INTEGER, b TEXT);');
 });
 
+test('keeps a comma FROM list broken when it was multi-line in the source', () => {
+    const out = formatSql('SELECT a\nFROM t1 x\n, t2 y\n, t3 z\nWHERE x.id = y.id;');
+    assert.equal(
+        out,
+        [
+            'SELECT a',
+            'FROM',
+            '  t1 x,',
+            '  t2 y,',
+            '  t3 z',
+            'WHERE x.id = y.id;'
+        ].join('\n')
+    );
+});
+
+test('keeps a single-line comma FROM list on one line', () => {
+    assert.equal(
+        formatSql('SELECT a FROM t1, t2, t3 WHERE t1.id = t2.id;'),
+        'SELECT a\nFROM t1, t2, t3\nWHERE t1.id = t2.id;'
+    );
+});
+
 test('indents subqueries inside parentheses', () => {
     const out = formatSql('select a from (select x from inner_t where x>0) sub;');
     assert.equal(
