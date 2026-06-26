@@ -38,6 +38,7 @@ export type ConstructKey =
     | 'createProcedure'
     | 'createType'
     | 'createTable'
+    | 'returnsTable'
     | 'functionCall'
     | 'selectColumns'
     | 'fromTables'
@@ -64,6 +65,7 @@ export const DEFAULT_THRESHOLDS: Record<ConstructKey, ListThreshold> = {
     createProcedure: { inlineMax: 1, multilineMin: 4 },
     createType: { inlineMax: 1, multilineMin: 4 },
     createTable: { inlineMax: 1, multilineMin: 4 },
+    returnsTable: { inlineMax: 1, multilineMin: 4 },
     functionCall: { inlineMax: 1, multilineMin: 4 },
     selectColumns: { inlineMax: 1, multilineMin: 2 },
     fromTables: { inlineMax: 1, multilineMin: 4 },
@@ -577,6 +579,25 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         }
     }
 
+    // Parens that open a `RETURNS TABLE(...)` column list of a CREATE FUNCTION.
+    const returnsTableParenSet = new Set<number>();
+    {
+        let sawReturns = false;
+        let sawTable = false;
+        for (let i = 0; i < toks.length; i++) {
+            const tk = toks[i];
+            if (tk.type === 'word') {
+                const w = tk.text.toLowerCase();
+                if (w === 'returns') { sawReturns = true; sawTable = false; }
+                else if (w === 'table' && sawReturns) { sawTable = true; }
+                else { sawReturns = false; sawTable = false; }
+            } else if (tk.text === '(') {
+                if (sawTable) { returnsTableParenSet.add(i); parenConstruct.set(i, 'returnsTable'); }
+                sawReturns = false; sawTable = false;
+            } else if (tk.text === ';') { sawReturns = false; sawTable = false; }
+        }
+    }
+
     // Per-context AND/OR grouping for JOIN ON, IF/ELSIF and CASE WHEN conditions.
     // Each condition's top-level AND/OR operators are counted once; if the
     // construct's threshold says the group should stay inline, its operator
@@ -674,6 +695,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             let kind: ParenKind;
             let isInList = false;
             if (routineParenSet.has(open)) kind = 'paramlist';
+            else if (returnsTableParenSet.has(open)) kind = 'paramlist';
             else if (typeParenSet.has(open) || tableParenSet.has(open)) kind = 'call';
             else {
                 const ns = sig(open, 1);
@@ -1727,8 +1749,9 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             const info = parenInfo.get(i);
             const kind: ParenKind = info ? info.kind : 'group';
             const multiline = info ? info.multiline : false;
-            if (kind === 'typemod' && cur !== '') {
-                // No space between a data type and its modifier, e.g. VARCHAR(500).
+            if ((kind === 'typemod' || returnsTableParenSet.has(i)) && cur !== '') {
+                // No space between a data type and its modifier, e.g. VARCHAR(500),
+                // nor between TABLE and its column list in `RETURNS TABLE(...)`.
                 cur += '(';
                 prev = { text: '(', isKeyword: false, type: 'punct' };
             } else {

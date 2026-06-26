@@ -7,6 +7,7 @@
   - `createProcedure` – `CREATE PROCEDURE`-Parameterliste (`1, 4`)
   - `createType` – `CREATE TYPE`-Attributliste (zusammengesetzte Typen sowie `ENUM`/`RANGE`) (`1, 4`)
   - `createTable` – `CREATE TABLE`-Spaltenliste (`1, 4`)
+  - `returnsTable` – `RETURNS TABLE(…)`-Spaltenliste einer `CREATE FUNCTION` (`1, 4`)
   - `functionCall` – Funktions-/Prozeduraufruf-Argumentliste (`1, 4`)
   - `selectColumns` – `SELECT`-Spalten- und `INTO`-Zielliste (`1, 2`)
   - `fromTables` – `FROM`-Tabellenliste im Komma-Stil (`FROM a, b, c`) (`1, 4`)
@@ -21,6 +22,7 @@
   - `exceptionWhenThen` – Zusammenklappen eines `EXCEPTION WHEN … THEN`-Blocks (nur `inlineMax`; `0` = nie zusammenklappen)
   - `ifElse` – Zusammenklappen eines `IF … ELSE … END IF`-Blocks (nur `inlineMax`; `0` = nie zusammenklappen)
 - **`CREATE TABLE`-Spaltenliste umbrechen:** Die Spaltenliste eines `CREATE TABLE … (…)` wird nach den `createTable`-Schwellwerten (Standard `1, 4`) umgebrochen.
+- **`RETURNS TABLE(…)`-Spaltenliste umbrechen:** Die Spaltenliste eines `RETURNS TABLE(…)` einer `CREATE FUNCTION` wird nach den `returnsTable`-Schwellwerten (Standard `1, 4`) wie eine Parameterliste umgebrochen (eine Spalte je Zeile, schließende Klammer auf eigener Zeile); zwischen `TABLE` und der Klammer steht dabei kein Leerzeichen.
 - **`SELECT`-Spalten und `FROM`-Tabellenliste nach Schwellwert:** Die `SELECT`-/`INTO`-Liste (`selectColumns`, Standard `1, 2`) und die kommagetrennte `FROM`-Tabellenliste im alten Stil (`fromTables`, Standard `1, 4`) richten sich jetzt nach ihren eigenen Schwellwerten statt allein nach der Quelltext-Anordnung.
 - **`ARRAY[…]`-Literale umbrechen:** Element-Listen von `ARRAY[…]`-Literalen (inkl. verschachtelter Arrays) werden nach den `arrayLiterals`-Schwellwerten (Standard `4, 12`) umgebrochen; Index-Zugriffe (`arr[i]`) bleiben weiterhin einzeilig. (Hinweis: eine einfache `SELECT`-Anweisung mit nur einem ARRAY-Wert bleibt durch `simpleSelectSingleLine` weiterhin einzeilig.)
 - **`IN (…)`-Wertelisten umbrechen:** `IN`-Wertelisten werden nach den `inLists`-Schwellwerten (Standard `4, 12`) umgebrochen.

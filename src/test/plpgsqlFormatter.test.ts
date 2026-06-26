@@ -705,6 +705,31 @@ test('CREATE TABLE column list wraps per createTable threshold', () => {
     );
 });
 
+test('RETURNS TABLE column list wraps per returnsTable threshold', () => {
+    const tail = '\nas $$ begin end $$ language plpgsql;';
+    // Default {1, 4}: a single-column table stays inline (no space before `(`).
+    assert.equal(
+        formatSql('create function f()\nreturns table(a integer)' + tail, { dataTypeCase: 'preserve' }),
+        ['CREATE FUNCTION f() RETURNS TABLE(a integer)', 'AS $$', 'BEGIN', 'END', '$$ LANGUAGE plpgsql;'].join('\n')
+    );
+    // Four columns reach multilineMin and wrap, one column per line.
+    assert.equal(
+        formatSql('create function f()\nreturns table(a integer, b integer, c integer, d integer)' + tail, { dataTypeCase: 'preserve' }),
+        [
+            'CREATE FUNCTION f() RETURNS TABLE(',
+            '  a integer,',
+            '  b integer,',
+            '  c integer,',
+            '  d integer',
+            ')',
+            'AS $$',
+            'BEGIN',
+            'END',
+            '$$ LANGUAGE plpgsql;'
+        ].join('\n')
+    );
+});
+
 test('FROM comma list wraps per fromTables threshold', () => {
     assert.equal(formatSql('select a from t1, t2;', { simpleSelectSingleLine: false }), 'SELECT a\nFROM t1, t2;');
     assert.equal(
