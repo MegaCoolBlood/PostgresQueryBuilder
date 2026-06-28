@@ -131,6 +131,42 @@ test('getApplicableMappings returns mapping when no conditions', async () => {
     assert.equal(result.filter(m => !m.reversed).length, 1);
 });
 
+test('reverse mapping carries the forward conditions as targetConditions', async () => {
+    const manager = new ColumnMappingManager(createMockContext());
+    await manager.addMapping(createSampleMapping({
+        conditions: [{ column: 'type', operator: '=', value: 'car' }]
+    }));
+
+    // From the target table (public.cars) the mapping appears reversed.
+    const reverse = manager.getMappingsForTable('public', 'cars').find(m => m.reversed);
+    assert.ok(reverse, 'a reverse mapping should be offered on the target table');
+    // The reverse mapping itself is unconditionally applicable (its own
+    // conditions are empty), but it remembers the original conditions to apply
+    // to the navigation target's WHERE clause.
+    assert.deepEqual(reverse!.conditions, []);
+    assert.deepEqual(reverse!.targetConditions, [{ column: 'type', operator: '=', value: 'car' }]);
+});
+
+test('forward mapping has no targetConditions', async () => {
+    const manager = new ColumnMappingManager(createMockContext());
+    await manager.addMapping(createSampleMapping({
+        conditions: [{ column: 'type', operator: '=', value: 'car' }]
+    }));
+
+    const forward = manager.getMappingsForTable('public', 'items').find(m => !m.reversed);
+    assert.ok(forward);
+    assert.equal(forward!.targetConditions, undefined);
+});
+
+test('reverse mapping without conditions has no targetConditions', async () => {
+    const manager = new ColumnMappingManager(createMockContext());
+    await manager.addMapping(createSampleMapping({ conditions: [] }));
+
+    const reverse = manager.getMappingsForTable('public', 'cars').find(m => m.reversed);
+    assert.ok(reverse);
+    assert.equal(reverse!.targetConditions, undefined);
+});
+
 test('getApplicableMappings with equality condition matches', async () => {
     const manager = new ColumnMappingManager(createMockContext());
     await manager.addMapping(createSampleMapping({

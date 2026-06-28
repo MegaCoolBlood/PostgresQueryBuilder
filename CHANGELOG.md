@@ -2,6 +2,8 @@
 
 ## 2.0.3
 
+- **Navigation über umgekehrte Custom Mappings berücksichtigt die Bedingungen:** Beim Springen (Rechtsklick → „Jump to … (reverse)") über ein umgekehrtes Custom Mapping werden jetzt die Bedingungen des ursprünglichen Mappings in die `WHERE`-Klausel der Zieltabelle übernommen. Beispiel: Bei einem Mapping von Tabelle A nach B über `a.id = b.id` mit der Bedingung `type = 'A'` erzeugt die Rückwärts-Navigation von B (id = 2) nach A jetzt `SELECT * FROM a WHERE id = 2 AND type = 'A'` statt nur `WHERE id = 2`. `LIKE`/`ILIKE`-Bedingungen werden dabei als „enthält"-Vergleich (`%wert%`) übernommen, passend zur Auswertung der Mapping-Bedingungen.
+
 - **`JOIN … ON …`-Bedingungen mit eigenem `ON` und ausgerichteten Schlüsselwörtern:** Erstreckt sich die `ON`-Bedingung eines `JOIN` über mehrere Zeilen (gemäß `joinConditions`-Schwellwert), steht `ON` jetzt in einer eigenen Zeile direkt unter dem `JOIN`. Die Schlüsselwörter `ON`, `AND` und `OR` werden dabei rechtsbündig (River-Stil) ausgerichtet, sodass die Bedingungen darunter exakt fluchten:
 
   ```sql

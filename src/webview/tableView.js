@@ -503,6 +503,20 @@ function buildNullConstraintClause(fmtCol, isNull) {
     return `${fmtCol} IS ${isNull ? 'NULL' : 'NOT NULL'}`;
 }
 
+// Turn a custom-mapping condition ({column, operator, value}) into a SQL WHERE
+// clause for an already-formatted column identifier. LIKE/ILIKE use a
+// "contains" match (wrapped in %…%) to mirror evaluateMappingConditions; every
+// other operator emits `<col> <op> <quoted-value>`. Returns '' for an
+// incomplete condition.
+function mappingConditionToClause(cond, fmtCol, filterType, thousandSeparator) {
+    if (!cond || !cond.column || !cond.operator) return '';
+    const raw = (cond.value === null || cond.value === undefined) ? '' : String(cond.value);
+    if (cond.operator === 'LIKE' || cond.operator === 'ILIKE') {
+        return `${fmtCol} ${cond.operator} '${escapeSqlString('%' + raw + '%')}'`;
+    }
+    return `${fmtCol} ${cond.operator} ${formatExactMatchValue(raw, filterType, thousandSeparator)}`;
+}
+
 // Operators offered in the permanent-constraint editor. Mirrors the Join
 // dialog's fixed-condition operators so both editors behave identically.
 const CONSTRAINT_OPERATORS = ['=', '<>', '<', '<=', '>', '>=', 'LIKE', 'ILIKE', 'BETWEEN', 'IS NULL', 'IS NOT NULL'];
@@ -1257,19 +1271,34 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function handleApplyFilter(msg) {
         // When opening a related table via FK/PK/custom mapping, only prefilter via
         // the SELECT clause and leave the column filter row empty.
-        applyExactMatchToQuery(msg.column, msg.value);
+        applyExactMatchToQuery(msg.column, msg.value, msg.conditions);
     }
 
-    function applyExactMatchToQuery(colName, value) {
+    function applyExactMatchToQuery(colName, value, extraConditions) {
         if (!schema || !table) return;
         if (value === null || value === undefined) return;
         const colMeta = columns.find(c => c.name === colName);
         const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
         const fmtCol = formatIdentifier(colName);
         const formatted = formatExactMatchValue(String(value), filterType, thousandSeparator);
-        const clause = `${fmtCol} = ${formatted}`;
-        mergeWhereClausesIntoQuery({ [colName]: clause });
+        const clausesByCol = { [colName]: `${fmtCol} = ${formatted}` };
+        // Append any custom-mapping conditions (e.g. from a reverse mapping) so
+        // the navigation target is filtered by the full mapping definition.
+        (extraConditions || []).forEach(cond => {
+            if (!cond || !cond.column || cond.column === colName) return;
+            const clause = buildMappingConditionClause(cond);
+            if (clause) clausesByCol[cond.column] = clause;
+        });
+        mergeWhereClausesIntoQuery(clausesByCol);
         runCustomQuery();
+    }
+
+    function buildMappingConditionClause(cond) {
+        if (!cond || !cond.column) return '';
+        const fmtCol = formatIdentifier(cond.column);
+        const colMeta = columns.find(c => c.name === cond.column);
+        const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
+        return mappingConditionToClause(cond, fmtCol, filterType, thousandSeparator);
     }
 
     function applyNullConstraint(colName, isNull) {
@@ -1650,7 +1679,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                             refSchema: mapping.targetSchema,
                             refTable: mapping.targetTable,
                             refColumn: mapping.targetColumn,
-                            value: String(cellValue)
+                            value: String(cellValue),
+                            conditions: mapping.targetConditions || []
                         });
                     }
                 });
@@ -3534,6 +3564,7 @@ if (typeof module !== 'undefined' && module.exports) {
         filterOperatorForMode,
         buildFilterClause,
         buildNullConstraintClause,
+        mappingConditionToClause,
         CONSTRAINT_OPERATORS,
         constraintIsUnary,
         constraintIsBetween,

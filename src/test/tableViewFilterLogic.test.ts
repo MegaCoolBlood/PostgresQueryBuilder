@@ -7,7 +7,8 @@ const {
     buildFilterClause,
     rowValueMatchesFilter,
     compareCellValues,
-    normalizeCellInput
+    normalizeCellInput,
+    mappingConditionToClause
 } = require(path.join(__dirname, '../../src/webview/tableView.js'));
 
 const SEP = ' ';
@@ -187,3 +188,46 @@ test('normalizeCellInput tolerates null/undefined raw text', () => {
     assert.equal(normalizeCellInput(null, false, SEP), '');
     assert.equal(normalizeCellInput(undefined, true, SEP), '');
 });
+
+// ===== mappingConditionToClause =====
+
+test('mappingConditionToClause builds an equality clause with a quoted value', () => {
+    const cond = { column: 'type', operator: '=', value: 'A' };
+    assert.equal(mappingConditionToClause(cond, '"type"', 'text', SEP), `"type" = 'A'`);
+});
+
+test('mappingConditionToClause builds comparison clauses', () => {
+    assert.equal(
+        mappingConditionToClause({ column: 'qty', operator: '>', value: '10' }, '"qty"', 'numeric', SEP),
+        `"qty" > '10'`
+    );
+    assert.equal(
+        mappingConditionToClause({ column: 'type', operator: '!=', value: 'B' }, '"type"', 'text', SEP),
+        `"type" != 'B'`
+    );
+});
+
+test('mappingConditionToClause wraps LIKE/ILIKE values in a contains match', () => {
+    assert.equal(
+        mappingConditionToClause({ column: 'name', operator: 'LIKE', value: 'foo' }, '"name"', 'text', SEP),
+        `"name" LIKE '%foo%'`
+    );
+    assert.equal(
+        mappingConditionToClause({ column: 'name', operator: 'ILIKE', value: 'bar' }, '"name"', 'text', SEP),
+        `"name" ILIKE '%bar%'`
+    );
+});
+
+test('mappingConditionToClause escapes single quotes in values', () => {
+    assert.equal(
+        mappingConditionToClause({ column: 'note', operator: '=', value: "O'Brien" }, '"note"', 'text', SEP),
+        `"note" = 'O''Brien'`
+    );
+});
+
+test('mappingConditionToClause returns empty string for incomplete conditions', () => {
+    assert.equal(mappingConditionToClause(null, '"x"', 'text', SEP), '');
+    assert.equal(mappingConditionToClause({ column: '', operator: '=', value: 'a' }, '""', 'text', SEP), '');
+    assert.equal(mappingConditionToClause({ column: 'x', operator: '', value: 'a' }, '"x"', 'text', SEP), '');
+});
+

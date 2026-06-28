@@ -21,7 +21,7 @@ interface MessageContext {
 
 export class TableWebViewManager {
     private panels: Map<string, vscode.WebviewPanel> = new Map();
-    private pendingFilters: Map<string, { column: string; value: string }> = new Map();
+    private pendingFilters: Map<string, { column: string; value: string; conditions?: any[] }> = new Map();
     private context: vscode.ExtensionContext;
     private connectionManager: ConnectionManager;
     private exportService: ExportService;
@@ -224,7 +224,8 @@ export class TableWebViewManager {
             panel.webview.postMessage({
                 command: 'applyFilter',
                 column: pendingFilter.column,
-                value: pendingFilter.value
+                value: pendingFilter.value,
+                conditions: pendingFilter.conditions || []
             });
         }
 
@@ -355,7 +356,8 @@ export class TableWebViewManager {
         const fkTable = message.refTable;
         const fkColumn = message.refColumn;
         const fkValue = message.value;
-        await this.openTableViewWithFilter(fkSchema, fkTable, fkColumn, fkValue);
+        const conditions = Array.isArray(message.conditions) ? message.conditions : [];
+        await this.openTableViewWithFilter(fkSchema, fkTable, fkColumn, fkValue, conditions);
     }
 
     private async handleAddCustomMapping(ctx: MessageContext): Promise<void> {
@@ -543,7 +545,7 @@ export class TableWebViewManager {
         this.context.globalState.update(key, history);
     }
 
-    async openTableViewWithFilter(schema: string, table: string, column: string, value: any): Promise<void> {
+    async openTableViewWithFilter(schema: string, table: string, column: string, value: any, conditions: any[] = []): Promise<void> {
         const key = `${schema}.${table}`;
         const existingPanel = this.panels.get(key);
 
@@ -553,11 +555,12 @@ export class TableWebViewManager {
             existingPanel.webview.postMessage({
                 command: 'applyFilter',
                 column: column,
-                value: String(value)
+                value: String(value),
+                conditions: conditions || []
             });
         } else {
             // Panel will be created — store filter to send after first dataLoaded
-            this.pendingFilters.set(key, { column, value: String(value) });
+            this.pendingFilters.set(key, { column, value: String(value), conditions: conditions || [] });
             await this.openTableView(schema, table);
         }
     }

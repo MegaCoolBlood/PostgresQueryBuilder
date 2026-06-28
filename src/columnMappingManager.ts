@@ -40,6 +40,13 @@ export interface CustomColumnMapping {
     reversed?: boolean;
     /** When reversed, the id of the original (forward) mapping for reference. */
     originalId?: string;
+    /**
+     * Literal conditions to apply to the navigation TARGET's WHERE clause when
+     * jumping along this mapping. Only populated on a reversed mapping, carried
+     * over from the original (forward) mapping's `conditions` — those conditions
+     * constrain the source table, which becomes the target we navigate back to.
+     */
+    targetConditions?: MappingCondition[];
 }
 
 interface WorkspaceMappingsFile {
@@ -160,6 +167,7 @@ export class ColumnMappingManager {
         delete stored.scope;
         delete stored.reversed;
         delete stored.originalId;
+        delete stored.targetConditions;
 
         if (scope === 'workspace') {
             const ensured = await this.ensureWorkspaceFile();
@@ -187,6 +195,7 @@ export class ColumnMappingManager {
         delete cleanUpdates.scope;
         delete cleanUpdates.reversed;
         delete cleanUpdates.originalId;
+        delete cleanUpdates.targetConditions;
 
         const currentScope = this.findScope(id);
         if (!currentScope) return;
@@ -198,6 +207,7 @@ export class ColumnMappingManager {
             delete moved.scope;
             delete moved.reversed;
             delete moved.originalId;
+            delete moved.targetConditions;
             await this.deleteMappingInternal(id, currentScope);
             if (targetScope === 'workspace') {
                 const ensured = await this.ensureWorkspaceFile();
@@ -384,6 +394,12 @@ export class ColumnMappingManager {
                 sourceColumn: p.targetColumn,
                 targetColumn: p.sourceColumn
             }));
+        }
+        // The forward conditions constrain the source table; after reversing,
+        // that table is the navigation target, so carry them over to be applied
+        // to the target query's WHERE clause.
+        if (Array.isArray(m.conditions) && m.conditions.length) {
+            reversed.targetConditions = m.conditions.map(c => ({ ...c }));
         }
         return reversed;
     }
