@@ -607,6 +607,10 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     // With the default thresholds ({1,2}) a group of >=2 conditions always
     // wraps, so this set stays empty and the layout is unchanged.
     const condInlineSet = new Set<number>();
+    // ON-token indices of a JOIN whose condition group wraps over several lines.
+    // For those the renderer puts ON on its own line and right-aligns the ON /
+    // AND / OR keywords (river style) so the conditions line up underneath.
+    const joinOnBreakSet = new Set<number>();
     {
         const stack: string[] = [];
         const topKind = () => stack[stack.length - 1];
@@ -630,6 +634,8 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             if (ops.length === 0) return;
             if (!wantsMultiline(ops.length + 1, srcMulti, key)) {
                 for (const idx of ops) condInlineSet.add(idx);
+            } else if (key === 'joinConditions') {
+                joinOnBreakSet.add(start);
             }
         };
         const thenEnd = (w: string) => w === 'then';
@@ -826,6 +832,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     let bracketDepth = 0;
     let betweenPending = 0;
     let forHeaderIndent: number | null = null;
+    let joinRiver = false;
     const blocks: BlockFrame[] = [];
     const lists: { depth: number; indent: number; bdepth?: number }[] = [];
     const parenStack: { kind: ParenKind; multiline: boolean; openIndent: number }[] = [];
@@ -1622,6 +1629,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
 
             // JOINs (only inside an actual SQL context)
             if (JOIN_WORDS.has(w) && inSql) {
+                joinRiver = false;
                 popLists(pd);
                 if (JOIN_WORDS.has(lastWord) || lastWord === 'outer') emit(rendered, meta);
                 else { startLine(blockIndent + pd, blanks); emit(rendered, meta); }
@@ -1630,6 +1638,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
 
             // SQL clause keywords (only inside an actual SQL context)
             if (CLAUSE_NEWLINE.has(w) && inSql) {
+                joinRiver = false;
                 const clauseIndent = blockIndent + pd;
                 popLists(pd);
                 betweenPending = 0;
@@ -1706,6 +1715,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
 
             if (w === 'into' && inSql && lastWord !== 'insert') {
                 // SELECT ... INTO / RETURNING ... INTO: INTO starts its own line.
+                joinRiver = false;
                 const clauseIndent = blockIndent + pd;
                 popLists(pd);
                 betweenPending = 0;
@@ -1727,6 +1737,17 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             }
             if (w === 'into' && inSql) popLists(pd);
 
+            // ON of a multi-line JOIN condition: put it on its own line and
+            // right-align the ON / AND / OR keywords so the conditions line up
+            // underneath (river style). The leading space makes the 2-char "ON"
+            // align with the 3-char "AND" used by the following conditions.
+            if (w === 'on' && inSql && joinOnBreakSet.has(i)) {
+                startLine(blockIndent + pd + 1, blanks);
+                emit(' ' + rendered, meta);
+                joinRiver = true;
+                lastWord = w; continue;
+            }
+
             // AND on its own line within a SQL condition (except the AND that belongs to BETWEEN).
             if (w === 'and' && inSql) {
                 if (betweenPending > 0) {
@@ -1742,7 +1763,8 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             if (w === 'or' && inSql && lastWord !== 'create') {
                 if (condInlineSet.has(i)) { emit(rendered, meta); lastWord = w; continue; }
                 if (expectThen) ifCondBroke = true;
-                startLine(blockIndent + pd + 1, blanks); emit(rendered, meta);
+                startLine(blockIndent + pd + 1, blanks);
+                emit(joinRiver ? ' ' + rendered : rendered, meta);
                 lastWord = w; continue;
             }
             if (w === 'between' && inSql) betweenPending++;
@@ -1780,6 +1802,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         if (t.text === ';') {
             popLists(pd);
             betweenPending = 0;
+            joinRiver = false;
             emit(';', { text: ';', isKeyword: false, type: 'punct' });
             if (pd === 0) {
                 flush();

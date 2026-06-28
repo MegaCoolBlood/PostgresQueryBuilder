@@ -759,11 +759,59 @@ test('ARRAY literal wraps per arrayLiterals threshold', () => {
 test('JOIN ON conditions follow the joinConditions threshold', () => {
     const sql = 'select a from t join u on t.a = u.a and t.b = u.b;';
     assert.equal(formatSql(sql),
-        ['SELECT a', 'FROM t', 'JOIN u ON t.a = u.a', '  AND t.b = u.b;'].join('\n'));
+        ['SELECT a', 'FROM t', 'JOIN u', '   ON t.a = u.a', '  AND t.b = u.b;'].join('\n'));
     assert.equal(
         formatSql(sql, { thresholds: { joinConditions: { inlineMax: 3, multilineMin: 5 } } }),
         ['SELECT a', 'FROM t', 'JOIN u ON t.a = u.a AND t.b = u.b;'].join('\n')
     );
+});
+
+test('multi-line JOIN ON puts ON on its own line, river-aligned with AND', () => {
+    const sql = 'select x from let join bos_t_kal_hours btkh on btkh.kal_tag = let.let_kal_tag '
+        + 'and lze.lze_menge = btkh.p_worktimetarget and btkh.session_id = p_websessionid;';
+    assert.equal(formatSql(sql),
+        [
+            'SELECT x',
+            'FROM let',
+            'JOIN bos_t_kal_hours btkh',
+            '   ON btkh.kal_tag = let.let_kal_tag',
+            '  AND lze.lze_menge = btkh.p_worktimetarget',
+            '  AND btkh.session_id = p_websessionid;',
+        ].join('\n'));
+});
+
+test('multi-line JOIN ON river-aligns OR with AND', () => {
+    const sql = 'select a from t join u on t.a = u.a and t.b = u.b or t.c = u.c;';
+    assert.equal(formatSql(sql),
+        [
+            'SELECT a',
+            'FROM t',
+            'JOIN u',
+            '   ON t.a = u.a',
+            '  AND t.b = u.b',
+            '   OR t.c = u.c;',
+        ].join('\n'));
+});
+
+test('single-condition JOIN ON stays inline', () => {
+    assert.equal(
+        formatSql('select a from t join u on t.a = u.a;'),
+        ['SELECT a', 'FROM t', 'JOIN u ON t.a = u.a;'].join('\n')
+    );
+});
+
+test('WHERE AND after a multi-line JOIN ON is not river-aligned', () => {
+    const sql = 'select a from t join u on t.a = u.a and t.b = u.b where x = 1 or y = 2;';
+    assert.equal(formatSql(sql),
+        [
+            'SELECT a',
+            'FROM t',
+            'JOIN u',
+            '   ON t.a = u.a',
+            '  AND t.b = u.b',
+            'WHERE x = 1',
+            '  OR y = 2;',
+        ].join('\n'));
 });
 
 test('operator chain breaks per operatorChains threshold', () => {

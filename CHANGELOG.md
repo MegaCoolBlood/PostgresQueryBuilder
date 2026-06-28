@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.0.3
+
+- **`JOIN … ON …`-Bedingungen mit eigenem `ON` und ausgerichteten Schlüsselwörtern:** Erstreckt sich die `ON`-Bedingung eines `JOIN` über mehrere Zeilen (gemäß `joinConditions`-Schwellwert), steht `ON` jetzt in einer eigenen Zeile direkt unter dem `JOIN`. Die Schlüsselwörter `ON`, `AND` und `OR` werden dabei rechtsbündig (River-Stil) ausgerichtet, sodass die Bedingungen darunter exakt fluchten:
+
+  ```sql
+  JOIN bos_t_kal_hours btkh
+     ON btkh.kal_tag = let.let_kal_tag
+    AND lze.lze_menge = btkh.p_worktimetarget
+    AND btkh.session_id = p_websessionid
+  ```
+
+  Ein `JOIN` mit nur einer Bedingung bleibt weiterhin einzeilig (`JOIN u ON t.a = u.a`).
+
 ## 2.0.2
 
 - **Mehrzeilig-Schwellwerte für alle wichtigen Konstrukte als Tabelle konfigurierbar:** Die Schwellwerte für die „Ein- oder mehrzeilig?"-Entscheidung lassen sich jetzt im Einstellungsdialog in **einer Tabelle** je Konstrukt einstellen — Einstellung `postgresQueryBuilder.format.listThresholds`. Jede Zeile enthält das Paar `"inlineMax, multilineMin"`: bei **höchstens** `inlineMax` Elementen immer einzeilig, bei **mindestens** `multilineMin` Elementen immer mehrzeilig, dazwischen wie im Quelltext (einzeilig bleibt einzeilig, mehrzeilig bleibt mehrzeilig). Die Liste umfasst jetzt folgende Konstrukte (Standardwerte in Klammern):
