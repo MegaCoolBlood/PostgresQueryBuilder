@@ -755,6 +755,26 @@ td.has-fk-btn > .fk-btn {
     max-width: 640px;
 }
 
+.error-dialog {
+    max-width: 640px;
+}
+
+.error-dialog-body {
+    padding: 14px;
+    overflow-y: auto;
+    flex: 1;
+    max-height: 60vh;
+}
+
+.error-dialog-message {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px;
+    color: var(--vscode-errorForeground);
+}
+
 .constraints-dialog-content {
     padding: 14px;
     overflow-y: auto;

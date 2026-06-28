@@ -317,6 +317,21 @@
             </div>
         </div>
     </div>
+    <!-- Query Error Dialog -->
+    <div class="sql-dialog-overlay" id="errorDialogOverlay" style="display:none;">
+        <div class="sql-dialog error-dialog">
+            <div class="sql-dialog-header">
+                <span>Query Error</span>
+                <button class="sql-dialog-close" id="errorDialogClose">&times;</button>
+            </div>
+            <div class="error-dialog-body">
+                <pre class="error-dialog-message" id="errorDialogMessage"></pre>
+            </div>
+            <div class="sql-dialog-footer">
+                <button class="btn btn-default" id="errorDialogOk">Close</button>
+            </div>
+        </div>
+    </div>
     <script>/* JS_PLACEHOLDER */</script>
 </body>
 </html>

@@ -503,6 +503,18 @@ function buildNullConstraintClause(fmtCol, isNull) {
     return `${fmtCol} IS ${isNull ? 'NULL' : 'NOT NULL'}`;
 }
 
+// Decide whether the in-viewer error dialog should be shown for a given error
+// text and what message it should display. A missing/blank message falls back
+// to a generic text; surrounding whitespace is trimmed. Returns
+// { visible, message }.
+function buildErrorDialogState(text) {
+    const message = (text === null || text === undefined) ? '' : String(text).trim();
+    if (!message) {
+        return { visible: true, message: 'An unknown error occurred.' };
+    }
+    return { visible: true, message };
+}
+
 // Turn a custom-mapping condition ({column, operator, value}) into a SQL WHERE
 // clause for an already-formatted column identifier. LIKE/ILIKE use a
 // "contains" match (wrapped in %…%) to mirror evaluateMappingConditions; every
@@ -2395,7 +2407,39 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             changeCount.style.color = '';
             updateChangeIndicator();
         }, 5000);
+        showErrorDialog(text);
     }
+
+    // Modal error dialog shown inside the Data Viewer so a failing query is not
+    // only reported through the small VS Code notification.
+    const errorDialogOverlay = document.getElementById('errorDialogOverlay');
+    const errorDialogMessage = document.getElementById('errorDialogMessage');
+    const errorDialogClose = document.getElementById('errorDialogClose');
+    const errorDialogOk = document.getElementById('errorDialogOk');
+
+    function showErrorDialog(text) {
+        if (!errorDialogOverlay || !errorDialogMessage) {
+            return;
+        }
+        const state = buildErrorDialogState(text);
+        if (!state.visible) {
+            return;
+        }
+        errorDialogMessage.textContent = state.message;
+        errorDialogOverlay.style.display = 'flex';
+    }
+
+    function closeErrorDialog() {
+        if (errorDialogOverlay) {
+            errorDialogOverlay.style.display = 'none';
+        }
+    }
+
+    if (errorDialogClose) errorDialogClose.addEventListener('click', closeErrorDialog);
+    if (errorDialogOk) errorDialogOk.addEventListener('click', closeErrorDialog);
+    if (errorDialogOverlay) errorDialogOverlay.addEventListener('click', (e) => {
+        if (e.target === errorDialogOverlay) closeErrorDialog();
+    });
 
     // ===== Permanent Constraints Dialog Logic =====
     const constraintsBtn = document.getElementById('constraintsBtn');
@@ -3564,6 +3608,7 @@ if (typeof module !== 'undefined' && module.exports) {
         filterOperatorForMode,
         buildFilterClause,
         buildNullConstraintClause,
+        buildErrorDialogState,
         mappingConditionToClause,
         CONSTRAINT_OPERATORS,
         constraintIsUnary,

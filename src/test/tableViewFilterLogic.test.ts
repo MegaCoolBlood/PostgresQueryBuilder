@@ -8,7 +8,8 @@ const {
     rowValueMatchesFilter,
     compareCellValues,
     normalizeCellInput,
-    mappingConditionToClause
+    mappingConditionToClause,
+    buildErrorDialogState
 } = require(path.join(__dirname, '../../src/webview/tableView.js'));
 
 const SEP = ' ';
@@ -229,5 +230,28 @@ test('mappingConditionToClause returns empty string for incomplete conditions', 
     assert.equal(mappingConditionToClause(null, '"x"', 'text', SEP), '');
     assert.equal(mappingConditionToClause({ column: '', operator: '=', value: 'a' }, '""', 'text', SEP), '');
     assert.equal(mappingConditionToClause({ column: 'x', operator: '', value: 'a' }, '"x"', 'text', SEP), '');
+});
+
+// ===== buildErrorDialogState =====
+
+test('buildErrorDialogState shows the trimmed error message', () => {
+    assert.deepEqual(
+        buildErrorDialogState('  syntax error at or near "SELEC"  '),
+        { visible: true, message: 'syntax error at or near "SELEC"' }
+    );
+});
+
+test('buildErrorDialogState falls back to a generic message for blank input', () => {
+    assert.deepEqual(buildErrorDialogState(''), { visible: true, message: 'An unknown error occurred.' });
+    assert.deepEqual(buildErrorDialogState('   '), { visible: true, message: 'An unknown error occurred.' });
+});
+
+test('buildErrorDialogState tolerates null and undefined', () => {
+    assert.deepEqual(buildErrorDialogState(null), { visible: true, message: 'An unknown error occurred.' });
+    assert.deepEqual(buildErrorDialogState(undefined), { visible: true, message: 'An unknown error occurred.' });
+});
+
+test('buildErrorDialogState stringifies non-string error values', () => {
+    assert.deepEqual(buildErrorDialogState(42), { visible: true, message: '42' });
 });
 

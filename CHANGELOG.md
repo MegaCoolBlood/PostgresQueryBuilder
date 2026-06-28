@@ -2,6 +2,8 @@
 
 ## 2.0.3
 
+- **Fehlermeldung als Dialog im Datenviewer:** Schlägt eine im Datenviewer ausgeführte Abfrage (z. B. ein fehlerhaftes `SELECT`) fehl, wird die Fehlermeldung jetzt zusätzlich zur kleinen VS-Code-Benachrichtigung in einem deutlich sichtbaren Dialog direkt im Datenviewer angezeigt. Der Dialog zeigt den vollständigen Fehlertext und lässt sich über „Close", das ×-Symbol oder einen Klick auf den Hintergrund schließen.
+
 - **Verbindungsabfrage, wenn keine Verbindung aktiv ist:** Wird für eine Aktion eine Datenbankverbindung benötigt (z. B. beim Ausführen eines `SELECT` im Datenviewer, beim Öffnen einer Tabelle oder beim Ausführen einer Custom Query) und ist aktuell keine Verbindung aktiv, wird der Benutzer jetzt aufgefordert, eine Verbindung auszuwählen (oder neu anzulegen), anstatt mit der Fehlermeldung „Not connected to a database" abzubrechen. Bricht der Benutzer die Auswahl ab, wird die Aktion still abgebrochen.
 
 - **Navigation über umgekehrte Custom Mappings berücksichtigt die Bedingungen:** Beim Springen (Rechtsklick → „Jump to … (reverse)") über ein umgekehrtes Custom Mapping werden jetzt die Bedingungen des ursprünglichen Mappings in die `WHERE`-Klausel der Zieltabelle übernommen. Beispiel: Bei einem Mapping von Tabelle A nach B über `a.id = b.id` mit der Bedingung `type = 'A'` erzeugt die Rückwärts-Navigation von B (id = 2) nach A jetzt `SELECT * FROM a WHERE id = 2 AND type = 'A'` statt nur `WHERE id = 2`. `LIKE`/`ILIKE`-Bedingungen werden dabei als „enthält"-Vergleich (`%wert%`) übernommen, passend zur Auswertung der Mapping-Bedingungen.
