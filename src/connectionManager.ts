@@ -103,6 +103,19 @@ export class ConnectionManager {
         return this.pool !== null;
     }
 
+    /**
+     * Ensure there is an active database connection. If none is active, prompt
+     * the user to pick (or create) a connection. Returns true if a connection
+     * is active afterwards, false if the user dismissed the prompt.
+     */
+    async ensureConnected(): Promise<boolean> {
+        if (this.isConnected()) {
+            return true;
+        }
+        await this.selectConnection();
+        return this.isConnected();
+    }
+
     getActiveConnectionConfig(): ConnectionConfig | null {
         return this.activeConfig;
     }

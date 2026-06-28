@@ -68,6 +68,12 @@ export class TableWebViewManager {
             return;
         }
 
+        // Opening a table requires a live connection to load its data. If none
+        // is active, prompt the user to pick one before creating the panel.
+        if (!await this.connectionManager.ensureConnected()) {
+            return;
+        }
+
         const panel = vscode.window.createWebviewPanel(
             'postgresTableView',
             `${schema}.${table}`,
@@ -299,6 +305,9 @@ export class TableWebViewManager {
 
     private async handleRunCustomQuery(ctx: MessageContext): Promise<void> {
         const { panel, schema, table, message, queryRunner } = ctx;
+        if (!await this.connectionManager.ensureConnected()) {
+            return;
+        }
         const result = await queryRunner.executeSQL(message.sql);
         if (this.modifyHistoryStore) {
             for (const stmt of splitSqlStatements(message.sql)) {
@@ -619,6 +628,9 @@ export class TableWebViewManager {
             try {
                 switch (message.command) {
                     case 'runCustomQuery': {
+                        if (!await this.connectionManager.ensureConnected()) {
+                            break;
+                        }
                         const result = await queryRunner.executeSQL(message.sql);
                         if (this.modifyHistoryStore) {
                             for (const stmt of splitSqlStatements(message.sql)) {

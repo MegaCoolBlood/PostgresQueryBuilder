@@ -25,8 +25,9 @@ export class ViewDataFromSelect {
             return;
         }
         if (!this.connectionManager.isConnected()) {
-            vscode.window.showWarningMessage('Connect to a PostgreSQL database first.');
-            return;
+            if (!await this.connectionManager.ensureConnected()) {
+                return;
+            }
         }
 
         const doc = editor.document;

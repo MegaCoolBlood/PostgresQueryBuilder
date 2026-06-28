@@ -69,6 +69,9 @@ export class SqlEditorManager {
             if (message.command === 'executeSQL') {
                 const queryRunner = new QueryRunner(this.connectionManager);
                 try {
+                    if (!await this.connectionManager.ensureConnected()) {
+                        return;
+                    }
                     const result = await queryRunner.executeSQL(message.sql);
                     if (this.modifyHistoryStore) {
                         for (const stmt of splitSqlStatements(message.sql)) {
