@@ -2,6 +2,8 @@
 
 ## 2.0.3
 
+- **Selbst definierte Spalten-/CTE-Namen werden nicht mehr als Variablen abgefragt:** Beim Ausführen eines `SELECT` über „View Data from Select" wurden Bezeichner, die in einem Wert-Ausdruck stehen (z. B. nach `||` in `schema_name || '.' || function_name`), fälschlich als zu ersetzende Variablen erkannt – auch wenn es sich um vom Benutzer definierte Spalten-Aliase (`… AS function_name`) oder CTE-Namen (`WITH checks AS (…)`) handelte. Solche selbst definierten Namen werden jetzt erkannt und nicht mehr zur Ersetzung angeboten; echte PL/pgSQL-Variablen im selben Ausdruck werden weiterhin gefunden.
+
 - **Fehlermeldung als Dialog im Datenviewer:** Schlägt eine im Datenviewer ausgeführte Abfrage (z. B. ein fehlerhaftes `SELECT`) fehl, wird die Fehlermeldung jetzt zusätzlich zur kleinen VS-Code-Benachrichtigung in einem deutlich sichtbaren Dialog direkt im Datenviewer angezeigt. Der Dialog zeigt den vollständigen Fehlertext und lässt sich über „Close", das ×-Symbol oder einen Klick auf den Hintergrund schließen.
 
 - **Verbindungsabfrage, wenn keine Verbindung aktiv ist:** Wird für eine Aktion eine Datenbankverbindung benötigt (z. B. beim Ausführen eines `SELECT` im Datenviewer, beim Öffnen einer Tabelle oder beim Ausführen einer Custom Query) und ist aktuell keine Verbindung aktiv, wird der Benutzer jetzt aufgefordert, eine Verbindung auszuwählen (oder neu anzulegen), anstatt mit der Fehlermeldung „Not connected to a database" abzubrechen. Bricht der Benutzer die Auswahl ab, wird die Aktion still abgebrochen.

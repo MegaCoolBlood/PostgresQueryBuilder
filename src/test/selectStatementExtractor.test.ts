@@ -7,7 +7,8 @@ import {
     substituteVariables,
     findEnclosingDollarBody,
     extractTableNames,
-    extractTableQualifiers
+    extractTableQualifiers,
+    extractDefinedNames
 } from '../selectStatementExtractor';
 
 // ===== maskSql =====
@@ -104,6 +105,23 @@ test('findVariableTokens does not flag a numeric LIMIT literal', () => {
     assert.deepEqual(names, ['v_a']);
 });
 
+test('findVariableTokens does not flag a column alias used in a value expression', () => {
+    const sql =
+        'SELECT a AS function_name FROM t WHERE (b || function_name) LIKE x';
+    const defined = extractDefinedNames(sql);
+    const names = findVariableTokens(sql, extractTableQualifiers(sql), defined).map((o) => o.name);
+    assert.ok(!names.includes('function_name'), 'a self-defined column alias is not a variable');
+});
+
+test('findVariableTokens still detects a real variable alongside a defined alias', () => {
+    const sql =
+        'SELECT a AS function_name FROM t WHERE (b || function_name) LIKE pi_pattern';
+    const defined = extractDefinedNames(sql);
+    const names = findVariableTokens(sql, extractTableQualifiers(sql), defined).map((o) => o.name);
+    assert.ok(!names.includes('function_name'), 'defined alias excluded');
+    assert.ok(names.includes('pi_pattern'), 'genuine variable still detected');
+});
+
 test('findVariableTokens treats a record-field access as a variable', () => {
     const sql = 'SELECT * FROM bos_belege lbe WHERE lbe.lbe_mit_id = pi_employeeObj.emplId';
     const qualifiers = extractTableQualifiers(sql);
@@ -149,6 +167,45 @@ test('substituteVariables replaces a record-field variable', () => {
     assert.ok(out.includes('= 42'), 'record-field variable substituted');
     assert.ok(out.includes('LIMIT 5'), 'LIMIT variable substituted');
     assert.ok(out.includes('lbe.lbe_mit_id'), 'qualified column left intact');
+});
+
+// ===== extractDefinedNames =====
+
+test('extractDefinedNames collects column aliases', () => {
+    const sql = 'SELECT a AS schema_name, b AS function_name FROM t';
+    const defined = extractDefinedNames(sql);
+    assert.ok(defined.has('schema_name'));
+    assert.ok(defined.has('function_name'));
+});
+
+test('extractDefinedNames collects CTE names', () => {
+    const sql = 'WITH checks AS (SELECT 1), more AS (SELECT 2) SELECT * FROM checks';
+    const defined = extractDefinedNames(sql);
+    assert.ok(defined.has('checks'));
+    assert.ok(defined.has('more'));
+});
+
+test('extractDefinedNames ignores SELECT without aliases', () => {
+    const sql = 'SELECT a, b FROM t';
+    const defined = extractDefinedNames(sql);
+    assert.equal(defined.size, 0);
+});
+
+test('extractSelect does not offer a CTE column alias as a variable', () => {
+    const sql = [
+        'WITH checks AS (',
+        '    SELECT pg_proc.oid AS function_name, pg_proc.lineno',
+        '    FROM pg_proc',
+        ')',
+        'SELECT function_name, lineno',
+        'FROM checks',
+        "WHERE (schema_name || '.' || function_name) NOT LIKE 'leda_types.obj_%'",
+        '  AND message NOT LIKE \'unused parameter%\';'
+    ].join('\n');
+    const result = extractSelect(sql, sql.indexOf('SELECT function_name'));
+    assert.ok(result, 'extraction succeeds');
+    assert.ok(!result!.variables.includes('function_name'),
+        'a self-defined CTE column alias must not be offered for substitution');
 });
 
 

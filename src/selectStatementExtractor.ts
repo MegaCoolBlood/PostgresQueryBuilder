@@ -472,7 +472,7 @@ function convertUpdateToSelect(sql: string): string | null {
  * treated as a PL/pgSQL record-field access (e.g. `pi_employeeObj.emplId`) and
  * reported as a single substitutable variable.
  */
-export function findVariableTokens(sql: string, tableQualifiers?: Set<string>): VariableOccurrence[] {
+export function findVariableTokens(sql: string, tableQualifiers?: Set<string>, definedNames?: Set<string>): VariableOccurrence[] {
     const masked = maskSql(sql);
     const tokens = tokenize(masked);
     const result: VariableOccurrence[] = [];
@@ -495,9 +495,10 @@ export function findVariableTokens(sql: string, tableQualifiers?: Set<string>): 
             result.push({ name: t.text, key: t.text.toLowerCase(), start: t.start, end: t.end });
         } else if (t.type === 'word') {
             const lower = t.text.toLowerCase();
+            const isDefined = definedNames ? definedNames.has(lower) : false;
             if (BUILTIN_VALUE_KEYWORDS.has(lower)) {
                 result.push({ name: t.text, key: lower, start: t.start, end: t.end });
-            } else if (!SQL_KEYWORDS.has(lower) && inValue) {
+            } else if (!SQL_KEYWORDS.has(lower) && inValue && !isDefined) {
                 const prevDot = prev && prev.type === 'punct' && prev.text === '.';
                 const nextDot = next && next.type === 'punct' && next.text === '.';
                 const nextParen = next && next.type === 'punct' && next.text === '(';
@@ -648,7 +649,7 @@ export function extractSelect(
     stmt = stripIntoClause(stmt).trim();
     if (!stmt) return null;
 
-    const occurrences = findVariableTokens(stmt, extractTableQualifiers(stmt));
+    const occurrences = findVariableTokens(stmt, extractTableQualifiers(stmt), extractDefinedNames(stmt));
     const seen = new Set<string>();
     const variables: string[] = [];
     for (const occ of occurrences) {
@@ -818,6 +819,37 @@ export function extractTableQualifiers(sql: string): Set<string> {
 
 
 /**
+ * Return the set of lower-cased identifiers that the query itself *defines* as
+ * output names — i.e. column aliases (`expr AS alias`) and common-table-
+ * expression names (`WITH name AS (...)`, `, name AS (...)`). Such names are
+ * authored by the user and reference query output, so they must never be
+ * offered as substitutable PL/pgSQL variables even when they happen to appear
+ * in a value position (e.g. `schema_name || '.' || function_name`).
+ */
+export function extractDefinedNames(sql: string): Set<string> {
+    const masked = maskSql(sql);
+    const tokens = tokenize(masked);
+    const defined = new Set<string>();
+
+    for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (t.type !== 'word' || t.text.toLowerCase() !== 'as') continue;
+        const next = tokens[i + 1];
+        const prev = tokens[i - 1];
+        if (next && next.type === 'word' && !SQL_KEYWORDS.has(next.text.toLowerCase())) {
+            // `expr AS alias` (column or table alias) / `CAST(x AS type)`.
+            defined.add(next.text.toLowerCase());
+        } else if (next && next.type === 'punct' && next.text === '(' &&
+            prev && prev.type === 'word' && !SQL_KEYWORDS.has(prev.text.toLowerCase())) {
+            // `name AS (...)` — a CTE definition; the name precedes `AS`.
+            defined.add(prev.text.toLowerCase());
+        }
+    }
+    return defined;
+}
+
+
+/**
  * Replace variable occurrences in `sql` with the provided values. Keys are
  * matched case-insensitively. Empty / missing values leave the identifier
  * untouched. Values are inserted verbatim (callers are responsible for quoting).
@@ -832,7 +864,7 @@ export function substituteVariables(sql: string, values: Record<string, string>)
     }
     if (lookup.size === 0) return sql;
 
-    const occurrences = findVariableTokens(sql, extractTableQualifiers(sql));
+    const occurrences = findVariableTokens(sql, extractTableQualifiers(sql), extractDefinedNames(sql));
     // Apply right-to-left so earlier spans keep their offsets.
     let result = sql;
     for (let i = occurrences.length - 1; i >= 0; i--) {
