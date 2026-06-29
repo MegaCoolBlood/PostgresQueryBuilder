@@ -2998,9 +2998,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // Index into allRows for the record currently shown (-1 = closed)
     let recordDialogRowIdx = -1;
 
+    // Per-column textarea heights the user has dragged-to-resize. Kept while the
+    // dialog stays open so a re-render (e.g. on blur) does not reset them.
+    let recordTextareaHeights = {};
+
     function openRecordDialog(rowIdx) {
         if (rowIdx == null || rowIdx < 0 || !allRows[rowIdx]) return;
         recordDialogRowIdx = rowIdx;
+        recordTextareaHeights = {};
         renderRecordDialog();
         recordDialogOverlay.style.display = 'flex';
     }
@@ -3008,6 +3013,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function closeRecordDialog() {
         recordDialogOverlay.style.display = 'none';
         recordDialogRowIdx = -1;
+        recordTextareaHeights = {};
     }
 
     function getDisplayedRowIndices() {
@@ -3047,12 +3053,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const isDeleted = deletedRows.has(idx);
         const rowData = allRows[idx];
 
+        // Remember any heights the user dragged before we replace the DOM.
+        captureRecordTextareaHeights();
+
         recordDialogBody.innerHTML = buildRecordRowsHtml(idx, isDeleted, rowData);
 
         // Restore the scroll position captured at the start of this render.
         // We do this synchronously (innerHTML assignment is synchronous and
         // the body has a fixed height, so the scroll range is already valid).
         recordDialogBody.scrollTop = savedScrollTop;
+
+        // Reapply user-resized heights so a re-render keeps the layout stable.
+        applyRecordTextareaHeights();
 
         const parts = [];
         if (isDeleted) parts.push('row marked for deletion (read-only)');
@@ -3146,6 +3158,30 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return html;
     }
 
+    // Read the current textarea heights from the DOM into recordTextareaHeights,
+    // keyed by column name, so a re-render can restore them.
+    function captureRecordTextareaHeights() {
+        recordDialogBody.querySelectorAll('.record-row').forEach(rowEl => {
+            const colName = rowEl.getAttribute('data-col');
+            const textarea = rowEl.querySelector('.record-value');
+            if (textarea && textarea.style.height) {
+                recordTextareaHeights[colName] = textarea.style.height;
+            }
+        });
+    }
+
+    // Reapply previously captured textarea heights after a re-render.
+    function applyRecordTextareaHeights() {
+        recordDialogBody.querySelectorAll('.record-row').forEach(rowEl => {
+            const colName = rowEl.getAttribute('data-col');
+            const saved = recordTextareaHeights[colName];
+            const textarea = rowEl.querySelector('.record-value');
+            if (textarea && saved) {
+                textarea.style.height = saved;
+            }
+        });
+    }
+
     // Wire textarea edit / reset / FK-jump listeners for the record dialog body.
     function wireRecordDialogListeners(idx) {
         recordDialogBody.querySelectorAll('.record-row').forEach(rowEl => {
@@ -3161,6 +3197,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 // Auto-grow as user types
                 textarea.style.height = 'auto';
                 textarea.style.height = Math.min(400, textarea.scrollHeight) + 'px';
+                recordTextareaHeights[colName] = textarea.style.height;
+            });
+
+            // Persist a manual drag-resize so it survives the next re-render.
+            textarea.addEventListener('mouseup', () => {
+                if (textarea.style.height) recordTextareaHeights[colName] = textarea.style.height;
             });
 
             textarea.addEventListener('blur', () => {

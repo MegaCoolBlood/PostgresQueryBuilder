@@ -2,6 +2,8 @@
 
 ## 2.0.3
 
+- **Textarea-Höhe im Single-Record-View bleibt erhalten:** Im Datenviewer-Einzelsatz-Dialog bleiben manuell vergrößerte Textfelder jetzt erhalten, wenn die Ansicht neu gerendert wird (z. B. beim Klick in ein anderes Textfeld) – zuvor wurden alle Textareas auf ihre Standardhöhe zurückgesetzt. Die gezogenen Höhen werden pro Spalte gemerkt, bis der Einzelsatz-Dialog geschlossen wird.
+
 - **Selbst definierte Spalten-/CTE-Namen werden nicht mehr als Variablen abgefragt:** Beim Ausführen eines `SELECT` über „View Data from Select" wurden Bezeichner, die in einem Wert-Ausdruck stehen (z. B. nach `||` in `schema_name || '.' || function_name`), fälschlich als zu ersetzende Variablen erkannt – auch wenn es sich um vom Benutzer definierte Spalten-Aliase (`… AS function_name`) oder CTE-Namen (`WITH checks AS (…)`) handelte. Solche selbst definierten Namen werden jetzt erkannt und nicht mehr zur Ersetzung angeboten; echte PL/pgSQL-Variablen im selben Ausdruck werden weiterhin gefunden.
 
 - **Fehlermeldung als Dialog im Datenviewer:** Schlägt eine im Datenviewer ausgeführte Abfrage (z. B. ein fehlerhaftes `SELECT`) fehl, wird die Fehlermeldung jetzt zusätzlich zur kleinen VS-Code-Benachrichtigung in einem deutlich sichtbaren Dialog direkt im Datenviewer angezeigt. Der Dialog zeigt den vollständigen Fehlertext und lässt sich über „Close", das ×-Symbol oder einen Klick auf den Hintergrund schließen.
