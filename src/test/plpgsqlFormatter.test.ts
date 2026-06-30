@@ -201,6 +201,52 @@ test('a trailing line comment after a statement does not swallow the next statem
     assert.ok(/CALL p_next\(id\);/.test(out), 'next statement survives as code');
 });
 
+test('a nested multiline CASE in an ELSE branch is rendered as its own block', () => {
+    const out = formatSql([
+        'SELECT',
+        '  CASE',
+        '    WHEN a IS NULL THEN NULL',
+        '    ELSE CASE b',
+        "      WHEN 'AV' THEN f_av()",
+        "      WHEN 'GV' THEN f_gv()",
+        "      WHEN 'AB' THEN f_ab()",
+        '      ELSE NULL',
+        '    END',
+        '  END AS antwort',
+        'FROM t;'
+    ].join('\n'));
+    const lines = out.split('\n');
+    // Each WHEN of the inner CASE must be on its own line, not collapsed.
+    assert.ok(lines.some(l => /^\s*WHEN 'AV' THEN f_av\(\)\s*$/.test(l)), "WHEN 'AV' on its own line");
+    assert.ok(lines.some(l => /^\s*WHEN 'GV' THEN f_gv\(\)\s*$/.test(l)), "WHEN 'GV' on its own line");
+    assert.ok(lines.some(l => /^\s*WHEN 'AB' THEN f_ab\(\)\s*$/.test(l)), "WHEN 'AB' on its own line");
+    // The inner WHENs are indented deeper than the inner CASE/ELSE keyword.
+    const elseLine = lines.find(l => /^\s*ELSE\s*$/.test(l))!;
+    const innerCaseLine = lines.find(l => /^\s*CASE b\s*$/.test(l))!;
+    const avLine = lines.find(l => /WHEN 'AV'/.test(l))!;
+    const indent = (s: string): number => s.match(/^\s*/)![0].length;
+    assert.ok(indent(innerCaseLine) > indent(elseLine), 'inner CASE is indented past ELSE');
+    assert.ok(indent(avLine) > indent(innerCaseLine), 'inner WHEN is indented past inner CASE');
+});
+
+test('a nested multiline CASE in a THEN result is rendered as its own block', () => {
+    const out = formatSql([
+        'SELECT',
+        '  CASE',
+        '    WHEN a IS NOT NULL THEN CASE b',
+        "      WHEN 'X' THEN 1",
+        "      WHEN 'Y' THEN 2",
+        '      ELSE 0',
+        '    END',
+        '    ELSE NULL',
+        '  END AS v',
+        'FROM t;'
+    ].join('\n'));
+    const lines = out.split('\n');
+    assert.ok(lines.some(l => /^\s*WHEN 'X' THEN 1\s*$/.test(l)), "inner WHEN 'X' on its own line");
+    assert.ok(lines.some(l => /^\s*WHEN 'Y' THEN 2\s*$/.test(l)), "inner WHEN 'Y' on its own line");
+});
+
 test('indents a CASE statement and breaks the body after THEN', () => {
     const out = formatSql([
         'BEGIN',

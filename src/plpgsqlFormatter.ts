@@ -1297,20 +1297,20 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 if (multiCond) {
                     renderCondMulti(k + 1, thenIdx - 1, deepIndent);
                     startLine(whenIndent, 0); emitInline(toks[thenIdx]); // THEN on its own line
-                    startLine(deepIndent, 0); emitRange(thenIdx + 1, resEnd);
+                    startLine(deepIndent, 0); emitResult(thenIdx + 1, resEnd);
                 } else {
                     emitRange(k + 1, thenIdx - 1); // condition inline
                     emitInline(toks[thenIdx]); // THEN inline
-                    if (clauseSingle) emitRange(thenIdx + 1, resEnd);
-                    else { startLine(deepIndent, 0); emitRange(thenIdx + 1, resEnd); }
+                    if (clauseSingle) emitResult(thenIdx + 1, resEnd);
+                    else { startLine(deepIndent, 0); emitResult(thenIdx + 1, resEnd); }
                 }
                 k = clauseEnd >= 0 ? clauseEnd : caseEnd;
             } else if (w === 'else') {
                 const resEnd = caseEnd - 1;
                 startLine(whenIndent, blanksFor(tk));
                 emitInline(tk); // ELSE
-                if (!rangeHasNewline(k + 1, resEnd)) emitRange(k + 1, resEnd);
-                else { startLine(deepIndent, 0); emitRange(k + 1, resEnd); }
+                if (!rangeHasNewline(k + 1, resEnd)) emitResult(k + 1, resEnd);
+                else { startLine(deepIndent, 0); emitResult(k + 1, resEnd); }
                 k = caseEnd;
             } else if (tk.type === 'lineComment' || tk.type === 'blockComment') {
                 startLine(whenIndent, blanksFor(tk));
@@ -1323,6 +1323,29 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         }
         startLine(caseIndent, blanksFor(toks[caseEnd]));
         emitInline(toks[caseEnd]); // END (left in `cur` so a trailing alias attaches)
+    };
+    /**
+     * Emit a CASE branch result expression [a..b] inline, but render a nested
+     * multiline CASE…END as its own structured block (recursively) instead of
+     * flattening it onto a single line.
+     */
+    const emitResult = (a: number, b: number): void => {
+        let k = a;
+        while (k <= b) {
+            const tk = toks[k];
+            if (tk.type === 'word' && tk.text.toLowerCase() === 'case') {
+                const end = caseMatchEnd(k);
+                const after = toks[end + 1];
+                const stmtForm = !!after && after.type === 'word' && after.text.toLowerCase() === 'case';
+                if (end <= b && !stmtForm && rangeHasNewline(k + 1, end)) {
+                    renderCaseBody(k, end);
+                    k = end + 1;
+                    continue;
+                }
+            }
+            emitInline(tk);
+            k++;
+        }
     };
 
     for (let i = 0; i < toks.length; i++) {
