@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatSql, DEFAULT_FORMAT_OPTIONS, DEFAULT_THRESHOLDS } from '../plpgsqlFormatter';
+import { formatSql, DEFAULT_FORMAT_OPTIONS, DEFAULT_THRESHOLDS, sqlSemanticallyEqual, sqlSemanticDiff, formatSqlChecked } from '../plpgsqlFormatter';
 
 test('uppercases keywords and breaks a SELECT into clauses with a column list', () => {
     const out = formatSql('select a,b ,c from foo f join bar b on b.id=f.bid where a=1 and b>2 order by a');
@@ -611,6 +611,77 @@ test('does not lose tokens (all words survive formatting)', () => {
     for (const word of ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta']) {
         assert.ok(out.toLowerCase().includes(word), `missing ${word}`);
     }
+});
+
+test('safety net: formatting never changes the semantic token stream', () => {
+    const inputs = [
+        'select a,b from foo f join bar b on b.id=f.bid where a=1 order by a',
+        "create function f() returns void as $$ declare x int; begin if x>0 then perform g(); end if; end; $$ language plpgsql;",
+        'update t set a=1,b=2 where id=5;',
+        [
+            'SELECT CASE rgl_antwort',
+            "  WHEN 'AV' THEN f_av() -- comment",
+            "  WHEN 'GV' THEN f_gv()",
+            '  ELSE NULL',
+            'END AS antwort',
+            'FROM t;'
+        ].join('\n'),
+        [
+            'BEGIN',
+            '  do_it(); -- run it',
+            '  CALL p_next(id);',
+            'END;'
+        ].join('\n'),
+        "select 'a  literal  with  spaces', E'\\n', q.\"Quoted Col\" from t;"
+    ];
+    for (const sql of inputs) {
+        assert.ok(sqlSemanticallyEqual(sql, formatSql(sql)), `meaning changed for: ${sql}`);
+    }
+});
+
+test('safety net: sqlSemanticallyEqual ignores whitespace and keyword case', () => {
+    assert.ok(sqlSemanticallyEqual('select   A , b\nfrom t', 'SELECT a, b FROM t'));
+    assert.ok(sqlSemanticallyEqual("a   --x\nb", 'a -- x\nb') === false, 'comment text is significant');
+});
+
+test('safety net: a comment that swallows code is detected as a different meaning', () => {
+    // Correct: comment ends the line, code follows on the next line.
+    const good = "WHEN 'AV' THEN f() -- note\nWHEN 'GV' THEN g()";
+    // Corrupt: the WHEN 'GV' branch was pulled onto the comment line, so it is
+    // now part of the comment and no longer live code.
+    const corrupt = "WHEN 'AV' THEN f() -- note WHEN 'GV' THEN g()";
+    assert.ok(!sqlSemanticallyEqual(good, corrupt), 'swallowed code must change the signature');
+});
+
+test('safety net: invalid/odd input is returned unchanged rather than corrupted', () => {
+    // A line comment directly followed by code on the next line must keep the
+    // code; round-tripping through the formatter preserves meaning.
+    const sql = 'select 1 -- c\n, 2 from t;';
+    assert.ok(sqlSemanticallyEqual(sql, formatSql(sql)));
+});
+
+test('sqlSemanticDiff returns null for equivalent SQL and a detail for divergence', () => {
+    assert.equal(sqlSemanticDiff('select   A , b\nfrom t', 'SELECT a, b FROM t'), null);
+    const good = "WHEN 'AV' THEN f() -- note\nWHEN 'GV' THEN g()";
+    const corrupt = "WHEN 'AV' THEN f() -- note WHEN 'GV' THEN g()";
+    const reason = sqlSemanticDiff(good, corrupt);
+    assert.ok(reason, 'a divergence must be reported');
+    assert.match(reason!, /token \d+/, 'reason names the diverging token position');
+    assert.match(reason!, /lineComment/, 'reason mentions the offending comment token');
+});
+
+test('sqlSemanticDiff reports added and dropped tokens', () => {
+    const added = sqlSemanticDiff('select a', 'select a, b');
+    assert.ok(added && /added|tokens instead/.test(added), added ?? 'expected a reason');
+    const dropped = sqlSemanticDiff('select a, b', 'select a');
+    assert.ok(dropped && /dropped|missing|tokens instead/.test(dropped), dropped ?? 'expected a reason');
+});
+
+test('formatSqlChecked reports ok for valid input', () => {
+    const r = formatSqlChecked('select a, b from t;');
+    assert.equal(r.ok, true);
+    assert.equal(r.reason, undefined);
+    assert.ok(sqlSemanticallyEqual('select a, b from t;', r.text));
 });
 
 test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {

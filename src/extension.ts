@@ -13,7 +13,7 @@ import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore } from './tableStatementDrop';
 import { ViewDataFromSelect } from './viewDataFromSelect';
 import { Logger, getErrorMessage, getErrorStack } from './logger';
-import { formatSql, coerceFormatOptions, FormatOptions } from './plpgsqlFormatter';
+import { formatSqlChecked, coerceFormatOptions, FormatOptions } from './plpgsqlFormatter';
 let connectionManager: ConnectionManager;
 let tableExplorer: TableExplorerProvider;
 let tableWebViewManager: TableWebViewManager;
@@ -237,8 +237,13 @@ export function activate(context: vscode.ExtensionContext) {
                             editor.document.positionAt(0),
                             editor.document.positionAt(editor.document.getText().length)
                         );
-                    const formatted = formatSql(editor.document.getText(range), opts);
-                    await editor.edit((b) => b.replace(range, formatted));
+                    const outcome = formatSqlChecked(editor.document.getText(range), opts);
+                    if (!outcome.ok) {
+                        outputChannel.appendLine(`[formatSql] skipped: ${outcome.reason}`);
+                        vscode.window.showWarningMessage(`Formatting skipped to protect your code: ${outcome.reason}`);
+                        return;
+                    }
+                    await editor.edit((b) => b.replace(range, outcome.text));
                 } catch (err: unknown) {
                     outputChannel.appendLine(`[formatSql] ${getErrorStack(err)}`);
                     vscode.window.showErrorMessage(`Format failed: ${getErrorMessage(err)}`);
@@ -281,6 +286,15 @@ export function activate(context: vscode.ExtensionContext) {
         );
 
         // PL/pgSQL document formatter (full document + selection range).
+        const applyChecked = (document: vscode.TextDocument, range: vscode.Range, source: string): vscode.TextEdit[] => {
+            const outcome = formatSqlChecked(document.getText(range), getFormatOptions());
+            if (!outcome.ok) {
+                outputChannel.appendLine(`[${source}] skipped: ${outcome.reason}`);
+                vscode.window.showWarningMessage(`Formatting skipped to protect your code: ${outcome.reason}`);
+                return [];
+            }
+            return [vscode.TextEdit.replace(range, outcome.text)];
+        };
         const formattingProvider: vscode.DocumentFormattingEditProvider & vscode.DocumentRangeFormattingEditProvider = {
             provideDocumentFormattingEdits(document) {
                 if (!isFormatterEnabled()) return [];
@@ -288,11 +302,11 @@ export function activate(context: vscode.ExtensionContext) {
                     document.positionAt(0),
                     document.positionAt(document.getText().length)
                 );
-                return [vscode.TextEdit.replace(fullRange, formatSql(document.getText(), getFormatOptions()))];
+                return applyChecked(document, fullRange, 'format');
             },
             provideDocumentRangeFormattingEdits(document, range) {
                 if (!isFormatterEnabled()) return [];
-                return [vscode.TextEdit.replace(range, formatSql(document.getText(range), getFormatOptions()))];
+                return applyChecked(document, range, 'formatRange');
             }
         };
         for (const lang of FORMATTER_LANGUAGES) {
@@ -315,7 +329,13 @@ export function activate(context: vscode.ExtensionContext) {
                             e.document.positionAt(0),
                             e.document.positionAt(e.document.getText().length)
                         );
-                        return [vscode.TextEdit.replace(fullRange, formatSql(e.document.getText(), getFormatOptions()))];
+                        const outcome = formatSqlChecked(e.document.getText(), getFormatOptions());
+                        if (!outcome.ok) {
+                            outputChannel.appendLine(`[formatOnSave] skipped: ${outcome.reason}`);
+                            vscode.window.showWarningMessage(`Formatting skipped to protect your code: ${outcome.reason}`);
+                            return [];
+                        }
+                        return [vscode.TextEdit.replace(fullRange, outcome.text)];
                     } catch (err: unknown) {
                         outputChannel.appendLine(`[formatOnSave] ${getErrorStack(err)}`);
                         return [];

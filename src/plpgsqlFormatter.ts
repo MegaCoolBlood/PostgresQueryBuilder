@@ -279,6 +279,118 @@ function normalizeTypePhrases(toks: Tok[]): Tok[] {
     return out;
 }
 
+/**
+ * Build a whitespace-independent *semantic signature* of a SQL/PL-pgSQL string:
+ * the ordered list of its tokens, where only formatting-irrelevant differences
+ * are normalised away. Two strings with the same signature can differ only in
+ *
+ *  - whitespace / line breaks (not tokens at all), and
+ *  - keyword / identifier / data-type letter-case (words are lower-cased), and
+ *  - verbose vs. canonical type phrases (when `normalizeTypes` is on), and
+ *  - the internal layout of a dollar-quoted body (compared by its own tokens).
+ *
+ * Everything that carries meaning — literals, comments, operators, structural
+ * punctuation and, crucially, the *number and order* of tokens — is preserved
+ * verbatim. This is the basis of the formatter's safety net: if formatting ever
+ * produces a different signature (for instance a line comment that absorbs the
+ * code following it, turning real tokens into comment text), the change is
+ * unsafe and must be rejected.
+ */
+function tokenSignature(input: string, normalizeTypes: boolean): string {
+    return semanticTokens(input, normalizeTypes).map(t => t.sig).join('\u0001');
+}
+
+/** One entry of a {@link semanticTokens} stream. */
+interface SemTok {
+    /** The exact string used for equality (type + normalised text). */
+    sig: string;
+    /** A short, human-readable description of the token for diagnostics. */
+    display: string;
+}
+
+/**
+ * Flatten `input` into its meaning-carrying tokens (see {@link tokenSignature}),
+ * expanding dollar-quoted bodies recursively. Used both for the fast equality
+ * check and for producing a human-readable explanation of the first difference.
+ */
+function semanticTokens(input: string, normalizeTypes: boolean): SemTok[] {
+    const out: SemTok[] = [];
+    const label = (type: string, text: string): string => {
+        const clean = text.replace(/\s+/g, ' ').trim();
+        const short = clean.length > 40 ? clean.slice(0, 37) + '…' : clean;
+        return `\`${short}\` (${type})`;
+    };
+    const walk = (src: string): void => {
+        let toks = tokenize(src);
+        if (normalizeTypes) toks = normalizeTypePhrases(toks);
+        for (const t of toks) {
+            if (t.type === 'dollar') {
+                const m = /^(\$[A-Za-z_]?[A-Za-z0-9_]*\$)([\s\S]*)\1$/.exec(t.text);
+                if (m) {
+                    // Tag is compared case-insensitively; the body is reformatted
+                    // by the formatter, so compare it by its own token stream.
+                    out.push({ sig: '$<' + m[1].toLowerCase(), display: label('dollar-tag', m[1]) });
+                    walk(m[2]);
+                    out.push({ sig: '>$', display: label('dollar-tag', m[1]) });
+                    continue;
+                }
+            }
+            const text = t.type === 'word' ? t.text.toLowerCase() : t.text;
+            out.push({ sig: t.type + '\u0000' + text, display: label(t.type, t.text) });
+        }
+    };
+    walk(input);
+    return out;
+}
+
+/**
+ * Compare the semantic token streams of `input` and `output`. Returns `null`
+ * when they are equivalent (formatting is safe), or a human-readable message
+ * describing the first divergence when they are not.
+ */
+function signatureDiff(input: string, output: string, normalizeTypes: boolean): string | null {
+    const a = semanticTokens(input, normalizeTypes);
+    const b = semanticTokens(output, normalizeTypes);
+    const len = Math.min(a.length, b.length);
+    for (let i = 0; i < len; i++) {
+        if (a[i].sig !== b[i].sig) {
+            return `formatting would have changed the code at token ${i + 1}: `
+                + `expected ${a[i].display} but the formatted output had ${b[i].display}.`;
+        }
+    }
+    if (a.length !== b.length) {
+        if (b.length > a.length) {
+            return `formatting added unexpected tokens (e.g. ${b[len].display} after token ${len}); `
+                + `it produced ${b.length} tokens instead of ${a.length}.`;
+        }
+        return `formatting dropped code (missing ${a[len].display} after token ${len}); `
+            + `it produced ${b.length} tokens instead of ${a.length}.`;
+    }
+    return null;
+}
+
+/**
+ * Returns `true` when two SQL / PL-pgSQL fragments have the same meaning, i.e.
+ * they differ only in whitespace, keyword/identifier/type letter-case and (when
+ * `normalizeTypes` is on) verbose vs. canonical type phrases. This is the exact
+ * check the formatter uses as a safety net to guarantee it never alters logic.
+ */
+export function sqlSemanticallyEqual(a: string, b: string, normalizeTypes = true): boolean {
+    return tokenSignature(a, normalizeTypes) === tokenSignature(b, normalizeTypes);
+}
+
+/**
+ * Like {@link sqlSemanticallyEqual}, but returns a human-readable description of
+ * the first meaning-changing difference between `a` and `b`, or `null` when they
+ * are equivalent. This is exactly the detail the formatter reports when its
+ * safety net rejects a formatting result.
+ */
+export function sqlSemanticDiff(a: string, b: string, normalizeTypes = true): string | null {
+    return signatureDiff(a, b, normalizeTypes);
+}
+
+
+
 /** Clause keywords that start a fresh line within a SQL statement. */
 const CLAUSE_NEWLINE = new Set([
     'select', 'from', 'where', 'group', 'order', 'having', 'limit', 'offset',
@@ -491,14 +603,43 @@ interface BlockFrame { type: 'declare' | 'begin' | 'if' | 'loop' | 'case'; head:
  * (e.g. nested boolean groups) are themselves re-indented on a following pass.
  */
 export function formatSql(input: string, options?: Partial<FormatOptions>): string {
+    return formatSqlChecked(input, options).text;
+}
+
+/** Outcome of {@link formatSqlChecked}. */
+export interface FormatResult {
+    /** The text to apply: the formatted output when safe, otherwise the original input unchanged. */
+    text: string;
+    /** `true` when formatting was applied, `false` when the safety net rejected it. */
+    ok: boolean;
+    /** When `ok` is `false`, a human-readable explanation of why formatting was rejected. */
+    reason?: string;
+}
+
+/**
+ * Like {@link formatSql}, but reports whether the safety net rejected the
+ * formatting and why. A formatter must NEVER change the meaning of the code, so
+ * the formatted output is verified to have exactly the same semantic token
+ * stream as the input (ignoring only whitespace and keyword/identifier/type
+ * letter-case). If anything differs — e.g. a line comment that accidentally
+ * absorbs the code following it — the formatting is discarded (`text` is the
+ * original input) and `reason` describes the first divergence.
+ */
+export function formatSqlChecked(input: string, options?: Partial<FormatOptions>): FormatResult {
     let result = formatSqlOnce(input, options);
     for (let pass = 1; pass < 10; pass++) {
         const next = formatSqlOnce(result, options);
         if (next === result) break;
         result = next;
     }
-    return result;
+    const normalizeTypes = options?.normalizeDataTypes ?? DEFAULT_FORMAT_OPTIONS.normalizeDataTypes;
+    const reason = signatureDiff(input, result, normalizeTypes);
+    if (reason) {
+        return { text: input, ok: false, reason };
+    }
+    return { text: result, ok: true };
 }
+
 
 function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string {
     const opt: FormatOptions = { ...DEFAULT_FORMAT_OPTIONS, ...(options || {}) };
