@@ -16,7 +16,7 @@
     "onView:postgresModifyHistory",
     "onStartupFinished"
   ],
-  "main": "./out/extension.js",
+  "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -408,9 +408,12 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run package",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "esbuild": "node esbuild.js",
+    "esbuild:watch": "node esbuild.js --watch",
+    "package": "node esbuild.js --minify",
     "lint": "eslint src --ext ts",
     "test": "npm run compile && node --test out/test/**/*.test.js",
     "bump:patch": "npm version patch --no-git-tag-version",
@@ -419,7 +422,7 @@
     "patch": "npm run bump:patch",
     "minor": "npm run bump:minor",
     "major": "npm run bump:major",
-    "deploy": "npm run compile && npx vsce package --allow-missing-repository",
+    "deploy": "npx vsce package --allow-missing-repository",
     "deploy:patch": "npm run patch && npm run deploy",
     "deploy:minor": "npm run minor && npm run deploy",
     "deploy:major": "npm run major && npm run deploy",
@@ -430,15 +433,16 @@
   },
   "devDependencies": {
     "@types/node": "^18.19.0",
-    "@types/vscode": "^1.85.0",
     "@types/pg": "^8.10.9",
-    "typescript": "^5.3.3",
+    "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
-    "eslint": "^9.0.0"
+    "esbuild": "^0.28.1",
+    "eslint": "^9.0.0",
+    "typescript": "^5.3.3"
   },
   "dependencies": {
-    "pg": "^8.11.3",
-    "exceljs": "^4.4.0"
+    "exceljs": "^4.4.0",
+    "pg": "^8.11.3"
   }
 }

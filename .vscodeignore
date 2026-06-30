@@ -1,15 +1,25 @@
+# Source & build tooling (the extension ships only the esbuild bundle in dist/)
 .vscode/**
 .vscode-test/**
+.github/**
+.gitignore
+.eslintignore
+eslint.config.*
+.eslintrc*
+tsconfig.json
+esbuild.js
+
+# TypeScript sources and the tsc/test output are not needed at runtime: the
+# extension entry point is the bundled dist/extension.js. The webview assets are
+# the exception — they are read from disk at runtime, so keep src/webview/**.
 src/**
 !src/webview/**
-.gitignore
-tsconfig.json
+out/**
+
+# node_modules is bundled into dist/extension.js, so none of it needs shipping.
+node_modules/**
+
+# Sourcemaps and packaged artifacts.
 **/*.map
-out/test/**
-node_modules/**/test/**
-node_modules/**/tests/**
-node_modules/**/*.md
-node_modules/**/*.ts
-node_modules/**/.bin/**
 *.vsix
 
