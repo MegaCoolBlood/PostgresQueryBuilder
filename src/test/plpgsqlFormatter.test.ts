@@ -884,6 +884,105 @@ test('FROM comma list wraps per fromTables threshold', () => {
     );
 });
 
+test('GROUP BY list follows the groupByColumns threshold', () => {
+    // Default {1, 4}: a short GROUP BY list stays on the clause line.
+    assert.equal(
+        formatSql('select a, count(*) from t group by a;'),
+        ['SELECT', '  a,', '  count(*)', 'FROM t', 'GROUP BY a;'].join('\n')
+    );
+    // Four or more columns wrap, one per line.
+    assert.equal(
+        formatSql('select a from t group by a, b, c, d;'),
+        ['SELECT a', 'FROM t', 'GROUP BY', '  a,', '  b,', '  c,', '  d;'].join('\n')
+    );
+    // A lower threshold forces a short GROUP BY list to wrap.
+    assert.equal(
+        formatSql('select a from t group by a, b;', { thresholds: { groupByColumns: { inlineMax: 1, multilineMin: 2 } } }),
+        ['SELECT a', 'FROM t', 'GROUP BY', '  a,', '  b;'].join('\n')
+    );
+});
+
+test('ORDER BY list follows the orderByColumns threshold', () => {
+    // Default {1, 4}: a short ORDER BY list stays on the clause line, keeping ASC/DESC.
+    assert.equal(
+        formatSql('select a from t order by a desc;'),
+        ['SELECT a', 'FROM t', 'ORDER BY a DESC;'].join('\n')
+    );
+    // A lower threshold wraps the list, one term per line including ASC/DESC.
+    assert.equal(
+        formatSql('select a from t order by a asc, b desc;', { thresholds: { orderByColumns: { inlineMax: 1, multilineMin: 2 } } }),
+        ['SELECT a', 'FROM t', 'ORDER BY', '  a ASC,', '  b DESC;'].join('\n')
+    );
+    // Four or more terms wrap by default.
+    assert.equal(
+        formatSql('select a from t order by a, b, c, d;'),
+        ['SELECT a', 'FROM t', 'ORDER BY', '  a,', '  b,', '  c,', '  d;'].join('\n')
+    );
+});
+
+test('GROUP BY / ORDER BY in a cursor FOR loop wrap by item count, not the loop body', () => {
+    // A long GROUP BY/ORDER BY inside `FOR … IN <query> LOOP` still wraps.
+    const many = [
+        'do $$ begin',
+        'for rec in select a from t',
+        'group by c1, c2, c3, c4',
+        'order by c1, c2, c3, c4',
+        'loop x := 1; end loop; end $$;'
+    ].join(' ');
+    assert.equal(
+        formatSql(many),
+        [
+            'DO $$',
+            'BEGIN',
+            '  FOR rec IN',
+            '    SELECT a',
+            '    FROM t',
+            '    GROUP BY',
+            '      c1,',
+            '      c2,',
+            '      c3,',
+            '      c4',
+            '    ORDER BY',
+            '      c1,',
+            '      c2,',
+            '      c3,',
+            '      c4',
+            '  LOOP',
+            '    x := 1;',
+            '  END LOOP;',
+            'END',
+            '$$;'
+        ].join('\n')
+    );
+    // A short single-line ORDER BY stays inline even when the multi-line loop
+    // body follows (the list must stop at LOOP, not run into the body).
+    const short = [
+        'do $$ begin',
+        'for rec in select a from t order by a, b',
+        'loop',
+        'x := 1;',
+        'y := 2;',
+        'end loop; end $$;'
+    ].join('\n');
+    assert.equal(
+        formatSql(short),
+        [
+            'DO $$',
+            'BEGIN',
+            '  FOR rec IN',
+            '    SELECT a',
+            '    FROM t',
+            '    ORDER BY a, b',
+            '  LOOP',
+            '    x := 1;',
+            '    y := 2;',
+            '  END LOOP;',
+            'END',
+            '$$;'
+        ].join('\n')
+    );
+});
+
 test('IN value list follows the inLists threshold', () => {
     // Default {4, 12}: a short IN list stays inline.
     assert.equal(formatSql('select a, b from t where x in (1, 2, 3);'),

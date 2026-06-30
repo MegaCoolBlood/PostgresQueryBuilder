@@ -42,6 +42,8 @@ export type ConstructKey =
     | 'functionCall'
     | 'selectColumns'
     | 'fromTables'
+    | 'groupByColumns'
+    | 'orderByColumns'
     | 'insertColumns'
     | 'arrayLiterals'
     | 'inLists'
@@ -70,6 +72,8 @@ export const DEFAULT_THRESHOLDS: Record<ConstructKey, ListThreshold> = {
     functionCall: { inlineMax: 1, multilineMin: 4 },
     selectColumns: { inlineMax: 1, multilineMin: 2 },
     fromTables: { inlineMax: 1, multilineMin: 4 },
+    groupByColumns: { inlineMax: 1, multilineMin: 4 },
+    orderByColumns: { inlineMax: 1, multilineMin: 4 },
     insertColumns: { inlineMax: 2, multilineMin: 6 },
     arrayLiterals: { inlineMax: 4, multilineMin: 12 },
     inLists: { inlineMax: 4, multilineMin: 12 },
@@ -1177,7 +1181,10 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 if (tk.text === ')' || tk.text === ';') break;
                 if (tk.type === 'word') {
                     const w = tk.text.toLowerCase();
-                    if (CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w) || w === 'into' || (stopAtFrom && w === 'from')) break;
+                    // `loop` ends a cursor `FOR … IN <query> LOOP`, so the list must
+                    // not run on into the loop body (whose newlines would otherwise be
+                    // mistaken for a multi-line list).
+                    if (CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w) || w === 'into' || w === 'loop' || (stopAtFrom && w === 'from')) break;
                 }
             }
             if (tk.nlBefore >= 1 && d === 0 && b === 0) hasNewline = true;
@@ -1871,6 +1878,26 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                         flush();
                         lastWord = w; continue;
                     }
+                }
+
+                // GROUP BY / ORDER BY enumerations: consume the BY keyword and wrap
+                // the item list per its own threshold (groupByColumns / orderByColumns).
+                if (w === 'group' || w === 'order') {
+                    const by = toks[i + 1];
+                    if (by && by.type === 'word' && by.text.toLowerCase() === 'by') {
+                        emit(applyCase(by.text, opt.keywordCase), { text: by.text, isKeyword: true, type: 'word' });
+                        i++;
+                    }
+                    const key: ConstructKey = w === 'group' ? 'groupByColumns' : 'orderByColumns';
+                    const info = clauseListInfo(i);
+                    if (wantsMultiline(info.count, info.srcMulti, key)) {
+                        lists.push({ depth: pd, indent: clauseIndent + 1 });
+                        pendingIndent = clauseIndent + 1;
+                        flush();
+                        lastWord = w; continue;
+                    }
+                    pendingIndent = clauseIndent + 1;
+                    lastWord = w; continue;
                 }
 
                 pendingIndent = clauseIndent + 1;
