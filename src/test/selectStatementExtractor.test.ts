@@ -390,6 +390,28 @@ test('extractSelect strips an INTO STRICT clause', () => {
     assert.equal(res.sql, 'SELECT count(*) FROM users');
 });
 
+test('extractSelect preserves newlines and line comments when stripping INTO', () => {
+    // Regression: collapsing whitespace while stripping INTO used to merge a
+    // `-- comment` line with the following code, letting the comment swallow it
+    // (and hiding variables that followed). Newlines must survive.
+    const body = [
+        'SELECT a  -- first column',
+        '    INTO v_target',
+        '    FROM t',
+        '    WHERE id = p_id  -- filter',
+        '      AND flag = p_flag;'
+    ].join('\n');
+    const cursor = body.indexOf('FROM');
+    const res = extractSelect(body, cursor);
+    assert.ok(res);
+    assert.ok(!/\bINTO\b/i.test(res.sql), 'INTO clause is stripped');
+    assert.ok(res.sql.includes('\n'), 'newlines are preserved');
+    assert.ok(res.sql.includes('-- first column'), 'leading line comment kept');
+    // The variable after the WHERE comment must still be detected (it would be
+    // swallowed by `-- filter` if newlines were collapsed).
+    assert.deepEqual(res.variables, ['p_id', 'p_flag']);
+});
+
 // ===== extractSelect: explicit selection (sub-select / WITH) =====
 
 test('extractSelect uses an explicit selection verbatim without expanding', () => {

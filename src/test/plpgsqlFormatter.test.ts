@@ -172,6 +172,35 @@ test('does not collapse a CASE statement (END CASE) with nested IF blocks', () =
     assert.ok(!/IF pi_param1/.test(commentLine), 'code is not pulled onto the comment line');
 });
 
+test('a line comment inside a CASE expression does not swallow the following WHEN branch', () => {
+    const out = formatSql([
+        'SELECT CASE rgl_antwort',
+        "  WHEN 'AV' THEN pk_onlinerm.f_abgelehnt_von() -- functions without arguments",
+        "  WHEN 'GV' THEN pk_onlinerm.f_genehmigt_von()",
+        '  ELSE NULL',
+        'END AS antwort',
+        'FROM t;'
+    ].join('\n'));
+    assert.ok(out.includes('-- functions without arguments'), 'comment is preserved');
+    // The branch following the comment must stay live code, not be absorbed into the comment.
+    const commentLine = out.split('\n').find(l => l.includes('-- functions without arguments'))!;
+    assert.ok(!/WHEN 'GV'/.test(commentLine), "second WHEN is not pulled onto the comment line");
+    assert.ok(/WHEN 'GV' THEN pk_onlinerm\.f_genehmigt_von\(\)/.test(out), 'second WHEN survives as code');
+    assert.ok(/f_abgelehnt_von\(\)/.test(out), 'first branch result survives');
+});
+
+test('a trailing line comment after a statement does not swallow the next statement', () => {
+    const out = formatSql([
+        'BEGIN',
+        '  do_it(); -- run it',
+        '  CALL p_next(id);',
+        'END;'
+    ].join('\n'));
+    const commentLine = out.split('\n').find(l => l.includes('-- run it'))!;
+    assert.ok(!/CALL p_next/.test(commentLine), 'next statement is not pulled onto the comment line');
+    assert.ok(/CALL p_next\(id\);/.test(out), 'next statement survives as code');
+});
+
 test('indents a CASE statement and breaks the body after THEN', () => {
     const out = formatSql([
         'BEGIN',

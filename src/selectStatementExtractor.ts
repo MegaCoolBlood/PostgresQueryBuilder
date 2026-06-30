@@ -390,7 +390,15 @@ function stripIntoClause(sql: string): string {
                 break;
             }
         }
-        return (sql.slice(0, t.start) + ' ' + sql.slice(endIdx)).replace(/\s+/g, ' ').trim();
+        // Splice out only the INTO clause itself. Whitespace (and especially
+        // newlines) in the rest of the statement must be preserved verbatim:
+        // collapsing them would let a `--` line comment swallow the code that
+        // followed it on the next line, corrupting the query. A separating
+        // space is inserted only when neither side already supplies whitespace.
+        const before = sql.slice(0, t.start);
+        const after = sql.slice(endIdx);
+        const needsSpace = before.length > 0 && !/\s$/.test(before) && after.length > 0 && !/^\s/.test(after);
+        return (before + (needsSpace ? ' ' : '') + after).trim();
     }
     return sql;
 }

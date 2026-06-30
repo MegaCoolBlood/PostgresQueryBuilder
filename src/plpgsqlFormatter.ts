@@ -1910,6 +1910,16 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
 
     /** Emit a raw token inline (used while greedily consuming sub-runs). */
     function emitInline(tk: Tok): void {
+        if (tk.type === 'lineComment') {
+            // A line comment runs to the end of its physical line, so anything
+            // emitted after it on the same output line would be swallowed by the
+            // comment. Append it to the current line, then force a newline so the
+            // following tokens continue on a fresh line at the same indent.
+            emit(tk.text, { text: tk.text, isKeyword: false, type: 'comment' });
+            pendingIndent = lineIndent;
+            flush();
+            return;
+        }
         if (tk.type === 'word') {
             const w = tk.text.toLowerCase();
             const cat: 'type' | 'keyword' | 'ident' =
