@@ -205,6 +205,7 @@ const KEYWORDS = new Set([
     'similar', 'to', 'between', 'exists', 'any', 'some',
     'with', 'recursive', 'into', 'strict', 'values', 'returning',
     'insert', 'update', 'delete', 'set', 'for', 'of', 'nowait', 'share',
+    'merge', 'matched',
     'at', 'time', 'zone', 'local', 'collate', 'over', 'partition', 'window',
     'filter', 'within', 'cast', 'default', 'check', 'constraint', 'primary',
     'key', 'foreign', 'references', 'unique', 'create', 'or', 'replace',
@@ -802,6 +803,42 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         }
     }
 
+    // Precedence-aware AND/OR indentation: within one boolean condition scope
+    // (a `(...)` group or a clause tail such as WHERE/HAVING) that also contains a
+    // top-level OR, the AND operators are indented one level deeper than the OR
+    // operators — so each OR alternative sits at the scope base and its AND
+    // sub-conditions hang underneath. A scope with only ANDs keeps them at the base.
+    const andDeepSet = new Set<number>();
+    {
+        type Scope = { hasOr: boolean; ands: number[]; between: number };
+        const newScope = (): Scope => ({ hasOr: false, ands: [], between: 0 });
+        const stack: Scope[] = [newScope()];
+        const finalize = (s: Scope): void => {
+            if (s.hasOr) for (const a of s.ands) andDeepSet.add(a);
+            s.hasOr = false; s.ands = []; s.between = 0;
+        };
+        for (let i = 0; i < toks.length; i++) {
+            const tk = toks[i];
+            if (tk.text === '(') { stack.push(newScope()); continue; }
+            if (tk.text === ')') { const s = stack.pop(); if (s) finalize(s); if (stack.length === 0) stack.push(newScope()); continue; }
+            if (tk.type !== 'word') {
+                if (tk.text === ',' || tk.text === ';') finalize(stack[stack.length - 1]);
+                continue;
+            }
+            const w = tk.text.toLowerCase();
+            const top = stack[stack.length - 1];
+            if (w === 'between') top.between++;
+            else if (w === 'or') top.hasOr = true;
+            else if (w === 'and') { if (top.between > 0) top.between--; else top.ands.push(i); }
+            else if (CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w)
+                || w === 'on' || w === 'when' || w === 'then' || w === 'else'
+                || w === 'loop' || w === 'into' || w === 'using') {
+                finalize(top);
+            }
+        }
+        finalize(stack[stack.length - 1]);
+    }
+
     // Array literals (ARRAY[...] and nested element arrays): wrap their element
     // list per the `arrayLiterals` threshold. Subscripts (arr[i]) stay inline.
     const bracketInfo = new Map<number, { match: number; multiline: boolean }>();
@@ -977,6 +1014,8 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     let bracketDepth = 0;
     let betweenPending = 0;
     let forHeaderIndent: number | null = null;
+    let mergeIndent: number | null = null;
+    let mergeWhenStart = -1;
     let joinRiver = false;
     const blocks: BlockFrame[] = [];
     const lists: { depth: number; indent: number; bdepth?: number }[] = [];
@@ -1619,6 +1658,39 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
 
             // PL/pgSQL block structure (top level only)
             if (pd === 0) {
+                // MERGE statement: `MERGE` on its own line; each `WHEN [NOT] MATCHED
+                // … THEN` clause and the closing `;` sit at the same (MERGE) level,
+                // with the THEN action (UPDATE/INSERT/DELETE) indented one level deeper.
+                if (w === 'merge' && cur === '') {
+                    startLine(blockIndent, blanks); emit(rendered, meta); flush();
+                    mergeIndent = blockIndent;
+                    pendingIndent = blockIndent;
+                    lastWord = w; continue;
+                }
+                if (mergeIndent !== null && w === 'when') {
+                    blockIndent = mergeIndent;
+                    startLine(mergeIndent, blanks); emit(rendered, meta);
+                    // Remember the current line count so THEN can tell whether the
+                    // WHEN condition ended up spanning multiple lines.
+                    mergeWhenStart = out.length;
+                    lastWord = w; continue;
+                }
+                if (mergeIndent !== null && w === 'then' && !expectThen && !exceptionThen
+                    && blocks[blocks.length - 1]?.type !== 'case') {
+                    // If the WHEN condition broke across several lines, put THEN on its
+                    // own line at the WHEN level (like a multi-line IF); otherwise keep
+                    // it on the WHEN line.
+                    const condBroke = mergeWhenStart >= 0 && out.length > mergeWhenStart;
+                    if (condBroke) { startLine(mergeIndent, blanks); emit(rendered, meta); flush(); }
+                    else { emit(rendered, meta); flush(); }
+                    mergeWhenStart = -1;
+                    // Indent the THEN action (UPDATE/INSERT/DELETE, incl. SET/VALUES)
+                    // one level deeper than the WHEN clause.
+                    blockIndent = mergeIndent + 1;
+                    pendingIndent = mergeIndent + 1;
+                    lastWord = w; continue;
+                }
+
                 // CASE *statement* form (`CASE … END CASE` with statement bodies).
                 // CASE/END CASE sit at the block indent, each WHEN/ELSE one level
                 // deeper, and the branch body (assignments, nested IF/LOOP, …) one
@@ -1947,7 +2019,11 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 }
                 if (condInlineSet.has(i)) { emit(rendered, meta); lastWord = w; continue; }
                 if (expectThen) ifCondBroke = true;
-                startLine(blockIndent + pd + 1, blanks); emit(rendered, meta);
+                // In a scope that mixes AND and OR, indent the AND one level deeper
+                // than the OR so it hangs under its OR alternative. The JOIN-ON river
+                // style keeps its own right-aligned layout, so it is left untouched.
+                const andExtra = andDeepSet.has(i) && !joinRiver ? 1 : 0;
+                startLine(blockIndent + pd + 1 + andExtra, blanks); emit(rendered, meta);
                 lastWord = w; continue;
             }
             // OR on its own line within a SQL condition (but not in CREATE OR REPLACE).
@@ -1994,6 +2070,20 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             popLists(pd);
             betweenPending = 0;
             joinRiver = false;
+            if (mergeIndent !== null && pd === 0) {
+                // Close the MERGE statement: the `;` gets its own line at the MERGE level.
+                flush();
+                blockIndent = mergeIndent;
+                lineIndent = mergeIndent;
+                pendingIndent = mergeIndent;
+                emit(';', { text: ';', isKeyword: false, type: 'punct' });
+                flush();
+                pendingIndent = blockIndent;
+                lastWord = '';
+                inRoutineTrailer = false;
+                mergeIndent = null;
+                continue;
+            }
             emit(';', { text: ';', isKeyword: false, type: 'punct' });
             if (pd === 0) {
                 flush();

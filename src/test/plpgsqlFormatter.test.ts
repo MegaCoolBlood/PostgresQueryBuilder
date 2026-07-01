@@ -344,6 +344,47 @@ test('breaks a parenthesised boolean group across lines', () => {
     );
 });
 
+test('indents AND one level deeper than OR when a boolean group mixes both', () => {
+    const sql = "SELECT * FROM t WHERE a NOT LIKE 'obj_%' AND b NOT LIKE 'ad_%' "
+        + "AND (c NOT LIKE 'ole_%' AND d LIKE 'e1%' AND e LIKE 'e2%' "
+        + "OR f LIKE 'debug%' AND g LIKE 'e3%' "
+        + "OR i LIKE 'debug2%' AND j LIKE 'e5%');";
+    assert.equal(
+        formatSql(sql),
+        [
+            'SELECT *',
+            'FROM t',
+            "WHERE a NOT LIKE 'obj_%'",
+            "  AND b NOT LIKE 'ad_%'",
+            '  AND (',
+            "    c NOT LIKE 'ole_%'",
+            "      AND d LIKE 'e1%'",
+            "      AND e LIKE 'e2%'",
+            "    OR f LIKE 'debug%'",
+            "      AND g LIKE 'e3%'",
+            "    OR i LIKE 'debug2%'",
+            "      AND j LIKE 'e5%'",
+            '  );'
+        ].join('\n')
+    );
+});
+
+test('a JOIN ON that mixes AND and OR keeps its river alignment (AND not indented deeper)', () => {
+    const sql = 'SELECT x FROM a JOIN b ON a.x = b.x AND a.y = b.y OR a.z = b.z AND a.w = b.w;';
+    assert.equal(
+        formatSql(sql),
+        [
+            'SELECT x',
+            'FROM a',
+            'JOIN b',
+            '   ON a.x = b.x',
+            '  AND a.y = b.y',
+            '   OR a.z = b.z',
+            '  AND a.w = b.w;'
+        ].join('\n')
+    );
+});
+
 test('keeps non-boolean groups inline (arithmetic, IN list, BETWEEN)', () => {
     assert.equal(formatSql('select (a + b) * c from t;'), 'SELECT (a + b) * c FROM t;');
     assert.equal(formatSql('select a from t where x in (1, 2, 3);'), 'SELECT a FROM t WHERE x IN (1, 2, 3);');
@@ -979,6 +1020,86 @@ test('GROUP BY / ORDER BY in a cursor FOR loop wrap by item count, not the loop 
             '  END LOOP;',
             'END',
             '$$;'
+        ].join('\n')
+    );
+});
+
+test('MERGE keeps MERGE, WHEN clauses and the closing semicolon on one level', () => {
+    const sql = 'MERGE INTO customer_account ca USING (SELECT customer_id, transaction_value FROM recent_transactions) t '
+        + 'ON (t.customer_id = ca.customer_id) '
+        + 'WHEN MATCHED THEN UPDATE SET balance = balance + transaction_value '
+        + 'WHEN NOT MATCHED THEN INSERT (customer_id, balance) VALUES (t.customer_id, t.transaction_value);';
+    assert.equal(
+        formatSql(sql),
+        [
+            'MERGE',
+            'INTO customer_account ca USING (',
+            '  SELECT',
+            '    customer_id,',
+            '    transaction_value',
+            '  FROM recent_transactions',
+            ') t ON (t.customer_id = ca.customer_id)',
+            'WHEN MATCHED THEN',
+            '  UPDATE',
+            '  SET',
+            '    balance = balance + transaction_value',
+            'WHEN NOT MATCHED THEN',
+            '  INSERT (customer_id, balance)',
+            '  VALUES (t.customer_id, t.transaction_value)',
+            ';'
+        ].join('\n')
+    );
+});
+
+test('MERGE inside a block keeps its clauses and semicolon at the block level', () => {
+    const sql = 'DO $$ BEGIN MERGE INTO t1 USING src ON (t1.id = src.id) '
+        + 'WHEN MATCHED THEN UPDATE SET a = src.a '
+        + 'WHEN NOT MATCHED THEN INSERT (id, a) VALUES (src.id, src.a); END $$;';
+    assert.equal(
+        formatSql(sql),
+        [
+            'DO $$',
+            'BEGIN',
+            '  MERGE',
+            '  INTO t1 USING src ON (t1.id = src.id)',
+            '  WHEN MATCHED THEN',
+            '    UPDATE',
+            '    SET',
+            '      a = src.a',
+            '  WHEN NOT MATCHED THEN',
+            '    INSERT (id, a)',
+            '    VALUES (src.id, src.a)',
+            '  ;',
+            'END',
+            '$$;'
+        ].join('\n')
+    );
+});
+
+test('MERGE puts THEN on its own line at the WHEN level when the WHEN condition is multi-line', () => {
+    const sql = 'MERGE INTO mak USING neu ON (mak.id = neu.id) '
+        + 'WHEN MATCHED AND (mak.mak_anzahl != neu.mac_anzahl OR mak.mak_deend != neu.mac_deend) THEN '
+        + 'UPDATE SET mak_anzahl = neu.mac_anzahl '
+        + 'WHEN NOT MATCHED THEN INSERT (id, anzahl) VALUES (neu.id, neu.mac_anzahl);';
+    assert.equal(
+        formatSql(sql),
+        [
+            'MERGE',
+            'INTO mak USING neu',
+            '   ON (mak.id = neu.id)',
+            'WHEN MATCHED',
+            '  AND (',
+            '    mak.mak_anzahl != neu.mac_anzahl',
+            '     OR mak.mak_deend != neu.mac_deend',
+            '  )',
+            'THEN',
+            '  UPDATE',
+            '  SET',
+            '    mak_anzahl = neu.mac_anzahl',
+            'WHEN NOT MATCHED THEN',
+            '  INSERT (id, anzahl)',
+            '  VALUES (neu.id, neu.mac_anzahl)',
+            ';'
         ].join('\n')
     );
 });
