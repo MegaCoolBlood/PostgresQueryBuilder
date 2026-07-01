@@ -482,6 +482,21 @@ td[contenteditable="true"]:focus {
     background: var(--vscode-editor-background);
 }
 
+/* Excel-like rectangular cell selection (drag across cells, then Ctrl/Cmd+C) */
+#tableBody td.cell-range-selected {
+    background: var(--vscode-editor-selectionBackground) !important;
+    color: var(--vscode-editor-selectionForeground, inherit);
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
+}
+
+/* Suppress the native text selection while dragging a cell rectangle. */
+#tableBody.range-dragging,
+#tableBody.range-dragging * {
+    user-select: none;
+    -webkit-user-select: none;
+}
+
 /* Actions column */
 .actions-cell {
     white-space: nowrap;

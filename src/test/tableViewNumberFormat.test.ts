@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv } = require(
     path.join(__dirname, '../../src/webview/tableView.js')
 );
 
@@ -21,6 +21,27 @@ test('stripThousandSeparators supports other separators and leaves text alone', 
     assert.equal(stripThousandSeparators('1.234.567,89', '.'), '1234567,89');
     assert.equal(stripThousandSeparators('hello world', ' '), 'helloworld');
     assert.equal(stripThousandSeparators('1234,5', ''), '1234,5');
+});
+
+test('cellRangeToTsv joins columns with TAB and rows with CRLF (Excel-compatible)', () => {
+    assert.equal(
+        cellRangeToTsv([['a', 'b'], ['c', 'd']]),
+        'a\tb\r\nc\td'
+    );
+    // A single cell has no separators.
+    assert.equal(cellRangeToTsv([['only']]), 'only');
+    // A single column of several rows is CRLF separated.
+    assert.equal(cellRangeToTsv([['1'], ['2'], ['3']]), '1\r\n2\r\n3');
+    // A single row of several columns is TAB separated.
+    assert.equal(cellRangeToTsv([['x', 'y', 'z']]), 'x\ty\tz');
+});
+
+test('cellRangeToTsv tolerates empty and malformed input', () => {
+    assert.equal(cellRangeToTsv([]), '');
+    assert.equal(cellRangeToTsv(null), '');
+    assert.equal(cellRangeToTsv(undefined), '');
+    // Empty strings (e.g. NULL cells rendered blank) are preserved as empty fields.
+    assert.equal(cellRangeToTsv([['a', ''], ['', 'd']]), 'a\t\r\n\td');
 });
 
 test('formatNumberDisplay uses thousand separators and comma decimal', () => {

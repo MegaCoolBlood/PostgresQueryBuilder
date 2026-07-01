@@ -46,6 +46,18 @@ function stripThousandSeparators(value, thousandSeparator = DEFAULT_THOUSAND_SEP
     return String(value).split(thousandSeparator).join('');
 }
 
+/**
+ * Join a rectangular block of already-stringified cell values into
+ * clipboard text: columns separated by a TAB, rows separated by CRLF, so it
+ * pastes into Excel (and other spreadsheets) as a proper cell grid.
+ */
+function cellRangeToTsv(rows) {
+    if (!Array.isArray(rows)) return '';
+    return rows
+        .map(row => (Array.isArray(row) ? row.join('\t') : ''))
+        .join('\r\n');
+}
+
 function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (value === null || value === undefined) return null;
     const num = Number(value);
@@ -892,6 +904,173 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // Strip thousand separators from numeric cells when copying from the grid,
     // so a displayed "9 999 999,99" lands on the clipboard as "9999999,99".
     document.addEventListener('copy', handleGridCopy);
+
+    // --- Excel-like rectangular cell selection ------------------------------
+    // Drag across data cells (or Shift+click) to select a rectangle spanning any
+    // number of columns and rows, then Ctrl/Cmd+C copies it as TAB-separated
+    // columns and CRLF-separated rows (pastes straight into Excel). A plain
+    // single click keeps the normal edit/focus behaviour.
+    let rangeAnchor = null;   // {r, c} first corner of the selection
+    let rangeFocus = null;    // {r, c} opposite corner
+    let rangeMouseDown = null; // candidate anchor recorded on mousedown
+    let rangeDragging = false;
+
+    function cellCoords(td) {
+        const tr = td.closest('tr');
+        if (!tr || tr.parentElement !== tableBody) return null;
+        const dataCells = tr.querySelectorAll(':scope > td[data-col]');
+        const c = Array.prototype.indexOf.call(dataCells, td);
+        if (c < 0) return null;
+        return { r: tr.sectionRowIndex, c };
+    }
+
+    function clearNativeTextSelection() {
+        const s = window.getSelection();
+        if (s && s.rangeCount) s.removeAllRanges();
+    }
+
+    function clearCellRangeSelection() {
+        rangeAnchor = null;
+        rangeFocus = null;
+        tableBody.querySelectorAll('td.cell-range-selected')
+            .forEach(td => td.classList.remove('cell-range-selected'));
+    }
+
+    function rangeBounds() {
+        return {
+            minR: Math.min(rangeAnchor.r, rangeFocus.r),
+            maxR: Math.max(rangeAnchor.r, rangeFocus.r),
+            minC: Math.min(rangeAnchor.c, rangeFocus.c),
+            maxC: Math.max(rangeAnchor.c, rangeFocus.c)
+        };
+    }
+
+    function applyCellRangeHighlight() {
+        tableBody.querySelectorAll('td.cell-range-selected')
+            .forEach(td => td.classList.remove('cell-range-selected'));
+        if (!rangeAnchor || !rangeFocus) return;
+        const { minR, maxR, minC, maxC } = rangeBounds();
+        const rows = tableBody.rows;
+        for (let r = minR; r <= maxR; r++) {
+            const tr = rows[r];
+            if (!tr) continue;
+            const dataCells = tr.querySelectorAll(':scope > td[data-col]');
+            for (let c = minC; c <= maxC && c < dataCells.length; c++) {
+                dataCells[c].classList.add('cell-range-selected');
+            }
+        }
+    }
+
+    // Collect the selected rectangle as a matrix of display strings, stripping
+    // thousand separators from numeric columns just like a native grid copy.
+    function collectCellRangeMatrix() {
+        if (!rangeAnchor || !rangeFocus) return null;
+        const { minR, maxR, minC, maxC } = rangeBounds();
+        const rows = tableBody.rows;
+        const matrix = [];
+        for (let r = minR; r <= maxR; r++) {
+            const tr = rows[r];
+            if (!tr) continue;
+            const dataCells = tr.querySelectorAll(':scope > td[data-col]');
+            const parts = [];
+            for (let c = minC; c <= maxC && c < dataCells.length; c++) {
+                const td = dataCells[c];
+                const text = getCellTextContent(td);
+                parts.push(isNumericColumn(td.getAttribute('data-col'))
+                    ? stripThousandSeparators(text, thousandSeparator)
+                    : text);
+            }
+            matrix.push(parts);
+        }
+        return matrix;
+    }
+
+    function copyCellRangeToClipboard() {
+        const matrix = collectCellRangeMatrix();
+        if (!matrix || matrix.length === 0) return false;
+        const tsv = cellRangeToTsv(matrix);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(tsv).catch(() => fallbackClipboardCopy(tsv));
+        } else {
+            fallbackClipboardCopy(tsv);
+        }
+        return true;
+    }
+
+    function fallbackClipboardCopy(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); } catch (_) { /* ignore */ }
+        document.body.removeChild(ta);
+    }
+
+    tableBody.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        const td = e.target.closest('td[data-col]');
+        if (!td || td.parentElement.parentElement !== tableBody) return;
+        const coords = cellCoords(td);
+        if (!coords) return;
+        if (e.shiftKey && rangeAnchor) {
+            rangeFocus = coords;
+            applyCellRangeHighlight();
+            clearNativeTextSelection();
+            e.preventDefault();
+            return;
+        }
+        // Record a potential drag anchor; a plain click still edits/focuses the cell.
+        rangeMouseDown = { td, r: coords.r, c: coords.c };
+        rangeDragging = false;
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!rangeMouseDown) return;
+        if (e.buttons === 0) { rangeMouseDown = null; return; }
+        const td = e.target && e.target.closest ? e.target.closest('td[data-col]') : null;
+        if (!td || td.parentElement.parentElement !== tableBody) return;
+        const coords = cellCoords(td);
+        if (!coords) return;
+        if (!rangeDragging) {
+            if (coords.r === rangeMouseDown.r && coords.c === rangeMouseDown.c) return;
+            rangeDragging = true;
+            rangeAnchor = { r: rangeMouseDown.r, c: rangeMouseDown.c };
+            tableBody.classList.add('range-dragging');
+            if (document.activeElement && typeof document.activeElement.blur === 'function') {
+                document.activeElement.blur();
+            }
+        }
+        rangeFocus = coords;
+        applyCellRangeHighlight();
+        clearNativeTextSelection();
+        e.preventDefault();
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (rangeMouseDown && !rangeDragging) {
+            // Plain click (no drag): drop any previous rectangle so single-cell
+            // editing/selection behaves normally.
+            clearCellRangeSelection();
+        }
+        rangeMouseDown = null;
+        rangeDragging = false;
+        tableBody.classList.remove('range-dragging');
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && rangeAnchor && rangeFocus) {
+            const sel = window.getSelection();
+            const hasInCellText = sel && !sel.isCollapsed && sel.toString().length > 0;
+            if (!hasInCellText && copyCellRangeToClipboard()) {
+                e.preventDefault();
+            }
+        } else if (e.key === 'Escape' && rangeAnchor) {
+            clearCellRangeSelection();
+        }
+    });
 
     function isNumericColumn(colName) {
         const colMeta = columns.find(c => c.name === colName);
@@ -1887,6 +2066,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         tableBody.innerHTML = buildTableHtml();
         wireTableListeners();
         updateChangeIndicator();
+        // The tbody was rebuilt, so any cell-range selection now points at stale
+        // DOM; drop it to avoid copying the wrong cells.
+        clearCellRangeSelection();
     }
 
     // Build the full <tbody> HTML for the current displayedRows plus any
@@ -3636,6 +3818,7 @@ if (typeof module !== 'undefined' && module.exports) {
         escapeSqlString,
         liveFormatNumeric,
         stripThousandSeparators,
+        cellRangeToTsv,
         stripTrailingLimitOffset,
         parseSqlForWhere,
         findTopLevelKeywordIndex,
