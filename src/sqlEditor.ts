@@ -61,7 +61,8 @@ export class SqlEditorManager {
                         preserveSingleLineIfBlocks: cfg.get('format.preserveSingleLineIfBlocks'),
                         preserveSingleLineSpecialCases: cfg.get('format.preserveSingleLineSpecialCases'),
                         listThresholds: cfg.get('format.listThresholds'),
-                        normalizeDataTypes: cfg.get('format.normalizeDataTypes')
+                        normalizeDataTypes: cfg.get('format.normalizeDataTypes'),
+                        dataTypeAliases: cfg.get('format.dataTypeAliases')
                     });
                     this.panel?.webview.postMessage({ command: 'formatted', sql: formatSql(message.sql, options) });
                 } catch (err: unknown) {

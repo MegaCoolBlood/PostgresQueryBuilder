@@ -2,6 +2,8 @@
 
 ## 2.0.4
 
+- **Mehrwort-Datentyp-Ersetzungen sind jetzt als Tabelle pflegbar:** Zusätzlich zum Schalter `postgresQueryBuilder.format.normalizeDataTypes` gibt es jetzt `postgresQueryBuilder.format.dataTypeAliases` als konfigurierbare Tabelle (Phrase -> Zieltyp), z. B. `"character varying" -> "varchar"`. Damit lassen sich die Ersetzungen individuell ergänzen/überschreiben, statt nur global ein-/auszuschalten.
+
 - **Separate Einstellungen pro Single-Line-Sonderfall:** Statt eines gemeinsamen Schalters gibt es jetzt getrennte Optionen `postgresQueryBuilder.format.preserveSingleLineRoutineHeaders` und `postgresQueryBuilder.format.preserveSingleLineIfBlocks` (jeweils Standard: `true`). Damit lassen sich einzeilige Routine-Header und einzeilige einfache IF-Blöcke unabhängig voneinander ein-/ausschalten. Der bisherige Umbrella-Schalter `postgresQueryBuilder.format.preserveSingleLineSpecialCases` bleibt als veraltete Fallback-Option kompatibel.
 
 - **Vollständig einzeilige `IF ... THEN ... END IF;`-Blöcke bleiben einzeilig:** Wenn ein kompletter IF-Block im Quelltext bereits in einer einzigen Zeile steht, bleibt er beim Formatieren nun ebenfalls in einer Zeile (analog zur Behandlung vollständig einzeiliger Routinen-Header).

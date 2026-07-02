@@ -49,7 +49,8 @@ function getFormatOptions(): FormatOptions {
         preserveSingleLineIfBlocks: cfg.get('format.preserveSingleLineIfBlocks'),
         preserveSingleLineSpecialCases: cfg.get('format.preserveSingleLineSpecialCases'),
         listThresholds: cfg.get('format.listThresholds'),
-        normalizeDataTypes: cfg.get('format.normalizeDataTypes')
+        normalizeDataTypes: cfg.get('format.normalizeDataTypes'),
+        dataTypeAliases: cfg.get('format.dataTypeAliases')
     });
 }
 

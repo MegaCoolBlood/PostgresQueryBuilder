@@ -112,6 +112,43 @@ export interface FormatOptions {
     thresholds: Partial<Record<ConstructKey, ListThreshold>>;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
     normalizeDataTypes: boolean;
+    /** Phrase-to-type map used by normalizeDataTypes (e.g. "character varying" -> "varchar"). */
+    dataTypeAliases: Record<string, string>;
+}
+
+export const DEFAULT_DATA_TYPE_ALIASES: Record<string, string> = {
+    'timestamp without time zone': 'timestamp',
+    'timestamp with time zone': 'timestamptz',
+    'time without time zone': 'time',
+    'time with time zone': 'timetz',
+    'character varying': 'varchar',
+    'bit varying': 'varbit'
+};
+
+function normalizeDataTypeAliasTable(raw: Record<string, unknown> | undefined): Record<string, string> {
+    const phrase = (value: unknown): string => {
+        if (typeof value !== 'string') return '';
+        return value.trim().toLowerCase().replace(/\s+/g, ' ');
+    };
+    const aliases: Record<string, string> = {};
+    Object.entries(DEFAULT_DATA_TYPE_ALIASES).forEach(([from, to]) => {
+        aliases[phrase(from)] = phrase(to);
+    });
+    const srcTable = raw ?? {};
+    Object.entries(srcTable).forEach(([from, to]) => {
+        const src = phrase(from);
+        const dst = phrase(to);
+        if (!src || !dst) return;
+        if (dst === src) {
+            // Explicitly disable a default alias by mapping phrase -> same phrase.
+            delete aliases[src];
+            return;
+        }
+        // Canonical replacements must be a single token (e.g. varchar, timetz).
+        if (dst.includes(' ')) return;
+        aliases[src] = dst;
+    });
+    return aliases;
 }
 
 export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
@@ -126,7 +163,8 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     preserveSingleLineRoutineHeaders: true,
     preserveSingleLineIfBlocks: true,
     thresholds: DEFAULT_THRESHOLDS,
-    normalizeDataTypes: true
+    normalizeDataTypes: true,
+    dataTypeAliases: DEFAULT_DATA_TYPE_ALIASES
 };
 
 /**
@@ -155,6 +193,7 @@ export function coerceFormatOptions(raw: {
     preserveSingleLineSpecialCases?: unknown;
     listThresholds?: unknown;
     normalizeDataTypes?: unknown;
+    dataTypeAliases?: unknown;
 }): FormatOptions {
     const pick = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
         typeof value === 'string' && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
@@ -163,6 +202,9 @@ export function coerceFormatOptions(raw: {
     const size = num(raw.indentSize, 1, 8, DEFAULT_FORMAT_OPTIONS.indentSize);
     const table = (raw.listThresholds && typeof raw.listThresholds === 'object')
         ? raw.listThresholds as Record<string, unknown>
+        : {};
+    const dataTypeAliasTable = (raw.dataTypeAliases && typeof raw.dataTypeAliases === 'object')
+        ? raw.dataTypeAliases as Record<string, unknown>
         : {};
     // Accept either a "inlineMax, multilineMin" string (settings table) or a
     // { inlineMax, multilineMin } object (programmatic callers); clamp & order.
@@ -186,6 +228,7 @@ export function coerceFormatOptions(raw: {
     (Object.keys(DEFAULT_THRESHOLDS) as ConstructKey[]).forEach(key => {
         thresholds[key] = threshold(table[key], DEFAULT_THRESHOLDS[key]);
     });
+    const aliases = normalizeDataTypeAliasTable(dataTypeAliasTable);
     const legacySingleLine = typeof raw.preserveSingleLineSpecialCases === 'boolean'
         ? raw.preserveSingleLineSpecialCases
         : undefined;
@@ -209,7 +252,8 @@ export function coerceFormatOptions(raw: {
         thresholds,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
-            : DEFAULT_FORMAT_OPTIONS.normalizeDataTypes
+            : DEFAULT_FORMAT_OPTIONS.normalizeDataTypes,
+        dataTypeAliases: aliases
     };
 }
 
@@ -267,23 +311,21 @@ const DATATYPES = new Set([
  * Verbose multi-word type phrases mapped to a canonical short form, applied when
  * `normalizeDataTypes` is enabled. Listed longest-first so the longest phrase wins.
  */
-const TYPE_PHRASE_ALIASES: { words: string[]; canonical: string }[] = [
-    { words: ['timestamp', 'without', 'time', 'zone'], canonical: 'timestamp' },
-    { words: ['timestamp', 'with', 'time', 'zone'], canonical: 'timestamptz' },
-    { words: ['time', 'without', 'time', 'zone'], canonical: 'time' },
-    { words: ['time', 'with', 'time', 'zone'], canonical: 'timetz' },
-    { words: ['character', 'varying'], canonical: 'varchar' },
-    { words: ['bit', 'varying'], canonical: 'varbit' }
-];
+function buildTypePhraseAliases(aliases: Record<string, string>): { words: string[]; canonical: string }[] {
+    return Object.entries(aliases)
+        .map(([from, to]) => ({ words: from.split(' ').filter(Boolean), canonical: to }))
+        .filter(a => a.words.length > 0 && a.canonical.length > 0)
+        .sort((a, b) => b.words.length - a.words.length);
+}
 
 /** Merge verbose multi-word type phrases (e.g. `character varying`) into a single short-form token. */
-function normalizeTypePhrases(toks: Tok[]): Tok[] {
+function normalizeTypePhrases(toks: Tok[], typeAliases: { words: string[]; canonical: string }[]): Tok[] {
     const out: Tok[] = [];
     for (let i = 0; i < toks.length; i++) {
         const t = toks[i];
         let matched = false;
         if (t.type === 'word') {
-            for (const { words, canonical } of TYPE_PHRASE_ALIASES) {
+            for (const { words, canonical } of typeAliases) {
                 if (i + words.length > toks.length) continue;
                 let ok = true;
                 for (let k = 0; k < words.length; k++) {
@@ -320,8 +362,8 @@ function normalizeTypePhrases(toks: Tok[]): Tok[] {
  * code following it, turning real tokens into comment text), the change is
  * unsafe and must be rejected.
  */
-function tokenSignature(input: string, normalizeTypes: boolean): string {
-    return semanticTokens(input, normalizeTypes).map(t => t.sig).join('\u0001');
+function tokenSignature(input: string, normalizeTypes: boolean, dataTypeAliases: Record<string, string>): string {
+    return semanticTokens(input, normalizeTypes, dataTypeAliases).map(t => t.sig).join('\u0001');
 }
 
 /** One entry of a {@link semanticTokens} stream. */
@@ -337,8 +379,9 @@ interface SemTok {
  * expanding dollar-quoted bodies recursively. Used both for the fast equality
  * check and for producing a human-readable explanation of the first difference.
  */
-function semanticTokens(input: string, normalizeTypes: boolean): SemTok[] {
+function semanticTokens(input: string, normalizeTypes: boolean, dataTypeAliases: Record<string, string>): SemTok[] {
     const out: SemTok[] = [];
+    const typeAliases = buildTypePhraseAliases(dataTypeAliases);
     const label = (type: string, text: string): string => {
         const clean = text.replace(/\s+/g, ' ').trim();
         const short = clean.length > 40 ? clean.slice(0, 37) + '…' : clean;
@@ -346,7 +389,7 @@ function semanticTokens(input: string, normalizeTypes: boolean): SemTok[] {
     };
     const walk = (src: string): void => {
         let toks = tokenize(src);
-        if (normalizeTypes) toks = normalizeTypePhrases(toks);
+        if (normalizeTypes) toks = normalizeTypePhrases(toks, typeAliases);
         for (const t of toks) {
             if (t.type === 'dollar') {
                 const m = /^(\$[A-Za-z_]?[A-Za-z0-9_]*\$)([\s\S]*)\1$/.exec(t.text);
@@ -372,9 +415,9 @@ function semanticTokens(input: string, normalizeTypes: boolean): SemTok[] {
  * when they are equivalent (formatting is safe), or a human-readable message
  * describing the first divergence when they are not.
  */
-function signatureDiff(input: string, output: string, normalizeTypes: boolean): string | null {
-    const a = semanticTokens(input, normalizeTypes);
-    const b = semanticTokens(output, normalizeTypes);
+function signatureDiff(input: string, output: string, normalizeTypes: boolean, dataTypeAliases: Record<string, string>): string | null {
+    const a = semanticTokens(input, normalizeTypes, dataTypeAliases);
+    const b = semanticTokens(output, normalizeTypes, dataTypeAliases);
     const len = Math.min(a.length, b.length);
     for (let i = 0; i < len; i++) {
         if (a[i].sig !== b[i].sig) {
@@ -399,8 +442,14 @@ function signatureDiff(input: string, output: string, normalizeTypes: boolean): 
  * `normalizeTypes` is on) verbose vs. canonical type phrases. This is the exact
  * check the formatter uses as a safety net to guarantee it never alters logic.
  */
-export function sqlSemanticallyEqual(a: string, b: string, normalizeTypes = true): boolean {
-    return tokenSignature(a, normalizeTypes) === tokenSignature(b, normalizeTypes);
+export function sqlSemanticallyEqual(
+    a: string,
+    b: string,
+    normalizeTypes = true,
+    dataTypeAliases: Record<string, string> = DEFAULT_DATA_TYPE_ALIASES
+): boolean {
+    const aliases = normalizeDataTypeAliasTable(dataTypeAliases as Record<string, unknown>);
+    return tokenSignature(a, normalizeTypes, aliases) === tokenSignature(b, normalizeTypes, aliases);
 }
 
 /**
@@ -409,8 +458,14 @@ export function sqlSemanticallyEqual(a: string, b: string, normalizeTypes = true
  * are equivalent. This is exactly the detail the formatter reports when its
  * safety net rejects a formatting result.
  */
-export function sqlSemanticDiff(a: string, b: string, normalizeTypes = true): string | null {
-    return signatureDiff(a, b, normalizeTypes);
+export function sqlSemanticDiff(
+    a: string,
+    b: string,
+    normalizeTypes = true,
+    dataTypeAliases: Record<string, string> = DEFAULT_DATA_TYPE_ALIASES
+): string | null {
+    const aliases = normalizeDataTypeAliasTable(dataTypeAliases as Record<string, unknown>);
+    return signatureDiff(a, b, normalizeTypes, aliases);
 }
 
 
@@ -657,7 +712,8 @@ export function formatSqlChecked(input: string, options?: Partial<FormatOptions>
         result = next;
     }
     const normalizeTypes = options?.normalizeDataTypes ?? DEFAULT_FORMAT_OPTIONS.normalizeDataTypes;
-    const reason = signatureDiff(input, result, normalizeTypes);
+    const dataTypeAliases = normalizeDataTypeAliasTable((options?.dataTypeAliases ?? DEFAULT_DATA_TYPE_ALIASES) as Record<string, unknown>);
+    const reason = signatureDiff(input, result, normalizeTypes, dataTypeAliases);
     if (reason) {
         return { text: input, ok: false, reason };
     }
@@ -679,7 +735,8 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         return srcMulti;
     };
     const trailingNewline = /\n\s*$/.test(input);
-    const toks = opt.normalizeDataTypes ? normalizeTypePhrases(tokenize(input)) : tokenize(input);
+    const typeAliases = buildTypePhraseAliases(normalizeDataTypeAliasTable(opt.dataTypeAliases as Record<string, unknown>));
+    const toks = opt.normalizeDataTypes ? normalizeTypePhrases(tokenize(input), typeAliases) : tokenize(input);
     const depths = computeDepths(toks);
 
     // --- Pre-scan: classify every parenthesis -------------------------------

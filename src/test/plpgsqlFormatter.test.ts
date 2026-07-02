@@ -813,7 +813,15 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         preserveSingleLineRoutineHeaders: true,
         preserveSingleLineIfBlocks: true,
         thresholds: DEFAULT_THRESHOLDS,
-        normalizeDataTypes: true
+        normalizeDataTypes: true,
+        dataTypeAliases: {
+            'timestamp without time zone': 'timestamp',
+            'timestamp with time zone': 'timestamptz',
+            'time without time zone': 'time',
+            'time with time zone': 'timetz',
+            'character varying': 'varchar',
+            'bit varying': 'varbit'
+        }
     });
 });
 
@@ -849,6 +857,26 @@ test('normalizes verbose data type names to their short form', () => {
 test('normalizeDataTypes can be disabled', () => {
     const out = formatSql('declare a character varying(500); begin end;', { normalizeDataTypes: false });
     assert.ok(out.includes('a CHARACTER VARYING(500);'), out);
+});
+
+test('dataTypeAliases table can be customized', () => {
+    const out = formatSql('declare a double precision; begin end;', {
+        dataTypeAliases: { 'double precision': 'float8' }
+    });
+    assert.ok(out.includes('a FLOAT8;'), out);
+});
+
+test('dataTypeAliases table can disable default replacements by overriding entries', () => {
+    const out = formatSql('declare a character varying(500); begin end;', {
+        dataTypeAliases: { 'character varying': 'character varying' }
+    });
+    assert.ok(out.includes('a CHARACTER VARYING(500);'), out);
+});
+
+test('coerceFormatOptions accepts dataTypeAliases from settings table', () => {
+    const opts = coerceFormatOptions({ dataTypeAliases: { 'double precision': 'float8' } });
+    assert.equal(opts.dataTypeAliases['double precision'], 'float8');
+    assert.equal(opts.dataTypeAliases['character varying'], 'varchar');
 });
 
 test('does not treat FROM/FOR inside a function call as SQL clauses', () => {

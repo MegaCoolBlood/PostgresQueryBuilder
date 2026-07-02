@@ -431,6 +431,21 @@
           "type": "boolean",
           "default": true,
           "description": "Replace verbose multi-word type names with their short form when formatting (e.g. 'character varying' -> 'varchar', 'timestamp without time zone' -> 'timestamp', 'timestamp with time zone' -> 'timestamptz')."
+        },
+        "postgresQueryBuilder.format.dataTypeAliases": {
+          "type": "object",
+          "default": {
+            "timestamp without time zone": "timestamp",
+            "timestamp with time zone": "timestamptz",
+            "time without time zone": "time",
+            "time with time zone": "timetz",
+            "character varying": "varchar",
+            "bit varying": "varbit"
+          },
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Table of phrase replacements used when normalizeDataTypes is enabled: key = verbose type phrase, value = canonical replacement (e.g. 'character varying' -> 'varchar')."
         }
       }
     }
