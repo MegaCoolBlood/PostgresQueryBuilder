@@ -892,6 +892,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 const ps = sig(open, -1);
                 if (ns && ns.type === 'word' && ['select', 'with', 'values'].includes(ns.text.toLowerCase())) kind = 'subquery';
                 else if (ps && ps.type === 'word' && ps.text.toLowerCase() === 'in') { kind = 'call'; isInList = true; }
+                else if (ps && ps.type === 'word' && ps.text.toLowerCase() === 'row') kind = 'call';
                 else if (ps && ps.type === 'word' && DATATYPES.has(ps.text.toLowerCase())) kind = 'typemod';
                 else if (ps && ((ps.type === 'word' && !KEYWORDS.has(ps.text.toLowerCase())) || ps.type === 'quotedIdent' || ps.type === 'param' || ps.text === ')' || ps.text === ']')) kind = 'call';
                 else kind = 'group';
@@ -1057,6 +1058,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         if (a === '::') return false;
         if (a === '(' || a === '[') return false;
         if (b === '(') {
+            if (p.type === 'word' && p.text.toLowerCase() === 'row') return false;
             if ((p.type === 'word' && !p.isKeyword) || p.type === 'quotedIdent' || a === ')' || a === ']') return false;
             return true;
         }

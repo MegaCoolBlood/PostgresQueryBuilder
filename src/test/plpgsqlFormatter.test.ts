@@ -623,6 +623,15 @@ test('applies separate thresholds per construct', () => {
         formatSql('CREATE TYPE t AS (a INT, b INT, c INT, d INT);'),
         ['CREATE TYPE t AS (', '  a INT,', '  b INT,', '  c INT,', '  d INT', ');'].join('\n')
     );
+    // ROW(...) uses the same defaults as list-like call parentheses ({1, 4}).
+    assert.equal(
+        formatSql('SELECT ROW(1, 2, 3);'),
+        'SELECT ROW(1, 2, 3);'
+    );
+    assert.equal(
+        formatSql('SELECT ROW(1, 2, 3, 4, 5, 6);'),
+        ['SELECT ROW(', '  1,', '  2,', '  3,', '  4,', '  5,', '  6', ');'].join('\n')
+    );
 });
 
 test('indents subqueries inside parentheses', () => {

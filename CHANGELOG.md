@@ -2,6 +2,8 @@
 
 ## 2.0.4
 
+- **`ROW(...)` wird jetzt wie eine Listen-Klammerung formatiert:** Der Row-Constructor wird nun in die Listen-Formatierung aufgenommen und nutzt dieselben Default-Schwellen wie Listen/Funktionsaufrufe. Damit bleibt z. B. `ROW(1, 2, 3)` einzeilig, während längere Varianten wie `ROW(1, 2, 3, 4, 5, 6)` standardmäßig mehrzeilig mit einem Element pro Zeile formatiert werden.
+
 - **`JOIN ... ON` mit gemischtem `AND`/`OR` rückt `AND` jetzt ebenfalls eine Ebene tiefer ein:** In Bedingungen auf derselben Ebene mit gemischten `OR`-Alternativen und `AND`-Teilbedingungen gilt die Präzedenz-Einrückung jetzt auch im `JOIN ... ON`-Kontext. Dadurch hängen `AND`-Zeilen unter der jeweiligen `OR`-Alternative, statt auf derselben Ebene wie `OR` zu bleiben.
 
 - **Präzedenz-Einrückung für gemischte `AND`/`OR` gilt jetzt in allen relevanten Bedingungskontexten:** Die Sonderbehandlung (bei `AND`+`OR` auf derselben Ebene werden `AND`-Zeilen eine Ebene tiefer als `OR` eingerückt) wird jetzt konsistent überall angewendet, wo solche Mischungen auftreten können, z. B. in `IF`/`ELSIF`-Bedingungen, `CASE WHEN`-Bedingungen und `JOIN ... ON`-Bedingungen.
