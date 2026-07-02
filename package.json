@@ -279,8 +279,8 @@
         "postgresQueryBuilder.format.listThresholds": {
           "type": "object",
           "default": {
-            "createFunction": "0, 0",
-            "createProcedure": "0, 0",
+            "createFunction": "0, 1",
+            "createProcedure": "0, 1",
             "createType": "1, 2",
             "createTable": "0, 0",
             "returnsTable": "1, 4",
