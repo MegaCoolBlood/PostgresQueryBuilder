@@ -819,6 +819,9 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
             'timestamp with time zone': 'timestamptz',
             'time without time zone': 'time',
             'time with time zone': 'timetz',
+            int2: 'smallint',
+            int4: 'integer',
+            int8: 'bigint',
             'character varying': 'varchar',
             'bit varying': 'varbit'
         }
@@ -852,6 +855,13 @@ test('normalizes verbose data type names to their short form', () => {
         formatSql('select cast(x as character varying) from t;'),
         'SELECT CAST (x AS VARCHAR) FROM t;'
     );
+});
+
+test('normalizes int2/int4/int8 aliases to canonical integer type names', () => {
+    const out = formatSql('declare a int2; b int4; c int8; begin end;');
+    assert.ok(out.includes('a SMALLINT;'), out);
+    assert.ok(out.includes('b INTEGER;'), out);
+    assert.ok(out.includes('c BIGINT;'), out);
 });
 
 test('normalizeDataTypes can be disabled', () => {

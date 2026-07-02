@@ -2,6 +2,8 @@
 
 ## 2.0.4
 
+- **Neue Default-Aliase für Integer-Typen:** In `format.dataTypeAliases` sind jetzt zusätzlich `int2 -> smallint`, `int4 -> integer` und `int8 -> bigint` enthalten.
+
 - **Mehrwort-Datentyp-Ersetzungen sind jetzt als Tabelle pflegbar:** Zusätzlich zum Schalter `postgresQueryBuilder.format.normalizeDataTypes` gibt es jetzt `postgresQueryBuilder.format.dataTypeAliases` als konfigurierbare Tabelle (Phrase -> Zieltyp), z. B. `"character varying" -> "varchar"`. Damit lassen sich die Ersetzungen individuell ergänzen/überschreiben, statt nur global ein-/auszuschalten.
 
 - **Separate Einstellungen pro Single-Line-Sonderfall:** Statt eines gemeinsamen Schalters gibt es jetzt getrennte Optionen `postgresQueryBuilder.format.preserveSingleLineRoutineHeaders` und `postgresQueryBuilder.format.preserveSingleLineIfBlocks` (jeweils Standard: `true`). Damit lassen sich einzeilige Routine-Header und einzeilige einfache IF-Blöcke unabhängig voneinander ein-/ausschalten. Der bisherige Umbrella-Schalter `postgresQueryBuilder.format.preserveSingleLineSpecialCases` bleibt als veraltete Fallback-Option kompatibel.

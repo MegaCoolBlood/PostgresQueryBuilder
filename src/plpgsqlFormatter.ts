@@ -121,6 +121,9 @@ export const DEFAULT_DATA_TYPE_ALIASES: Record<string, string> = {
     'timestamp with time zone': 'timestamptz',
     'time without time zone': 'time',
     'time with time zone': 'timetz',
+    int2: 'smallint',
+    int4: 'integer',
+    int8: 'bigint',
     'character varying': 'varchar',
     'bit varying': 'varbit'
 };
