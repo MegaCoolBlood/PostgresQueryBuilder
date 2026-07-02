@@ -282,7 +282,7 @@
             "createFunction": "0, 1",
             "createProcedure": "0, 1",
             "createType": "1, 2",
-            "createTable": "0, 0",
+            "createTable": "0, 1",
             "returnsTable": "1, 4",
             "functionCall": "1, 4",
             "selectColumns": "1, 3",
