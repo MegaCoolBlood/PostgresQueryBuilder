@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.4
+
+- **`JOIN ... ON` mit gemischtem `AND`/`OR` rückt `AND` jetzt ebenfalls eine Ebene tiefer ein:** In Bedingungen auf derselben Ebene mit gemischten `OR`-Alternativen und `AND`-Teilbedingungen gilt die Präzedenz-Einrückung jetzt auch im `JOIN ... ON`-Kontext. Dadurch hängen `AND`-Zeilen unter der jeweiligen `OR`-Alternative, statt auf derselben Ebene wie `OR` zu bleiben.
+
+- **Präzedenz-Einrückung für gemischte `AND`/`OR` gilt jetzt in allen relevanten Bedingungskontexten:** Die Sonderbehandlung (bei `AND`+`OR` auf derselben Ebene werden `AND`-Zeilen eine Ebene tiefer als `OR` eingerückt) wird jetzt konsistent überall angewendet, wo solche Mischungen auftreten können, z. B. in `IF`/`ELSIF`-Bedingungen, `CASE WHEN`-Bedingungen und `JOIN ... ON`-Bedingungen.
+
 ## 2.0.3
 
 - **Schwellenwert `multilineMin = 1` wird jetzt respektiert (einzelner Parameter kann erzwungen umbrochen werden):** Bisher hat `coerceFormatOptions` den zweiten Wert eines Schwellenwert-Paars auf **mindestens 2** hochgeklemmt, sodass z. B. `createFunction`/`createProcedure` = `"0, 1"` heimlich zu `"0, 2"` wurde – ein einzelner Parameter wurde dann bei einzeiliger Quelle doch nicht umbrochen. Die Untergrenze ist jetzt `1`, d. h. `"0, 1"` bewirkt zuverlässig, dass schon **ein** Parameter/Element umbrochen wird. Die shipped-Defaults für `createFunction` und `createProcedure` stehen jetzt auf `"0, 1"`.

@@ -369,7 +369,56 @@ test('indents AND one level deeper than OR when a boolean group mixes both', () 
     );
 });
 
-test('a JOIN ON that mixes AND and OR keeps its river alignment (AND not indented deeper)', () => {
+test('indents AND one level deeper than OR in mixed IF conditions', () => {
+    const sql = [
+        'BEGIN',
+        'IF a = 1 AND b = 2 OR c = 3 AND d = 4 THEN',
+        'do_it();',
+        'END IF;',
+        'END;'
+    ].join('\n');
+    assert.equal(
+        formatSql(sql),
+        [
+            'BEGIN',
+            '  IF a = 1',
+            '      AND b = 2',
+            '    OR c = 3',
+            '      AND d = 4',
+            '  THEN',
+            '    do_it();',
+            '  END IF;',
+            'END;'
+        ].join('\n')
+    );
+});
+
+test('indents AND one level deeper than OR in mixed CASE WHEN conditions', () => {
+    const sql = [
+        'SELECT CASE',
+        '  WHEN a = 1 AND b = 2 OR c = 3 AND d = 4 THEN 1',
+        '  ELSE 0',
+        'END AS v',
+        'FROM t;'
+    ].join('\n');
+    assert.equal(
+        formatSql(sql),
+        [
+            'SELECT CASE',
+            '  WHEN a = 1',
+            '      AND b = 2',
+            '    OR c = 3',
+            '      AND d = 4',
+            '  THEN',
+            '    1',
+            '  ELSE 0',
+            'END AS v',
+            'FROM t;'
+        ].join('\n')
+    );
+});
+
+test('a JOIN ON that mixes AND and OR indents AND one level deeper than OR', () => {
     const sql = 'SELECT x FROM a JOIN b ON a.x = b.x AND a.y = b.y OR a.z = b.z AND a.w = b.w;';
     assert.equal(
         formatSql(sql),
@@ -378,9 +427,26 @@ test('a JOIN ON that mixes AND and OR keeps its river alignment (AND not indente
             'FROM a',
             'JOIN b',
             '   ON a.x = b.x',
-            '  AND a.y = b.y',
+            '    AND a.y = b.y',
             '   OR a.z = b.z',
-            '  AND a.w = b.w;'
+            '    AND a.w = b.w;'
+        ].join('\n')
+    );
+});
+
+
+test('a INNER JOIN ON that mixes AND and OR indents AND one level deeper than OR', () => {
+    const sql = 'SELECT x FROM a INNER JOIN b ON a.x = b.x AND a.y = b.y OR a.z = b.z AND a.w = b.w;';
+    assert.equal(
+        formatSql(sql),
+        [
+            'SELECT x',
+            'FROM a',
+            'INNER JOIN b',
+            '   ON a.x = b.x',
+            '    AND a.y = b.y',
+            '   OR a.z = b.z',
+            '    AND a.w = b.w;'
         ].join('\n')
     );
 });
@@ -1178,7 +1244,7 @@ test('multi-line JOIN ON puts ON on its own line, river-aligned with AND', () =>
         ].join('\n'));
 });
 
-test('multi-line JOIN ON river-aligns OR with AND', () => {
+test('multi-line JOIN ON keeps OR river-aligned and indents AND one level deeper', () => {
     const sql = 'select a from t join u on t.a = u.a and t.b = u.b or t.c = u.c;';
     assert.equal(formatSql(sql),
         [
@@ -1186,7 +1252,7 @@ test('multi-line JOIN ON river-aligns OR with AND', () => {
             'FROM t',
             'JOIN u',
             '   ON t.a = u.a',
-            '  AND t.b = u.b',
+            '    AND t.b = u.b',
             '   OR t.c = u.c;',
         ].join('\n'));
 });

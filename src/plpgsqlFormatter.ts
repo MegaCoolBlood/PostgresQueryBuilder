@@ -1440,25 +1440,32 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     const emitRange = (a: number, b: number): void => {
         for (let k = a; k <= b; k++) emitInline(toks[k]);
     };
-    /** Emit a multi-condition WHEN clause, breaking before each top-level AND/OR. */
+    /**
+     * Emit a multi-condition WHEN clause, breaking before each top-level AND/OR.
+     * In mixed OR/AND scopes, AND is indented one level deeper than OR so each
+     * OR alternative stays on the base line and its AND parts hang underneath.
+     */
     const renderCondMulti = (a: number, b: number, indent: number): void => {
         let pd = 0, cd = 0, between = 0;
         for (let k = a; k <= b; k++) {
             const tk = toks[k];
-            let isBreak = false;
+            let breakIndent: number | null = null;
             if (tk.type === 'word' && pd === 0) {
                 const w = tk.text.toLowerCase();
                 if (w === 'case') cd++;
                 else if (w === 'end') cd--;
                 else if (cd === 0) {
                     if (w === 'between') between++;
-                    else if (w === 'or') isBreak = true;
-                    else if (w === 'and') { if (between > 0) between--; else isBreak = true; }
+                    else if (w === 'or') breakIndent = indent;
+                    else if (w === 'and') {
+                        if (between > 0) between--;
+                        else breakIndent = indent + (andDeepSet.has(k) ? 1 : 0);
+                    }
                 }
             }
             if (tk.text === '(') pd++;
             else if (tk.text === ')') pd--;
-            if (isBreak) startLine(indent, 0);
+            if (breakIndent !== null) startLine(breakIndent, 0);
             emitInline(tk);
         }
     };
@@ -2020,9 +2027,9 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 if (condInlineSet.has(i)) { emit(rendered, meta); lastWord = w; continue; }
                 if (expectThen) ifCondBroke = true;
                 // In a scope that mixes AND and OR, indent the AND one level deeper
-                // than the OR so it hangs under its OR alternative. The JOIN-ON river
-                // style keeps its own right-aligned layout, so it is left untouched.
-                const andExtra = andDeepSet.has(i) && !joinRiver ? 1 : 0;
+                // than the OR so it hangs under its OR alternative. This now also
+                // applies inside JOIN ... ON conditions.
+                const andExtra = andDeepSet.has(i) ? 1 : 0;
                 startLine(blockIndent + pd + 1 + andExtra, blanks); emit(rendered, meta);
                 lastWord = w; continue;
             }
