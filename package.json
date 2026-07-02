@@ -305,12 +305,12 @@
             "createFunction": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "CREATE FUNCTION-Parameterliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Parametern einzeilig, ab multilineMin Parametern mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+              "description": "CREATE FUNCTION-Parameterliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Parametern einzeilig, ab multilineMin Parametern mehrzeilig, dazwischen wie im Quelltext. Mit \"0, 1\" wird schon ein einzelner Parameter umbrochen. Standard: 0, 1."
             },
             "createProcedure": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "CREATE PROCEDURE-Parameterliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Parametern einzeilig, ab multilineMin Parametern mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+              "description": "CREATE PROCEDURE-Parameterliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Parametern einzeilig, ab multilineMin Parametern mehrzeilig, dazwischen wie im Quelltext. Mit \"0, 1\" wird schon ein einzelner Parameter umbrochen. Standard: 0, 1."
             },
             "createType": {
               "type": "string",

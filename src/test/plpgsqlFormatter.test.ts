@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatSql, DEFAULT_FORMAT_OPTIONS, DEFAULT_THRESHOLDS, sqlSemanticallyEqual, sqlSemanticDiff, formatSqlChecked } from '../plpgsqlFormatter';
+import { formatSql, DEFAULT_FORMAT_OPTIONS, DEFAULT_THRESHOLDS, sqlSemanticallyEqual, sqlSemanticDiff, formatSqlChecked, coerceFormatOptions } from '../plpgsqlFormatter';
 
 test('uppercases keywords and breaks a SELECT into clauses with a column list', () => {
     const out = formatSql('select a,b ,c from foo f join bar b on b.id=f.bid where a=1 and b>2 order by a');
@@ -882,6 +882,38 @@ test('functionCallThreshold controls call wrapping', () => {
     // Lowering the upper threshold forces two-argument calls to wrap.
     const two = formatSql('call f(a, b);', { thresholds: { functionCall: { inlineMax: 1, multilineMin: 2 } } });
     assert.equal(two, ['CALL f(', '  a,', '  b', ');'].join('\n'));
+});
+
+test('coerceFormatOptions accepts multilineMin of 1 so a single parameter can be forced to wrap', () => {
+    const opts = coerceFormatOptions({ listThresholds: { createProcedure: '0, 1', createFunction: '0, 1' } });
+    // "0, 1" must survive coercion (previously multilineMin was clamped up to 2).
+    assert.deepEqual(opts.thresholds.createProcedure, { inlineMax: 0, multilineMin: 1 });
+    assert.deepEqual(opts.thresholds.createFunction, { inlineMax: 0, multilineMin: 1 });
+
+    // A one-parameter CREATE PROCEDURE now wraps its single parameter.
+    const sql = [
+        'CREATE PROCEDURE p(IN x integer)',
+        'LANGUAGE plpgsql',
+        'AS $$',
+        'BEGIN',
+        '  NULL;',
+        'END',
+        '$$;'
+    ].join('\n');
+    assert.equal(
+        formatSql(sql, opts),
+        [
+            'CREATE PROCEDURE p(',
+            '  IN x INTEGER',
+            ')',
+            '  LANGUAGE plpgsql',
+            'AS $$',
+            'BEGIN',
+            '  NULL;',
+            'END',
+            '$$;'
+        ].join('\n')
+    );
 });
 
 test('CREATE TABLE column list wraps per createTable threshold', () => {

@@ -168,7 +168,7 @@ export function coerceFormatOptions(raw: {
             if (typeof o.multilineMin === 'number') multilineMin = o.multilineMin;
         }
         inlineMax = Math.min(50, Math.max(0, Math.floor(inlineMax)));
-        multilineMin = Math.min(100, Math.max(2, Math.floor(multilineMin)));
+        multilineMin = Math.min(100, Math.max(1, Math.floor(multilineMin)));
         if (multilineMin <= inlineMax) multilineMin = inlineMax + 1;
         return { inlineMax, multilineMin };
     };
