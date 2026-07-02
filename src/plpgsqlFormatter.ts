@@ -104,6 +104,10 @@ export interface FormatOptions {
     blankLines: BlankLineStyle;
     /** Keep a simple SELECT (1 column, <=1 table, <=1 WHERE) on one line. Default: true. */
     simpleSelectSingleLine: boolean;
+    /** Keep a one-line CREATE FUNCTION/PROCEDURE header on one line. Default: true. */
+    preserveSingleLineRoutineHeaders: boolean;
+    /** Keep a fully one-line simple IF ... THEN ... END IF block on one line. Default: true. */
+    preserveSingleLineIfBlocks: boolean;
     /** Per-construct multi-line wrapping thresholds. See {@link DEFAULT_THRESHOLDS}. */
     thresholds: Partial<Record<ConstructKey, ListThreshold>>;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
@@ -119,6 +123,8 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     commaStyle: 'trailing',
     blankLines: 'preserve',
     simpleSelectSingleLine: true,
+    preserveSingleLineRoutineHeaders: true,
+    preserveSingleLineIfBlocks: true,
     thresholds: DEFAULT_THRESHOLDS,
     normalizeDataTypes: true
 };
@@ -143,6 +149,10 @@ export function coerceFormatOptions(raw: {
     commaStyle?: unknown;
     blankLines?: unknown;
     simpleSelectSingleLine?: unknown;
+    preserveSingleLineRoutineHeaders?: unknown;
+    preserveSingleLineIfBlocks?: unknown;
+    // Legacy umbrella switch: kept as fallback for backward compatibility.
+    preserveSingleLineSpecialCases?: unknown;
     listThresholds?: unknown;
     normalizeDataTypes?: unknown;
 }): FormatOptions {
@@ -176,6 +186,9 @@ export function coerceFormatOptions(raw: {
     (Object.keys(DEFAULT_THRESHOLDS) as ConstructKey[]).forEach(key => {
         thresholds[key] = threshold(table[key], DEFAULT_THRESHOLDS[key]);
     });
+    const legacySingleLine = typeof raw.preserveSingleLineSpecialCases === 'boolean'
+        ? raw.preserveSingleLineSpecialCases
+        : undefined;
     return {
         keywordCase: pick(raw.keywordCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.keywordCase),
         identifierCase: pick(raw.identifierCase, ['upper', 'lower', 'preserve'], DEFAULT_FORMAT_OPTIONS.identifierCase),
@@ -187,6 +200,12 @@ export function coerceFormatOptions(raw: {
         simpleSelectSingleLine: typeof raw.simpleSelectSingleLine === 'boolean'
             ? raw.simpleSelectSingleLine
             : DEFAULT_FORMAT_OPTIONS.simpleSelectSingleLine,
+        preserveSingleLineRoutineHeaders: typeof raw.preserveSingleLineRoutineHeaders === 'boolean'
+            ? raw.preserveSingleLineRoutineHeaders
+            : (legacySingleLine ?? DEFAULT_FORMAT_OPTIONS.preserveSingleLineRoutineHeaders),
+        preserveSingleLineIfBlocks: typeof raw.preserveSingleLineIfBlocks === 'boolean'
+            ? raw.preserveSingleLineIfBlocks
+            : (legacySingleLine ?? DEFAULT_FORMAT_OPTIONS.preserveSingleLineIfBlocks),
         thresholds,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
@@ -1647,7 +1666,8 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             const meta: TokMeta = { text: rendered, isKeyword: cat !== 'ident', type: 'word' };
 
             // Keep a CREATE FUNCTION/PROCEDURE that the author wrote on a single line intact.
-            if (w === 'create' && pd === 0 && parenStack.length === 0 && cur === '') {
+            if (opt.preserveSingleLineRoutineHeaders
+                && w === 'create' && pd === 0 && parenStack.length === 0 && cur === '') {
                 const end = singleLineRoutineEnd(i);
                 if (end >= 0) {
                     startLine(blockIndent, blanks);
@@ -1848,7 +1868,8 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                     let spanEnd = endKw;
                     if (toks[endKw + 1]?.type === 'word' && toks[endKw + 1].text.toLowerCase() === 'if') spanEnd = endKw + 1;
                     if (toks[spanEnd + 1]?.text === ';') spanEnd++;
-                    if (isSingleSourceLineRange(i, spanEnd)
+                    if (opt.preserveSingleLineIfBlocks
+                        && isSingleSourceLineRange(i, spanEnd)
                         && !ifHasTopLevelElseBranch(i, endKw)
                         && !rangeBlocksCollapse(i + 1, endKw - 1)) {
                         startLine(blockIndent, blanks);

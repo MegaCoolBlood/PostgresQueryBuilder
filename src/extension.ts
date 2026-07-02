@@ -45,6 +45,9 @@ function getFormatOptions(): FormatOptions {
         commaStyle: cfg.get('format.commaStyle'),
         blankLines: cfg.get('format.blankLines'),
         simpleSelectSingleLine: cfg.get('format.simpleSelectSingleLine'),
+        preserveSingleLineRoutineHeaders: cfg.get('format.preserveSingleLineRoutineHeaders'),
+        preserveSingleLineIfBlocks: cfg.get('format.preserveSingleLineIfBlocks'),
+        preserveSingleLineSpecialCases: cfg.get('format.preserveSingleLineSpecialCases'),
         listThresholds: cfg.get('format.listThresholds'),
         normalizeDataTypes: cfg.get('format.normalizeDataTypes')
     });

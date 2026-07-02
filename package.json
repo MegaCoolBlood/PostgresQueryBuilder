@@ -276,6 +276,22 @@
           "default": true,
           "description": "Keep a simple SELECT (single column, at most one table, at most one WHERE condition, no JOIN/GROUP/ORDER) on a single line."
         },
+        "postgresQueryBuilder.format.preserveSingleLineRoutineHeaders": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep a one-line CREATE FUNCTION/PROCEDURE header on one line."
+        },
+        "postgresQueryBuilder.format.preserveSingleLineIfBlocks": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep a fully one-line simple IF ... THEN ... END IF block on one line."
+        },
+        "postgresQueryBuilder.format.preserveSingleLineSpecialCases": {
+          "type": "boolean",
+          "default": true,
+          "description": "Deprecated umbrella switch for single-line special cases. Use preserveSingleLineRoutineHeaders and preserveSingleLineIfBlocks instead.",
+          "deprecationMessage": "Deprecated: use postgresQueryBuilder.format.preserveSingleLineRoutineHeaders and postgresQueryBuilder.format.preserveSingleLineIfBlocks."
+        },
         "postgresQueryBuilder.format.listThresholds": {
           "type": "object",
           "default": {

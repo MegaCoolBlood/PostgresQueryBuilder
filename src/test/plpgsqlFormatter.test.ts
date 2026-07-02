@@ -810,6 +810,8 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         commaStyle: 'trailing',
         blankLines: 'preserve',
         simpleSelectSingleLine: true,
+        preserveSingleLineRoutineHeaders: true,
+        preserveSingleLineIfBlocks: true,
         thresholds: DEFAULT_THRESHOLDS,
         normalizeDataTypes: true
     });
@@ -922,6 +924,22 @@ test('keeps a CREATE FUNCTION written on a single line on one line', () => {
     assert.equal(out, "CREATE FUNCTION pk.g_pair() RETURNS VARCHAR LANGUAGE SQL IMMUTABLE AS $$ SELECT 'X'; $$;");
 });
 
+test('single-line CREATE FUNCTION special case can be disabled', () => {
+    const out = formatSql(
+        "CREATE FUNCTION pk.g_pair() RETURNS varchar LANGUAGE SQL IMMUTABLE AS $$ SELECT 'X'; $$;",
+        { preserveSingleLineRoutineHeaders: false }
+    );
+    assert.equal(
+        out,
+        [
+            'CREATE FUNCTION pk.g_pair() RETURNS VARCHAR',
+            '  LANGUAGE SQL',
+            '  IMMUTABLE',
+            "AS $$ SELECT 'X'; $$;"
+        ].join('\n')
+    );
+});
+
 test('still expands a CREATE FUNCTION that the author wrote across lines', () => {
     const out = formatSql(
         "create function pk.g_pair() returns varchar language sql immutable as $$\nselect 'X';\n$$;"
@@ -989,6 +1007,19 @@ test('coerceFormatOptions accepts multilineMin of 1 so a single parameter can be
             '$$;'
         ].join('\n')
     );
+});
+
+test('coerceFormatOptions maps separate single-line toggles and supports legacy fallback', () => {
+    const split = coerceFormatOptions({
+        preserveSingleLineRoutineHeaders: false,
+        preserveSingleLineIfBlocks: true
+    });
+    assert.equal(split.preserveSingleLineRoutineHeaders, false);
+    assert.equal(split.preserveSingleLineIfBlocks, true);
+
+    const legacy = coerceFormatOptions({ preserveSingleLineSpecialCases: false });
+    assert.equal(legacy.preserveSingleLineRoutineHeaders, false);
+    assert.equal(legacy.preserveSingleLineIfBlocks, false);
 });
 
 test('CREATE TABLE column list wraps per createTable threshold', () => {
@@ -1316,6 +1347,11 @@ test('IF block keeps a fully one-line source on one line (and can still be thres
     assert.equal(
         formatSql(sql, { thresholds: { ifElse: { inlineMax: 1, multilineMin: 2 } } }),
         ['DO $$', 'BEGIN', '  IF a THEN x := 1; END IF;', 'END', '$$;'].join('\n')
+    );
+    // The special-case preservation can be disabled via formatter options.
+    assert.equal(
+        formatSql(sql, { preserveSingleLineIfBlocks: false }),
+        ['DO $$', 'BEGIN', '  IF a THEN', '    x := 1;', '  END IF;', 'END', '$$;'].join('\n')
     );
 });
 
