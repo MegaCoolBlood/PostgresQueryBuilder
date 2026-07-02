@@ -1305,12 +1305,12 @@ test('operator chain breaks per operatorChains threshold', () => {
     );
 });
 
-test('IF block collapses to one line per ifElse threshold', () => {
+test('IF block keeps a fully one-line source on one line (and can still be threshold-collapsed)', () => {
     const sql = 'do $$ begin if a then x := 1; end if; end $$;';
-    // Default: structural blocks stay multiline.
+    // A fully single-line source IF stays on one line by default.
     assert.equal(
         formatSql(sql),
-        ['DO $$', 'BEGIN', '  IF a THEN', '    x := 1;', '  END IF;', 'END', '$$;'].join('\n')
+        ['DO $$', 'BEGIN', '  IF a THEN x := 1; END IF;', 'END', '$$;'].join('\n')
     );
     // inlineMax >= 1 collapses a single-statement IF onto one line.
     assert.equal(

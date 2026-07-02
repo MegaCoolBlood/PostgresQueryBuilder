@@ -1143,6 +1143,39 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         return -1;
     };
 
+    /** True when all tokens in [from..to] stay on the same source line. */
+    const isSingleSourceLineRange = (from: number, to: number): boolean => {
+        for (let k = from + 1; k <= to; k++) {
+            const tk = toks[k];
+            if (tk.nlBefore >= 1) return false;
+            if (tk.text.includes('\n')) return false;
+        }
+        return true;
+    };
+
+    /** True when IF [ifIdx..endKw] has a top-level ELSE / ELSIF branch. */
+    const ifHasTopLevelElseBranch = (ifIdx: number, endKw: number): boolean => {
+        let pd = 0;
+        let nested = 0;
+        for (let k = ifIdx + 1; k < endKw; k++) {
+            const tk = toks[k];
+            if (tk.text === '(') { pd++; continue; }
+            if (tk.text === ')') { pd = Math.max(0, pd - 1); continue; }
+            if (pd !== 0 || tk.type !== 'word') continue;
+            const w = tk.text.toLowerCase();
+            if (w === 'if' || w === 'case' || w === 'loop' || w === 'begin') { nested++; continue; }
+            if (w === 'end' && nested > 0) {
+                nested--;
+                const nx = toks[k + 1];
+                const nw = nx && nx.type === 'word' ? nx.text.toLowerCase() : '';
+                if (nw === 'if' || nw === 'loop' || nw === 'case') k++;
+                continue;
+            }
+            if (nested === 0 && (w === 'else' || w === 'elsif' || w === 'elseif')) return true;
+        }
+        return false;
+    };
+
     /** If a simple one-line SELECT starts at `idx`, return the index of its `;` (or last token); else -1. */
     const simpleSelectEnd = (idx: number): number => {
         let d = 0;
@@ -1810,11 +1843,21 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                     lastWord = w; continue;
                 }
                 if (w === 'if' && ifIsBlock(i)) {
-                    // Collapse a small `IF … END IF;` onto one line when configured.
+                    // Keep a fully single-line *simple* IF on one line (like single-line routines).
                     const endKw = caseMatchEnd(i);
                     let spanEnd = endKw;
                     if (toks[endKw + 1]?.type === 'word' && toks[endKw + 1].text.toLowerCase() === 'if') spanEnd = endKw + 1;
                     if (toks[spanEnd + 1]?.text === ';') spanEnd++;
+                    if (isSingleSourceLineRange(i, spanEnd)
+                        && !ifHasTopLevelElseBranch(i, endKw)
+                        && !rangeBlocksCollapse(i + 1, endKw - 1)) {
+                        startLine(blockIndent, blanks);
+                        for (let k = i; k <= spanEnd; k++) emitInline(toks[k]);
+                        flush();
+                        pendingIndent = blockIndent;
+                        lastWord = ''; i = spanEnd; continue;
+                    }
+                    // Collapse a small `IF … END IF;` onto one line when configured.
                     if (wantsCollapse(countStmts(i + 1, endKw - 1), 'ifElse')
                         && !rangeBlocksCollapse(i + 1, endKw - 1)) {
                         startLine(blockIndent, blanks);
