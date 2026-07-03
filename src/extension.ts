@@ -14,6 +14,7 @@ import { TableDragAndDropController, TableStatementDropProvider, QualifierStore 
 import { ViewDataFromSelect } from './viewDataFromSelect';
 import { Logger, getErrorMessage, getErrorStack } from './logger';
 import { formatSqlChecked, coerceFormatOptions, FormatOptions } from './plpgsqlFormatter';
+import { readRepoFormatConfig, formatOptionsToRepoConfig } from './repoFormatConfig';
 let connectionManager: ConnectionManager;
 let tableExplorer: TableExplorerProvider;
 let tableWebViewManager: TableWebViewManager;
@@ -33,24 +34,32 @@ let lastTableClick: { key: string; time: number } = { key: '', time: 0 };
 /** Language IDs the PL/pgSQL formatter applies to. */
 const FORMATTER_LANGUAGES = ['sql', 'postgres', 'pgsql'];
 
-/** Read the formatter settings from configuration. */
+/** Read the formatter settings from configuration.
+ * Repository-level `.pgformat.json` takes precedence over VS Code settings. */
 function getFormatOptions(): FormatOptions {
     const cfg = vscode.workspace.getConfiguration('postgresQueryBuilder');
+    const folders = vscode.workspace.workspaceFolders;
+    const repo = folders && folders.length > 0
+        ? readRepoFormatConfig(folders[0].uri.fsPath)
+        : {};
+    // For each key: use the repo file value when present, otherwise VS Code setting.
+    const val = (shortKey: string, cfgKey: string): unknown =>
+        shortKey in repo ? repo[shortKey] : cfg.get(cfgKey);
     return coerceFormatOptions({
-        keywordCase: cfg.get('format.keywordCase'),
-        identifierCase: cfg.get('format.identifierCase'),
-        dataTypeCase: cfg.get('format.dataTypeCase'),
-        indentStyle: cfg.get('format.indentStyle'),
-        indentSize: cfg.get('format.indentSize'),
-        commaStyle: cfg.get('format.commaStyle'),
-        blankLines: cfg.get('format.blankLines'),
-        simpleSelectSingleLine: cfg.get('format.simpleSelectSingleLine'),
-        preserveSingleLineRoutineHeaders: cfg.get('format.preserveSingleLineRoutineHeaders'),
-        preserveSingleLineIfBlocks: cfg.get('format.preserveSingleLineIfBlocks'),
-        preserveSingleLineSpecialCases: cfg.get('format.preserveSingleLineSpecialCases'),
-        listThresholds: cfg.get('format.listThresholds'),
-        normalizeDataTypes: cfg.get('format.normalizeDataTypes'),
-        dataTypeAliases: cfg.get('format.dataTypeAliases')
+        keywordCase:                    val('keywordCase',                    'format.keywordCase'),
+        identifierCase:                 val('identifierCase',                 'format.identifierCase'),
+        dataTypeCase:                   val('dataTypeCase',                   'format.dataTypeCase'),
+        indentStyle:                    val('indentStyle',                    'format.indentStyle'),
+        indentSize:                     val('indentSize',                     'format.indentSize'),
+        commaStyle:                     val('commaStyle',                     'format.commaStyle'),
+        blankLines:                     val('blankLines',                     'format.blankLines'),
+        simpleSelectSingleLine:         val('simpleSelectSingleLine',         'format.simpleSelectSingleLine'),
+        preserveSingleLineRoutineHeaders: val('preserveSingleLineRoutineHeaders', 'format.preserveSingleLineRoutineHeaders'),
+        preserveSingleLineIfBlocks:     val('preserveSingleLineIfBlocks',     'format.preserveSingleLineIfBlocks'),
+        preserveSingleLineSpecialCases: val('preserveSingleLineSpecialCases', 'format.preserveSingleLineSpecialCases'),
+        listThresholds:                 val('listThresholds',                 'format.listThresholds'),
+        normalizeDataTypes:             val('normalizeDataTypes',             'format.normalizeDataTypes'),
+        dataTypeAliases:                val('dataTypeAliases',                'format.dataTypeAliases')
     });
 }
 
@@ -251,6 +260,35 @@ export function activate(context: vscode.ExtensionContext) {
                 } catch (err: unknown) {
                     outputChannel.appendLine(`[formatSql] ${getErrorStack(err)}`);
                     vscode.window.showErrorMessage(`Format failed: ${getErrorMessage(err)}`);
+                }
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.commands.registerCommand('postgresQueryBuilder.exportFormatConfig', async () => {
+                const folders = vscode.workspace.workspaceFolders;
+                if (!folders || folders.length === 0) {
+                    vscode.window.showWarningMessage('No workspace folder open. Please open a folder first.');
+                    return;
+                }
+                const targetPath = require('path').join(folders[0].uri.fsPath, '.pgformat.json');
+                const fs = require('fs') as typeof import('fs');
+                if (fs.existsSync(targetPath)) {
+                    const answer = await vscode.window.showWarningMessage(
+                        '.pgformat.json already exists. Overwrite with current settings?',
+                        { modal: true },
+                        'Overwrite'
+                    );
+                    if (answer !== 'Overwrite') { return; }
+                }
+                try {
+                    const content = formatOptionsToRepoConfig(getFormatOptions());
+                    fs.writeFileSync(targetPath, JSON.stringify(content, null, 2) + '\n', 'utf8');
+                    const doc = await vscode.workspace.openTextDocument(targetPath);
+                    await vscode.window.showTextDocument(doc);
+                } catch (err: unknown) {
+                    outputChannel.appendLine(`[exportFormatConfig] ${getErrorStack(err)}`);
+                    vscode.window.showErrorMessage(`Could not write .pgformat.json: ${getErrorMessage(err)}`);
                 }
             })
         );

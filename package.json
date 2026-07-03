@@ -2,7 +2,7 @@
   "name": "postgres-query-builder",
   "displayName": "PostgreSQL Query Builder",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "2.0.4",
+  "version": "2.1.0",
   "publisher": "postgres-query-builder",
   "engines": {
     "vscode": "^1.85.0"
@@ -49,70 +49,75 @@
       {
         "command": "postgresQueryBuilder.connect",
         "title": "Connect to PostgreSQL Database",
-        "category": "PostgreSQL"
+        "category": "PostgreSQL Query Builder"
         },
       {
         "command": "postgresQueryBuilder.disconnect",
         "title": "Disconnect from PostgreSQL Database",
-        "category": "PostgreSQL"
+        "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.refreshExplorer",
         "title": "Refresh Table Explorer",
-        "category": "PostgreSQL",
+        "category": "PostgreSQL Query Builder",
         "icon": "$(refresh)"
       },
       {
         "command": "postgresQueryBuilder.editSearchPath",
         "title": "Show / Edit search_path",
-        "category": "PostgreSQL",
+        "category": "PostgreSQL Query Builder",
         "icon": "$(list-tree)"
       },
       {
         "command": "postgresQueryBuilder.openTable",
         "title": "Open Table",
-        "category": "PostgreSQL"
+        "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.selectConnection",
         "title": "Select Connection",
-        "category": "PostgreSQL"
+        "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.openSqlEditor",
         "title": "Open SQL Editor",
-        "category": "PostgreSQL"
+        "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.exportCustomMappings",
         "title": "Export Custom Column Mappings...",
-        "category": "PostgreSQL"
+        "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.importCustomMappings",
         "title": "Import Custom Column Mappings...",
-        "category": "PostgreSQL"
+        "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.openCustomMappingsFile",
         "title": "Open Workspace Custom Mappings File",
-        "category": "PostgreSQL"
+        "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.manageCustomMappings",
         "title": "Manage Custom Column Mappings...",
-        "category": "PostgreSQL"
+        "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.viewDataFromSelect",
         "title": "View Data",
-        "category": "PostgreSQL"
+        "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.formatSql",
         "title": "Format PL/pgSQL",
-        "category": "PostgreSQL",
+        "category": "PostgreSQL Query Builder",
         "icon": "$(symbol-namespace)"
+      },
+      {
+        "command": "postgresQueryBuilder.exportFormatConfig",
+        "title": "Export Formatter Settings to .pgformat.json",
+        "category": "PostgreSQL Query Builder"
       }
     ],
     "menus": {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.0
+
+- **Repository-level formatter config (`.pgformat.json`):** Formatter settings can now be shared across a team via a `.pgformat.json` file in the workspace root. All keys mirror the VS Code setting names without the `postgresQueryBuilder.format.` prefix (e.g. `keywordCase`, `indentSize`, `listThresholds`). Values in the file take precedence over personal VS Code settings, so every developer formats consistently without touching their own `settings.json`. The file is optional; when absent the extension behaves as before.
+
+- **Export formatter settings to `.pgformat.json`** (command *PostgreSQL Query Builder: Export Formatter Settings to .pgformat.json*): Creates or overwrites `.pgformat.json` in the workspace root with all current formatter settings (VS Code settings merged with any existing repo file). Asks for confirmation before overwriting an existing file, then opens the generated file in the editor.
+
+- **Unified command category:** All extension commands now appear under the category `PostgreSQL Query Builder` in the Command Palette instead of the former `PostgreSQL`.
+
 ## 2.0.4
 
 - **Neue Default-Aliase für Integer-Typen:** In `format.dataTypeAliases` sind jetzt zusätzlich `int2 -> smallint`, `int4 -> integer` und `int8 -> bigint` enthalten.
