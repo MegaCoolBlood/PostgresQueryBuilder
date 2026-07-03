@@ -1,4 +1,4 @@
-// Bundles the extension into a single CommonJS file for packaging.
+// Bundles the extension, language server, and CLI into CommonJS files.
 //
 // The webview assets in `src/webview/**` are loaded from disk at runtime
 // (via `context.extensionPath` / `__dirname/../src/webview`), so they are NOT
@@ -9,27 +9,45 @@ const esbuild = require('esbuild');
 const production = process.argv.includes('--minify');
 const watch = process.argv.includes('--watch');
 
+const commonOptions = {
+    bundle: true,
+    format: 'cjs',
+    platform: 'node',
+    target: 'node18',
+    // `vscode` is provided by the host. `pg-native` is an optional native
+    // driver that pg requires lazily; it is not a dependency of this
+    // extension, so keep it external instead of trying to bundle it.
+    external: ['vscode', 'pg-native'],
+    sourcemap: !production,
+    minify: production,
+    logLevel: 'info'
+};
+
 async function main() {
-    const ctx = await esbuild.context({
-        entryPoints: ['src/extension.ts'],
-        bundle: true,
-        format: 'cjs',
-        platform: 'node',
-        target: 'node18',
-        outfile: 'dist/extension.js',
-        // `vscode` is provided by the host. `pg-native` is an optional native
-        // driver that pg requires lazily; it is not a dependency of this
-        // extension, so keep it external instead of trying to bundle it.
-        external: ['vscode', 'pg-native'],
-        sourcemap: !production,
-        minify: production,
-        logLevel: 'info'
-    });
+    const entries = [
+        { entryPoints: ['src/extension.ts'], outfile: 'dist/extension.js' },
+        { entryPoints: ['server/language-server.ts'], outfile: 'dist/server.js' },
+        { entryPoints: ['cli/format-cli.ts'], outfile: 'dist/cli.js' },
+    ];
+
     if (watch) {
+        // In watch mode, create one context with all entry points
+        const ctx = await esbuild.context({
+            ...commonOptions,
+            entryPoints: entries.flatMap(e => e.entryPoints),
+            outdir: 'dist'
+        });
         await ctx.watch();
     } else {
-        await ctx.rebuild();
-        await ctx.dispose();
+        // In build mode, rebuild each entry point
+        for (const entry of entries) {
+            const ctx = await esbuild.context({
+                ...commonOptions,
+                ...entry
+            });
+            await ctx.rebuild();
+            await ctx.dispose();
+        }
     }
 }
 

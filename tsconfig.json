@@ -5,12 +5,14 @@
     "outDir": "out",
     "lib": ["ES2022"],
     "sourceMap": true,
-    "rootDir": "src",
+    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "types": ["node"]
   },
-  "exclude": ["node_modules", ".vscode-test"]
+  "include": ["src/**/*", "server/**/*", "cli/**/*"],
+  "exclude": ["node_modules", ".vscode-test", "dist", "out"]
 }

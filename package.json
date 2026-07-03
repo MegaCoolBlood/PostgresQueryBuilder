@@ -5,7 +5,11 @@
   "version": "2.1.0",
   "publisher": "postgres-query-builder",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.85.0",
+    "node": ">=18"
+  },
+  "bin": {
+    "pgformat": "./dist/cli.js"
   },
   "categories": [
     "Other"
@@ -15,7 +19,7 @@
     "onView:postgresTableSearch",
     "onView:postgresModifyHistory",
     "onStartupFinished"
-    ],
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -50,7 +54,7 @@
         "command": "postgresQueryBuilder.connect",
         "title": "Connect to PostgreSQL Database",
         "category": "PostgreSQL Query Builder"
-        },
+      },
       {
         "command": "postgresQueryBuilder.disconnect",
         "title": "Disconnect from PostgreSQL Database",
@@ -467,6 +471,8 @@
     "esbuild": "node esbuild.js",
     "esbuild:watch": "node esbuild.js --watch",
     "package": "node esbuild.js --minify",
+    "start-server": "node dist/server.js",
+    "format-cli": "node dist/cli.js",
     "lint": "eslint src --ext ts",
     "test": "npm run compile:test && node --test out/test/**/*.test.js",
     "bump:patch": "npm version patch --no-git-tag-version",
@@ -492,7 +498,9 @@
     "@typescript-eslint/parser": "^8.0.0",
     "esbuild": "^0.28.1",
     "eslint": "^9.0.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.12"
   },
   "dependencies": {
     "exceljs": "^4.4.0",
