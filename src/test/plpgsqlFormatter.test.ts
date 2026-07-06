@@ -649,6 +649,47 @@ test('indents subqueries inside parentheses', () => {
     );
 });
 
+test('indents scalar subqueries in a SELECT column list', () => {
+    const out = formatSql(
+        'SELECT a,\n(SELECT COUNT(*) FROM t WHERE t.id = base.id) AS cnt\nFROM base;'
+    );
+    assert.equal(
+        out,
+        [
+            'SELECT',
+            '  a,',
+            '  (',
+            '    SELECT COUNT(*)',
+            '    FROM t',
+            '    WHERE t.id = base.id',
+            '  ) AS cnt',
+            'FROM base;'
+        ].join('\n')
+    );
+});
+
+test('indents scalar subqueries in a SELECT column list inside a PL/pgSQL block', () => {
+    const out = formatSql(
+        "BEGIN\n  RETURN QUERY\n  SELECT\n    mtd.id,\n    (SELECT COUNT(*) FROM expenses e WHERE e.mtd_id = mtd.id) AS expense_count\n  FROM timedata mtd;\nEND;"
+    );
+    assert.equal(
+        out,
+        [
+            'BEGIN',
+            '  RETURN QUERY',
+            '  SELECT',
+            '    mtd.id,',
+            '    (',
+            '      SELECT COUNT(*)',
+            '      FROM expenses e',
+            '      WHERE e.mtd_id = mtd.id',
+            '    ) AS expense_count',
+            '  FROM timedata mtd;',
+            'END;'
+        ].join('\n')
+    );
+});
+
 test('breaks UPDATE ... SET assignments onto separate lines', () => {
     const out = formatSql('update tbl set a=1, b=2 where id=5;');
     assert.equal(

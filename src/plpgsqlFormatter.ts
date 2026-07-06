@@ -1206,7 +1206,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     let joinRiver = false;
     const blocks: BlockFrame[] = [];
     const lists: { depth: number; indent: number; bdepth?: number }[] = [];
-    const parenStack: { kind: ParenKind; multiline: boolean; openIndent: number }[] = [];
+    const parenStack: { kind: ParenKind; multiline: boolean; openIndent: number; savedBlockIndent?: number }[] = [];
     const bracketStack: { multiline: boolean; openIndent: number }[] = [];
 
     const indentStr = (level: number): string =>
@@ -2374,10 +2374,16 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 emit('(', { text: '(', isKeyword: false, type: 'punct' });
             }
             const openIndent = lineIndent;
-            parenStack.push({ kind, multiline, openIndent });
+            // For subqueries, adjust blockIndent so that clause keywords inside
+            // (SELECT, FROM, WHERE …) are indented one level deeper than the opening `(`.
+            // The formula blockIndent = openIndent - depths[i] ensures that
+            // clauseIndent = blockIndent + pd_inside = openIndent + 1.
+            const savedBlockIndent = kind === 'subquery' ? blockIndent : undefined;
+            if (kind === 'subquery') blockIndent = openIndent - depths[i];
+            parenStack.push({ kind, multiline, openIndent, savedBlockIndent });
             if (multiline) {
                 if (kind === 'subquery') {
-                    flush(); pendingIndent = openIndent;
+                    flush(); pendingIndent = openIndent + 1;
                 } else if (kind === 'boolgroup') {
                     // Boolean group: operands/operators break onto their own lines,
                     // indented one level under the opening parenthesis.
@@ -2400,6 +2406,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             } else {
                 emit(')', { text: ')', isKeyword: false, type: 'punct' });
             }
+            if (frame && frame.savedBlockIndent !== undefined) blockIndent = frame.savedBlockIndent;
             if (frame && frame.kind === 'paramlist') inRoutineTrailer = true;
             continue;
         }
