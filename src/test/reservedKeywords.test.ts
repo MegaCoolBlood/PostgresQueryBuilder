@@ -10,7 +10,7 @@ import { POSTGRES_RESERVED_KEYWORDS_LIST } from '../reservedKeywords';
 // two lists stay identical.
 function readWebviewKeywords(): string[] {
     const src = fs.readFileSync(
-        path.join(__dirname, '../../src/webview/tableView.js'),
+        path.join(__dirname, '../../../src/webview/tableView.js'),
         'utf8'
     );
     const marker = 'const POSTGRES_RESERVED_KEYWORDS = new Set([';

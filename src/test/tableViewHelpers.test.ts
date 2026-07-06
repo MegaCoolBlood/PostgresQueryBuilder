@@ -9,7 +9,7 @@ const {
     splitTopLevelCommas,
     splitTopLevelClauses,
     buildRowIdentity
-} = require(path.join(__dirname, '../../src/webview/tableView.js'));
+} = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== cellToString =====
 

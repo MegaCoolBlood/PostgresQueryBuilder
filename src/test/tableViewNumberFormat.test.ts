@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 
 const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv } = require(
-    path.join(__dirname, '../../src/webview/tableView.js')
+    path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
 test('normalizeNumericInput strips thousand separators and converts decimal comma', () => {

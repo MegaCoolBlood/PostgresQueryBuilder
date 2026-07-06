@@ -723,6 +723,113 @@ export function formatSqlChecked(input: string, options?: Partial<FormatOptions>
     return { text: result, ok: true };
 }
 
+/**
+ * Strip trailing spaces/tabs at the end of every physical line, but never touch
+ * whitespace that lives *inside* a string / dollar-quoted / quoted-identifier
+ * literal. A multi-line string literal (e.g. the body of a `format('…')` call)
+ * carries its interior whitespace verbatim, and rewriting it would change the
+ * code's meaning — which the safety net then (correctly) rejects, silently
+ * disabling formatting for the whole file. Comments are intentionally left
+ * unprotected: their whitespace is normalised away before the semantic
+ * comparison, so trimming them is harmless.
+ */
+function stripTrailingWhitespacePreservingLiterals(text: string): string {
+    const n = text.length;
+    const isProtected = new Uint8Array(n);
+    let i = 0;
+    while (i < n) {
+        const c = text[i];
+        const c2 = text[i + 1];
+        // Line comment — skip to end of line (unprotected).
+        if (c === '-' && c2 === '-') {
+            let j = i + 2;
+            while (j < n && text[j] !== '\n') j++;
+            i = j;
+            continue;
+        }
+        // Block comment (nesting allowed) — skip over it (unprotected).
+        if (c === '/' && c2 === '*') {
+            let j = i + 2;
+            let depth = 1;
+            while (j < n && depth > 0) {
+                if (text[j] === '/' && text[j + 1] === '*') { depth++; j += 2; }
+                else if (text[j] === '*' && text[j + 1] === '/') { depth--; j += 2; }
+                else j++;
+            }
+            i = j;
+            continue;
+        }
+        // Prefixed string literal: E'…', B'…', X'…', U&'…' (and lowercase forms).
+        const lc = c.toLowerCase();
+        let pfx = 0;
+        if ((lc === 'e' || lc === 'b' || lc === 'x') && c2 === "'") pfx = 1;
+        else if (lc === 'u' && c2 === '&' && text[i + 2] === "'") pfx = 2;
+        if (pfx || c === "'") {
+            const start = i;
+            let j = i + (pfx ? pfx + 1 : 1);
+            while (j < n) {
+                if (text[j] === '\\') { j += 2; continue; }
+                if (text[j] === "'") {
+                    if (text[j + 1] === "'") { j += 2; continue; }
+                    j++; break;
+                }
+                j++;
+            }
+            for (let k = start; k < j; k++) isProtected[k] = 1;
+            i = j;
+            continue;
+        }
+        // Quoted identifier.
+        if (c === '"') {
+            const start = i;
+            let j = i + 1;
+            while (j < n) {
+                if (text[j] === '"') {
+                    if (text[j + 1] === '"') { j += 2; continue; }
+                    j++; break;
+                }
+                j++;
+            }
+            for (let k = start; k < j; k++) isProtected[k] = 1;
+            i = j;
+            continue;
+        }
+        // Dollar-quoted string ($tag$…$tag$) or positional parameter ($1).
+        if (c === '$') {
+            if (/\d/.test(c2 || '')) {
+                let j = i + 1;
+                while (j < n && /\d/.test(text[j])) j++;
+                i = j;
+                continue;
+            }
+            const tagMatch = /^\$[A-Za-z_]?[A-Za-z0-9_]*\$/.exec(text.slice(i));
+            if (tagMatch) {
+                const tag = tagMatch[0];
+                const close = text.indexOf(tag, i + tag.length);
+                const j = close === -1 ? n : close + tag.length;
+                for (let k = i; k < j; k++) isProtected[k] = 1;
+                i = j;
+                continue;
+            }
+        }
+        i++;
+    }
+    // Rebuild, dropping unprotected trailing spaces/tabs before each line break
+    // and at end of input. A newline inside a literal is protected, so the
+    // literal's interior lines are emitted verbatim.
+    let result = '';
+    let lineStart = 0;
+    for (let k = 0; k <= n; k++) {
+        if (k === n || (text[k] === '\n' && !isProtected[k])) {
+            let end = k;
+            while (end > lineStart && (text[end - 1] === ' ' || text[end - 1] === '\t') && !isProtected[end - 1]) end--;
+            result += text.slice(lineStart, end);
+            if (k < n) result += '\n';
+            lineStart = k + 1;
+        }
+    }
+    return result;
+}
 
 function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string {
     const opt: FormatOptions = { ...DEFAULT_FORMAT_OPTIONS, ...(options || {}) };
@@ -2349,7 +2456,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         }
     }
 
-    let result = out.join('\n').replace(/[ \t]+$/gm, '');
+    let result = stripTrailingWhitespacePreservingLiterals(out.join('\n'));
     if (opt.blankLines === 'collapse') result = result.replace(/\n{3,}/g, '\n\n');
     result = result.replace(/^\n+/, '').replace(/\n+$/, '');
     return trailingNewline ? result + '\n' : result;

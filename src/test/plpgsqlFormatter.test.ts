@@ -800,6 +800,40 @@ test('formatSqlChecked reports ok for valid input', () => {
     assert.ok(sqlSemanticallyEqual('select a, b from t;', r.text));
 });
 
+test('preserves trailing whitespace inside a multi-line string literal', () => {
+    // A multi-line string literal (e.g. the body of a format('…') call) whose
+    // interior lines carry trailing whitespace must be emitted verbatim. The
+    // formatter used to strip trailing whitespace on *every* physical line,
+    // including those inside string literals, which changed the code and made
+    // the safety net silently disable formatting for the whole file.
+    const src = [
+        'CREATE OR REPLACE PROCEDURE foo()',
+        'LANGUAGE plpgsql AS $procedure$',
+        'BEGIN',
+        "    v_sql := format('",
+        '        INSERT INTO wtm_backend_communication (a, b)    ',
+        '        VALUES (%L, %L)',
+        "    ', x, y);",
+        'END;',
+        '$procedure$;',
+    ].join('\n');
+    const r = formatSqlChecked(src);
+    assert.equal(r.reason, undefined);
+    assert.equal(r.ok, true);
+    // The literal's interior trailing spaces survive in the output.
+    assert.ok(
+        r.text.includes('INSERT INTO wtm_backend_communication (a, b)    \n'),
+        'trailing whitespace inside the string literal should be preserved',
+    );
+});
+
+test('still strips trailing whitespace on ordinary code lines', () => {
+    const r = formatSqlChecked('select a,   \n       b from t;   \n');
+    assert.equal(r.ok, true);
+    assert.ok(!/[ \t]+\n/.test(r.text), 'code lines should not keep trailing whitespace');
+    assert.ok(!/[ \t]+$/.test(r.text.replace(/\n$/, '')), 'no trailing whitespace at end');
+});
+
 test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
     assert.deepEqual(DEFAULT_FORMAT_OPTIONS, {
         keywordCase: 'upper',

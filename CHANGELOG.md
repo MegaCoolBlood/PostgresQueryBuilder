@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.1
+
+- **Formatter no longer skips files that contain multi-line string literals with trailing whitespace:** The final formatting pass trimmed trailing spaces/tabs on *every* physical line, including lines *inside* a string literal (for example the body of a `format('… INSERT INTO … ')` call). Because a string literal must be preserved byte-for-byte, this altered the code and the safety net (correctly) rejected the result, silently disabling formatting for the whole file with a message like *"formatting would have changed the code at token N …"*. Trailing whitespace is now stripped only outside of string, dollar-quoted and quoted-identifier literals, so such files format normally again.
+
 ## 2.1.0
 
 - **Repository-level formatter config (`.pgformat.json`):** Formatter settings can now be shared across a team via a `.pgformat.json` file in the workspace root. All keys mirror the VS Code setting names without the `postgresQueryBuilder.format.` prefix (e.g. `keywordCase`, `indentSize`, `listThresholds`). Values in the file take precedence over personal VS Code settings, so every developer formats consistently without touching their own `settings.json`. The file is optional; when absent the extension behaves as before.

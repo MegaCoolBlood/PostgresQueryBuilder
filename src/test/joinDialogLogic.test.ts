@@ -13,7 +13,7 @@ const {
     formatSqlLiteral,
     literalToCustomCondition
 } = require(
-    path.join(__dirname, '../../src/webview/joinDialogLogic.js')
+    path.join(__dirname, '../../../src/webview/joinDialogLogic.js')
 );
 
 // ===== uniqueAlias =====

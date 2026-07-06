@@ -10,7 +10,7 @@ const {
     normalizeCellInput,
     mappingConditionToClause,
     buildErrorDialogState
-} = require(path.join(__dirname, '../../src/webview/tableView.js'));
+} = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 const SEP = ' ';
 

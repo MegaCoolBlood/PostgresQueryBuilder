@@ -2,7 +2,7 @@
   "name": "postgres-query-builder",
   "displayName": "PostgreSQL Query Builder",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "publisher": "postgres-query-builder",
   "engines": {
     "vscode": "^1.85.0",
@@ -474,7 +474,7 @@
     "start-server": "node dist/server.js",
     "format-cli": "node dist/cli.js",
     "lint": "eslint src --ext ts",
-    "test": "npm run compile:test && node --test out/test/**/*.test.js",
+    "test": "npm run compile:test && node --test out/src/test/**/*.test.js",
     "bump:patch": "npm version patch --no-git-tag-version",
     "bump:minor": "npm version minor --no-git-tag-version",
     "bump:major": "npm version major --no-git-tag-version",

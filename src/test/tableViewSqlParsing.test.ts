@@ -17,7 +17,7 @@ const {
     formatConstraintCondition,
     buildConstraintWhere,
     shouldRenderEarlyColumns
-} = require(path.join(__dirname, '../../src/webview/tableView.js'));
+} = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== 0.2.0: "Load More" for custom queries (stripTrailingLimitOffset) =====
 
