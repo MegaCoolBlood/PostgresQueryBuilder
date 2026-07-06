@@ -23,3 +23,9 @@ node_modules/**
 **/*.map
 *.vsix
 
+# CLI standalone binaries are distributed separately and should not inflate the
+# VS Code extension package.
+dist/pgformat.exe
+dist/pgformat.zip
+dist/binaries/**
+
