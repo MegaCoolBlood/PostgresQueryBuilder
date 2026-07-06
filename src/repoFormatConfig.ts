@@ -7,6 +7,37 @@ import { FormatOptions } from './plpgsqlFormatter';
 export const REPO_FORMAT_CONFIG_FILENAME = '.pgformat.json';
 
 /**
+ * Read formatter settings from an explicit config file path.
+ *
+ * Returns an empty object when the file does not exist.
+ * Logs a warning (via {@link Logger}) and returns an empty object when the
+ * file cannot be parsed.
+ */
+export function readFormatConfigFile(filePath: string): Record<string, unknown> {
+    let raw: string;
+    try {
+        raw = fs.readFileSync(filePath, 'utf8');
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            Logger.log('repoFormatConfig', `Could not read ${path.basename(filePath)}: ${getErrorMessage(err)}`);
+        }
+        return {};
+    }
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(raw);
+    } catch (err) {
+        Logger.log('repoFormatConfig', `${path.basename(filePath)} contains invalid JSON: ${getErrorMessage(err)}`);
+        return {};
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        Logger.log('repoFormatConfig', `${path.basename(filePath)} must be a JSON object — ignored.`);
+        return {};
+    }
+    return parsed as Record<string, unknown>;
+}
+
+/**
  * Read formatter settings from a `.pgformat.json` file in `folderPath`.
  *
  * The file must contain a JSON object whose keys mirror the VS Code setting
@@ -25,28 +56,7 @@ export const REPO_FORMAT_CONFIG_FILENAME = '.pgformat.json';
  * file cannot be parsed.
  */
 export function readRepoFormatConfig(folderPath: string): Record<string, unknown> {
-    const filePath = path.join(folderPath, REPO_FORMAT_CONFIG_FILENAME);
-    let raw: string;
-    try {
-        raw = fs.readFileSync(filePath, 'utf8');
-    } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-            Logger.log('repoFormatConfig', `Could not read ${REPO_FORMAT_CONFIG_FILENAME}: ${getErrorMessage(err)}`);
-        }
-        return {};
-    }
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(raw);
-    } catch (err) {
-        Logger.log('repoFormatConfig', `${REPO_FORMAT_CONFIG_FILENAME} contains invalid JSON: ${getErrorMessage(err)}`);
-        return {};
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        Logger.log('repoFormatConfig', `${REPO_FORMAT_CONFIG_FILENAME} must be a JSON object — ignored.`);
-        return {};
-    }
-    return parsed as Record<string, unknown>;
+    return readFormatConfigFile(path.join(folderPath, REPO_FORMAT_CONFIG_FILENAME));
 }
 
 /**

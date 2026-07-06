@@ -13,8 +13,9 @@ import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore } from './tableStatementDrop';
 import { ViewDataFromSelect } from './viewDataFromSelect';
 import { Logger, getErrorMessage, getErrorStack } from './logger';
-import { formatSqlChecked, coerceFormatOptions, FormatOptions } from './plpgsqlFormatter';
-import { readRepoFormatConfig, formatOptionsToRepoConfig } from './repoFormatConfig';
+import { formatSqlChecked, FormatOptions } from './plpgsqlFormatter';
+import { formatOptionsToRepoConfig } from './repoFormatConfig';
+import { resolveFormatOptions } from './formatConfig';
 let connectionManager: ConnectionManager;
 let tableExplorer: TableExplorerProvider;
 let tableWebViewManager: TableWebViewManager;
@@ -39,28 +40,10 @@ const FORMATTER_LANGUAGES = ['sql', 'postgres', 'pgsql'];
 function getFormatOptions(): FormatOptions {
     const cfg = vscode.workspace.getConfiguration('postgresQueryBuilder');
     const folders = vscode.workspace.workspaceFolders;
-    const repo = folders && folders.length > 0
-        ? readRepoFormatConfig(folders[0].uri.fsPath)
-        : {};
-    // For each key: use the repo file value when present, otherwise VS Code setting.
-    const val = (shortKey: string, cfgKey: string): unknown =>
-        shortKey in repo ? repo[shortKey] : cfg.get(cfgKey);
-    return coerceFormatOptions({
-        keywordCase:                    val('keywordCase',                    'format.keywordCase'),
-        identifierCase:                 val('identifierCase',                 'format.identifierCase'),
-        dataTypeCase:                   val('dataTypeCase',                   'format.dataTypeCase'),
-        indentStyle:                    val('indentStyle',                    'format.indentStyle'),
-        indentSize:                     val('indentSize',                     'format.indentSize'),
-        commaStyle:                     val('commaStyle',                     'format.commaStyle'),
-        blankLines:                     val('blankLines',                     'format.blankLines'),
-        simpleSelectSingleLine:         val('simpleSelectSingleLine',         'format.simpleSelectSingleLine'),
-        preserveSingleLineRoutineHeaders: val('preserveSingleLineRoutineHeaders', 'format.preserveSingleLineRoutineHeaders'),
-        preserveSingleLineIfBlocks:     val('preserveSingleLineIfBlocks',     'format.preserveSingleLineIfBlocks'),
-        preserveSingleLineSpecialCases: val('preserveSingleLineSpecialCases', 'format.preserveSingleLineSpecialCases'),
-        listThresholds:                 val('listThresholds',                 'format.listThresholds'),
-        normalizeDataTypes:             val('normalizeDataTypes',             'format.normalizeDataTypes'),
-        dataTypeAliases:                val('dataTypeAliases',                'format.dataTypeAliases')
-    });
+    return resolveFormatOptions(
+        (configKey) => cfg.get(configKey),
+        folders && folders.length > 0 ? folders[0].uri.fsPath : undefined
+    );
 }
 
 /** Whether the formatter is enabled (master toggle). */

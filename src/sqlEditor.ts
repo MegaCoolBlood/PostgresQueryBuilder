@@ -4,7 +4,8 @@ import { QueryRunner } from './queryRunner';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
 import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
 import { getErrorMessage } from './logger';
-import { formatSql, coerceFormatOptions } from './plpgsqlFormatter';
+import { formatSql } from './plpgsqlFormatter';
+import { resolveFormatOptions } from './formatConfig';
 
 export class SqlEditorManager {
     private panel: vscode.WebviewPanel | null = null;
@@ -48,22 +49,10 @@ export class SqlEditorManager {
                     return;
                 }
                 try {
-                    const options = coerceFormatOptions({
-                        keywordCase: cfg.get('format.keywordCase'),
-                        identifierCase: cfg.get('format.identifierCase'),
-                        dataTypeCase: cfg.get('format.dataTypeCase'),
-                        indentStyle: cfg.get('format.indentStyle'),
-                        indentSize: cfg.get('format.indentSize'),
-                        commaStyle: cfg.get('format.commaStyle'),
-                        blankLines: cfg.get('format.blankLines'),
-                        simpleSelectSingleLine: cfg.get('format.simpleSelectSingleLine'),
-                        preserveSingleLineRoutineHeaders: cfg.get('format.preserveSingleLineRoutineHeaders'),
-                        preserveSingleLineIfBlocks: cfg.get('format.preserveSingleLineIfBlocks'),
-                        preserveSingleLineSpecialCases: cfg.get('format.preserveSingleLineSpecialCases'),
-                        listThresholds: cfg.get('format.listThresholds'),
-                        normalizeDataTypes: cfg.get('format.normalizeDataTypes'),
-                        dataTypeAliases: cfg.get('format.dataTypeAliases')
-                    });
+                    const options = resolveFormatOptions(
+                        (configKey) => cfg.get(configKey),
+                        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+                    );
                     this.panel?.webview.postMessage({ command: 'formatted', sql: formatSql(message.sql, options) });
                 } catch (err: unknown) {
                     vscode.window.showErrorMessage(`Format failed: ${getErrorMessage(err)}`);

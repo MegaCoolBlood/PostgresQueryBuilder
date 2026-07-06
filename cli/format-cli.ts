@@ -3,7 +3,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { formatSqlChecked, coerceFormatOptions } from '../src/plpgsqlFormatter';
-import { readRepoFormatConfig } from '../src/repoFormatConfig';
+import { readFormatConfigFile, readRepoFormatConfig } from '../src/repoFormatConfig';
 
 interface CliArgs {
 	file?: string;
@@ -92,22 +92,15 @@ async function readInput(args: CliArgs): Promise<string> {
 }
 
 function loadConfig(args: CliArgs): object {
-	let config: object = {};
-
-	// Try to load from specified --config or default .pgformat.json
-	const configPath = args.config || '.pgformat.json';
-
 	try {
-		if (fs.existsSync(configPath)) {
-			const content = fs.readFileSync(configPath, 'utf-8');
-			config = JSON.parse(content);
+		if (args.config) {
+			return readFormatConfigFile(path.resolve(args.config));
 		}
+		return readRepoFormatConfig(process.cwd());
 	} catch (e) {
-		console.error(`Error reading config ${configPath}: ${e instanceof Error ? e.message : String(e)}`);
+		console.error(`Error reading config ${args.config ?? '.pgformat.json'}: ${e instanceof Error ? e.message : String(e)}`);
 		process.exit(2);
 	}
-
-	return config;
 }
 
 async function main(): Promise<void> {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { readRepoFormatConfig, formatOptionsToRepoConfig, REPO_FORMAT_CONFIG_FILENAME } from '../repoFormatConfig';
+import { readFormatConfigFile, readRepoFormatConfig, formatOptionsToRepoConfig, REPO_FORMAT_CONFIG_FILENAME } from '../repoFormatConfig';
 import { coerceFormatOptions, DEFAULT_FORMAT_OPTIONS } from '../plpgsqlFormatter';
 
 function withTempDir(fn: (dir: string) => void): void {
@@ -66,6 +66,15 @@ test('readRepoFormatConfig returns empty object for an unreadable file path (not
         assert.doesNotThrow(() => {
             assert.deepEqual(readRepoFormatConfig(dir), {});
         });
+    });
+});
+
+test('readFormatConfigFile parses a valid JSON object from an explicit path', () => {
+    withTempDir(dir => {
+        const filePath = path.join(dir, 'custom-format.json');
+        const config = { keywordCase: 'lower', indentSize: 3 };
+        fs.writeFileSync(filePath, JSON.stringify(config));
+        assert.deepEqual(readFormatConfigFile(filePath), config);
     });
 });
 
