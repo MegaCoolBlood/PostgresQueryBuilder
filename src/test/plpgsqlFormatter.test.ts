@@ -698,6 +698,22 @@ test('breaks UPDATE ... SET assignments onto separate lines', () => {
     );
 });
 
+test('does not add spaces around JSON path operators ->, ->>, #>, #>>', () => {
+    assert.equal(formatSql("select v_json->>'key' from t;"), "SELECT v_json->>'key' FROM t;");
+    assert.equal(formatSql("select v_json->'obj' from t;"), "SELECT v_json->'obj' FROM t;");
+    assert.equal(formatSql("select v_json#>'{a,b}' from t;"), "SELECT v_json#>'{a,b}' FROM t;");
+    assert.equal(formatSql("select v_json#>>'{a,b}' from t;"), "SELECT v_json#>>'{a,b}' FROM t;");
+    assert.equal(
+        formatSql("select a from t where v_json->>'status' = 'active';"),
+        "SELECT a FROM t WHERE v_json->>'status' = 'active';"
+    );
+    // Chains should also be compact
+    assert.equal(
+        formatSql("select data->'user'->>'name' from t;"),
+        "SELECT data->'user'->>'name' FROM t;"
+    );
+});
+
 test('keeps DISTINCT ON (...) on the SELECT line', () => {
     const out = formatSql('select distinct on (a) a, b from t;');
     assert.equal(out, ['SELECT DISTINCT ON (a)', '  a,', '  b', 'FROM t;'].join('\n'));
@@ -1010,6 +1026,31 @@ test('keeps a trailing line comment on the same line (after a semicolon)', () =>
     assert.equal(routine, 'CREATE FUNCTION pk.g() RETURNS VARCHAR LANGUAGE SQL STABLE AS $$ SELECT f(1); $$;  --x');
     // A comment authored on its own line still gets its own line.
     assert.equal(formatSql('select 1;\n-- standalone\nselect 2;'), 'SELECT 1;\n-- standalone\nSELECT 2;');
+});
+
+test('a line comment on its own source line is not pulled onto the preceding expression line', () => {
+    // Comment on next line inside a boolean group must stay on its own line.
+    const out = formatSql(
+        "SELECT a FROM t WHERE x = 0 AND (\n  c1 = 'A'\n  -- my note\n  OR c2 = 'B'\n);"
+    );
+    assert.equal(
+        out,
+        [
+            'SELECT a',
+            'FROM t',
+            'WHERE x = 0',
+            "  AND (",
+            "    c1 = 'A'",
+            '    -- my note',
+            "    OR c2 = 'B'",
+            '  );'
+        ].join('\n')
+    );
+    // Trailing comment on the same source line is still kept on that line.
+    assert.equal(
+        formatSql("SELECT a FROM t WHERE x = 0 AND (\n  c1 = 'A' -- inline\n  OR c2 = 'B'\n);"),
+        "SELECT a\nFROM t\nWHERE x = 0\n  AND (\n    c1 = 'A'  -- inline\n    OR c2 = 'B'\n  );"
+    );
 });
 
 test('preserves an authored blank line before a standalone comment', () => {

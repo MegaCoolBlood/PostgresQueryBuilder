@@ -4,6 +4,10 @@
 
 - **Subqueries in SELECT column lists are now indented inside their parentheses:** Scalar subqueries placed as column expressions (e.g. `(SELECT COUNT(*) FROM … WHERE …) AS cnt`) were previously rendered with `SELECT`, `FROM` and `WHERE` at the same indentation level as the opening `(`. They are now indented one level deeper inside the parentheses, matching the established behaviour of `FROM (SELECT …)` subqueries. The fix applies at any nesting depth and inside PL/pgSQL blocks.
 
+- **No spaces around PostgreSQL JSON path operators:** The operators `->`, `->>`, `#>` and `#>>` are now formatted without surrounding spaces (e.g. `v_json->>'key'` instead of `v_json ->> 'key'`), matching standard PostgreSQL usage. Chained access like `data->'user'->>'name'` is also kept compact.
+
+- **Line comments on their own source line are no longer pulled onto the preceding expression line:** A `-- comment` that the author wrote on its own line (e.g. between two conditions inside an `AND (…)` group) was previously appended to the end of the expression above it. The newline before such a comment is now preserved so the comment keeps its own line.
+
 ## 2.1.1
 
 - **Formatter no longer skips files that contain multi-line string literals with trailing whitespace:** The final formatting pass trimmed trailing spaces/tabs on *every* physical line, including lines *inside* a string literal (for example the body of a `format('… INSERT INTO … ')` call). Because a string literal must be preserved byte-for-byte, this altered the code and the safety net (correctly) rejected the result, silently disabling formatting for the whole file with a message like *"formatting would have changed the code at token N …"*. Trailing whitespace is now stripped only outside of string, dollar-quoted and quoted-identifier literals, so such files format normally again.

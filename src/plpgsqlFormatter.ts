@@ -1243,6 +1243,9 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         if (b === '.' || a === '.') return false;
         if (a === '::') return false;
         if (a === '(' || a === '[') return false;
+        // JSON / JSONB path operators: no spaces around ->, ->>, #>, #>>
+        if (a === '->' || a === '->>' || a === '#>' || a === '#>>') return false;
+        if (b === '->' || b === '->>' || b === '#>' || b === '#>>') return false;
         if (b === '(') {
             if (p.type === 'word' && p.text.toLowerCase() === 'row') return false;
             if ((p.type === 'word' && !p.isKeyword) || p.type === 'quotedIdent' || a === ')' || a === ']') return false;
@@ -1771,13 +1774,19 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
 
         // --- Comments -------------------------------------------------------
         if (t.type === 'lineComment') {
-            if (cur !== '') { cur += '  ' + t.text; flush(); }
-            else if (t.nlBefore === 0 && out.length > 0) {
+            if (cur !== '' && t.nlBefore === 0) {
+                // Trailing comment on the same source line as pending content: keep it attached.
+                cur += '  ' + t.text; flush();
+            } else if (cur === '' && t.nlBefore === 0 && out.length > 0) {
                 // A trailing comment authored on the same line (e.g. after `;`)
                 // stays attached to that line instead of moving to a new one.
                 out[out.length - 1] = (out[out.length - 1] + '  ' + t.text).replace(/\s+$/, '');
+            } else {
+                // Comment on its own source line: flush any pending content first,
+                // then emit the comment on a fresh line at the current indent.
+                if (cur !== '') flush();
+                insertBlanks(blanks); lineIndent = pendingIndent; out.push((indentStr(lineIndent) + t.text).replace(/\s+$/, ''));
             }
-            else { insertBlanks(blanks); lineIndent = pendingIndent; out.push((indentStr(lineIndent) + t.text).replace(/\s+$/, '')); }
             prev = null;
             continue;
         }
