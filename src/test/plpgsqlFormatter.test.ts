@@ -189,6 +189,58 @@ test('a line comment inside a CASE expression does not swallow the following WHE
     assert.ok(/f_abgelehnt_von\(\)/.test(out), 'first branch result survives');
 });
 
+test('a line comment directly after an operator (||--) does not swallow the following code', () => {
+    // Regression: the tokenizer treated `||--` as a single operator, so the
+    // `--` never started a comment and the code on the next lines was silently
+    // merged into it. `--` must always begin a comment, even with no space.
+    const input = [
+        'CREATE FUNCTION f() RETURNS void AS $$',
+        'BEGIN',
+        '    v_params := CONCAT_WS(',
+        "        ';',",
+        "        TO_CHAR(pi_refdate, 'DD') || '.' ||-- P_TAG_KG",
+        "        TO_CHAR(pi_refdate, 'MM') || '.' ||-- P_MONAT",
+        "        TO_CHAR(pi_refdate, 'YYYY'),      -- P_JAHR",
+        "        (buf_params ->> 'AStd'::text)",
+        '    );',
+        'END;',
+        '$$ LANGUAGE plpgsql;'
+    ].join('\n');
+    const r = formatSqlChecked(input);
+    assert.equal(r.ok, true, r.reason);
+    const out = r.text;
+    // Each comment must remain a trailing comment; no code may sit after the marker.
+    for (const marker of ['-- P_TAG_KG', '-- P_MONAT', '-- P_JAHR']) {
+        const line = out.split('\n').find(l => l.includes(marker))!;
+        assert.ok(line, `${marker} is preserved`);
+        assert.ok(!/TO_CHAR|buf_params/.test(line.slice(line.indexOf(marker))), `code is not pulled onto the ${marker} line`);
+    }
+    // All three TO_CHAR calls survive as live code and are not lost to a comment.
+    assert.equal((out.match(/TO_CHAR\(pi_refdate/g) ?? []).length, 3, 'all TO_CHAR calls survive');
+    assert.ok(sqlSemanticallyEqual(input, out), 'formatting preserves meaning');
+});
+
+test('tokenizer stops an operator run before -- and /* comment markers', () => {
+    // `x ||-- c` keeps the `||` operator and starts a comment; the block-comment
+    // marker `/*` likewise ends an operator run rather than being absorbed.
+    const line = formatSql('SELECT a ||-- note\nb;');
+    assert.ok(line.includes('-- note'), 'line comment after || is preserved');
+    assert.ok(sqlSemanticallyEqual('SELECT a ||-- note\nb;', line), 'meaning preserved for ||--');
+    const blk = formatSql('SELECT a ||/* note */ b;');
+    assert.ok(blk.includes('/* note */'), 'block comment after || is preserved');
+    assert.ok(sqlSemanticallyEqual('SELECT a ||/* note */ b;', blk), 'meaning preserved for ||/*');
+});
+
+test('safety net: code absorbed into a comment after an operator is detected', () => {
+    // Correct: the concat operator ends the line, code follows below.
+    const good = "a || '.' ||-- c1\nTO_CHAR(x)";
+    // Corrupt: the next line was merged onto the comment, so TO_CHAR(x) is now
+    // comment text. The signatures must differ so the safety net rejects it.
+    const corrupt = "a || '.' ||-- c1 TO_CHAR(x)";
+    assert.ok(!sqlSemanticallyEqual(good, corrupt), 'swallowed code after an operator must change the signature');
+    assert.match(sqlSemanticDiff(good, corrupt)!, /lineComment/, 'diff names the offending comment token');
+});
+
 test('a trailing line comment after a statement does not swallow the next statement', () => {
     const out = formatSql([
         'BEGIN',

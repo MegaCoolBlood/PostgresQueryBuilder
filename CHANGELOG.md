@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.3
+
+- **Line comments directly attached to an operator (`||--`) no longer swallow the following code:** When a `--` comment followed an operator with no space (e.g. `TO_CHAR(…) || '.' ||-- P_TAG_KG`), the tokenizer mistook `||--` for a single operator, so the `--` never started a comment. As a result the code on the following lines was silently merged into the (non-)comment when formatting, effectively commenting out real code. In PostgreSQL `--` and `/*` always begin a comment and can never appear inside an operator; the tokenizer now stops an operator run before either marker, so the comment is recognised and the code is preserved.
+
+- **Safety net now detects this class of corruption:** Because the previous tokenization produced no comment token at all, the formatter's semantic safety net could not see that code had been absorbed and let the bad output through. With the comment now tokenized correctly, the safety net again guarantees that formatting never turns live code into comment text.
+
 ## 2.1.2
 
 - **Subqueries in SELECT column lists are now indented inside their parentheses:** Scalar subqueries placed as column expressions (e.g. `(SELECT COUNT(*) FROM … WHERE …) AS cnt`) were previously rendered with `SELECT`, `FROM` and `WHERE` at the same indentation level as the opening `(`. They are now indented one level deeper inside the parentheses, matching the established behaviour of `FROM (SELECT …)` subqueries. The fix applies at any nesting depth and inside PL/pgSQL blocks.

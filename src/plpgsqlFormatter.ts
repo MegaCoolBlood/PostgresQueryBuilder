@@ -641,10 +641,19 @@ function tokenize(input: string): Tok[] {
             toks.push({ type: 'punct', text: c, nlBefore: nl });
             nl = 0; i++; continue;
         }
-        // Operator run
+        // Operator run. In PostgreSQL `--` and `/*` always start a comment and
+        // can never appear inside an operator, so the run must stop before either
+        // sequence. Without this, `x || '.' ||-- note` would be lexed as a bogus
+        // `||--` operator, the comment marker would be lost, and the code on the
+        // following lines would silently be swallowed as operands (and, because no
+        // comment token is produced, the safety net could not detect the damage).
         if (OP_CHARS.has(c)) {
             let j = i + 1;
-            while (j < n && OP_CHARS.has(input[j])) j++;
+            while (j < n && OP_CHARS.has(input[j])) {
+                if (input[j] === '-' && input[j + 1] === '-') break;
+                if (input[j] === '/' && input[j + 1] === '*') break;
+                j++;
+            }
             toks.push({ type: 'operator', text: input.slice(i, j), nlBefore: nl });
             nl = 0; i = j; continue;
         }
