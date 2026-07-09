@@ -51,7 +51,8 @@ export class SqlEditorManager {
                 try {
                     const options = resolveFormatOptions(
                         (configKey) => cfg.get(configKey),
-                        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+                        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+                        cfg.get<string>('format.configPath')
                     );
                     this.panel?.webview.postMessage({ command: 'formatted', sql: formatSql(message.sql, options) });
                 } catch (err: unknown) {

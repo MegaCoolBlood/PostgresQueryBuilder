@@ -1,5 +1,5 @@
 import { coerceFormatOptions, FormatOptions } from './plpgsqlFormatter';
-import { readRepoFormatConfig } from './repoFormatConfig';
+import { readFormatConfigFile, resolveFormatConfigPath } from './repoFormatConfig';
 
 type SettingGetter = (configKey: string) => unknown;
 
@@ -25,8 +25,9 @@ const FORMAT_SETTING_BINDINGS: readonly FormatSettingBinding[] = [
     { shortKey: 'dataTypeAliases', configKey: 'format.dataTypeAliases' }
 ];
 
-export function resolveFormatOptions(settingGetter: SettingGetter, workspaceFolderPath?: string): FormatOptions {
-    const repo = workspaceFolderPath ? readRepoFormatConfig(workspaceFolderPath) : {};
+export function resolveFormatOptions(settingGetter: SettingGetter, workspaceFolderPath?: string, configPath?: string): FormatOptions {
+    const resolvedPath = resolveFormatConfigPath(workspaceFolderPath, configPath);
+    const repo = resolvedPath ? readFormatConfigFile(resolvedPath) : {};
     const raw: Record<string, unknown> = {};
 
     for (const binding of FORMAT_SETTING_BINDINGS) {

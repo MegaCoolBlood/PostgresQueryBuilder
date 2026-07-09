@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { readFormatConfigFile, readRepoFormatConfig, formatOptionsToRepoConfig, REPO_FORMAT_CONFIG_FILENAME } from '../repoFormatConfig';
-import { coerceFormatOptions, DEFAULT_FORMAT_OPTIONS } from '../plpgsqlFormatter';
+import { readFormatConfigFile, readRepoFormatConfig, formatOptionsToRepoConfig, REPO_FORMAT_CONFIG_FILENAME, resolveFormatConfigPath } from '../repoFormatConfig';
+import { coerceFormatOptions, DEFAULT_FORMAT_OPTIONS, formatSql, formatSqlChecked } from '../plpgsqlFormatter';
 
 function withTempDir(fn: (dir: string) => void): void {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pgformat-test-'));
@@ -174,4 +174,139 @@ test('formatOptionsToRepoConfig includes dataTypeAliases as a plain object', () 
     const aliases = record['dataTypeAliases'] as Record<string, string>;
     assert.equal(typeof aliases, 'object');
     assert.equal(aliases['character varying'], 'varchar');
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end: a .pgformat.json actually changes CREATE FUNCTION formatting
+// (this mirrors the exact code path the CLI uses:
+//  readRepoFormatConfig -> coerceFormatOptions -> formatSqlChecked)
+// ---------------------------------------------------------------------------
+
+/** The single-line CREATE FUNCTION with two parameters used across the tests below. */
+const CREATE_FN_TWO_PARAMS =
+    'CREATE FUNCTION s.f(a integer, b text) RETURNS void LANGUAGE sql AS $$ SELECT 1; $$;';
+
+test('.pgformat.json createFunction "9, 20" keeps a 2-param function inline, unlike the default', () => {
+    withTempDir(dir => {
+        // Sanity: with the built-in default (createFunction {0,1}) a 2-param header wraps.
+        const defaultOut = formatSql(CREATE_FN_TWO_PARAMS);
+        assert.ok(defaultOut.includes('\n'), `default should wrap, got: ${defaultOut}`);
+        assert.ok(defaultOut.includes('CREATE FUNCTION s.f('), defaultOut);
+
+        // Write a repo config that raises the threshold so 2 params stay inline.
+        fs.writeFileSync(
+            path.join(dir, REPO_FORMAT_CONFIG_FILENAME),
+            JSON.stringify({ listThresholds: { createFunction: '9, 20' } })
+        );
+
+        // Exact CLI path: read file -> coerce -> format.
+        const repo = readRepoFormatConfig(dir);
+        const opts = coerceFormatOptions(repo);
+        const configuredOut = formatSql(CREATE_FN_TWO_PARAMS, opts);
+
+        // The configured output must differ from the default and stay on one line.
+        assert.notEqual(configuredOut, defaultOut);
+        assert.equal(
+            configuredOut,
+            'CREATE FUNCTION s.f(a INTEGER, b TEXT) RETURNS VOID LANGUAGE sql AS $$ SELECT 1; $$;'
+        );
+    });
+});
+
+test('.pgformat.json createFunction "0, 1" wraps a 2-param function that the source wrote inline', () => {
+    withTempDir(dir => {
+        fs.writeFileSync(
+            path.join(dir, REPO_FORMAT_CONFIG_FILENAME),
+            JSON.stringify({ listThresholds: { createFunction: '0, 1' } })
+        );
+        const repo = readRepoFormatConfig(dir);
+        const opts = coerceFormatOptions(repo);
+        const out = formatSqlChecked(CREATE_FN_TWO_PARAMS, opts);
+
+        assert.equal(out.ok, true, out.reason);
+        assert.equal(
+            out.text,
+            [
+                'CREATE FUNCTION s.f(',
+                '  a INTEGER,',
+                '  b TEXT',
+                ') RETURNS VOID',
+                '  LANGUAGE sql',
+                'AS $$ SELECT 1; $$;'
+            ].join('\n')
+        );
+    });
+});
+
+test('an explicit --config path (readFormatConfigFile) changes CREATE FUNCTION formatting', () => {
+    withTempDir(dir => {
+        // Mirrors `pgformat --config custom.json`: a config file at an arbitrary path.
+        const configPath = path.join(dir, 'my-format.json');
+        fs.writeFileSync(configPath, JSON.stringify({ listThresholds: { createFunction: '9, 20' } }));
+
+        const config = readFormatConfigFile(configPath);
+        const opts = coerceFormatOptions(config);
+        const out = formatSql(CREATE_FN_TWO_PARAMS, opts);
+
+        assert.equal(
+            out,
+            'CREATE FUNCTION s.f(a INTEGER, b TEXT) RETURNS VOID LANGUAGE sql AS $$ SELECT 1; $$;'
+        );
+    });
+});
+
+test('.pgformat.json keywordCase lower reaches CREATE FUNCTION output via the CLI path', () => {
+    withTempDir(dir => {
+        fs.writeFileSync(
+            path.join(dir, REPO_FORMAT_CONFIG_FILENAME),
+            JSON.stringify({ keywordCase: 'lower', listThresholds: { createFunction: '9, 20' } })
+        );
+        const repo = readRepoFormatConfig(dir);
+        const opts = coerceFormatOptions(repo);
+        const out = formatSql(CREATE_FN_TWO_PARAMS, opts);
+
+        // Keywords are lower-cased; data types keep the default upper case, and the
+        // raised threshold keeps the header inline.
+        assert.equal(
+            out,
+            'create function s.f(a INTEGER, b TEXT) returns VOID language sql as $$ SELECT 1; $$;'
+        );
+    });
+});
+
+// ---------------------------------------------------------------------------
+// resolveFormatConfigPath
+// ---------------------------------------------------------------------------
+
+test('resolveFormatConfigPath returns <folder>/.pgformat.json when no configPath is given', () => {
+    assert.equal(
+        resolveFormatConfigPath(path.join('root', 'ws')),
+        path.join('root', 'ws', REPO_FORMAT_CONFIG_FILENAME)
+    );
+});
+
+test('resolveFormatConfigPath returns undefined without a folder or configPath', () => {
+    assert.equal(resolveFormatConfigPath(undefined, undefined), undefined);
+    assert.equal(resolveFormatConfigPath(undefined, '   '), undefined);
+});
+
+test('resolveFormatConfigPath uses an absolute configPath verbatim', () => {
+    const abs = path.resolve(path.sep, 'etc', 'pgformat', 'rules.json');
+    assert.equal(resolveFormatConfigPath(path.join('root', 'ws'), abs), abs);
+    // Even with no workspace folder the absolute path is honoured.
+    assert.equal(resolveFormatConfigPath(undefined, abs), abs);
+});
+
+test('resolveFormatConfigPath resolves a relative configPath against the workspace folder', () => {
+    assert.equal(
+        resolveFormatConfigPath(path.join('root', 'ws'), path.join('config', 'fmt.json')),
+        path.join('root', 'ws', 'config', 'fmt.json')
+    );
+});
+
+test('resolveFormatConfigPath trims surrounding whitespace from configPath', () => {
+    assert.equal(
+        resolveFormatConfigPath(path.join('root', 'ws'), '  sub/fmt.json  '),
+        path.join('root', 'ws', 'sub', 'fmt.json')
+    );
 });

@@ -64,27 +64,27 @@ export type ConstructKey =
  * while a single-line source may stay on one line).
  */
 export const DEFAULT_THRESHOLDS: Record<ConstructKey, ListThreshold> = {
-    createFunction: { inlineMax: 1, multilineMin: 4 },
-    createProcedure: { inlineMax: 1, multilineMin: 4 },
-    createType: { inlineMax: 1, multilineMin: 4 },
-    createTable: { inlineMax: 1, multilineMin: 4 },
+    createFunction: { inlineMax: 0, multilineMin: 1 },
+    createProcedure: { inlineMax: 0, multilineMin: 1 },
+    createType: { inlineMax: 1, multilineMin: 2 },
+    createTable: { inlineMax: 0, multilineMin: 1 },
     returnsTable: { inlineMax: 1, multilineMin: 4 },
     functionCall: { inlineMax: 1, multilineMin: 4 },
-    selectColumns: { inlineMax: 1, multilineMin: 2 },
+    selectColumns: { inlineMax: 1, multilineMin: 3 },
     fromTables: { inlineMax: 1, multilineMin: 4 },
     groupByColumns: { inlineMax: 1, multilineMin: 4 },
     orderByColumns: { inlineMax: 1, multilineMin: 4 },
-    insertColumns: { inlineMax: 2, multilineMin: 6 },
-    arrayLiterals: { inlineMax: 4, multilineMin: 12 },
-    inLists: { inlineMax: 4, multilineMin: 12 },
-    booleanGroups: { inlineMax: 1, multilineMin: 2 },
-    joinConditions: { inlineMax: 1, multilineMin: 2 },
-    ifConditions: { inlineMax: 1, multilineMin: 2 },
-    caseConditions: { inlineMax: 1, multilineMin: 2 },
-    operatorChains: { inlineMax: 1, multilineMin: 8 },
-    caseWhenThen: { inlineMax: 0, multilineMin: 99 },
-    exceptionWhenThen: { inlineMax: 0, multilineMin: 99 },
-    ifElse: { inlineMax: 0, multilineMin: 99 }
+    insertColumns: { inlineMax: 2, multilineMin: 10 },
+    arrayLiterals: { inlineMax: 2, multilineMin: 10 },
+    inLists: { inlineMax: 2, multilineMin: 10 },
+    booleanGroups: { inlineMax: 1, multilineMin: 3 },
+    joinConditions: { inlineMax: 1, multilineMin: 3 },
+    ifConditions: { inlineMax: 1, multilineMin: 3 },
+    caseConditions: { inlineMax: 1, multilineMin: 3 },
+    operatorChains: { inlineMax: 1, multilineMin: 6 },
+    caseWhenThen: { inlineMax: 0, multilineMin: 3 },
+    exceptionWhenThen: { inlineMax: 0, multilineMin: 3 },
+    ifElse: { inlineMax: 0, multilineMin: 3 }
 };
 
 export interface FormatOptions {
@@ -1851,15 +1851,27 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             const meta: TokMeta = { text: rendered, isKeyword: cat !== 'ident', type: 'word' };
 
             // Keep a CREATE FUNCTION/PROCEDURE that the author wrote on a single line intact.
+            // Exception: if the param-list threshold demands multi-line output, skip the
+            // shortcut so the threshold takes effect even for originally single-line headers.
             if (opt.preserveSingleLineRoutineHeaders
                 && w === 'create' && pd === 0 && parenStack.length === 0 && cur === '') {
                 const end = singleLineRoutineEnd(i);
                 if (end >= 0) {
-                    startLine(blockIndent, blanks);
-                    for (let k = i; k <= end; k++) emitInline(toks[k]);
-                    flush();
-                    pendingIndent = blockIndent;
-                    lastWord = ''; i = end; continue;
+                    let paramListWantsMultiline = false;
+                    for (let k = i + 1; k <= end; k++) {
+                        if (toks[k].text === '(' && routineParenSet.has(k)) {
+                            const info = parenInfo.get(k);
+                            if (info && info.multiline) paramListWantsMultiline = true;
+                            break;
+                        }
+                    }
+                    if (!paramListWantsMultiline) {
+                        startLine(blockIndent, blanks);
+                        for (let k = i; k <= end; k++) emitInline(toks[k]);
+                        flush();
+                        pendingIndent = blockIndent;
+                        lastWord = ''; i = end; continue;
+                    }
                 }
             }
 

@@ -2,7 +2,7 @@
   "name": "postgres-query-builder",
   "displayName": "PostgreSQL Query Builder",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "publisher": "postgres-query-builder",
   "engines": {
     "vscode": "^1.85.0",
@@ -208,6 +208,11 @@
           "type": "boolean",
           "default": true,
           "description": "Enable the PL/pgSQL formatter (document formatting provider, command and SQL Editor button)."
+        },
+        "postgresQueryBuilder.format.configPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the JSON file with formatter rules (same schema as .pgformat.json). An absolute path is used as-is; a relative path is resolved against the workspace root. Leave empty to use .pgformat.json in the workspace root."
         },
         "postgresQueryBuilder.format.formatOnSave": {
           "type": "boolean",
@@ -481,16 +486,16 @@
     "patch": "npm run bump:patch",
     "minor": "npm run bump:minor",
     "major": "npm run bump:major",
-    "deploy": "npx vsce package --allow-missing-repository",
+    "build-cli-exe": "node esbuild.js --minify && pkg dist/cli.js --targets node18-win-x64 --output dist/pgformat.exe",
+    "build-cli-exe:all": "node esbuild.js --minify && pkg dist/cli.js --targets node18-win-x64,node18-linux-x64,node18-macos-x64 --out-path dist/binaries",
+    "deploy": "npx vsce package --allow-missing-repository  && npm run build-cli-exe",
     "deploy:patch": "npm run patch && npm run deploy",
     "deploy:minor": "npm run minor && npm run deploy",
     "deploy:major": "npm run major && npm run deploy",
     "d": "npm run deploy",
     "d1": "npm run deploy:patch",
     "d2": "npm run deploy:minor",
-    "d3": "npm run deploy:major",
-    "build-cli-exe": "node esbuild.js --minify && pkg dist/cli.js --targets node18-win-x64 --output dist/pgformat.exe",
-    "build-cli-exe:all": "node esbuild.js --minify && pkg dist/cli.js --targets node18-win-x64,node18-linux-x64,node18-macos-x64 --out-path dist/binaries"
+    "d3": "npm run deploy:major"
   },
   "devDependencies": {
     "@types/node": "^18.19.0",

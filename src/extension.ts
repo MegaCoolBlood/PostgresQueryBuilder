@@ -42,7 +42,8 @@ function getFormatOptions(): FormatOptions {
     const folders = vscode.workspace.workspaceFolders;
     return resolveFormatOptions(
         (configKey) => cfg.get(configKey),
-        folders && folders.length > 0 ? folders[0].uri.fsPath : undefined
+        folders && folders.length > 0 ? folders[0].uri.fsPath : undefined,
+        cfg.get<string>('format.configPath')
     );
 }
 

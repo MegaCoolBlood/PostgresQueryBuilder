@@ -31,7 +31,9 @@ test('formats a PL/pgSQL function body with DECLARE/BEGIN/IF/LOOP blocks', () =>
     assert.equal(
         out,
         [
-            'CREATE FUNCTION f(p INT) RETURNS VOID',
+            'CREATE FUNCTION f(',
+            '  p INT',
+            ') RETURNS VOID',
             'AS $$',
             'DECLARE',
             '  x INT;',
@@ -67,15 +69,8 @@ test('handles ELSIF chains', () => {
 
 test('treats CASE as an expression (does not break on its ELSE/END)', () => {
     const out = formatSql("select a, case when x>1 then 'a' else 'b' end as label from t;");
-    assert.equal(
-        out,
-        [
-            'SELECT',
-            '  a,',
-            "  CASE WHEN x > 1 THEN 'a' ELSE 'b' END AS label",
-            'FROM t;'
-        ].join('\n')
-    );
+    // With selectColumns default {1, 3}: 2 columns follow source layout (single-line → stays inline).
+    assert.equal(out, "SELECT a, CASE WHEN x > 1 THEN 'a' ELSE 'b' END AS label\nFROM t;");
 });
 
 test('keeps a single-line CASE expression on one line', () => {
@@ -517,15 +512,21 @@ test('produces stable output when formatted repeatedly (idempotent)', () => {
 });
 
 test('moves THEN to its own line when an IF condition is broken across lines', () => {
-    const out = formatSql(
-        'BEGIN\nIF a.amount IS NULL OR a.amount = 0 THEN\ndo_something();\nEND IF;\nEND;'
-    );
+    // With ifConditions default {1, 3}: 2 conditions on one source line follow source (stay inline).
+    const inlineInput = 'BEGIN\nIF a.amount IS NULL OR a.amount = 0 THEN\ndo_something();\nEND IF;\nEND;';
     assert.equal(
-        out,
+        formatSql(inlineInput),
+        'BEGIN\n  IF a.amount IS NULL OR a.amount = 0 THEN\n    do_something();\n  END IF;\nEND;'
+    );
+    // 3 conditions reach multilineMin → THEN moves to its own line.
+    const multiInput = 'BEGIN\nIF a IS NULL OR b = 0 OR c > 1 THEN\ndo_something();\nEND IF;\nEND;';
+    assert.equal(
+        formatSql(multiInput),
         [
             'BEGIN',
-            '  IF a.amount IS NULL',
-            '    OR a.amount = 0',
+            '  IF a IS NULL',
+            '    OR b = 0',
+            '    OR c > 1',
             '  THEN',
             '    do_something();',
             '  END IF;',
@@ -587,8 +588,9 @@ test('keeps a single-line 3-5 column INSERT on one line', () => {
     );
 });
 
-test('wraps an INSERT with six or more columns even from a single source line', () => {
-    const out = formatSql('INSERT INTO t (a, b, c, d, e, f) VALUES (1, 2, 3, 4, 5, 6);');
+test('wraps an INSERT with ten or more columns even from a single source line', () => {
+    // insertColumns default {2, 10}: 10 columns always wrap regardless of source layout.
+    const out = formatSql('INSERT INTO t (a, b, c, d, e, f, g, h, i, j) VALUES (1, 2, 3, 4, 5, 6, 7, 8, 9, 10);');
     assert.equal(
         out,
         [
@@ -598,7 +600,11 @@ test('wraps an INSERT with six or more columns even from a single source line', 
             '  c,',
             '  d,',
             '  e,',
-            '  f',
+            '  f,',
+            '  g,',
+            '  h,',
+            '  i,',
+            '  j',
             ')',
             'VALUES (',
             '  1,',
@@ -606,7 +612,11 @@ test('wraps an INSERT with six or more columns even from a single source line', 
             '  3,',
             '  4,',
             '  5,',
-            '  6',
+            '  6,',
+            '  7,',
+            '  8,',
+            '  9,',
+            '  10',
             ');'
         ].join('\n')
     );
@@ -629,9 +639,13 @@ test('wraps a CREATE TYPE attribute list with many attributes', () => {
     );
 });
 
-test('keeps a small CREATE TYPE attribute list on one line', () => {
+test('keeps a single-attribute CREATE TYPE on one line, wraps two or more', () => {
+    // createType default {1, 2}: 1 attr stays inline, 2+ attrs always wrap.
     assert.equal(formatSql('CREATE TYPE t AS (a INTEGER);'), 'CREATE TYPE t AS (a INTEGER);');
-    assert.equal(formatSql('CREATE TYPE t AS (a INTEGER, b TEXT);'), 'CREATE TYPE t AS (a INTEGER, b TEXT);');
+    assert.equal(
+        formatSql('CREATE TYPE t AS (a INTEGER, b TEXT);'),
+        ['CREATE TYPE t AS (', '  a INTEGER,', '  b TEXT', ');'].join('\n')
+    );
 });
 
 test('keeps a comma FROM list broken when it was multi-line in the source', () => {
@@ -767,8 +781,9 @@ test('does not add spaces around JSON path operators ->, ->>, #>, #>>', () => {
 });
 
 test('keeps DISTINCT ON (...) on the SELECT line', () => {
+    // selectColumns default {1, 3}: 2 columns follow source layout (single-line → stays inline).
     const out = formatSql('select distinct on (a) a, b from t;');
-    assert.equal(out, ['SELECT DISTINCT ON (a)', '  a,', '  b', 'FROM t;'].join('\n'));
+    assert.equal(out, 'SELECT DISTINCT ON (a) a, b\nFROM t;');
 });
 
 test('supports leading comma style', () => {
@@ -777,8 +792,12 @@ test('supports leading comma style', () => {
 });
 
 test('respects indentSize and tab indentation', () => {
-    assert.equal(formatSql('select a,b from t', { indentSize: 4 }), 'SELECT\n    a,\n    b\nFROM t');
-    assert.equal(formatSql('select a,b from t', { indentStyle: 'tab' }), 'SELECT\n\ta,\n\tb\nFROM t');
+    // selectColumns default {1, 3}: 2 columns follow source (single-line → stays inline).
+    assert.equal(formatSql('select a,b from t', { indentSize: 4 }), 'SELECT a, b\nFROM t');
+    assert.equal(formatSql('select a,b from t', { indentStyle: 'tab' }), 'SELECT a, b\nFROM t');
+    // With 3 columns the threshold fires and indentSize / indentStyle take effect.
+    assert.equal(formatSql('select a,b,c from t', { indentSize: 4 }), 'SELECT\n    a,\n    b,\n    c\nFROM t');
+    assert.equal(formatSql('select a,b,c from t', { indentStyle: 'tab' }), 'SELECT\n\ta,\n\tb,\n\tc\nFROM t');
 });
 
 test('keywordCase lower and identifierCase preserve', () => {
@@ -807,9 +826,10 @@ test('collapses blank lines when blankLines is collapse', () => {
 });
 
 test('preserves authored blank lines before a non-clause statement (e.g. CREATE)', () => {
+    // createTable default {0, 1}: even 1 column wraps.
     assert.equal(
         formatSql('create table a(x int);\n\n\ncreate table b(y int);'),
-        'CREATE TABLE a(x INT);\n\n\nCREATE TABLE b(y INT);'
+        'CREATE TABLE a(\n  x INT\n);\n\n\nCREATE TABLE b(\n  y INT\n);'
     );
 });
 
@@ -1042,14 +1062,18 @@ test('keeps commas inside ARRAY[...] on one line', () => {
     assert.equal(out, 'SELECT ARRAY[1, 2, 3, 4, 5];');
 });
 
-test('formats a CREATE PROCEDURE header (params inline, characteristics own lines)', () => {
+test('formats a CREATE PROCEDURE header (params on own lines, characteristics own lines)', () => {
+    // createProcedure default {0, 1}: any parameter count wraps to individual lines.
     const out = formatSql(
         'create or replace procedure p.add_text(inout po text, in pi text) language plpgsql as $procedure$ begin\n po := po || pi; end; $procedure$;'
     );
     assert.equal(
         out,
         [
-            'CREATE OR REPLACE PROCEDURE p.add_text(INOUT po TEXT, IN pi TEXT)',
+            'CREATE OR REPLACE PROCEDURE p.add_text(',
+            '  INOUT po TEXT,',
+            '  IN pi TEXT',
+            ')',
             '  LANGUAGE plpgsql',
             'AS $procedure$',
             'BEGIN',
@@ -1154,6 +1178,51 @@ test('still expands a CREATE FUNCTION that the author wrote across lines', () =>
     assert.ok(out.startsWith('CREATE FUNCTION pk.g_pair() RETURNS VARCHAR'), out);
 });
 
+test('createFunction threshold overrides preserveSingleLineRoutineHeaders for single-line input with 2 params', () => {
+    // Regression: when preserveSingleLineRoutineHeaders=true (default) and a
+    // createFunction threshold of "0, 1" is configured (all params → multiline),
+    // a single-line function header with 2 parameters must still be expanded.
+    // Previously the CLI produced incorrect single-line output because the
+    // preserveSingleLineRoutineHeaders shortcut bypassed the threshold check.
+    const opts = coerceFormatOptions({ listThresholds: { createFunction: '0, 1' } });
+    assert.equal(opts.thresholds.createFunction!.multilineMin, 1);
+
+    const singleLine = 'CREATE FUNCTION f(a integer, b text) RETURNS void LANGUAGE sql AS $$ SELECT 1; $$;';
+    const out = formatSql(singleLine, { ...opts, preserveSingleLineRoutineHeaders: true });
+    assert.equal(
+        out,
+        [
+            'CREATE FUNCTION f(',
+            '  a INTEGER,',
+            '  b TEXT',
+            ') RETURNS VOID',
+            '  LANGUAGE sql',
+            'AS $$ SELECT 1; $$;'
+        ].join('\n')
+    );
+});
+
+test('createFunction threshold "0,1" via coerceFormatOptions expands single-line function with preserveSingleLineRoutineHeaders default', () => {
+    // Simulates the CLI scenario: config file has listThresholds.createFunction="0, 1"
+    // and preserveSingleLineRoutineHeaders is not set (defaults to true).
+    const opts = coerceFormatOptions({ listThresholds: { createFunction: '0, 1' } });
+    const singleLine = "CREATE FUNCTION my_schema.my_fn(p_id integer, p_name text) RETURNS void LANGUAGE plpgsql AS $$ BEGIN NULL; END $$;";
+    const out = formatSql(singleLine, opts);
+    // Must be expanded to multiline despite preserveSingleLineRoutineHeaders: true
+    assert.ok(out.includes('\n'), `Expected multiline output, got: ${out}`);
+    assert.ok(out.includes('  p_id INTEGER,'), `Expected param on own line, got: ${out}`);
+    assert.ok(out.includes('  p_name TEXT'), `Expected param on own line, got: ${out}`);
+});
+
+test('preserveSingleLineRoutineHeaders still works for a zero-param function with createFunction threshold "0,1"', () => {
+    // A function with 0 params (inlineMax=0 covers it exactly as boundary: count=0 <= inlineMax=0 → inline).
+    const opts = coerceFormatOptions({ listThresholds: { createFunction: '0, 1' } });
+    const singleLine = "CREATE FUNCTION f() RETURNS void LANGUAGE sql AS $$ SELECT 1; $$;";
+    const out = formatSql(singleLine, opts);
+    // Zero params: threshold says inline, so the single-line shortcut may keep it intact.
+    assert.equal(out, "CREATE FUNCTION f() RETURNS VOID LANGUAGE sql AS $$ SELECT 1; $$;");
+});
+
 test('formats an EXCEPTION ... WHEN block', () => {
     const out = formatSql(
         "begin perform 1; exception when no_data_found then raise exception 'x'; when others then null; end;"
@@ -1229,7 +1298,11 @@ test('coerceFormatOptions maps separate single-line toggles and supports legacy 
 });
 
 test('CREATE TABLE column list wraps per createTable threshold', () => {
-    assert.equal(formatSql('create table t (a int, b int);'), 'CREATE TABLE t(a INT, b INT);');
+    // createTable default {0, 1}: any number of columns wraps.
+    assert.equal(
+        formatSql('create table t (a int, b int);'),
+        ['CREATE TABLE t(', '  a INT,', '  b INT', ');'].join('\n')
+    );
     assert.equal(
         formatSql('create table t (a int, b int, c int, d int);'),
         ['CREATE TABLE t(', '  a INT,', '  b INT,', '  c INT,', '  d INT', ');'].join('\n')
@@ -1270,10 +1343,10 @@ test('FROM comma list wraps per fromTables threshold', () => {
 });
 
 test('GROUP BY list follows the groupByColumns threshold', () => {
-    // Default {1, 4}: a short GROUP BY list stays on the clause line.
+    // selectColumns default {1, 3}: 2 columns follow source (single-line → stays inline).
     assert.equal(
         formatSql('select a, count(*) from t group by a;'),
-        ['SELECT', '  a,', '  count(*)', 'FROM t', 'GROUP BY a;'].join('\n')
+        'SELECT a, count(*)\nFROM t\nGROUP BY a;'
     );
     // Four or more columns wrap, one per line.
     assert.equal(
@@ -1373,14 +1446,13 @@ test('MERGE keeps MERGE, WHEN clauses and the closing semicolon on one level', (
         + 'ON (t.customer_id = ca.customer_id) '
         + 'WHEN MATCHED THEN UPDATE SET balance = balance + transaction_value '
         + 'WHEN NOT MATCHED THEN INSERT (customer_id, balance) VALUES (t.customer_id, t.transaction_value);';
+    // selectColumns default {1, 3}: 2 columns in the subquery follow source (single-line → stays inline).
     assert.equal(
         formatSql(sql),
         [
             'MERGE',
             'INTO customer_account ca USING (',
-            '  SELECT',
-            '    customer_id,',
-            '    transaction_value',
+            '  SELECT customer_id, transaction_value',
             '  FROM recent_transactions',
             ') t ON (t.customer_id = ca.customer_id)',
             'WHEN MATCHED THEN',
@@ -1449,13 +1521,15 @@ test('MERGE puts THEN on its own line at the WHEN level when the WHEN condition 
 });
 
 test('IN value list follows the inLists threshold', () => {
-    // Default {4, 12}: a short IN list stays inline.
+    // selectColumns default {1, 3}: 2 columns follow source (single-line → stays inline).
+    // inLists default {2, 10}: short IN lists (< 10) follow source and stay inline.
     assert.equal(formatSql('select a, b from t where x in (1, 2, 3);'),
-        ['SELECT', '  a,', '  b', 'FROM t', 'WHERE x IN (1, 2, 3);'].join('\n'));
+        'SELECT a, b\nFROM t\nWHERE x IN (1, 2, 3);'
+    );
     // A lower threshold forces the list to wrap.
     assert.equal(
         formatSql('select a, b from t where x in (1, 2, 3);', { thresholds: { inLists: { inlineMax: 1, multilineMin: 2 } } }),
-        ['SELECT', '  a,', '  b', 'FROM t', 'WHERE x IN (', '  1,', '  2,', '  3', ');'].join('\n')
+        ['SELECT a, b', 'FROM t', 'WHERE x IN (', '  1,', '  2,', '  3', ');'].join('\n')
     );
 });
 
@@ -1467,11 +1541,16 @@ test('ARRAY literal wraps per arrayLiterals threshold', () => {
 });
 
 test('JOIN ON conditions follow the joinConditions threshold', () => {
-    const sql = 'select a from t join u on t.a = u.a and t.b = u.b;';
-    assert.equal(formatSql(sql),
-        ['SELECT a', 'FROM t', 'JOIN u', '   ON t.a = u.a', '  AND t.b = u.b;'].join('\n'));
+    // joinConditions default {1, 3}: 2 conditions follow source (single-line → stays inline).
+    assert.equal(formatSql('select a from t join u on t.a = u.a and t.b = u.b;'),
+        'SELECT a\nFROM t\nJOIN u ON t.a = u.a AND t.b = u.b;');
+    // 3 conditions reach multilineMin → wrap.
     assert.equal(
-        formatSql(sql, { thresholds: { joinConditions: { inlineMax: 3, multilineMin: 5 } } }),
+        formatSql('select a from t join u on t.a = u.a and t.b = u.b and t.c = u.c;'),
+        ['SELECT a', 'FROM t', 'JOIN u', '   ON t.a = u.a', '  AND t.b = u.b', '  AND t.c = u.c;'].join('\n')
+    );
+    assert.equal(
+        formatSql('select a from t join u on t.a = u.a and t.b = u.b;', { thresholds: { joinConditions: { inlineMax: 3, multilineMin: 5 } } }),
         ['SELECT a', 'FROM t', 'JOIN u ON t.a = u.a AND t.b = u.b;'].join('\n')
     );
 });
@@ -1605,14 +1684,20 @@ test('simpleSelectSingleLine can be disabled', () => {
     assert.equal(formatSql('select a from t;'), 'SELECT a FROM t;');
 });
 
-test('keeps a single SELECT item on the SELECT line but splits multiple', () => {
+test('keeps a single SELECT item on the SELECT line; splits when threshold is met', () => {
     assert.equal(
         formatSql('select 1 into strict v from t where a = 1;'),
         ['SELECT 1', 'INTO STRICT v', 'FROM t', 'WHERE a = 1;'].join('\n')
     );
+    // selectColumns default {1, 3}: 2 columns follow source (single-line → stays inline).
     assert.equal(
         formatSql('select a, b into x, y from t;'),
-        ['SELECT', '  a,', '  b', 'INTO', '  x,', '  y', 'FROM t;'].join('\n')
+        'SELECT a, b\nINTO x, y\nFROM t;'
+    );
+    // 3 columns reach multilineMin → wrap.
+    assert.equal(
+        formatSql('select a, b, c into x, y, z from t;'),
+        ['SELECT', '  a,', '  b,', '  c', 'INTO', '  x,', '  y,', '  z', 'FROM t;'].join('\n')
     );
 });
 

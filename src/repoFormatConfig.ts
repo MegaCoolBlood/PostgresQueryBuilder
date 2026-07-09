@@ -60,6 +60,25 @@ export function readRepoFormatConfig(folderPath: string): Record<string, unknown
 }
 
 /**
+ * Resolve the file path the formatter should read its settings from.
+ *
+ * - When `configPath` is a non-empty string: an absolute path is used verbatim;
+ *   a relative path is resolved against `workspaceFolderPath` (or the process
+ *   working directory when no folder is given).
+ * - Otherwise it falls back to `.pgformat.json` in `workspaceFolderPath`.
+ *
+ * Returns `undefined` when there is neither a `configPath` nor a
+ * `workspaceFolderPath` to anchor a file name to.
+ */
+export function resolveFormatConfigPath(workspaceFolderPath?: string, configPath?: string): string | undefined {
+    const trimmed = typeof configPath === 'string' ? configPath.trim() : '';
+    if (trimmed) {
+        return path.isAbsolute(trimmed) ? trimmed : path.join(workspaceFolderPath ?? process.cwd(), trimmed);
+    }
+    return workspaceFolderPath ? path.join(workspaceFolderPath, REPO_FORMAT_CONFIG_FILENAME) : undefined;
+}
+
+/**
  * Serialize a {@link FormatOptions} object into the `.pgformat.json` record
  * format — the inverse of passing the result through {@link readRepoFormatConfig}
  * + `coerceFormatOptions`.
