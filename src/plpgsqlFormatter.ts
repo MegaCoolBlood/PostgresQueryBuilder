@@ -641,6 +641,21 @@ function tokenize(input: string): Tok[] {
             toks.push({ type: 'punct', text: c, nlBefore: nl });
             nl = 0; i++; continue;
         }
+        // PostgreSQL `format()` specifier: a `%` immediately followed by one of
+        // the type characters `s`, `I` or `L` is a single placeholder and must
+        // never be split by inserting a space (that would change the meaning of
+        // the format string, e.g. `%L` -> `% L`). Emitting it as one token keeps
+        // the `%` and its type character glued together in the output. `%%` is
+        // already a single token because both characters are operator characters.
+        // The following character must not continue an identifier so real code
+        // like `%system` (a `%` operator applied to `system`) is left untouched.
+        if (c === '%' && (c2 === 's' || c2 === 'I' || c2 === 'L')) {
+            const after = input[i + 2];
+            if (after === undefined || !/[A-Za-z0-9_$\u0080-\uffff]/.test(after)) {
+                toks.push({ type: 'operator', text: input.slice(i, i + 2), nlBefore: nl });
+                nl = 0; i += 2; continue;
+            }
+        }
         // Operator run. In PostgreSQL `--` and `/*` always start a comment and
         // can never appear inside an operator, so the run must stop before either
         // sequence. Without this, `x || '.' ||-- note` would be lexed as a bogus

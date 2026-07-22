@@ -1009,6 +1009,46 @@ test('attaches %TYPE / %ROWTYPE to the name without spaces (but keeps modulo spa
     assert.equal(formatSql('select a % b from t;'), 'SELECT a % b FROM t;');
 });
 
+test('keeps format() specifiers %L, %I and %s intact when a dollar-quoted body is reformatted', () => {
+    const src = [
+        'CREATE OR REPLACE PROCEDURE p()',
+        'LANGUAGE plpgsql AS $body$',
+        'DECLARE v_sql TEXT;',
+        'BEGIN',
+        '  v_sql := format($outer$',
+        '    SELECT * FROM t WHERE a = %L AND b = %I AND c = %s',
+        '  $outer$, x, y, z);',
+        '  EXECUTE v_sql;',
+        'END;',
+        '$body$;',
+    ].join('\n');
+    const out = formatSql(src);
+    assert.ok(out.includes('a = %L'), out);
+    assert.ok(out.includes('b = %I'), out);
+    assert.ok(out.includes('c = %s'), out);
+    assert.ok(!/%\s+[LIs]\b/.test(out), 'a space must never be inserted between % and its type char\n' + out);
+});
+
+test('does not merge % into a following identifier that is not a format type char', () => {
+    // `%system` is a modulo of the identifier `system`, not a format specifier.
+    assert.equal(formatSql('select a %system from t;'), 'SELECT a % system FROM t;');
+    // A modulo written with spaces is unaffected.
+    assert.equal(formatSql('select a % l from t;'), 'SELECT a % l FROM t;');
+});
+
+test('format() specifier keeps the code semantically identical (safety net not tripped)', () => {
+    const src = [
+        'DO $outer$',
+        'BEGIN',
+        '  EXECUTE format($inner$ DELETE FROM t WHERE id = %L $inner$, 1);',
+        'END',
+        '$outer$;',
+    ].join('\n');
+    const r = formatSqlChecked(src);
+    assert.equal(r.ok, true, r.reason);
+    assert.ok(r.text.includes('id = %L'), r.text);
+});
+
 test('normalizes verbose data type names to their short form', () => {
     const out = formatSql('declare a character varying(500); b timestamp without time zone; c timestamp with time zone; begin end;');
     assert.ok(out.includes('a VARCHAR(500);'), out);
