@@ -1147,7 +1147,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 else kind = 'group';
             }
             let localP = 0, localB = 0, args = 0, hasTok = false, srcMulti = false;
-            let between = 0, topBool = false, boolOps = 0;
+            let between = 0, topBool = false, boolOps = 0, topOp = false;
             for (let k = open + 1; k < close; k++) {
                 const tk = toks[k];
                 if (tk.nlBefore >= 1) srcMulti = true;
@@ -1159,6 +1159,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 else if (tk.text === ']') localB--;
                 else if (localP === 0 && localB === 0) {
                     if (tk.text === ',') args++;
+                    else if (tk.type === 'operator' && tk.text !== '::') topOp = true;
                     else if (tk.type === 'word') {
                         const lw = tk.text.toLowerCase();
                         if (lw === 'between') between++;
@@ -1178,6 +1179,12 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             else if (kind === 'call' || kind === 'paramlist') {
                 const key: ConstructKey = parenConstruct.get(open) ?? (isInList ? 'inLists' : 'functionCall');
                 multiline = wantsMultiline(argCount, srcMulti, key);
+                // A function call the author deliberately split across lines whose
+                // single argument is a compound expression (a top-level operator such
+                // as `||`, `+`, …) keeps its multi-line layout instead of being
+                // collapsed onto one line. Multi-argument calls already follow the
+                // functionCall threshold above.
+                if (!multiline && kind === 'call' && srcMulti && topOp && argCount <= 1) multiline = true;
             }
             parenInfo.set(open, { match: close, kind, argCount, multiline, srcMulti });
         }

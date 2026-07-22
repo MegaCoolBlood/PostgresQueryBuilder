@@ -1771,6 +1771,32 @@ test('simpleSelectSingleLine can be disabled', () => {
     assert.equal(formatSql('select a from t;'), 'SELECT a FROM t;');
 });
 
+test('does not collapse a SELECT whose function call was split across lines with a compound argument', () => {
+    const src = [
+        'CREATE OR REPLACE FUNCTION pk.k(p_session_id VARCHAR, p_employee_no VARCHAR DEFAULT NULL) RETURNS BIGINT',
+        '  LANGUAGE sql IMMUTABLE PARALLEL SAFE',
+        'AS $$',
+        'SELECT hashtext(',
+        "               COALESCE(p_session_id, '') ||",
+        "               COALESCE('::' || p_employee_no, '')",
+        '       )::bigint;',
+        '$$;',
+    ].join('\n');
+    const out = formatSql(src);
+    // The SELECT is no longer on a single line: the hashtext call wraps its argument.
+    assert.ok(/SELECT hashtext\(\n/.test(out), 'hashtext should wrap its argument onto a new line\n' + out);
+    assert.ok(/\n\s*\)::BIGINT;/.test(out), 'the closing paren/cast should be on its own line\n' + out);
+    // Stable on a second pass.
+    assert.equal(formatSql(out), out);
+});
+
+test('still collapses a simple single-line function-call SELECT', () => {
+    // A single-arg call written on one line stays inline.
+    assert.equal(formatSql('select abs(x) from t;'), 'SELECT abs(x) FROM t;');
+    // A single-arg call split across lines but with no top-level operator is not forced to wrap.
+    assert.equal(formatSql('select foo(\n   bar\n);'), 'SELECT foo(bar);');
+});
+
 test('keeps a single SELECT item on the SELECT line; splits when threshold is met', () => {
     assert.equal(
         formatSql('select 1 into strict v from t where a = 1;'),
