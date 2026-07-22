@@ -174,7 +174,8 @@ export class TableWebViewManager {
         browseExportLocation: this.handleBrowseExportLocation,
         getExportDefaults: this.handleGetExportDefaults,
         saveExportDefaults: this.handleSaveExportDefaults,
-        exportData: this.handleExportData
+        exportData: this.handleExportData,
+        selectConnection: this.handleSelectConnection
     };
 
     private async handleLoadData(ctx: MessageContext): Promise<void> {
@@ -357,6 +358,12 @@ export class TableWebViewManager {
             command: 'queryHistoryUpdated',
             history: this.getQueryHistory(schema, table)
         });
+    }
+
+    private async handleSelectConnection(): Promise<void> {
+        // Opens the connection picker. Switching fires onConnectionChanged,
+        // which pushes a `connectionChanged` message back to every open panel.
+        await this.connectionManager.selectConnection();
     }
 
     private async handleOpenForeignKey(ctx: MessageContext): Promise<void> {
@@ -688,6 +695,10 @@ export class TableWebViewManager {
                     }
                     case 'showError': {
                         vscode.window.showErrorMessage(message.text);
+                        break;
+                    }
+                    case 'selectConnection': {
+                        await this.connectionManager.selectConnection();
                         break;
                     }
                 }

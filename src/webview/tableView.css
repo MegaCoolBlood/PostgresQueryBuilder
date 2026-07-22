@@ -236,6 +236,14 @@ body {
     border: 1px solid var(--vscode-panel-border);
     border-radius: 3px;
     background: var(--vscode-editorWidget-background);
+    cursor: pointer;
+    user-select: none;
+}
+
+.connection-info:hover {
+    color: var(--vscode-foreground);
+    border-color: var(--vscode-focusBorder);
+    background: var(--vscode-list-hoverBackground, var(--vscode-editorWidget-background));
 }
 
 .connection-info.warn {

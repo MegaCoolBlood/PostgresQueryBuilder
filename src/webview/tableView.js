@@ -641,6 +641,34 @@ function recordFieldReadonlyAttr(isDeleted, readOnly) {
     return (isDeleted || readOnly) ? 'readonly' : '';
 }
 
+// Compute the connection badge state shown in the Data Viewer toolbar. The
+// badge is always clickable (to switch connection); `lastUsedConnection` is the
+// connection the displayed rows came from and `currentConnection` is the now
+// active one. Returns { text, warn, title }.
+function buildConnectionBadge(lastUsedConnection, currentConnection) {
+    const hint = ' (click to switch connection)';
+    if (!lastUsedConnection && !currentConnection) {
+        return {
+            text: 'Select connection…',
+            warn: false,
+            title: 'Click to choose a database connection'
+        };
+    }
+    const last = lastUsedConnection || '(none)';
+    if (currentConnection && lastUsedConnection && currentConnection !== lastUsedConnection) {
+        return {
+            text: `⚠ ${last} → ${currentConnection}`,
+            warn: true,
+            title: `Data was loaded from "${last}". Active connection is now "${currentConnection}".` + hint
+        };
+    }
+    return {
+        text: last,
+        warn: false,
+        title: `Connection used for the currently displayed data: ${last}` + hint
+    };
+}
+
 // Predicate for local (in-memory) row filtering. Returns true when `cellVal`
 // passes the given column filter. A filter that cannot constrain the data
 // (empty range, invalid number) matches every row.
@@ -869,6 +897,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     discardBtn.addEventListener('click', discardChanges);
     insertRowBtn.addEventListener('click', insertRow);
     loadMoreBtn.addEventListener('click', loadMore);
+    // Clicking the connection badge lets the user switch to another saved
+    // connection (handled by the extension host).
+    if (connectionInfo) {
+        connectionInfo.addEventListener('click', () => {
+            vscode.postMessage({ command: 'selectConnection' });
+        });
+    }
     // Recompute the sticky filter-row offset when the header may rewrap.
     window.addEventListener('resize', updateStickyFilterOffset);
     sqlDialogCancel.addEventListener('click', closeSqlDialog);
@@ -2570,22 +2605,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function updateConnectionDisplay() {
         if (!connectionInfo) return;
-        if (!lastUsedConnection && !currentConnection) {
-            connectionInfo.textContent = '';
-            connectionInfo.classList.remove('warn');
-            connectionInfo.title = '';
-            return;
-        }
-        const last = lastUsedConnection || '(none)';
-        if (currentConnection && lastUsedConnection && currentConnection !== lastUsedConnection) {
-            connectionInfo.textContent = `⚠ ${last} → ${currentConnection}`;
-            connectionInfo.classList.add('warn');
-            connectionInfo.title = `Data was loaded from "${last}". Active connection is now "${currentConnection}".`;
-        } else {
-            connectionInfo.textContent = last;
-            connectionInfo.classList.remove('warn');
-            connectionInfo.title = `Connection used for the currently displayed data: ${last}`;
-        }
+        const badge = buildConnectionBadge(lastUsedConnection, currentConnection);
+        connectionInfo.textContent = badge.text;
+        connectionInfo.classList.toggle('warn', badge.warn);
+        connectionInfo.title = badge.title;
     }
 
     function closeSqlDialog() {
@@ -3878,6 +3901,7 @@ if (typeof module !== 'undefined' && module.exports) {
         shouldRenderEarlyColumns,
         isFreshRowLoad,
         recordFieldReadonlyAttr,
+        buildConnectionBadge,
         rowValueMatchesFilter,
         compareCellValues,
         normalizeCellInput,

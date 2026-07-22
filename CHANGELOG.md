@@ -2,6 +2,8 @@
 
 ## 2.1.5
 
+- **The connection badge in the Data Viewer is now clickable to switch connection:** The toolbar badge that shows which database the displayed data came from can now be clicked to open the connection picker and switch to another saved connection (the same picker used elsewhere). The badge shows a hover state and a "click to switch connection" hint, and when no connection is active yet it reads "Select connection…". Switching a connection updates every open Data Viewer as before.
+
 - **Single Record View now respects read-only data views:** When the Data Viewer could not be edited (for example an ad-hoc custom `SELECT` result), the table grid correctly blocked edits, but opening a row in the Single Record View still let you type into the field textareas and register changes that could never be committed. The record dialog now marks all fields as `readonly` whenever the view is read-only (or the row is pending deletion), and `applyRecordEdit` ignores edits in read-only mode, so the two views behave consistently.
 
 - **Reloading the Data Viewer now discards uncommitted edits instead of re-applying them to unrelated rows:** When a row was changed (but not saved) and the query was re-run — or the table was reloaded — the freshly fetched rows were displayed with the old pending edits still painted into the cells at the same 0-based row index, even though those values belonged to different (now replaced) rows. Any fresh first page or re-run query now resets all pending changes (cell edits, deletions, inserted and duplicated rows, and the row selection) so the grid always reflects the data actually returned by the database. "Load More" pagination still appends rows and keeps existing edits.

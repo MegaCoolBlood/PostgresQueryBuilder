@@ -18,7 +18,8 @@ const {
     buildConstraintWhere,
     shouldRenderEarlyColumns,
     isFreshRowLoad,
-    recordFieldReadonlyAttr
+    recordFieldReadonlyAttr,
+    buildConnectionBadge
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== 0.2.0: "Load More" for custom queries (stripTrailingLimitOffset) =====
@@ -413,6 +414,36 @@ test('recordFieldReadonlyAttr marks fields readonly when the view is read-only',
 test('recordFieldReadonlyAttr marks fields readonly for rows pending deletion', () => {
     assert.equal(recordFieldReadonlyAttr(true, false), 'readonly');
     assert.equal(recordFieldReadonlyAttr(true, true), 'readonly');
+});
+
+// ===== 2.1.5: clickable connection badge =====
+
+test('buildConnectionBadge prompts to select when no connection is known', () => {
+    const badge = buildConnectionBadge('', '');
+    assert.equal(badge.text, 'Select connection\u2026');
+    assert.equal(badge.warn, false);
+    assert.match(badge.title, /choose a database connection/i);
+});
+
+test('buildConnectionBadge shows the active connection and a switch hint', () => {
+    const badge = buildConnectionBadge('prod', 'prod');
+    assert.equal(badge.text, 'prod');
+    assert.equal(badge.warn, false);
+    assert.match(badge.title, /click to switch connection/i);
+});
+
+test('buildConnectionBadge warns when the active connection differs from the loaded one', () => {
+    const badge = buildConnectionBadge('prod', 'staging');
+    assert.match(badge.text, /prod/);
+    assert.match(badge.text, /staging/);
+    assert.equal(badge.warn, true);
+    assert.match(badge.title, /click to switch connection/i);
+});
+
+test('buildConnectionBadge falls back to the current connection when no load is recorded', () => {
+    const badge = buildConnectionBadge('', 'prod');
+    assert.equal(badge.text, '(none)');
+    assert.equal(badge.warn, false);
 });
 
 
