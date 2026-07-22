@@ -2,6 +2,8 @@
 
 ## 2.1.5
 
+- **Column filters now refine a custom query too:** In a custom-`SELECT` result the column filter row (and the cell context-menu actions "Add as Exact Match" / "Exclude this Value") did nothing, because they were gated on a known schema/table which a custom query does not have. Typing a term into a column filter and pressing Enter now merges the resulting condition into the `WHERE` clause of the query in the query bar and re-runs it, just like in a standard table view. Existing user-written clauses are preserved.
+
 - **The connection badge in the Data Viewer is now clickable to switch connection:** The toolbar badge that shows which database the displayed data came from can now be clicked to open the connection picker and switch to another saved connection (the same picker used elsewhere). The badge shows a hover state and a "click to switch connection" hint, and when no connection is active yet it reads "Select connection…". Switching a connection updates every open Data Viewer as before.
 
 - **Single Record View now respects read-only data views:** When the Data Viewer could not be edited (for example an ad-hoc custom `SELECT` result), the table grid correctly blocked edits, but opening a row in the Single Record View still let you type into the field textareas and register changes that could never be committed. The record dialog now marks all fields as `readonly` whenever the view is read-only (or the row is pending deletion), and `applyRecordEdit` ignores edits in read-only mode, so the two views behave consistently.

@@ -641,6 +641,14 @@ function recordFieldReadonlyAttr(isDeleted, readOnly) {
     return (isDeleted || readOnly) ? 'readonly' : '';
 }
 
+// True when WHERE clauses can be merged into the current view's query and the
+// query re-run: either a standard table view (schema + table are known) or an
+// active custom query (whose SQL lives in the query bar). Lets the column
+// filter row and the cell context-menu refine a custom SELECT as well.
+function canApplyQueryFilters(schema, table, customQueryActive) {
+    return (!!schema && !!table) || !!customQueryActive;
+}
+
 // Compute the connection badge state shown in the Data Viewer toolbar. The
 // badge is always clickable (to switch connection); `lastUsedConnection` is the
 // connection the displayed rows came from and `currentConnection` is the now
@@ -1540,7 +1548,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function applyExactMatchToQuery(colName, value, extraConditions) {
-        if (!schema || !table) return;
+        if (!canApplyQueryFilters(schema, table, customQueryActive)) return;
         if (value === null || value === undefined) return;
         const colMeta = columns.find(c => c.name === colName);
         const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
@@ -1806,7 +1814,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function applyFiltersToQuery() {
-        if (!schema || !table) return;
+        if (!canApplyQueryFilters(schema, table, customQueryActive)) return;
 
         const newClausesByCol = {};
         for (const [col, val] of Object.entries(filters)) {
@@ -1863,7 +1871,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             items.push({
                 label: 'Exclude this Value from Query',
                 action: () => {
-                    if (!schema || !table) return;
+                    if (!canApplyQueryFilters(schema, table, customQueryActive)) return;
                     const escaped = escapeSqlString(cellValue);
                     const fmtCol = formatIdentifier(colName);
                     const colMeta = columns.find(c => c.name === colName);
@@ -3902,6 +3910,7 @@ if (typeof module !== 'undefined' && module.exports) {
         isFreshRowLoad,
         recordFieldReadonlyAttr,
         buildConnectionBadge,
+        canApplyQueryFilters,
         rowValueMatchesFilter,
         compareCellValues,
         normalizeCellInput,

@@ -19,7 +19,8 @@ const {
     shouldRenderEarlyColumns,
     isFreshRowLoad,
     recordFieldReadonlyAttr,
-    buildConnectionBadge
+    buildConnectionBadge,
+    canApplyQueryFilters
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== 0.2.0: "Load More" for custom queries (stripTrailingLimitOffset) =====
@@ -444,6 +445,22 @@ test('buildConnectionBadge falls back to the current connection when no load is 
     const badge = buildConnectionBadge('', 'prod');
     assert.equal(badge.text, '(none)');
     assert.equal(badge.warn, false);
+});
+
+// ===== 2.1.5: filters can refine a custom query =====
+
+test('canApplyQueryFilters is true for a standard table view', () => {
+    assert.equal(canApplyQueryFilters('public', 'users', false), true);
+});
+
+test('canApplyQueryFilters is true for an active custom query without schema/table', () => {
+    assert.equal(canApplyQueryFilters('', '', true), true);
+});
+
+test('canApplyQueryFilters is false when neither a table nor a custom query is present', () => {
+    assert.equal(canApplyQueryFilters('', '', false), false);
+    assert.equal(canApplyQueryFilters('public', '', false), false);
+    assert.equal(canApplyQueryFilters('', 'users', false), false);
 });
 
 
