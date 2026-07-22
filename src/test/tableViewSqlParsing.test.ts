@@ -16,7 +16,8 @@ const {
     formatConstraintOperand,
     formatConstraintCondition,
     buildConstraintWhere,
-    shouldRenderEarlyColumns
+    shouldRenderEarlyColumns,
+    isFreshRowLoad
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== 0.2.0: "Load More" for custom queries (stripTrailingLimitOffset) =====
@@ -374,6 +375,28 @@ test('shouldRenderEarlyColumns is false for paged "Load More" requests', () => {
 
 test('shouldRenderEarlyColumns is false while a custom query is active', () => {
     assert.equal(shouldRenderEarlyColumns(0, true), false);
+});
+
+// ===== 2.1.5: pending edits are discarded when rows are reloaded =====
+
+test('isFreshRowLoad is true for the initial page (offset 0)', () => {
+    assert.equal(isFreshRowLoad(0, false), true);
+    assert.equal(isFreshRowLoad(undefined, false), true);
+    assert.equal(isFreshRowLoad(null, false), true);
+});
+
+test('isFreshRowLoad is false for paged "Load More" requests', () => {
+    assert.equal(isFreshRowLoad(50, false), false);
+    assert.equal(isFreshRowLoad(100, false), false);
+});
+
+test('isFreshRowLoad is false when appending custom-query pages', () => {
+    assert.equal(isFreshRowLoad(0, true), false);
+    assert.equal(isFreshRowLoad(undefined, true), false);
+});
+
+test('isFreshRowLoad is true when a custom query is re-run (not appending)', () => {
+    assert.equal(isFreshRowLoad(0, false), true);
 });
 
 

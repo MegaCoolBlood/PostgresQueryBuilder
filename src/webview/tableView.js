@@ -623,6 +623,17 @@ function shouldRenderEarlyColumns(offset, customQueryActive) {
     return !offset || offset <= 0;
 }
 
+// Decide whether a data-load message replaces the current rows wholesale (a
+// fresh first page or a re-run query) rather than appending a "Load More" page.
+// Fresh loads must discard pending edits, since those edits are keyed by a
+// 0-based row index that would otherwise be re-applied to unrelated new rows.
+function isFreshRowLoad(offset, isAppend) {
+    if (isAppend) {
+        return false;
+    }
+    return (offset || 0) <= 0;
+}
+
 // Predicate for local (in-memory) row filtering. Returns true when `cellVal`
 // passes the given column filter. A filter that cannot constrain the data
 // (empty range, invalid number) matches every row.
@@ -770,6 +781,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let deletedRows = new Set();   // rowIndex
     let insertedRows = [];          // [{ row: {col: val, ...}, anchor: number|null }]
     let duplicatedRows = [];        // [{ row: {col: val, ...}, anchor: number|null }]
+
+    // Drop every pending (uncommitted) edit. Called whenever a fresh page of
+    // data replaces the current rows, so that per-row-index changes are never
+    // re-applied to unrelated rows after a reload.
+    function resetPendingChanges() {
+        modifiedCells.clear();
+        deletedRows.clear();
+        insertedRows = [];
+        duplicatedRows = [];
+        selectedRowIdx = null;
+    }
 
     // Index of the currently "selected" existing row (the one most recently
     // clicked). New / duplicated rows are inserted directly below this row.
@@ -1254,8 +1276,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function handleDataLoaded(msg) {
-        if (currentOffset === 0) {
+        if (isFreshRowLoad(currentOffset, false)) {
             allRows = msg.data;
+            // A fresh first page replaces the row set entirely; any pending
+            // edits refer to the previous rows and must not leak onto the newly
+            // loaded ones (which share the same 0-based indices).
+            resetPendingChanges();
         } else {
             allRows = allRows.concat(msg.data);
         }
@@ -1321,10 +1347,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const incoming = msg.rows || [];
         const isAppend = customQueryAppendPending;
         customQueryAppendPending = false;
-        if (isAppend) {
-            allRows = allRows.concat(incoming);
-        } else {
+        if (isFreshRowLoad(0, isAppend)) {
             allRows = incoming;
+            // Re-running the query replaces the rows; discard pending edits so
+            // they are not re-applied to unrelated rows by their stale index.
+            resetPendingChanges();
+        } else {
+            allRows = allRows.concat(incoming);
         }
         columns = msg.columns;
         totalCount = allRows.length;
@@ -2567,19 +2596,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function handleCommitSuccess() {
         // Reset state and reload
-        modifiedCells.clear();
-        deletedRows.clear();
-        insertedRows = [];
-        duplicatedRows = [];
+        resetPendingChanges();
         currentOffset = 0;
         postDefaultLoadData(0);
     }
 
     function discardChanges() {
-        modifiedCells.clear();
-        deletedRows.clear();
-        insertedRows = [];
-        duplicatedRows = [];
+        resetPendingChanges();
         currentOffset = 0;
         postDefaultLoadData(0);
         updateChangeIndicator();
@@ -3845,6 +3868,7 @@ if (typeof module !== 'undefined' && module.exports) {
         formatConstraintCondition,
         buildConstraintWhere,
         shouldRenderEarlyColumns,
+        isFreshRowLoad,
         rowValueMatchesFilter,
         compareCellValues,
         normalizeCellInput,

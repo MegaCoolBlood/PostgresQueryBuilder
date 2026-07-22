@@ -2,6 +2,8 @@
 
 ## 2.1.5
 
+- **Reloading the Data Viewer now discards uncommitted edits instead of re-applying them to unrelated rows:** When a row was changed (but not saved) and the query was re-run — or the table was reloaded — the freshly fetched rows were displayed with the old pending edits still painted into the cells at the same 0-based row index, even though those values belonged to different (now replaced) rows. Any fresh first page or re-run query now resets all pending changes (cell edits, deletions, inserted and duplicated rows, and the row selection) so the grid always reflects the data actually returned by the database. "Load More" pagination still appends rows and keeps existing edits.
+
 - **Leading/trailing spaces in Data Viewer cells are now shown and preserved:** Text values with significant whitespace (for example `" foo"`) were rendered without their leading spaces in the table view (the surrounding cell uses `white-space: nowrap`, which collapses them), even though the Single Record View showed them correctly. Worse, simply focusing such a cell and leaving it again trimmed the whitespace and flagged the cell as modified, silently altering the data on the next commit. Table cells now preserve their whitespace visually (`white-space: pre` on the editable cell content), and editing no longer trims leading/trailing spaces of text values — so clicking into and out of a cell no longer registers a phantom change. Numeric columns are still trimmed and reformatted as before.
 
 ## 2.1.4
