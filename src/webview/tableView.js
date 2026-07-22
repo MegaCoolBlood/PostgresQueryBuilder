@@ -634,6 +634,13 @@ function isFreshRowLoad(offset, isAppend) {
     return (offset || 0) <= 0;
 }
 
+// The `readonly` attribute for a Single Record View field. A field is
+// non-editable when its row is marked for deletion or when the whole view is
+// read-only (e.g. an ad-hoc custom-query result that cannot be written back).
+function recordFieldReadonlyAttr(isDeleted, readOnly) {
+    return (isDeleted || readOnly) ? 'readonly' : '';
+}
+
 // Predicate for local (in-memory) row filtering. Returns true when `cellVal`
 // passes the given column filter. A filter that cannot constrain the data
 // (empty range, invalid number) matches every row.
@@ -3322,7 +3329,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const lineCount = isNull ? 1 : Math.min(15, Math.max(1, displayVal.split('\n').length));
             const charInfo = isNull ? '(NULL)' : (displayVal.length + ' chars');
 
-            const editableAttr = isDeleted ? 'readonly' : '';
+            const editableAttr = recordFieldReadonlyAttr(isDeleted, readOnly);
             const valueClass = 'record-value' + (isNull ? ' is-null' : '');
             const rowClass = 'record-row' + (isModified ? ' record-row-modified' : '');
 
@@ -3449,6 +3456,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     // Mirrors handleCellEdit: writes to modifiedCells / clears it if equal to original
     function applyRecordEdit(rowIdx, colName, rawText) {
+        if (readOnly) return;
         if (deletedRows.has(rowIdx)) return;
         const originalVal = allRows[rowIdx][colName];
         const colMeta = columns.find(c => c.name === colName);
@@ -3869,6 +3877,7 @@ if (typeof module !== 'undefined' && module.exports) {
         buildConstraintWhere,
         shouldRenderEarlyColumns,
         isFreshRowLoad,
+        recordFieldReadonlyAttr,
         rowValueMatchesFilter,
         compareCellValues,
         normalizeCellInput,

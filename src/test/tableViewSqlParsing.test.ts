@@ -17,7 +17,8 @@ const {
     formatConstraintCondition,
     buildConstraintWhere,
     shouldRenderEarlyColumns,
-    isFreshRowLoad
+    isFreshRowLoad,
+    recordFieldReadonlyAttr
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== 0.2.0: "Load More" for custom queries (stripTrailingLimitOffset) =====
@@ -397,6 +398,21 @@ test('isFreshRowLoad is false when appending custom-query pages', () => {
 
 test('isFreshRowLoad is true when a custom query is re-run (not appending)', () => {
     assert.equal(isFreshRowLoad(0, false), true);
+});
+
+// ===== 2.1.5: Single Record View respects read-only views =====
+
+test('recordFieldReadonlyAttr makes fields editable in a normal editable view', () => {
+    assert.equal(recordFieldReadonlyAttr(false, false), '');
+});
+
+test('recordFieldReadonlyAttr marks fields readonly when the view is read-only', () => {
+    assert.equal(recordFieldReadonlyAttr(false, true), 'readonly');
+});
+
+test('recordFieldReadonlyAttr marks fields readonly for rows pending deletion', () => {
+    assert.equal(recordFieldReadonlyAttr(true, false), 'readonly');
+    assert.equal(recordFieldReadonlyAttr(true, true), 'readonly');
 });
 
 
