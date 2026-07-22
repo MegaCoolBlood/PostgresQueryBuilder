@@ -1049,6 +1049,44 @@ test('format() specifier keeps the code semantically identical (safety net not t
     assert.ok(r.text.includes('id = %L'), r.text);
 });
 
+test('reformats a multi-line SQL statement inside a dollar-quoted format() template', () => {
+    const src = [
+        'CREATE OR REPLACE FUNCTION x.f() RETURNS void LANGUAGE plpgsql AS $BODY$',
+        'DECLARE v_sql TEXT;',
+        'BEGIN',
+        '  v_sql := format(',
+        '    $query$ SELECT a AS x,',
+        '    b',
+        ' FROM t',
+        ' WHERE c = %L AND d = %L',
+        '    $query$,',
+        '    p1,',
+        '    p2);',
+        'END;',
+        '$BODY$;',
+    ].join('\n');
+    const r = formatSqlChecked(src);
+    assert.equal(r.ok, true, r.reason);
+    // The inner SELECT is now structured onto its own clause lines.
+    assert.ok(/\$query\$\n\s*SELECT\n/.test(r.text), 'SELECT should start a fresh line inside the body\n' + r.text);
+    assert.ok(/\n\s*FROM t\n/.test(r.text), 'FROM should be on its own line\n' + r.text);
+    assert.ok(/\n\s*WHERE c = %L\n\s*AND d = %L/.test(r.text), 'WHERE/AND should wrap; %L stays intact\n' + r.text);
+    // Formatting is stable on a second pass.
+    assert.equal(formatSql(r.text), r.text);
+});
+
+test('leaves a single-line SQL function body inline (does not force it multi-line)', () => {
+    const out = formatSql("CREATE FUNCTION g() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;");
+    assert.ok(out.includes('AS $$ SELECT 1 $$;'), out);
+});
+
+test('leaves a non-SQL dollar-quoted body verbatim', () => {
+    // A plain-text body that does not start with a SQL statement keyword is untouched.
+    const src = "SELECT set_config('x', $doc$line one\nline two$doc$, false);";
+    const out = formatSql(src);
+    assert.ok(out.includes('$doc$line one\nline two$doc$'), out);
+});
+
 test('normalizes verbose data type names to their short form', () => {
     const out = formatSql('declare a character varying(500); b timestamp without time zone; c timestamp with time zone; begin end;');
     assert.ok(out.includes('a VARCHAR(500);'), out);

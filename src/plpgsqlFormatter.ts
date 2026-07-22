@@ -490,6 +490,45 @@ const SIMPLE_SELECT_BREAKERS = new Set([
 /** Words that introduce a JOIN and therefore begin a new line. */
 const JOIN_WORDS = new Set(['join', 'inner', 'left', 'right', 'full', 'cross', 'natural']);
 
+/**
+ * SQL statement keywords that, when they begin a dollar-quoted body, mark the
+ * body as SQL that should be reformatted (e.g. the query template of an
+ * `EXECUTE format($query$ SELECT … $query$)` call).
+ */
+const SQL_STATEMENT_STARTERS = new Set([
+    'select', 'with', 'insert', 'update', 'delete', 'merge'
+]);
+
+/**
+ * Decides whether a dollar-quoted body should be reformatted as code. True when
+ * it contains a PL/pgSQL block (`BEGIN`/`DECLARE`) or when it spans multiple
+ * lines and its first significant word (ignoring leading whitespace and
+ * comments) starts a SQL statement. Single-line bodies and bodies that are plain
+ * text, JSON, regex patterns, etc. are left verbatim.
+ */
+function dollarBodyIsCode(body: string): boolean {
+    if (/\b(begin|declare)\b/i.test(body)) return true;
+    // A single-line SQL body (e.g. `AS $$ SELECT 1 $$`) is kept inline; only a
+    // multi-line statement template is reformatted.
+    if (!/\n/.test(body)) return false;
+    let s = body;
+    // Skip leading whitespace and comments to reach the first real word.
+    for (;;) {
+        const before = s;
+        s = s.replace(/^\s+/, '');
+        if (s.startsWith('--')) {
+            const nl = s.indexOf('\n');
+            s = nl === -1 ? '' : s.slice(nl + 1);
+        } else if (s.startsWith('/*')) {
+            const end = s.indexOf('*/');
+            s = end === -1 ? '' : s.slice(end + 2);
+        }
+        if (s === before) break;
+    }
+    const mw = /^([A-Za-z_]+)/.exec(s);
+    return mw ? SQL_STATEMENT_STARTERS.has(mw[1].toLowerCase()) : false;
+}
+
 type TokType =
     | 'word' | 'quotedIdent' | 'string' | 'dollar' | 'number'
     | 'param' | 'lineComment' | 'blockComment' | 'punct' | 'operator';
@@ -1834,7 +1873,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             const m = /^(\$[A-Za-z_]?[A-Za-z0-9_]*\$)([\s\S]*)\1$/.exec(t.text);
             const inner = m ? m[2] : '';
             const tag = m ? m[1] : t.text;
-            const looksLikeCode = m && /\b(begin|declare)\b/i.test(inner);
+            const looksLikeCode = !!m && dollarBodyIsCode(inner);
             if (looksLikeCode) {
                 emit(tag, { text: tag, isKeyword: false, type: 'operator' });
                 flush();
