@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.5
+
+- **Leading/trailing spaces in Data Viewer cells are now shown and preserved:** Text values with significant whitespace (for example `" foo"`) were rendered without their leading spaces in the table view (the surrounding cell uses `white-space: nowrap`, which collapses them), even though the Single Record View showed them correctly. Worse, simply focusing such a cell and leaving it again trimmed the whitespace and flagged the cell as modified, silently altering the data on the next commit. Table cells now preserve their whitespace visually (`white-space: pre` on the editable cell content), and editing no longer trims leading/trailing spaces of text values — so clicking into and out of a cell no longer registers a phantom change. Numeric columns are still trimmed and reformatted as before.
+
 ## 2.1.4
 
 - **A `SELECT` is no longer collapsed onto one line when a function call was deliberately split across lines with a compound argument:** A single-statement `SELECT` (for example the body of a `LANGUAGE sql` function) was treated as a "simple" `SELECT` and rendered on a single line even when the author had written a function call across several lines, such as `hashtext(COALESCE(a, '') || COALESCE('::' || b, ''))`. A function call whose single argument is a compound expression (it contains a top-level operator like `||`, `+`, …) and which the author split across multiple source lines now keeps its multi-line layout — the call wraps its argument onto its own indented line and the surrounding `SELECT` is no longer flattened. Calls written on one line, and multi-line calls whose argument is a single simple value (e.g. `foo(\n bar\n)`), still collapse as before.

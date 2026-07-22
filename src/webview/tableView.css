@@ -547,6 +547,10 @@ td.has-fk-btn {
     display: inline-block;
     min-width: 1px;
     outline: none;
+    /* Preserve significant leading/trailing whitespace so values such as
+       " foo" render exactly as stored (the surrounding td is `nowrap`, which
+       would otherwise collapse leading spaces). */
+    white-space: pre;
 }
 
 /* Foreign key button */

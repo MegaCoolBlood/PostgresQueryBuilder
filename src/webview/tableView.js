@@ -679,14 +679,17 @@ function compareCellValues(valA, valB, direction) {
     return direction === 'asc' ? cmp : -cmp;
 }
 
-// Trim and (for numeric columns) normalize a raw edited cell value into the
-// canonical string stored in the change set.
+// Normalize a raw edited cell value into the canonical string stored in the
+// change set. Numeric columns are trimmed and reformatted; text columns keep
+// their leading/trailing whitespace so that values with significant spaces
+// (e.g. " foo") are not silently altered merely by focusing and blurring a cell.
 function normalizeCellInput(rawText, isNumeric, thousandSeparator) {
-    const newValue = (rawText || '').trim();
-    if (isNumeric && newValue !== '') {
-        return normalizeNumericInput(newValue, thousandSeparator);
+    const raw = rawText || '';
+    if (isNumeric) {
+        const trimmed = raw.trim();
+        return trimmed === '' ? '' : normalizeNumericInput(trimmed, thousandSeparator);
     }
-    return newValue;
+    return raw;
 }
 
 // Build the set of column/value pairs that uniquely identifies a row for an

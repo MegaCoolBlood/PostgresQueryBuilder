@@ -172,13 +172,18 @@ test('compareCellValues always sorts nulls last', () => {
 
 // ===== normalizeCellInput =====
 
-test('normalizeCellInput trims plain text', () => {
-    assert.equal(normalizeCellInput('  hello  ', false, SEP), 'hello');
+test('normalizeCellInput preserves leading/trailing whitespace for text', () => {
+    assert.equal(normalizeCellInput('  hello  ', false, SEP), '  hello  ');
+    assert.equal(normalizeCellInput(' foo', false, SEP), ' foo');
     assert.equal(normalizeCellInput('', false, SEP), '');
 });
 
 test('normalizeCellInput normalizes numeric input', () => {
     assert.equal(normalizeCellInput('1 234,50', true, SEP), '1234.50');
+});
+
+test('normalizeCellInput trims surrounding whitespace for numeric input', () => {
+    assert.equal(normalizeCellInput('  1 234,50  ', true, SEP), '1234.50');
 });
 
 test('normalizeCellInput leaves empty numeric input untouched', () => {
