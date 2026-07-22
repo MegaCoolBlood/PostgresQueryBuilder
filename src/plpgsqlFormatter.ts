@@ -1875,15 +1875,23 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             const tag = m ? m[1] : t.text;
             const looksLikeCode = !!m && dollarBodyIsCode(inner);
             if (looksLikeCode) {
+                // A PL/pgSQL block body (BEGIN/DECLARE) keeps its content at the
+                // same level as the tags (e.g. `AS $BODY$` / `DECLARE` / `$BODY$`).
+                // A SQL statement template (e.g. `format($query$ SELECT … $query$)`)
+                // aligns its opening and closing tags and indents the body one
+                // level deeper so the embedded query stands out.
+                const isBlock = /\b(begin|declare)\b/i.test(inner);
                 emit(tag, { text: tag, isKeyword: false, type: 'operator' });
+                const tagIndent = lineIndent;
                 flush();
                 const innerFmt = formatSqlOnce(inner.replace(/^\s*\n/, '').replace(/\s+$/, ''), opt);
-                const bodyIndent = blockIndent;
+                const bodyIndent = isBlock ? blockIndent : tagIndent + 1;
                 for (const ln of innerFmt.split('\n')) {
                     out.push(ln === '' ? '' : indentStr(bodyIndent) + ln);
                 }
-                lineIndent = blockIndent;
-                pendingIndent = blockIndent;
+                const closeIndent = isBlock ? blockIndent : tagIndent;
+                lineIndent = closeIndent;
+                pendingIndent = closeIndent;
                 cur = tag;
                 prev = { text: tag, isKeyword: false, type: 'operator' };
             } else {

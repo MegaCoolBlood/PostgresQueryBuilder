@@ -1071,6 +1071,15 @@ test('reformats a multi-line SQL statement inside a dollar-quoted format() templ
     assert.ok(/\$query\$\n\s*SELECT\n/.test(r.text), 'SELECT should start a fresh line inside the body\n' + r.text);
     assert.ok(/\n\s*FROM t\n/.test(r.text), 'FROM should be on its own line\n' + r.text);
     assert.ok(/\n\s*WHERE c = %L\n\s*AND d = %L/.test(r.text), 'WHERE/AND should wrap; %L stays intact\n' + r.text);
+    // The opening and closing $query$ tags share one indentation level and the
+    // body is indented exactly one level (indentSize spaces) deeper.
+    const lines = r.text.split('\n');
+    const indentOf = (l: string): number => l.match(/^ */)![0].length;
+    const openIndent = indentOf(lines.find(l => l.trim() === '$query$')!);
+    const closeIndent = indentOf(lines.find(l => l.trim() === '$query$,')!);
+    const selectIndent = indentOf(lines.find(l => l.trim() === 'SELECT')!);
+    assert.equal(openIndent, closeIndent, 'opening and closing $query$ tags must be at the same indent\n' + r.text);
+    assert.equal(selectIndent, openIndent + 2, 'body must be one level (2 spaces) deeper than the tags\n' + r.text);
     // Formatting is stable on a second pass.
     assert.equal(formatSql(r.text), r.text);
 });
