@@ -19,6 +19,51 @@ interface MessageContext {
     queryRunner: QueryRunner;
 }
 
+/** Minimal shape of a `pg` field descriptor used to build result columns. */
+export interface ResultFieldInfo {
+    name: string;
+    dataTypeID: number;
+    tableID?: number;
+    columnID?: number;
+}
+
+/** A Data Viewer column as posted to the webview. */
+export interface ResultColumn {
+    name: string;
+    dataType: string;
+    isNullable: boolean;
+    columnDefault: null;
+    comment: string | null;
+}
+
+/**
+ * Map raw `pg` field descriptors to Data Viewer column objects, resolving the
+ * type name (via `typeMap`, keyed by data-type OID) and the column comment (via
+ * `commentMap`, keyed by `"tableOID:columnNumber"`). Fields that do not
+ * originate from a table column (`tableID`/`columnID` <= 0, e.g. computed
+ * expressions or literals in a custom SELECT) get no comment.
+ */
+export function buildCustomResultColumns(
+    fields: ReadonlyArray<ResultFieldInfo>,
+    typeMap: Record<number, string>,
+    commentMap: Record<string, string>
+): ResultColumn[] {
+    return fields.map((f) => {
+        const tableId = f.tableID ?? 0;
+        const columnId = f.columnID ?? 0;
+        const comment = (tableId > 0 && columnId > 0)
+            ? (commentMap[`${tableId}:${columnId}`] ?? null)
+            : null;
+        return {
+            name: f.name,
+            dataType: typeMap[f.dataTypeID] || '',
+            isNullable: true,
+            columnDefault: null,
+            comment
+        };
+    });
+}
+
 export class TableWebViewManager {
     private panels: Map<string, vscode.WebviewPanel> = new Map();
     private pendingFilters: Map<string, { column: string; value: string; conditions?: any[] }> = new Map();
@@ -304,6 +349,46 @@ export class TableWebViewManager {
         vscode.window.showErrorMessage(ctx.message.text);
     }
 
+    /**
+     * Resolve the columns of a custom-query result: map each field's type OID to
+     * a type name and look up the column comment for fields that come straight
+     * from a table column (`tableID`/`columnID`). This makes the column-comment
+     * tooltip work for custom SELECTs too, not just the default table view.
+     */
+    private async resolveResultColumns(fields: ReadonlyArray<ResultFieldInfo>): Promise<ResultColumn[]> {
+        // Resolve field type OIDs to type names.
+        const oids = fields.map((f) => f.dataTypeID).filter((id: number) => id > 0);
+        const typeMap: Record<number, string> = {};
+        if (oids.length > 0) {
+            const typeRows = await this.connectionManager.query(
+                `SELECT oid, typname FROM pg_type WHERE oid = ANY($1)`,
+                [oids]
+            );
+            for (const row of typeRows.rows) {
+                typeMap[row.oid] = row.typname;
+            }
+        }
+
+        // Resolve column comments for fields that originate from a table column.
+        const commentMap: Record<string, string> = {};
+        const tableIds = Array.from(new Set(fields.map((f) => f.tableID).filter((id): id is number => typeof id === 'number' && id > 0)));
+        const columnIds = Array.from(new Set(fields.map((f) => f.columnID).filter((id): id is number => typeof id === 'number' && id > 0)));
+        if (tableIds.length > 0 && columnIds.length > 0) {
+            const descRows = await this.connectionManager.queryMetadata(
+                `SELECT objoid, objsubid, description
+                 FROM pg_catalog.pg_description
+                 WHERE classoid = 'pg_catalog.pg_class'::regclass
+                   AND objoid = ANY($1) AND objsubid = ANY($2)`,
+                [tableIds, columnIds]
+            );
+            for (const row of descRows) {
+                commentMap[`${row.objoid}:${row.objsubid}`] = row.description;
+            }
+        }
+
+        return buildCustomResultColumns(fields, typeMap, commentMap);
+    }
+
     private async handleRunCustomQuery(ctx: MessageContext): Promise<void> {
         const { panel, schema, table, message, queryRunner } = ctx;
         if (!await this.connectionManager.ensureConnected()) {
@@ -317,25 +402,7 @@ export class TableWebViewManager {
                 }
             }
         }
-        // Resolve field OIDs to type names
-        const oids = result.fields.map((f) => f.dataTypeID).filter((id: number) => id > 0);
-        let typeMap: Record<number, string> = {};
-        if (oids.length > 0) {
-            const typeRows = await this.connectionManager.query(
-                `SELECT oid, typname FROM pg_type WHERE oid = ANY($1)`,
-                [oids]
-            );
-            for (const row of typeRows.rows) {
-                typeMap[row.oid] = row.typname;
-            }
-        }
-        const cols = result.fields.map((f) => ({
-            name: f.name,
-            dataType: typeMap[f.dataTypeID] || '',
-            isNullable: true,
-            columnDefault: null,
-            comment: null
-        }));
+        const cols = await this.resolveResultColumns(result.fields);
         panel.webview.postMessage({
             command: 'queryResult',
             rows: result.rows,
@@ -647,25 +714,7 @@ export class TableWebViewManager {
                                 }
                             }
                         }
-                        // Resolve field OIDs to type names
-                        const oids = result.fields.map((f) => f.dataTypeID).filter((id: number) => id > 0);
-                        let typeMap: Record<number, string> = {};
-                        if (oids.length > 0) {
-                            const typeRows = await this.connectionManager.query(
-                                `SELECT oid, typname FROM pg_type WHERE oid = ANY($1)`,
-                                [oids]
-                            );
-                            for (const row of typeRows.rows) {
-                                typeMap[row.oid] = row.typname;
-                            }
-                        }
-                        const cols = result.fields.map((f) => ({
-                            name: f.name,
-                            dataType: typeMap[f.dataTypeID] || '',
-                            isNullable: true,
-                            columnDefault: null,
-                            comment: null
-                        }));
+                        const cols = await this.resolveResultColumns(result.fields);
                         if (!disposed) {
                             panel.webview.postMessage({
                                 command: 'queryResult',
