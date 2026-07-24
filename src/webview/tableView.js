@@ -612,6 +612,21 @@ function buildConstraintWhere(conditions, formatCol) {
         .join(' AND ');
 }
 
+// Build the explicit column list used by the default table-view query. Instead
+// of a `*` wildcard the query bar lists every column by name. When the columns
+// are not yet known (empty list) it falls back to `*` so the query bar still
+// shows a valid statement while metadata is loading.
+function buildSelectColumnList(columns, formatCol) {
+    if (!Array.isArray(columns) || columns.length === 0) {
+        return '*';
+    }
+    const fmt = typeof formatCol === 'function' ? formatCol : (c) => c;
+    const names = columns
+        .map((col) => (col && col.name !== undefined && col.name !== null) ? fmt(col.name) : '')
+        .filter((s) => s !== '');
+    return names.length > 0 ? names.join(', ') : '*';
+}
+
 // Decide whether an early `columnsLoaded` message should render the header.
 // Only the initial page (offset 0) of a standard table view qualifies: paged
 // "Load More" requests already have columns, and custom-query results must keep
@@ -1323,6 +1338,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         alwaysQuote = Boolean(msg.alwaysQuote);
         tableName.textContent = `${schema}.${table}`;
         renderHeader();
+        // Now that the columns are known, refresh the query bar so it lists all
+        // columns explicitly instead of the initial `*` placeholder.
+        setQueryText(getDefaultQuery());
     }
 
     function handleDataLoaded(msg) {
@@ -3035,9 +3053,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     // The default table-view query including any permanent WHERE constraints.
+    // Lists all known columns explicitly instead of `*` (falls back to `*`
+    // while column metadata is still loading).
     function getDefaultQuery() {
         const where = getDefaultWhere();
-        return `SELECT * FROM ${getDefaultTableReference()}${where ? ` WHERE ${where}` : ''}`;
+        const columnList = buildSelectColumnList(columns, formatIdentifier);
+        return `SELECT ${columnList} FROM ${getDefaultTableReference()}${where ? ` WHERE ${where}` : ''}`;
     }
 
     // Post a default-path loadData request carrying the permanent WHERE so the
@@ -3906,6 +3927,7 @@ if (typeof module !== 'undefined' && module.exports) {
         formatConstraintOperand,
         formatConstraintCondition,
         buildConstraintWhere,
+        buildSelectColumnList,
         shouldRenderEarlyColumns,
         isFreshRowLoad,
         recordFieldReadonlyAttr,

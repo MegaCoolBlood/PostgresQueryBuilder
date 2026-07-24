@@ -8,7 +8,8 @@ const {
     collapseSqlWhitespace,
     splitTopLevelCommas,
     splitTopLevelClauses,
-    buildRowIdentity
+    buildRowIdentity,
+    buildSelectColumnList
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== cellToString =====
@@ -195,5 +196,33 @@ test('buildRowIdentity keeps null values in the full-row fallback', () => {
 test('buildRowIdentity treats a missing primaryKeys argument as no primary key', () => {
     const row = { a: 1, b: 2 };
     assert.deepEqual(buildRowIdentity(undefined, ['a', 'b'], row), { a: 1, b: 2 });
+});
+
+// ===== buildSelectColumnList =====
+
+test('buildSelectColumnList lists every column name instead of a wildcard', () => {
+    const columns = [{ name: 'id' }, { name: 'name' }, { name: 'age' }];
+    assert.equal(buildSelectColumnList(columns), 'id, name, age');
+});
+
+test('buildSelectColumnList applies the identifier formatter to each column', () => {
+    const columns = [{ name: 'id' }, { name: 'order' }];
+    const fmt = (c: string) => `"${c}"`;
+    assert.equal(buildSelectColumnList(columns, fmt), '"id", "order"');
+});
+
+test('buildSelectColumnList falls back to * when columns are not yet known', () => {
+    assert.equal(buildSelectColumnList([]), '*');
+    assert.equal(buildSelectColumnList(undefined), '*');
+    assert.equal(buildSelectColumnList(null), '*');
+});
+
+test('buildSelectColumnList skips entries without a usable name', () => {
+    const columns = [{ name: 'id' }, {}, { name: null }, { name: 'note' }];
+    assert.equal(buildSelectColumnList(columns), 'id, note');
+});
+
+test('buildSelectColumnList falls back to * when no column has a usable name', () => {
+    assert.equal(buildSelectColumnList([{}, { name: null }]), '*');
 });
 

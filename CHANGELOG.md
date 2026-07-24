@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.0
+
+- **The Data Viewer query bar now lists all columns instead of `SELECT *`:** When a table (or view) is opened in the Data Viewer from the Table Explorer, the query bar previously showed `SELECT * FROM <table>`. It now spells out every column by name — `SELECT col1, col2, … FROM <table>` — so the generated statement is explicit and ready to be trimmed or copied. Identifiers are quoted according to the same rules as the rest of the extension (and the `alwaysQuote` setting), and any permanent per-table `WHERE` constraints are still appended. While the column metadata is still loading the bar briefly falls back to `*`, and the query is refreshed to the full column list as soon as the columns are known.
+
 ## 2.1.5
 
 - **Column filters now refine a custom query too:** In a custom-`SELECT` result the column filter row (and the cell context-menu actions "Add as Exact Match" / "Exclude this Value") did nothing, because they were gated on a known schema/table which a custom query does not have. Typing a term into a column filter and pressing Enter now merges the resulting condition into the `WHERE` clause of the query in the query bar and re-runs it, just like in a standard table view. Existing user-written clauses are preserved.
