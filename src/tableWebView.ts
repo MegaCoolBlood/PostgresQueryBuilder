@@ -64,6 +64,30 @@ export function buildCustomResultColumns(
     });
 }
 
+/**
+ * Build a fast "describe" probe query that returns the result columns of a
+ * custom SELECT without fetching any rows, so the Data Viewer can render the
+ * header and filter row immediately while the real query is still running.
+ *
+ * Only a single-statement `SELECT`/`WITH` query can be safely wrapped this way;
+ * anything else (DML, multiple statements, empty input) returns `null` so the
+ * caller skips the early render and falls back to rendering columns from the
+ * full result. `singleStatement` must already be a single SQL statement.
+ */
+export function buildColumnProbeSql(singleStatement: string): string | null {
+    if (typeof singleStatement !== 'string') {
+        return null;
+    }
+    const trimmed = singleStatement.trim().replace(/;+\s*$/, '').trim();
+    if (!trimmed) {
+        return null;
+    }
+    if (!/^(select|with)\b/i.test(trimmed)) {
+        return null;
+    }
+    return `SELECT * FROM (${trimmed}) AS _pqb_cols LIMIT 0`;
+}
+
 export class TableWebViewManager {
     private panels: Map<string, vscode.WebviewPanel> = new Map();
     private pendingFilters: Map<string, { column: string; value: string; conditions?: any[] }> = new Map();
@@ -389,11 +413,41 @@ export class TableWebViewManager {
         return buildCustomResultColumns(fields, typeMap, commentMap);
     }
 
+    /**
+     * Try to resolve the columns of a custom SELECT quickly (without fetching
+     * its rows) and post them to the webview so the header and filter row render
+     * immediately, before the full query returns. Failures are ignored: the real
+     * result still renders the columns afterwards.
+     */
+    private async tryPostEarlyQueryColumns(panel: vscode.WebviewPanel, sql: string): Promise<void> {
+        try {
+            const statements = splitSqlStatements(sql).map((s) => s.trim()).filter((s) => s.length > 0);
+            if (statements.length !== 1) {
+                return;
+            }
+            const probeSql = buildColumnProbeSql(statements[0]);
+            if (!probeSql) {
+                return;
+            }
+            const probe = await this.connectionManager.query(probeSql);
+            if (!probe.fields || probe.fields.length === 0) {
+                return;
+            }
+            const cols = await this.resolveResultColumns(probe.fields);
+            panel.webview.postMessage({ command: 'queryColumns', columns: cols });
+        } catch {
+            // Ignore probe failures (non-SELECT, multi-statement, invalid wrap,
+            // etc.); the full query result will render the columns as before.
+        }
+    }
+
     private async handleRunCustomQuery(ctx: MessageContext): Promise<void> {
         const { panel, schema, table, message, queryRunner } = ctx;
         if (!await this.connectionManager.ensureConnected()) {
             return;
         }
+        // Render the columns + filter row immediately while the full query runs.
+        await this.tryPostEarlyQueryColumns(panel, message.sql);
         const result = await queryRunner.executeSQL(message.sql);
         if (this.modifyHistoryStore) {
             for (const stmt of splitSqlStatements(message.sql)) {
@@ -705,6 +759,10 @@ export class TableWebViewManager {
                     case 'runCustomQuery': {
                         if (!await this.connectionManager.ensureConnected()) {
                             break;
+                        }
+                        // Render columns + filter row immediately while running.
+                        if (!disposed) {
+                            await this.tryPostEarlyQueryColumns(panel, message.sql);
                         }
                         const result = await queryRunner.executeSQL(message.sql);
                         if (this.modifyHistoryStore) {

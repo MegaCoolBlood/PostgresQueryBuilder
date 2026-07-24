@@ -1,7 +1,7 @@
 import './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCustomResultColumns } from '../tableWebView';
+import { buildCustomResultColumns, buildColumnProbeSql } from '../tableWebView';
 
 test('buildCustomResultColumns resolves type names and column comments', () => {
     const fields = [
@@ -52,4 +52,52 @@ test('buildCustomResultColumns keeps only the matching table/column comment', ()
     const cols = buildCustomResultColumns(fields, { 23: 'int4' }, commentMap);
     assert.equal(cols[0].comment, 'from table 10');
     assert.equal(cols[1].comment, 'from table 20');
+});
+
+// ===== buildColumnProbeSql =====
+
+test('buildColumnProbeSql wraps a SELECT into a zero-row describe query', () => {
+    assert.equal(
+        buildColumnProbeSql('SELECT id, name FROM users'),
+        'SELECT * FROM (SELECT id, name FROM users) AS _pqb_cols LIMIT 0'
+    );
+});
+
+test('buildColumnProbeSql wraps a WITH (CTE) query', () => {
+    assert.equal(
+        buildColumnProbeSql('WITH x AS (SELECT 1 AS n) SELECT n FROM x'),
+        'SELECT * FROM (WITH x AS (SELECT 1 AS n) SELECT n FROM x) AS _pqb_cols LIMIT 0'
+    );
+});
+
+test('buildColumnProbeSql strips a trailing semicolon before wrapping', () => {
+    assert.equal(
+        buildColumnProbeSql('SELECT 1 ;  '),
+        'SELECT * FROM (SELECT 1) AS _pqb_cols LIMIT 0'
+    );
+});
+
+test('buildColumnProbeSql is case-insensitive to the leading keyword', () => {
+    assert.equal(
+        buildColumnProbeSql('select 1'),
+        'SELECT * FROM (select 1) AS _pqb_cols LIMIT 0'
+    );
+});
+
+test('buildColumnProbeSql returns null for non-SELECT statements', () => {
+    assert.equal(buildColumnProbeSql('UPDATE t SET a = 1'), null);
+    assert.equal(buildColumnProbeSql('INSERT INTO t VALUES (1)'), null);
+    assert.equal(buildColumnProbeSql('DELETE FROM t'), null);
+});
+
+test('buildColumnProbeSql returns null for empty or non-string input', () => {
+    assert.equal(buildColumnProbeSql(''), null);
+    assert.equal(buildColumnProbeSql('   '), null);
+    assert.equal(buildColumnProbeSql(';'), null);
+    assert.equal(buildColumnProbeSql(undefined as any), null);
+    assert.equal(buildColumnProbeSql(null as any), null);
+});
+
+test('buildColumnProbeSql does not treat "selection" as a SELECT keyword', () => {
+    assert.equal(buildColumnProbeSql('selective_function()'), null);
 });

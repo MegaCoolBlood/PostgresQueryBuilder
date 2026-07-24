@@ -1315,6 +1315,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'queryResult':
                 handleQueryResult(msg);
                 break;
+            case 'queryColumns':
+                handleQueryColumns(msg);
+                break;
             case 'queryHistoryUpdated':
                 updateQueryHistoryDropdown(msg.history);
                 break;
@@ -1474,6 +1477,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (fkLoaded && refsLoaded) {
             metaLoading.classList.add('hidden');
         }
+    }
+
+    function handleQueryColumns(msg) {
+        // Early column metadata for a custom query: render the header and filter
+        // row immediately, before the (possibly slow) full result arrives. Ignore
+        // stale messages once a query is no longer active.
+        if (!customQueryActive) return;
+        columns = msg.columns || [];
+        if (!readOnly) {
+            tableName.textContent = `${schema}.${table} (custom query)`;
+        }
+        renderHeader();
     }
 
     function handleQueryResult(msg) {
