@@ -676,6 +676,13 @@ function computeResizedRowHeight(startHeight, deltaY, minHeight, maxHeight) {
     return h;
 }
 
+// Number of rows still to load given how many are already loaded and the total.
+// Never negative; used by the "Load All" button and the pagination indicator.
+function remainingRowCount(loaded, total) {
+    const n = (Number(total) || 0) - (Number(loaded) || 0);
+    return n > 0 ? n : 0;
+}
+
 // Reorder the column expressions of the SELECT clause in `sql` by moving the
 // expression at `fromIndex` to `toIndex`, while preserving the rest of the
 // statement (aliases, DISTINCT prefix, WHERE/ORDER BY/... clauses). This keeps a
@@ -892,6 +899,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let customQueryUserPaged = false; // true when the user wrote an explicit LIMIT/OFFSET
     let customQueryOffset = 0;
     let customQueryAppendPending = false;
+    // Set when the user pressed "Load All" for a custom query: the next result
+    // has fetched every remaining row, so pagination buttons stay disabled even
+    // though the heuristic (a full last batch) cannot tell there is no more.
+    let customQueryAllLoaded = false;
     const PAGE_SIZE = 50;
     // NOTE: Single source of truth is src/reservedKeywords.ts. This browser
     // script is injected as a plain string and cannot import it at runtime;
@@ -986,6 +997,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const discardBtn = document.getElementById('discardBtn');
     const insertRowBtn = document.getElementById('insertRowBtn');
     const loadMoreBtn = document.getElementById('loadMoreBtn');
+    const loadAllBtn = document.getElementById('loadAllBtn');
     const changeCount = document.getElementById('changeCount');
     const sqlDialogOverlay = document.getElementById('sqlDialogOverlay');
     const sqlDialogContent = document.getElementById('sqlDialogContent');
@@ -1035,6 +1047,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     discardBtn.addEventListener('click', discardChanges);
     insertRowBtn.addEventListener('click', insertRow);
     loadMoreBtn.addEventListener('click', loadMore);
+    loadAllBtn.addEventListener('click', loadAll);
     // Clicking the connection badge lets the user switch to another saved
     // connection (handled by the extension host).
     if (connectionInfo) {
@@ -1566,8 +1579,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // Re-enable Load More when this looks like a paged custom query and the
         // last batch came back full (i.e. there may be more rows).
         const canPage = customQueryActive && !customQueryUserPaged;
-        const moreLikely = canPage && incoming.length >= PAGE_SIZE;
+        const moreLikely = canPage && incoming.length >= PAGE_SIZE && !customQueryAllLoaded;
         loadMoreBtn.disabled = !moreLikely;
+        loadAllBtn.disabled = !moreLikely;
         rowCount.textContent = canPage
             ? `${allRows.length} rows loaded` + (moreLikely ? ' (more available)' : '')
             : `${incoming.length} rows returned`;
@@ -1682,6 +1696,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         customQueryUserPaged = stripped.hadLimit;
         customQueryOffset = 0;
         customQueryAppendPending = false;
+        customQueryAllLoaded = false;
         const sql = customQueryUserPaged
             ? raw
             : (customQueryBase + ' LIMIT ' + PAGE_SIZE + ' OFFSET 0');
@@ -1747,7 +1762,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function updateRowCount() {
         const showing = allRows.length + insertedRows.length + duplicatedRows.length;
         rowCount.textContent = `Showing ${showing} of ${totalCount} rows`;
-        loadMoreBtn.disabled = allRows.length >= totalCount;
+        const noMore = remainingRowCount(allRows.length, totalCount) === 0;
+        loadMoreBtn.disabled = noMore;
+        loadAllBtn.disabled = noMore;
     }
 
     function getColumnFilterType(dataType) {
@@ -2737,6 +2754,30 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         currentOffset += PAGE_SIZE;
         postDefaultLoadData(currentOffset);
+    }
+
+    // Load every remaining row in a single request (the "Load All" button).
+    function loadAll() {
+        if (customQueryActive && !customQueryUserPaged) {
+            const nextOffset = allRows.length;
+            customQueryOffset = nextOffset;
+            customQueryAppendPending = true;
+            customQueryAllLoaded = true;
+            loadMoreBtn.disabled = true;
+            loadAllBtn.disabled = true;
+            // No LIMIT -> fetch all rows from the current offset onward.
+            const sql = customQueryBase + ' OFFSET ' + nextOffset;
+            dataLoading.classList.remove('hidden');
+            vscode.postMessage({ command: 'runCustomQuery', sql });
+            return;
+        }
+        const remaining = remainingRowCount(allRows.length, totalCount);
+        if (remaining <= 0) return;
+        currentOffset = allRows.length;
+        loadMoreBtn.disabled = true;
+        loadAllBtn.disabled = true;
+        dataLoading.classList.remove('hidden');
+        vscode.postMessage({ command: 'loadData', offset: currentOffset, limit: remaining, where: getDefaultWhere() });
     }
 
     function updateChangeIndicator() {
@@ -4131,6 +4172,7 @@ if (typeof module !== 'undefined' && module.exports) {
         buildSelectColumnList,
         buildColumnHeaderTitle,
         computeResizedRowHeight,
+        remainingRowCount,
         reorderColumns,
         reorderSelectColumns,
         shouldRenderEarlyColumns,

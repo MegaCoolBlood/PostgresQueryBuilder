@@ -13,7 +13,8 @@ const {
     reorderColumns,
     reorderSelectColumns,
     buildColumnHeaderTitle,
-    computeResizedRowHeight
+    computeResizedRowHeight,
+    remainingRowCount
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== cellToString =====
@@ -389,5 +390,25 @@ test('computeResizedRowHeight ignores the maximum when it is null', () => {
 test('computeResizedRowHeight treats non-numeric inputs as zero', () => {
     assert.equal(computeResizedRowHeight(NaN as any, 40, 20, 600), 40);
     assert.equal(computeResizedRowHeight(50, undefined as any, 20, 600), 50);
+});
+
+// ===== remainingRowCount =====
+
+test('remainingRowCount returns the number of rows still to load', () => {
+    assert.equal(remainingRowCount(50, 200), 150);
+    assert.equal(remainingRowCount(0, 200), 200);
+});
+
+test('remainingRowCount returns 0 when everything is loaded', () => {
+    assert.equal(remainingRowCount(200, 200), 0);
+});
+
+test('remainingRowCount never returns a negative number', () => {
+    assert.equal(remainingRowCount(250, 200), 0);
+});
+
+test('remainingRowCount coerces non-numeric input to zero', () => {
+    assert.equal(remainingRowCount(undefined as any, 100), 100);
+    assert.equal(remainingRowCount(10, undefined as any), 0);
 });
 
