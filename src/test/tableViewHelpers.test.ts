@@ -12,7 +12,8 @@ const {
     buildSelectColumnList,
     reorderColumns,
     reorderSelectColumns,
-    buildColumnHeaderTitle
+    buildColumnHeaderTitle,
+    computeResizedRowHeight
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== cellToString =====
@@ -360,5 +361,33 @@ test('buildColumnHeaderTitle returns an empty string when there is no comment', 
 
 test('buildColumnHeaderTitle preserves multi-line comments', () => {
     assert.equal(buildColumnHeaderTitle({ name: 'id', comment: 'line 1\nline 2' }), 'line 1\nline 2');
+});
+
+// ===== computeResizedRowHeight =====
+
+test('computeResizedRowHeight grows the row when dragging downward', () => {
+    assert.equal(computeResizedRowHeight(20, 40, 20, 600), 60);
+});
+
+test('computeResizedRowHeight shrinks the row when dragging upward', () => {
+    assert.equal(computeResizedRowHeight(100, -30, 20, 600), 70);
+});
+
+test('computeResizedRowHeight never shrinks below the minimum (single line)', () => {
+    assert.equal(computeResizedRowHeight(20, -50, 20, 600), 20);
+    assert.equal(computeResizedRowHeight(40, -100, 20, 600), 20);
+});
+
+test('computeResizedRowHeight never grows beyond the maximum', () => {
+    assert.equal(computeResizedRowHeight(500, 400, 20, 600), 600);
+});
+
+test('computeResizedRowHeight ignores the maximum when it is null', () => {
+    assert.equal(computeResizedRowHeight(100, 1000, 20, null), 1100);
+});
+
+test('computeResizedRowHeight treats non-numeric inputs as zero', () => {
+    assert.equal(computeResizedRowHeight(NaN as any, 40, 20, 600), 40);
+    assert.equal(computeResizedRowHeight(50, undefined as any, 20, 600), 50);
 });
 

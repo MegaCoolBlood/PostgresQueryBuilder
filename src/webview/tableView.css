@@ -550,6 +550,36 @@ td[contenteditable="true"]:focus {
     user-select: none;
     font-variant-numeric: tabular-nums;
     padding: 4px 8px;
+    position: relative;
+}
+
+/* Keep multi-line / resized rows reading from the top edge. */
+#tableBody td {
+    vertical-align: top;
+}
+
+/* Draggable handle at the bottom of a row's number cell to manually change the
+   row height so a multi-line value can be read. */
+.row-resize-handle {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -3px;
+    height: 6px;
+    cursor: row-resize;
+    z-index: 3;
+}
+
+.row-resize-handle:hover {
+    background: var(--vscode-focusBorder);
+    opacity: 0.6;
+}
+
+body.row-resizing,
+body.row-resizing * {
+    cursor: row-resize !important;
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 /* Status bar */
@@ -584,6 +614,13 @@ td.has-fk-btn {
        " foo" render exactly as stored (the surrounding td is `nowrap`, which
        would otherwise collapse leading spaces). */
     white-space: pre;
+    /* A multi-line value must not grow the row automatically: clip the content
+       to a single line by default. The user can drag the row-resize handle to
+       reveal more lines; that sets --row-content-max-h on the row, which is
+       inherited here to raise the visible height. */
+    vertical-align: top;
+    overflow: hidden;
+    max-height: var(--row-content-max-h, 20px);
 }
 
 /* Foreign key button */

@@ -660,6 +660,22 @@ function buildColumnHeaderTitle(col) {
     return String(col.comment).trim();
 }
 
+// Compute the new per-row content height while dragging the row-resize handle.
+// `startHeight` is the height (px) when the drag began, `deltaY` the vertical
+// mouse movement (px, positive = downward = taller). The result is clamped to
+// [minHeight, maxHeight] so a row can never shrink below a single line nor grow
+// unbounded.
+function computeResizedRowHeight(startHeight, deltaY, minHeight, maxHeight) {
+    let h = (Number(startHeight) || 0) + (Number(deltaY) || 0);
+    if (h < minHeight) {
+        h = minHeight;
+    }
+    if (maxHeight != null && h > maxHeight) {
+        h = maxHeight;
+    }
+    return h;
+}
+
 // Reorder the column expressions of the SELECT clause in `sql` by moving the
 // expression at `fromIndex` to `toIndex`, while preserving the rest of the
 // statement (aliases, DISTINCT prefix, WHERE/ORDER BY/... clauses). This keeps a
@@ -923,6 +939,40 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // Name of the column currently being dragged in the header (drag-and-drop
     // reordering), or null when no drag is in progress.
     let dragSourceCol = null;
+
+    // Row-height resize: the default (single-line) content height in px must
+    // match the CSS fallback for --row-content-max-h; MAX bounds how far a row
+    // can be dragged open. `rowResizeState` holds the in-flight drag.
+    const DEFAULT_ROW_CONTENT_H = 20;
+    const MAX_ROW_CONTENT_H = 600;
+    let rowResizeState = null;
+
+    function startRowResize(e) {
+        const tr = e.target.closest('tr');
+        if (!tr) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const startVar = tr.style.getPropertyValue('--row-content-max-h');
+        const startHeight = startVar ? parseFloat(startVar) : DEFAULT_ROW_CONTENT_H;
+        rowResizeState = { tr, startY: e.clientY, startHeight };
+        document.addEventListener('mousemove', onRowResizeMove);
+        document.addEventListener('mouseup', endRowResize);
+        document.body.classList.add('row-resizing');
+    }
+
+    function onRowResizeMove(e) {
+        if (!rowResizeState) return;
+        const delta = e.clientY - rowResizeState.startY;
+        const h = computeResizedRowHeight(rowResizeState.startHeight, delta, DEFAULT_ROW_CONTENT_H, MAX_ROW_CONTENT_H);
+        rowResizeState.tr.style.setProperty('--row-content-max-h', h + 'px');
+    }
+
+    function endRowResize() {
+        rowResizeState = null;
+        document.removeEventListener('mousemove', onRowResizeMove);
+        document.removeEventListener('mouseup', endRowResize);
+        document.body.classList.remove('row-resizing');
+    }
 
     let filters = {};
     let exactFilters = {}; // FK filters that use exact match
@@ -2383,7 +2433,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
             rowNum++;
             html += `<tr class="${rowClass}" data-row-index="${idx}">`;
-            html += `<td class="row-num-cell">${rowNum}</td>`;
+            html += `<td class="row-num-cell">${rowNum}<div class="row-resize-handle" title="Drag to change row height"></div></td>`;
             html += `<td class="actions-cell">`;
             if (readOnly) {
                 html += `<button class="btn-view-record" onclick="openRecordDialog(${idx})" title="View full record">&#128065;</button>`;
@@ -2499,6 +2549,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         tableBody.querySelectorAll('td[data-dup][contenteditable="true"]').forEach(td => {
             td.addEventListener('blur', handleDupCellEdit);
             td.addEventListener('input', () => handleNumericCellInput(td));
+        });
+
+        // Row-height resize handles (drag the bottom of the row-number cell).
+        tableBody.querySelectorAll('.row-resize-handle').forEach(handle => {
+            handle.addEventListener('mousedown', startRowResize);
         });
 
         tableBody.querySelectorAll('.fk-btn').forEach(btn => {
@@ -4075,6 +4130,7 @@ if (typeof module !== 'undefined' && module.exports) {
         buildConstraintWhere,
         buildSelectColumnList,
         buildColumnHeaderTitle,
+        computeResizedRowHeight,
         reorderColumns,
         reorderSelectColumns,
         shouldRenderEarlyColumns,
