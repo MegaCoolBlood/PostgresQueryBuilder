@@ -2,6 +2,8 @@
 
 ## 2.2.0
 
+- **The row-count indicator now shows the query execution time:** Next to "Showing X of Y rows" (and "N rows returned" for custom queries), the Data Viewer now appends how long the SELECT took to run, e.g. `Showing 50 of 1240 rows · 18 ms` or `… · 1.23 s`. The time is measured on the server round-trip for both the standard table view and custom queries; sub-second times are shown in milliseconds, longer ones in seconds.
+
 - **New "Load All" button next to "Load More":** The Data Viewer toolbar now has a "Load All" button that fetches every remaining row in a single request instead of one 50-row page at a time. It works for the standard table view (loads the rest up to the total row count) and for custom queries / filtered results (loads everything from the current position onward). Both pagination buttons disable once all rows are loaded.
 
 - **Multi-line cell values no longer stretch the row; row height is now manually adjustable:** A cell containing a multi-line value previously made the whole row grow tall enough to show every line. Rows now stay a single line high by default and clip a multi-line value to its first line. To read the full text, drag the resize handle at the bottom edge of a row's number (`#`) cell to make just that row as tall as you need (bounded so it can never shrink below one line). Significant leading/trailing whitespace is still preserved.

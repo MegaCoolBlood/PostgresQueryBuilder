@@ -683,6 +683,19 @@ function remainingRowCount(loaded, total) {
     return n > 0 ? n : 0;
 }
 
+// Format a query execution time (milliseconds) for the row-count indicator.
+// Returns '' for a missing/invalid value; sub-second times show as whole
+// milliseconds, longer times as seconds with two decimals.
+function formatExecutionTime(ms) {
+    if (ms === null || ms === undefined || typeof ms !== 'number' || !isFinite(ms) || ms < 0) {
+        return '';
+    }
+    if (ms < 1000) {
+        return `${Math.round(ms)}\u00A0ms`;
+    }
+    return `${(ms / 1000).toFixed(2)}\u00A0s`;
+}
+
 // Reorder the column expressions of the SELECT clause in `sql` by moving the
 // expression at `fromIndex` to `toIndex`, while preserving the rest of the
 // statement (aliases, DISTINCT prefix, WHERE/ORDER BY/... clauses). This keeps a
@@ -903,6 +916,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // has fetched every remaining row, so pagination buttons stay disabled even
     // though the heuristic (a full last batch) cannot tell there is no more.
     let customQueryAllLoaded = false;
+    // Execution time (ms) of the most recent data/custom query, shown next to
+    // the row-count indicator. null when not yet known.
+    let lastQueryDurationMs = null;
     const PAGE_SIZE = 50;
     // NOTE: Single source of truth is src/reservedKeywords.ts. This browser
     // script is injected as a plain string and cannot import it at runtime;
@@ -1506,6 +1522,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         tableName.textContent = `${schema}.${table}`;
         setQueryText(getDefaultQuery());
         dataLoading.classList.add('hidden');
+        lastQueryDurationMs = (typeof msg.durationMs === 'number') ? msg.durationMs : null;
         updateRowCount();
         renderTable();
     }
@@ -1582,9 +1599,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const moreLikely = canPage && incoming.length >= PAGE_SIZE && !customQueryAllLoaded;
         loadMoreBtn.disabled = !moreLikely;
         loadAllBtn.disabled = !moreLikely;
-        rowCount.textContent = canPage
+        lastQueryDurationMs = (typeof msg.durationMs === 'number') ? msg.durationMs : null;
+        const time = formatExecutionTime(lastQueryDurationMs);
+        const baseText = canPage
             ? `${allRows.length} rows loaded` + (moreLikely ? ' (more available)' : '')
             : `${incoming.length} rows returned`;
+        rowCount.textContent = baseText + (time ? ` · ${time}` : '');
         dataLoading.classList.add('hidden');
         renderTable();
     }
@@ -1761,7 +1781,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function updateRowCount() {
         const showing = allRows.length + insertedRows.length + duplicatedRows.length;
-        rowCount.textContent = `Showing ${showing} of ${totalCount} rows`;
+        const time = formatExecutionTime(lastQueryDurationMs);
+        rowCount.textContent = `Showing ${showing} of ${totalCount} rows` + (time ? ` · ${time}` : '');
         const noMore = remainingRowCount(allRows.length, totalCount) === 0;
         loadMoreBtn.disabled = noMore;
         loadAllBtn.disabled = noMore;
@@ -4173,6 +4194,7 @@ if (typeof module !== 'undefined' && module.exports) {
         buildColumnHeaderTitle,
         computeResizedRowHeight,
         remainingRowCount,
+        formatExecutionTime,
         reorderColumns,
         reorderSelectColumns,
         shouldRenderEarlyColumns,

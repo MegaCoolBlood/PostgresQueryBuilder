@@ -14,7 +14,8 @@ const {
     reorderSelectColumns,
     buildColumnHeaderTitle,
     computeResizedRowHeight,
-    remainingRowCount
+    remainingRowCount,
+    formatExecutionTime
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== cellToString =====
@@ -410,5 +411,36 @@ test('remainingRowCount never returns a negative number', () => {
 test('remainingRowCount coerces non-numeric input to zero', () => {
     assert.equal(remainingRowCount(undefined as any, 100), 100);
     assert.equal(remainingRowCount(10, undefined as any), 0);
+});
+
+// ===== formatExecutionTime =====
+
+test('formatExecutionTime shows sub-second times as whole milliseconds', () => {
+    assert.equal(formatExecutionTime(0), '0\u00A0ms');
+    assert.equal(formatExecutionTime(12), '12\u00A0ms');
+    assert.equal(formatExecutionTime(12.6), '13\u00A0ms');
+    assert.equal(formatExecutionTime(999), '999\u00A0ms');
+});
+
+test('formatExecutionTime shows one second and longer as seconds with two decimals', () => {
+    assert.equal(formatExecutionTime(1000), '1.00\u00A0s');
+    assert.equal(formatExecutionTime(1234), '1.23\u00A0s');
+    assert.equal(formatExecutionTime(60000), '60.00\u00A0s');
+});
+
+test('formatExecutionTime uses a non-breaking space between number and unit', () => {
+    assert.ok(formatExecutionTime(12).includes('\u00A0'));
+    assert.ok(!formatExecutionTime(12).includes(' '));
+    assert.ok(formatExecutionTime(1500).includes('\u00A0'));
+    assert.ok(!formatExecutionTime(1500).includes(' '));
+});
+
+test('formatExecutionTime returns an empty string for missing or invalid values', () => {
+    assert.equal(formatExecutionTime(null as any), '');
+    assert.equal(formatExecutionTime(undefined as any), '');
+    assert.equal(formatExecutionTime(-5), '');
+    assert.equal(formatExecutionTime('12' as any), '');
+    assert.equal(formatExecutionTime(NaN), '');
+    assert.equal(formatExecutionTime(Infinity), '');
 });
 

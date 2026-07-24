@@ -276,9 +276,11 @@ export class TableWebViewManager {
             offset: message.offset || 0
         });
 
+        const fetchStart = Date.now();
         const data = await queryRunner.fetchRows(
             schema, table, message.offset || 0, message.limit || 50, where
         );
+        const durationMs = Date.now() - fetchStart;
         const totalCount = await queryRunner.getRowCount(schema, table, where);
 
         panel.webview.postMessage({
@@ -290,7 +292,8 @@ export class TableWebViewManager {
             table: table,
             alwaysQuote: selectBuildInfo.alwaysQuote,
             tableReference: selectBuildInfo.tableReference,
-            connectionName: this.getConnectionName()
+            connectionName: this.getConnectionName(),
+            durationMs: durationMs
         });
 
         // Send pending filter after data is loaded
@@ -448,7 +451,9 @@ export class TableWebViewManager {
         }
         // Render the columns + filter row immediately while the full query runs.
         await this.tryPostEarlyQueryColumns(panel, message.sql);
+        const execStart = Date.now();
         const result = await queryRunner.executeSQL(message.sql);
+        const durationMs = Date.now() - execStart;
         if (this.modifyHistoryStore) {
             for (const stmt of splitSqlStatements(message.sql)) {
                 if (isModifyingSql(stmt)) {
@@ -461,7 +466,8 @@ export class TableWebViewManager {
             command: 'queryResult',
             rows: result.rows,
             columns: cols,
-            connectionName: this.getConnectionName()
+            connectionName: this.getConnectionName(),
+            durationMs: durationMs
         });
     }
 
@@ -764,7 +770,9 @@ export class TableWebViewManager {
                         if (!disposed) {
                             await this.tryPostEarlyQueryColumns(panel, message.sql);
                         }
+                        const execStart = Date.now();
                         const result = await queryRunner.executeSQL(message.sql);
+                        const durationMs = Date.now() - execStart;
                         if (this.modifyHistoryStore) {
                             for (const stmt of splitSqlStatements(message.sql)) {
                                 if (isModifyingSql(stmt)) {
@@ -778,7 +786,8 @@ export class TableWebViewManager {
                                 command: 'queryResult',
                                 rows: result.rows,
                                 columns: cols,
-                                connectionName: this.getConnectionName()
+                                connectionName: this.getConnectionName(),
+                                durationMs: durationMs
                             });
                         }
                         break;
