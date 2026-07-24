@@ -2,6 +2,10 @@
 
 ## 2.2.0
 
+- **Reordering columns now keeps a manually edited SELECT intact:** Previously, dragging a column header regenerated the query bar from scratch, which discarded manual edits — a column alias or a deleted column was lost, and once a custom query had been run the drag no longer changed the SELECT at all. Reordering now moves the matching column expression *inside the current query text*, so aliases, removed columns and any custom `WHERE`/`ORDER BY` (including a run custom query) are preserved and only the affected column changes position. The extension falls back to regenerating the default query only when the current text cannot be reordered by column index (for example a `SELECT *`).
+
+- **Columns in the Data Viewer can now be reordered by drag-and-drop:** Grab a column header and drop it onto another column to move it to that position. The new order is applied to the grid immediately (header, filter row and all cells follow) and the SELECT column order in the query bar is updated to match — so the listed columns always mirror what you see on screen. Dragging shows a "grabbing" cursor and highlights the drop target; sorting (click) and the header context menu keep working as before.
+
 - **The Data Viewer query bar now lists all columns instead of `SELECT *`:** When a table (or view) is opened in the Data Viewer from the Table Explorer, the query bar previously showed `SELECT * FROM <table>`. It now spells out every column by name — `SELECT col1, col2, … FROM <table>` — so the generated statement is explicit and ready to be trimmed or copied. Identifiers are quoted according to the same rules as the rest of the extension (and the `alwaysQuote` setting), and any permanent per-table `WHERE` constraints are still appended. While the column metadata is still loading the bar briefly falls back to `*`, and the query is refreshed to the full column list as soon as the columns are known.
 
 ## 2.1.5

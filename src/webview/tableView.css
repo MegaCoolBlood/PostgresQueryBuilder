@@ -389,6 +389,21 @@ th.sorted-desc::after {
     font-size: 10px;
 }
 
+/* Drag-and-drop column reordering */
+th[draggable="true"] {
+    cursor: grab;
+}
+
+th.col-dragging {
+    opacity: 0.5;
+    cursor: grabbing;
+}
+
+th.col-drop-target {
+    box-shadow: inset 2px 0 0 var(--vscode-focusBorder), inset 0 -1px 0 var(--vscode-panel-border);
+    background: var(--vscode-list-dropBackground, var(--vscode-list-hoverBackground));
+}
+
 /* Filter row */
 .filter-row th {
     position: sticky;

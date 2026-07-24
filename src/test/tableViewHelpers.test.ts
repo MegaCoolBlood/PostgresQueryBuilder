@@ -9,7 +9,9 @@ const {
     splitTopLevelCommas,
     splitTopLevelClauses,
     buildRowIdentity,
-    buildSelectColumnList
+    buildSelectColumnList,
+    reorderColumns,
+    reorderSelectColumns
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== cellToString =====
@@ -224,5 +226,116 @@ test('buildSelectColumnList skips entries without a usable name', () => {
 
 test('buildSelectColumnList falls back to * when no column has a usable name', () => {
     assert.equal(buildSelectColumnList([{}, { name: null }]), '*');
+});
+
+// ===== reorderColumns =====
+
+function names(cols: Array<{ name: string }>): string[] {
+    return cols.map((c) => c.name);
+}
+
+test('reorderColumns moves a column forward to the target position', () => {
+    const cols = [{ name: 'a' }, { name: 'b' }, { name: 'c' }, { name: 'd' }];
+    assert.deepEqual(names(reorderColumns(cols, 0, 2)), ['b', 'c', 'a', 'd']);
+});
+
+test('reorderColumns moves a column backward to the target position', () => {
+    const cols = [{ name: 'a' }, { name: 'b' }, { name: 'c' }, { name: 'd' }];
+    assert.deepEqual(names(reorderColumns(cols, 3, 1)), ['a', 'd', 'b', 'c']);
+});
+
+test('reorderColumns keeps the SELECT list order in sync after a move', () => {
+    const cols = [{ name: 'id' }, { name: 'name' }, { name: 'age' }];
+    const moved = reorderColumns(cols, 2, 0);
+    assert.equal(buildSelectColumnList(moved), 'age, id, name');
+});
+
+test('reorderColumns does not mutate the input array', () => {
+    const cols = [{ name: 'a' }, { name: 'b' }, { name: 'c' }];
+    reorderColumns(cols, 0, 2);
+    assert.deepEqual(names(cols), ['a', 'b', 'c']);
+});
+
+test('reorderColumns returns an unchanged copy for a no-op move', () => {
+    const cols = [{ name: 'a' }, { name: 'b' }];
+    assert.deepEqual(names(reorderColumns(cols, 1, 1)), ['a', 'b']);
+});
+
+test('reorderColumns returns an unchanged copy for out-of-range indices', () => {
+    const cols = [{ name: 'a' }, { name: 'b' }];
+    assert.deepEqual(names(reorderColumns(cols, -1, 0)), ['a', 'b']);
+    assert.deepEqual(names(reorderColumns(cols, 0, 5)), ['a', 'b']);
+    assert.deepEqual(names(reorderColumns(cols, 0, 1.5 as any)), ['a', 'b']);
+});
+
+test('reorderColumns returns an empty array when columns is not an array', () => {
+    assert.deepEqual(reorderColumns(undefined as any, 0, 1), []);
+    assert.deepEqual(reorderColumns(null as any, 0, 1), []);
+});
+
+// ===== reorderSelectColumns =====
+
+test('reorderSelectColumns moves a plain column expression', () => {
+    assert.equal(
+        reorderSelectColumns('SELECT a, b, c FROM t', 0, 2),
+        'SELECT b, c, a FROM t'
+    );
+});
+
+test('reorderSelectColumns preserves a manually assigned alias', () => {
+    assert.equal(
+        reorderSelectColumns('SELECT id, name AS full_name, age FROM users', 2, 0),
+        'SELECT age, id, name AS full_name FROM users'
+    );
+});
+
+test('reorderSelectColumns keeps a trailing WHERE/ORDER BY clause intact', () => {
+    assert.equal(
+        reorderSelectColumns('SELECT a, b FROM t WHERE a > 1 ORDER BY b', 1, 0),
+        'SELECT b, a FROM t WHERE a > 1 ORDER BY b'
+    );
+});
+
+test('reorderSelectColumns works after a column was manually deleted', () => {
+    // Only two expressions remain; reordering by their indices still works.
+    assert.equal(
+        reorderSelectColumns('SELECT a, c FROM t', 1, 0),
+        'SELECT c, a FROM t'
+    );
+});
+
+test('reorderSelectColumns preserves a DISTINCT prefix', () => {
+    assert.equal(
+        reorderSelectColumns('SELECT DISTINCT a, b, c FROM t', 0, 2),
+        'SELECT DISTINCT b, c, a FROM t'
+    );
+});
+
+test('reorderSelectColumns ignores commas inside function calls', () => {
+    assert.equal(
+        reorderSelectColumns('SELECT coalesce(a, b) AS x, c FROM t', 1, 0),
+        'SELECT c, coalesce(a, b) AS x FROM t'
+    );
+});
+
+test('reorderSelectColumns reorders a multi-line formatted query', () => {
+    const sql = 'SELECT\n    a,\n    b,\n    c\nFROM t';
+    assert.equal(reorderSelectColumns(sql, 2, 0), 'SELECT c, a, b FROM t');
+});
+
+test('reorderSelectColumns returns null for a wildcard SELECT', () => {
+    assert.equal(reorderSelectColumns('SELECT * FROM t', 0, 1), null);
+    assert.equal(reorderSelectColumns('SELECT t.*, a FROM t', 0, 1), null);
+});
+
+test('reorderSelectColumns returns null for out-of-range indices', () => {
+    assert.equal(reorderSelectColumns('SELECT a, b FROM t', 0, 5), null);
+    assert.equal(reorderSelectColumns('SELECT a, b FROM t', -1, 0), null);
+});
+
+test('reorderSelectColumns returns null for a no-op or non-SELECT input', () => {
+    assert.equal(reorderSelectColumns('SELECT a, b FROM t', 1, 1), null);
+    assert.equal(reorderSelectColumns('UPDATE t SET a = 1', 0, 1), null);
+    assert.equal(reorderSelectColumns('', 0, 1), null);
 });
 

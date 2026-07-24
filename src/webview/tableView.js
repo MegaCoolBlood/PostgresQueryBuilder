@@ -627,6 +627,57 @@ function buildSelectColumnList(columns, formatCol) {
     return names.length > 0 ? names.join(', ') : '*';
 }
 
+// Return a new array with the column at `fromIndex` moved so it sits at
+// `toIndex` (drag-and-drop reordering of the Data Viewer header). The original
+// array is left untouched. Out-of-range or no-op moves return a shallow copy of
+// the input so callers can treat the result uniformly.
+function reorderColumns(columns, fromIndex, toIndex) {
+    if (!Array.isArray(columns)) {
+        return [];
+    }
+    const result = columns.slice();
+    const len = result.length;
+    if (
+        !Number.isInteger(fromIndex) || !Number.isInteger(toIndex) ||
+        fromIndex < 0 || fromIndex >= len ||
+        toIndex < 0 || toIndex >= len ||
+        fromIndex === toIndex
+    ) {
+        return result;
+    }
+    const [moved] = result.splice(fromIndex, 1);
+    result.splice(toIndex, 0, moved);
+    return result;
+}
+
+// Reorder the column expressions of the SELECT clause in `sql` by moving the
+// expression at `fromIndex` to `toIndex`, while preserving the rest of the
+// statement (aliases, DISTINCT prefix, WHERE/ORDER BY/... clauses). This keeps a
+// manually edited query bar (e.g. a column alias, a removed column) intact when
+// the user reorders columns by drag-and-drop, instead of regenerating the query
+// from scratch. Returns the rebuilt SQL, or null when the SELECT list cannot be
+// safely reordered by column index (empty input, no SELECT clause, a `*`
+// wildcard, or an out-of-range index) so callers can fall back.
+function reorderSelectColumns(sql, fromIndex, toIndex) {
+    if (typeof sql !== 'string' || sql.trim() === '') return null;
+    if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex) || fromIndex === toIndex) return null;
+    const clauses = splitTopLevelClauses(collapseSqlWhitespace(sql));
+    if (clauses.length === 0 || String(clauses[0].kw).toUpperCase() !== 'SELECT') return null;
+    let body = clauses[0].content;
+    let prefix = '';
+    const distinct = body.match(/^DISTINCT(\s+ON\s*\([\s\S]*?\))?\s+/i);
+    if (distinct) { prefix = body.slice(0, distinct[0].length); body = body.slice(distinct[0].length); }
+    const exprs = splitTopLevelCommas(body).map(e => e.trim()).filter(e => e !== '');
+    if (exprs.length === 0) return null;
+    // A `*` / `table.*` wildcard has no 1:1 mapping to grid column indices.
+    if (exprs.some(e => e === '*' || /\.\*$/.test(e))) return null;
+    if (fromIndex < 0 || fromIndex >= exprs.length || toIndex < 0 || toIndex >= exprs.length) return null;
+    const [moved] = exprs.splice(fromIndex, 1);
+    exprs.splice(toIndex, 0, moved);
+    clauses[0] = { kw: clauses[0].kw, content: prefix + exprs.join(', ') };
+    return clauses.map(c => (c.content ? `${c.kw} ${c.content}` : c.kw)).join(' ').trim();
+}
+
 // Decide whether an early `columnsLoaded` message should render the header.
 // Only the initial page (offset 0) of a standard table view qualifies: paged
 // "Load More" requests already have columns, and custom-query results must keep
@@ -858,6 +909,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     let sortColumn = null;
     let sortDirection = 'asc';
+
+    // Name of the column currently being dragged in the header (drag-and-drop
+    // reordering), or null when no drag is in progress.
+    let dragSourceCol = null;
 
     let filters = {};
     let exactFilters = {}; // FK filters that use exact match
@@ -1664,6 +1719,68 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         updateChangeIndicator();
     }
 
+    // Wire up drag-and-drop reordering for a header cell. Dragging a column
+    // header onto another column moves it to that position; the change is
+    // reflected both in the grid and in the SELECT column order in the query
+    // bar (for the standard table view).
+    function attachColumnDragHandlers(th) {
+        th.addEventListener('dragstart', (e) => {
+            dragSourceCol = th.getAttribute('data-col');
+            if (e.dataTransfer) {
+                e.dataTransfer.effectAllowed = 'move';
+                // Firefox requires some data to be set for the drag to start.
+                try { e.dataTransfer.setData('text/plain', dragSourceCol); } catch (_) { /* ignore */ }
+            }
+            th.classList.add('col-dragging');
+        });
+        th.addEventListener('dragover', (e) => {
+            if (dragSourceCol === null) return;
+            e.preventDefault();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+            if (th.getAttribute('data-col') !== dragSourceCol) {
+                th.classList.add('col-drop-target');
+            }
+        });
+        th.addEventListener('dragleave', () => {
+            th.classList.remove('col-drop-target');
+        });
+        th.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            th.classList.remove('col-drop-target');
+            moveColumn(dragSourceCol, th.getAttribute('data-col'));
+            dragSourceCol = null;
+        });
+        th.addEventListener('dragend', () => {
+            dragSourceCol = null;
+            tableHead.querySelectorAll('.col-dragging, .col-drop-target').forEach(el => {
+                el.classList.remove('col-dragging', 'col-drop-target');
+            });
+        });
+    }
+
+    // Move column `fromCol` in front of / onto `toCol`, update the grid and
+    // reflect the new order in the query bar. The SELECT column expressions in
+    // the current query text are reordered in place, so manual edits (aliases,
+    // removed columns, custom WHERE/ORDER BY, a run custom query) are preserved.
+    // Only when the current text cannot be reordered by column index (e.g. a
+    // `SELECT *` fallback) does the standard table view regenerate its default
+    // query.
+    function moveColumn(fromCol, toCol) {
+        if (!fromCol || !toCol || fromCol === toCol) return;
+        const fromIndex = columns.findIndex(c => c.name === fromCol);
+        const toIndex = columns.findIndex(c => c.name === toCol);
+        if (fromIndex < 0 || toIndex < 0) return;
+        columns = reorderColumns(columns, fromIndex, toIndex);
+        renderTable();
+        const reordered = reorderSelectColumns((queryInput.value || '').trim(), fromIndex, toIndex);
+        if (reordered) {
+            setQueryText(reordered);
+        } else if (!readOnly && !customQueryActive) {
+            setQueryText(getDefaultQuery());
+        }
+    }
+
     function renderHeader() {
         let html = '<tr>';
         html += '<th class="row-num-cell">#</th>';
@@ -1673,7 +1790,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (sortColumn === col.name) {
                 cls = sortDirection === 'asc' ? 'sorted-asc' : 'sorted-desc';
             }
-            html += `<th class="${cls}" data-col="${escapeAttr(col.name)}">${escapeHtml(col.name)}<br><small style="font-weight:normal;color:var(--vscode-descriptionForeground)">${escapeHtml(col.dataType)}</small></th>`;
+            html += `<th class="${cls}" draggable="true" data-col="${escapeAttr(col.name)}">${escapeHtml(col.name)}<br><small style="font-weight:normal;color:var(--vscode-descriptionForeground)">${escapeHtml(col.dataType)}</small></th>`;
         });
         html += '</tr>';
 
@@ -1743,6 +1860,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 e.stopPropagation();
                 showHeaderContextMenu(e, th.getAttribute('data-col'));
             });
+            attachColumnDragHandlers(th);
         });
 
         tableHead.querySelectorAll('.filter-input').forEach(input => {
@@ -3928,6 +4046,8 @@ if (typeof module !== 'undefined' && module.exports) {
         formatConstraintCondition,
         buildConstraintWhere,
         buildSelectColumnList,
+        reorderColumns,
+        reorderSelectColumns,
         shouldRenderEarlyColumns,
         isFreshRowLoad,
         recordFieldReadonlyAttr,
