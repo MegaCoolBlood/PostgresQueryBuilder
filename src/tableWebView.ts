@@ -333,7 +333,8 @@ export class TableWebViewManager {
             name: f.name,
             dataType: typeMap[f.dataTypeID] || '',
             isNullable: true,
-            columnDefault: null
+            columnDefault: null,
+            comment: null
         }));
         panel.webview.postMessage({
             command: 'queryResult',
@@ -662,7 +663,8 @@ export class TableWebViewManager {
                             name: f.name,
                             dataType: typeMap[f.dataTypeID] || '',
                             isNullable: true,
-                            columnDefault: null
+                            columnDefault: null,
+                            comment: null
                         }));
                         if (!disposed) {
                             panel.webview.postMessage({

@@ -82,6 +82,7 @@ export interface ColumnInfo {
     dataType: string;
     isNullable: boolean;
     columnDefault: string | null;
+    comment: string | null;
 }
 
 export interface ChangeSet {
@@ -144,17 +145,22 @@ export class QueryRunner {
 
     async getColumns(schema: string, table: string): Promise<ColumnInfo[]> {
         const rows = await this.connectionManager.queryMetadata(
-            `SELECT column_name, data_type, is_nullable, column_default
-             FROM information_schema.columns
-             WHERE table_schema = $1 AND table_name = $2
-             ORDER BY ordinal_position`,
+            `SELECT c.column_name, c.data_type, c.is_nullable, c.column_default,
+                    pgd.description AS column_comment
+             FROM information_schema.columns c
+             LEFT JOIN pg_catalog.pg_namespace n ON n.nspname = c.table_schema
+             LEFT JOIN pg_catalog.pg_class cls ON cls.relname = c.table_name AND cls.relnamespace = n.oid
+             LEFT JOIN pg_catalog.pg_description pgd ON pgd.objoid = cls.oid AND pgd.objsubid = c.ordinal_position
+             WHERE c.table_schema = $1 AND c.table_name = $2
+             ORDER BY c.ordinal_position`,
             [schema, table]
         );
         return rows.map((row) => ({
             name: row.column_name,
             dataType: row.data_type,
             isNullable: row.is_nullable === 'YES',
-            columnDefault: row.column_default
+            columnDefault: row.column_default,
+            comment: row.column_comment ?? null
         }));
     }
 

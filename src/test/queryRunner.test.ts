@@ -213,7 +213,7 @@ test('metadata methods map PostgreSQL rows into extension-friendly objects', asy
     });
 
     assert.deepEqual(await runner.getColumns('public', 'users'), [
-        { name: 'id', dataType: 'integer', isNullable: false, columnDefault: null }
+        { name: 'id', dataType: 'integer', isNullable: false, columnDefault: null, comment: null }
     ]);
     assert.deepEqual(await runner.getPrimaryKeys('public', 'users'), ['id']);
     assert.deepEqual(await runner.getForeignKeys('public', 'orders'), [
@@ -222,6 +222,25 @@ test('metadata methods map PostgreSQL rows into extension-friendly objects', asy
     assert.deepEqual(await runner.getReferencingTables('public', 'users'), [
         { fkSchema: 'public', fkTable: 'orders', fkColumn: 'user_id', localColumn: 'id' }
     ]);
+});
+
+test('getColumns maps a column comment and defaults a missing comment to null', async () => {
+    const { runner, metadataCalls } = createRunner({
+        metadataHandler: (sql: string) => {
+            assert.ok(sql.includes('information_schema.columns'));
+            assert.ok(sql.includes('pg_description'));
+            return [
+                { column_name: 'id', data_type: 'integer', is_nullable: 'NO', column_default: null, column_comment: 'Primary key' },
+                { column_name: 'name', data_type: 'text', is_nullable: 'YES', column_default: null, column_comment: null }
+            ];
+        }
+    });
+
+    assert.deepEqual(await runner.getColumns('public', 'users'), [
+        { name: 'id', dataType: 'integer', isNullable: false, columnDefault: null, comment: 'Primary key' },
+        { name: 'name', dataType: 'text', isNullable: true, columnDefault: null, comment: null }
+    ]);
+    assert.deepEqual(metadataCalls[0].params, ['public', 'users']);
 });
 
 test('executeSQL normalizes empty fields and rowCount', async () => {

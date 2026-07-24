@@ -2,6 +2,8 @@
 
 ## 2.2.0
 
+- **Column headers in the Data Viewer now show the column comment as a tooltip:** When a column has a PostgreSQL comment (`COMMENT ON COLUMN …`), its header shows a small 🛈 indicator and hovering the header reveals the comment text as a tooltip. Comments are read together with the column metadata (for tables and views alike) and default to none when a column is not documented. Custom-query result columns, which have no attached comment, are shown without an indicator as before.
+
 - **Reordering columns now keeps a manually edited SELECT intact:** Previously, dragging a column header regenerated the query bar from scratch, which discarded manual edits — a column alias or a deleted column was lost, and once a custom query had been run the drag no longer changed the SELECT at all. Reordering now moves the matching column expression *inside the current query text*, so aliases, removed columns and any custom `WHERE`/`ORDER BY` (including a run custom query) are preserved and only the affected column changes position. The extension falls back to regenerating the default query only when the current text cannot be reordered by column index (for example a `SELECT *`).
 
 - **Columns in the Data Viewer can now be reordered by drag-and-drop:** Grab a column header and drop it onto another column to move it to that position. The new order is applied to the grid immediately (header, filter row and all cells follow) and the SELECT column order in the query bar is updated to match — so the listed columns always mirror what you see on screen. Dragging shows a "grabbing" cursor and highlights the drop target; sorting (click) and the header context menu keep working as before.

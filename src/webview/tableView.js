@@ -650,6 +650,16 @@ function reorderColumns(columns, fromIndex, toIndex) {
     return result;
 }
 
+// Build the tooltip text shown when hovering a Data Viewer column header.
+// Returns the column's comment (trimmed) or '' when the column has no comment,
+// so the caller can omit the `title` attribute entirely.
+function buildColumnHeaderTitle(col) {
+    if (!col || col.comment === null || col.comment === undefined) {
+        return '';
+    }
+    return String(col.comment).trim();
+}
+
 // Reorder the column expressions of the SELECT clause in `sql` by moving the
 // expression at `fromIndex` to `toIndex`, while preserving the rest of the
 // statement (aliases, DISTINCT prefix, WHERE/ORDER BY/... clauses). This keeps a
@@ -1790,7 +1800,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (sortColumn === col.name) {
                 cls = sortDirection === 'asc' ? 'sorted-asc' : 'sorted-desc';
             }
-            html += `<th class="${cls}" draggable="true" data-col="${escapeAttr(col.name)}">${escapeHtml(col.name)}<br><small style="font-weight:normal;color:var(--vscode-descriptionForeground)">${escapeHtml(col.dataType)}</small></th>`;
+            const commentTitle = buildColumnHeaderTitle(col);
+            const titleAttr = commentTitle ? ` title="${escapeAttr(commentTitle)}"` : '';
+            const commentMark = commentTitle ? ' <span class="col-comment-indicator" aria-hidden="true">🛈</span>' : '';
+            html += `<th class="${cls}" draggable="true" data-col="${escapeAttr(col.name)}"${titleAttr}>${escapeHtml(col.name)}${commentMark}<br><small style="font-weight:normal;color:var(--vscode-descriptionForeground)">${escapeHtml(col.dataType)}</small></th>`;
         });
         html += '</tr>';
 
@@ -4046,6 +4059,7 @@ if (typeof module !== 'undefined' && module.exports) {
         formatConstraintCondition,
         buildConstraintWhere,
         buildSelectColumnList,
+        buildColumnHeaderTitle,
         reorderColumns,
         reorderSelectColumns,
         shouldRenderEarlyColumns,

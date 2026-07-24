@@ -11,7 +11,8 @@ const {
     buildRowIdentity,
     buildSelectColumnList,
     reorderColumns,
-    reorderSelectColumns
+    reorderSelectColumns,
+    buildColumnHeaderTitle
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== cellToString =====
@@ -337,5 +338,27 @@ test('reorderSelectColumns returns null for a no-op or non-SELECT input', () => 
     assert.equal(reorderSelectColumns('SELECT a, b FROM t', 1, 1), null);
     assert.equal(reorderSelectColumns('UPDATE t SET a = 1', 0, 1), null);
     assert.equal(reorderSelectColumns('', 0, 1), null);
+});
+
+// ===== buildColumnHeaderTitle =====
+
+test('buildColumnHeaderTitle returns the column comment as the tooltip text', () => {
+    assert.equal(buildColumnHeaderTitle({ name: 'id', comment: 'Primary key' }), 'Primary key');
+});
+
+test('buildColumnHeaderTitle trims surrounding whitespace', () => {
+    assert.equal(buildColumnHeaderTitle({ name: 'id', comment: '  hello  ' }), 'hello');
+});
+
+test('buildColumnHeaderTitle returns an empty string when there is no comment', () => {
+    assert.equal(buildColumnHeaderTitle({ name: 'id', comment: null }), '');
+    assert.equal(buildColumnHeaderTitle({ name: 'id', comment: undefined }), '');
+    assert.equal(buildColumnHeaderTitle({ name: 'id' }), '');
+    assert.equal(buildColumnHeaderTitle(null), '');
+    assert.equal(buildColumnHeaderTitle(undefined), '');
+});
+
+test('buildColumnHeaderTitle preserves multi-line comments', () => {
+    assert.equal(buildColumnHeaderTitle({ name: 'id', comment: 'line 1\nline 2' }), 'line 1\nline 2');
 });
 
