@@ -1797,6 +1797,52 @@ test('still collapses a simple single-line function-call SELECT', () => {
     assert.equal(formatSql('select foo(\n   bar\n);'), 'SELECT foo(bar);');
 });
 
+test('formats CRLF sources and keeps their line endings', () => {
+    const src = [
+        '/*******************************',
+        ' * Header banner',
+        ' *******************************/',
+        'create or replace function f() returns void as $body$',
+        'begin',
+        "  raise notice '%', 'x';",
+        'end;',
+        '$body$ language plpgsql;',
+    ].join('\r\n');
+    const res = formatSqlChecked(src);
+    assert.ok(res.ok, 'CRLF source must not be rejected by the safety net: ' + res.reason);
+    assert.ok(res.text.includes('\r\n'), 'CRLF line endings must be preserved\n' + JSON.stringify(res.text));
+    assert.ok(!/[^\r]\n/.test(res.text), 'no lone LF may remain\n' + JSON.stringify(res.text));
+    // The block comment survives unchanged apart from line endings.
+    assert.ok(res.text.includes(' * Header banner'), res.text);
+});
+
+test('accepts whitespace-only changes inside comments', () => {
+    // Trailing blanks inside a block comment and after a line comment are trimmed;
+    // that is a pure whitespace change and must not disable formatting.
+    const src = 'select 1; /* a   \n   b   \n*/ -- tail   \nselect 2;';
+    const res = formatSqlChecked(src);
+    assert.ok(res.ok, 'comment whitespace must not trip the safety net: ' + res.reason);
+    // Real changes to comment text are still rejected.
+    assert.ok(!sqlSemanticallyEqual('select 1; /* a */', 'select 1; /* b */'));
+    assert.ok(sqlSemanticallyEqual('select 1; /* a\n   b */', 'select 1; /* a b */'));
+});
+
+test('does not indent the interior lines of a multi-line string literal', () => {
+    const src = [
+        'create or replace function f() returns void as $body$',
+        'begin',
+        '  perform x(',
+        "    '{",
+        '  "messages": []',
+        "}'::jsonb);",
+        'end;',
+        '$body$ language plpgsql;',
+    ].join('\n');
+    const res = formatSqlChecked(src);
+    assert.ok(res.ok, 'string payload must stay verbatim: ' + res.reason);
+    assert.ok(res.text.includes('\n  "messages": []\n'), 'literal interior must keep its own indentation\n' + res.text);
+});
+
 test('keeps a single SELECT item on the SELECT line; splits when threshold is met', () => {
     assert.equal(
         formatSql('select 1 into strict v from t where a = 1;'),

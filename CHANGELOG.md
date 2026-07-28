@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.2.1
+
+- **Files with Windows line endings (CRLF) are no longer skipped by the formatter:** The renderer joins its output with `\n`, so in a CRLF file the `\r` inside multi-line block comments and multi-line string literals was lost. Because such tokens are compared byte-for-byte, the safety net (correctly) rejected the result and reported *"formatting would have changed the code at token N: expected `/****…` but the formatted output had `/****…`"* — two comments that looked identical but differed in their line endings. Formatting now runs on LF-normalised text and restores the file's original CRLF endings afterwards.
+
+- **Comment whitespace no longer disables formatting:** Trailing blanks inside a block comment (or after a `--` comment) were trimmed by the final formatting pass, which again changed a token that was compared verbatim. Comment tokens are now compared whitespace-insensitively — exactly as the safety net always documented — so re-indenting or trimming a comment is accepted, while any real change to a comment's text is still rejected.
+
+- **Multi-line string literals inside a dollar-quoted body keep their payload:** When a `$body$ … $body$` block was re-indented, every physical line was shifted — including the interior lines of a multi-line string literal (e.g. a JSON template `'{\n  "messages": []\n}'`), which silently changed the string's content. Indentation is now only applied to lines that do not continue a string, dollar-quoted or quoted-identifier literal.
+
 ## 2.2.0
 
 - **The row-count indicator now shows the query execution time:** Next to "Showing X of Y rows" (and "N rows returned" for custom queries), the Data Viewer now appends how long the SELECT took to run, e.g. `Showing 50 of 1240 rows · 18 ms` or `… · 1.23 s`. The time is measured on the server round-trip for both the standard table view and custom queries; sub-second times are shown in milliseconds, longer ones in seconds.

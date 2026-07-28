@@ -405,7 +405,15 @@ function semanticTokens(input: string, normalizeTypes: boolean, dataTypeAliases:
                     continue;
                 }
             }
-            const text = t.type === 'word' ? t.text.toLowerCase() : t.text;
+            // Words are compared case-insensitively; comments are compared
+            // whitespace-insensitively (the formatter may re-indent them, trim
+            // trailing blanks and rewrite line endings — none of which changes
+            // their meaning), everything else verbatim.
+            const text = t.type === 'word'
+                ? t.text.toLowerCase()
+                : (t.type === 'lineComment' || t.type === 'blockComment')
+                    ? t.text.replace(/\s+/g, ' ').trim()
+                    : t.text;
             out.push({ sig: t.type + '\u0000' + text, display: label(t.type, t.text) });
         }
     };
@@ -771,7 +779,13 @@ export interface FormatResult {
  * original input) and `reason` describes the first divergence.
  */
 export function formatSqlChecked(input: string, options?: Partial<FormatOptions>): FormatResult {
-    let result = formatSqlOnce(input, options);
+    // Work on LF-only text: the renderer joins its output with '\n', so a CRLF
+    // file would otherwise end up with the '\r' stripped *inside* multi-line
+    // string literals and comments, which the safety net rejects. The original
+    // line ending is restored on the way out.
+    const usesCrlf = /\r/.test(input);
+    const source = usesCrlf ? input.replace(/\r\n?/g, '\n') : input;
+    let result = formatSqlOnce(source, options);
     for (let pass = 1; pass < 10; pass++) {
         const next = formatSqlOnce(result, options);
         if (next === result) break;
@@ -779,24 +793,22 @@ export function formatSqlChecked(input: string, options?: Partial<FormatOptions>
     }
     const normalizeTypes = options?.normalizeDataTypes ?? DEFAULT_FORMAT_OPTIONS.normalizeDataTypes;
     const dataTypeAliases = normalizeDataTypeAliasTable((options?.dataTypeAliases ?? DEFAULT_DATA_TYPE_ALIASES) as Record<string, unknown>);
-    const reason = signatureDiff(input, result, normalizeTypes, dataTypeAliases);
+    const reason = signatureDiff(source, result, normalizeTypes, dataTypeAliases);
     if (reason) {
         return { text: input, ok: false, reason };
     }
-    return { text: result, ok: true };
+    return { text: usesCrlf ? result.replace(/\n/g, '\r\n') : result, ok: true };
 }
 
 /**
- * Strip trailing spaces/tabs at the end of every physical line, but never touch
- * whitespace that lives *inside* a string / dollar-quoted / quoted-identifier
- * literal. A multi-line string literal (e.g. the body of a `format('…')` call)
- * carries its interior whitespace verbatim, and rewriting it would change the
- * code's meaning — which the safety net then (correctly) rejects, silently
- * disabling formatting for the whole file. Comments are intentionally left
- * unprotected: their whitespace is normalised away before the semantic
- * comparison, so trimming them is harmless.
+ * Mark every character position that lives *inside* a string, dollar-quoted or
+ * quoted-identifier literal. Such positions carry the literal's payload
+ * verbatim: rewriting them (trimming trailing blanks, adding indentation)
+ * changes the code's meaning. Comments are deliberately *not* marked — their
+ * whitespace is normalised away before the semantic comparison, so re-indenting
+ * or trimming them is harmless.
  */
-function stripTrailingWhitespacePreservingLiterals(text: string): string {
+function literalMask(text: string): Uint8Array {
     const n = text.length;
     const isProtected = new Uint8Array(n);
     let i = 0;
@@ -877,6 +889,32 @@ function stripTrailingWhitespacePreservingLiterals(text: string): string {
         }
         i++;
     }
+    return isProtected;
+}
+
+/**
+ * For each physical line of `text`, whether the line *starts* inside a
+ * multi-line literal (and therefore must be emitted byte-for-byte).
+ */
+function literalContinuationLines(text: string): boolean[] {
+    const mask = literalMask(text);
+    const flags: boolean[] = [];
+    let pos = 0;
+    for (const line of text.split('\n')) {
+        flags.push(mask[pos] === 1);
+        pos += line.length + 1;
+    }
+    return flags;
+}
+
+/**
+ * Strip trailing spaces/tabs at the end of every physical line, but never touch
+ * whitespace that lives *inside* a string / dollar-quoted / quoted-identifier
+ * literal (see {@link literalMask}).
+ */
+function stripTrailingWhitespacePreservingLiterals(text: string): string {
+    const n = text.length;
+    const isProtected = literalMask(text);
     // Rebuild, dropping unprotected trailing spaces/tabs before each line break
     // and at end of input. A newline inside a literal is protected, so the
     // literal's interior lines are emitted verbatim.
@@ -1893,8 +1931,13 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 flush();
                 const innerFmt = formatSqlOnce(inner.replace(/^\s*\n/, '').replace(/\s+$/, ''), opt);
                 const bodyIndent = isBlock ? blockIndent : tagIndent + 1;
-                for (const ln of innerFmt.split('\n')) {
-                    out.push(ln === '' ? '' : indentStr(bodyIndent) + ln);
+                // Continuation lines of a multi-line string literal carry the
+                // literal's payload and must not be shifted by the indentation.
+                const innerLines = innerFmt.split('\n');
+                const inLiteral = literalContinuationLines(innerFmt);
+                for (let k = 0; k < innerLines.length; k++) {
+                    const ln = innerLines[k];
+                    out.push(ln === '' || inLiteral[k] ? ln : indentStr(bodyIndent) + ln);
                 }
                 const closeIndent = isBlock ? blockIndent : tagIndent;
                 lineIndent = closeIndent;
