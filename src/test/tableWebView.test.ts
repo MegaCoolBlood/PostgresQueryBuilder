@@ -128,6 +128,7 @@ function createFakePanel() {
 
 function createManager() {
     const globalStateStore: Record<string, any> = {};
+    const executed: string[] = [];
     const context: any = {
         subscriptions: [],
         extensionPath: EXTENSION_PATH,
@@ -141,7 +142,13 @@ function createManager() {
         getActiveConnectionConfig: () => undefined,
         ensureConnected: async () => true,
         query: async () => ({ rows: [], fields: [] }),
-        queryMetadata: async () => []
+        queryMetadata: async () => [],
+        getPool: () => ({
+            connect: async () => ({
+                query: async (sql: string) => { executed.push(sql); return { rowCount: 1 }; },
+                release() {}
+            })
+        })
     };
     const columnMappingManager: any = {
         onDidChange: () => ({ dispose() {} }),
@@ -149,12 +156,12 @@ function createManager() {
     };
     const permanentConstraintManager: any = { getConstraints: () => [] };
     const manager = new TableWebViewManager(context, connectionManager, columnMappingManager, permanentConstraintManager);
-    return { manager, globalStateStore };
+    return { manager, globalStateStore, executed };
 }
 
 /** Open a query panel and return it together with its message callback. */
 async function openCustomQueryPanel() {
-    const { manager, globalStateStore } = createManager();
+    const { manager, globalStateStore, executed } = createManager();
     const panel = createFakePanel();
     const originalCreate = vscodeStub.window.createWebviewPanel;
     vscodeStub.window.createWebviewPanel = () => panel;
@@ -163,7 +170,7 @@ async function openCustomQueryPanel() {
     } finally {
         vscodeStub.window.createWebviewPanel = originalCreate;
     }
-    return { panel, send: (m: any) => panel.state.onMessage(m), globalStateStore };
+    return { panel, send: (m: any) => panel.state.onMessage(m), globalStateStore, executed };
 }
 
 test('query panel: Browse opens the folder dialog and reports the choice', async () => {
@@ -241,6 +248,31 @@ test('query panel: committing without targets reports an error instead of succee
     const { panel, send } = await openCustomQueryPanel();
     await send({ command: 'commitChanges', targets: [] });
     assert.equal(panel.posted.some(m => m.command === 'commitSuccess'), false);
+    assert.ok(panel.posted.some(m => m.command === 'error'), 'expected an error to be reported');
+});
+
+test('query panel: statements edited in the preview are executed verbatim', async () => {
+    const { panel, send, executed } = await openCustomQueryPanel();
+
+    await send({
+        command: 'commitChanges',
+        targets: [],
+        sql: "UPDATE t SET a = 1 WHERE id = 7;\nDELETE FROM t WHERE id = 8;"
+    });
+
+    assert.deepEqual(executed, [
+        'BEGIN',
+        'UPDATE t SET a = 1 WHERE id = 7',
+        'DELETE FROM t WHERE id = 8',
+        'COMMIT'
+    ]);
+    assert.ok(panel.posted.some(m => m.command === 'commitSuccess'), 'expected commitSuccess');
+});
+
+test('query panel: a blank edited script falls back to the generated targets', async () => {
+    const { panel, send, executed } = await openCustomQueryPanel();
+    await send({ command: 'commitChanges', targets: [], sql: '   ' });
+    assert.deepEqual(executed, []);
     assert.ok(panel.posted.some(m => m.command === 'error'), 'expected an error to be reported');
 });
 

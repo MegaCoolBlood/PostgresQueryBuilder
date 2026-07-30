@@ -1022,6 +1022,30 @@ function columnWriteMode(caps, colName) {
     return (plan && plan.identityStrategy === 'pk') ? 'editable' : 'unsafe';
 }
 
+// True when the statements in the commit preview were changed by the user.
+// Pure whitespace differences are ignored so re-indenting is not treated as
+// an edit.
+function isSqlEdited(generated, edited) {
+    return collapseSqlWhitespace(String(edited || '')).trim()
+        !== collapseSqlWhitespace(String(generated || '')).trim();
+}
+
+// Warnings shown in the commit preview: how reliably the rows can be matched
+// and whether the connection changed since the data was loaded.
+function buildCommitWarnings(capabilityWarning, currentConnection, loadedConnection) {
+    const warnings = [];
+    if (capabilityWarning) {
+        warnings.push(capabilityWarning);
+    }
+    if (currentConnection && loadedConnection && currentConnection !== loadedConnection) {
+        warnings.push(
+            `The active connection (${currentConnection}) differs from the connection the data was loaded with `
+            + `(${loadedConnection}). Executing will run against "${currentConnection}".`
+        );
+    }
+    return warnings;
+}
+
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 (function() {
     const vscode = acquireVsCodeApi();
@@ -1154,7 +1178,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const tableBody = document.getElementById('tableBody');
     const tableName = document.getElementById('tableName');
     const rowCount = document.getElementById('rowCount');
-    const capabilityWarning = document.getElementById('capabilityWarning');
     const commitBtn = document.getElementById('commitBtn');
     const discardBtn = document.getElementById('discardBtn');
     const insertRowBtn = document.getElementById('insertRowBtn');
@@ -1166,6 +1189,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const sqlDialogExecute = document.getElementById('sqlDialogExecute');
     const sqlDialogCancel = document.getElementById('sqlDialogCancel');
     const sqlDialogClose = document.getElementById('sqlDialogClose');
+    const sqlDialogReset = document.getElementById('sqlDialogReset');
     const queryInput = document.getElementById('queryInput');
     const queryRunBtn = document.getElementById('queryRunBtn');
     const queryFormatBtn = document.getElementById('queryFormatBtn');
@@ -1231,6 +1255,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     sqlDialogCancel.addEventListener('click', closeSqlDialog);
     sqlDialogClose.addEventListener('click', closeSqlDialog);
     sqlDialogExecute.addEventListener('click', executePendingChanges);
+    if (sqlDialogReset) {
+        sqlDialogReset.addEventListener('click', () => {
+            sqlDialogContent.value = generatedSql;
+            sqlDialogContent.focus();
+        });
+    }
     queryRunBtn.addEventListener('click', runQuery);
     if (queryFormatBtn) {
         queryFormatBtn.addEventListener('click', () => {
@@ -1621,10 +1651,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         toggle(commitBtn, caps.canEdit || caps.canInsert || caps.canDelete);
         toggle(discardBtn, caps.canEdit || caps.canInsert || caps.canDelete);
         toggle(constraintsBtn, caps.canConstrain);
-        if (capabilityWarning) {
-            capabilityWarning.textContent = caps.warning || '';
-            capabilityWarning.classList.toggle('hidden', !caps.warning);
-        }
         // Relation metadata is only fetched for a single source table; without
         // one nothing will arrive and the indicator must not keep spinning.
         if (caps.table) {
@@ -2958,6 +2984,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     let pendingChanges = null;
+    // The statements as generated for the pending changes, so a manual edit in
+    // the preview dialog can be detected (and undone).
+    let generatedSql = '';
 
     function commitChanges() {
         const totalChanges = modifiedCells.size + deletedRows.size + insertedRows.length + duplicatedRows.length;
@@ -2994,7 +3023,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function showSqlDialog(sql, connectionName) {
-        sqlDialogContent.textContent = sql;
+        generatedSql = sql;
+        sqlDialogContent.value = sql;
         const curr = (typeof connectionName === 'string' && connectionName) ? connectionName : currentConnection;
         if (curr) currentConnection = curr;
         const last = lastUsedConnection || '(none)';
@@ -3003,13 +3033,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             sqlDialogConnection.textContent = `Current connection: ${currLabel}  |  Data loaded with: ${last}`;
         }
         if (sqlDialogWarning) {
-            if (curr && lastUsedConnection && curr !== lastUsedConnection) {
-                sqlDialogWarning.textContent = `⚠ The active connection (${curr}) differs from the connection the data was loaded with (${lastUsedConnection}). Executing will run against "${curr}".`;
-                sqlDialogWarning.style.display = 'block';
-            } else {
-                sqlDialogWarning.style.display = 'none';
-                sqlDialogWarning.textContent = '';
-            }
+            const warnings = buildCommitWarnings(caps.warning, curr, lastUsedConnection);
+            sqlDialogWarning.textContent = warnings.map(w => `⚠ ${w}`).join('\n');
+            sqlDialogWarning.style.display = warnings.length > 0 ? 'block' : 'none';
         }
         updateConnectionDisplay();
         sqlDialogOverlay.style.display = 'flex';
@@ -3026,14 +3052,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function closeSqlDialog() {
         sqlDialogOverlay.style.display = 'none';
         pendingChanges = null;
+        generatedSql = '';
     }
 
     function executePendingChanges() {
-        if (pendingChanges) {
-            vscode.postMessage({ command: 'commitChanges', targets: pendingChanges });
-            sqlDialogOverlay.style.display = 'none';
-            pendingChanges = null;
-        }
+        if (!pendingChanges) return;
+        const edited = sqlDialogContent.value;
+        // Only a manually edited script is executed verbatim; otherwise the
+        // extension commits the parameterized statements it generated.
+        const message = isSqlEdited(generatedSql, edited)
+            ? { command: 'commitChanges', targets: pendingChanges, sql: edited }
+            : { command: 'commitChanges', targets: pendingChanges };
+        vscode.postMessage(message);
+        sqlDialogOverlay.style.display = 'none';
+        pendingChanges = null;
+        generatedSql = '';
     }
 
     function handleCommitSuccess() {
@@ -4331,6 +4364,8 @@ if (typeof module !== 'undefined' && module.exports) {
         normalizeCapabilities,
         buildCommitTargets,
         describeRowCount,
-        columnWriteMode
+        columnWriteMode,
+        buildCommitWarnings,
+        isSqlEdited
     };
 }

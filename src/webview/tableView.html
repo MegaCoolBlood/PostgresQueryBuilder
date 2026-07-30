@@ -39,7 +39,6 @@
             <button class="btn" id="queryFormatBtn" title="Format SQL">Format</button>
             <button class="btn btn-primary" id="queryRunBtn" title="Run query (Ctrl+Enter)">&#9654; Run</button>
         </div>
-        <div class="capability-warning hidden" id="capabilityWarning"></div>
         <div class="table-wrapper" id="tableWrapper">
             <table id="dataTable">
                 <thead id="tableHead"></thead>
@@ -62,9 +61,11 @@
                 </div>
                 <div class="sql-dialog-connection" id="sqlDialogConnection"></div>
                 <div class="sql-dialog-warning" id="sqlDialogWarning" style="display:none;"></div>
-                <pre class="sql-dialog-content" id="sqlDialogContent"></pre>
+                <textarea class="sql-dialog-content" id="sqlDialogContent" spellcheck="false" wrap="off" aria-label="Statements to execute"></textarea>
+                <div class="sql-dialog-hint">The statements can be edited before executing. They run as a single transaction.</div>
                 <div class="sql-dialog-footer">
                     <button class="btn btn-success" id="sqlDialogExecute">Execute</button>
+                    <button class="btn btn-default" id="sqlDialogReset" title="Restore the generated statements">Reset</button>
                     <button class="btn btn-default" id="sqlDialogCancel">Cancel</button>
                 </div>
             </div>

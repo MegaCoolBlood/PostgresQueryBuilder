@@ -20,7 +20,9 @@ const {
     normalizeCapabilities,
     buildCommitTargets,
     describeRowCount,
-    columnWriteMode
+    columnWriteMode,
+    buildCommitWarnings,
+    isSqlEdited
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== cellToString =====
@@ -677,5 +679,45 @@ test('columnWriteMode judges every table of a joined result separately', () => {
 
     assert.equal(columnWriteMode(caps, 'user_id'), 'editable');
     assert.equal(columnWriteMode(caps, 'msg'), 'unsafe');
+});
+
+// ===== 2.2.2: commit preview =====
+
+test('buildCommitWarnings is empty when everything is unambiguous', () => {
+    assert.deepEqual(buildCommitWarnings(null, 'prod', 'prod'), []);
+    assert.deepEqual(buildCommitWarnings('', '', ''), []);
+});
+
+test('buildCommitWarnings reports how rows are identified', () => {
+    assert.deepEqual(buildCommitWarnings('No primary key available', 'prod', 'prod'), ['No primary key available']);
+});
+
+test('buildCommitWarnings reports a connection that changed since the data was loaded', () => {
+    const warnings = buildCommitWarnings(null, 'prod', 'staging');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /prod.*staging|staging.*prod/);
+});
+
+test('buildCommitWarnings lists both reasons together', () => {
+    assert.equal(buildCommitWarnings('No primary key available', 'prod', 'staging').length, 2);
+});
+
+test('buildCommitWarnings stays silent when one of the connections is unknown', () => {
+    assert.deepEqual(buildCommitWarnings(null, 'prod', ''), []);
+    assert.deepEqual(buildCommitWarnings(null, '', 'staging'), []);
+});
+
+test('isSqlEdited detects a changed statement', () => {
+    assert.equal(isSqlEdited('DELETE FROM t WHERE id = 1;', 'DELETE FROM t WHERE id = 2;'), true);
+    assert.equal(isSqlEdited('DELETE FROM t WHERE id = 1;', 'DELETE FROM t WHERE id = 1;\nSELECT 1;'), true);
+});
+
+test('isSqlEdited ignores pure whitespace and indentation changes', () => {
+    assert.equal(isSqlEdited('UPDATE t SET a = 1;', '  UPDATE t\n    SET a = 1;  '), false);
+    assert.equal(isSqlEdited('UPDATE t SET a = 1;', 'UPDATE t SET a = 1;'), false);
+});
+
+test('isSqlEdited keeps whitespace inside string literals significant', () => {
+    assert.equal(isSqlEdited("UPDATE t SET a = 'x  y';", "UPDATE t SET a = 'x y';"), true);
 });
 

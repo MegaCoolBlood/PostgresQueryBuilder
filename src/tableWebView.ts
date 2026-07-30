@@ -494,6 +494,22 @@ export class TableWebViewManager {
 
     private async handleCommitChanges(ctx: MessageContext): Promise<void> {
         const { session, message, queryRunner } = ctx;
+        // The user may edit the statements in the preview dialog; then that
+        // script is executed verbatim instead of the generated parameterized
+        // statements.
+        const editedSql: string = typeof message.sql === 'string' ? message.sql.trim() : '';
+        if (editedSql) {
+            await queryRunner.executeStatements(editedSql);
+            this.recordModifyHistory(splitSqlStatements(editedSql).map(sql => ({
+                sql,
+                schema: session.schema,
+                table: session.table
+            })));
+            this.post(session, { command: 'commitSuccess' });
+            vscode.window.showInformationMessage('Edited statements committed');
+            return;
+        }
+
         const targets = this.toCommitTargets(message);
         if (targets.length === 0) {
             // Nothing could be mapped back to a table (e.g. computed columns
@@ -501,18 +517,22 @@ export class TableWebViewManager {
             throw new Error('These changes cannot be saved: no writable source table could be determined for them.');
         }
         await queryRunner.commitChanges(targets);
-        if (this.modifyHistoryStore) {
-            try {
-                const stmts = targets.flatMap(target =>
-                    splitSqlStatements(queryRunner.generateSQL([target]))
-                        .map(sql => ({ sql, schema: target.schema, table: target.table }))
-                );
-                if (stmts.length > 0) { this.modifyHistoryStore.addMany(stmts); }
-            } catch { /* ignore history failures */ }
-        }
+        this.recordModifyHistory(targets.flatMap(target =>
+            splitSqlStatements(queryRunner.generateSQL([target]))
+                .map(sql => ({ sql, schema: target.schema, table: target.table }))
+        ));
         this.post(session, { command: 'commitSuccess' });
         const names = [...new Set(targets.map(t => `${t.schema}.${t.table}`))].join(', ');
         vscode.window.showInformationMessage(`Changes committed to ${names}`);
+    }
+
+    private recordModifyHistory(entries: Array<{ sql: string; schema?: string; table?: string }>): void {
+        if (!this.modifyHistoryStore || entries.length === 0) {
+            return;
+        }
+        try {
+            this.modifyHistoryStore.addMany(entries);
+        } catch { /* ignore history failures */ }
     }
 
     private handleShowError(ctx: MessageContext): void {

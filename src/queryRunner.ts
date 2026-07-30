@@ -1,6 +1,6 @@
 import { ConnectionManager } from './connectionManager';
 import { Logger } from './logger';
-import { escapeSqlLiteral } from './sqlUtils';
+import { escapeSqlLiteral, splitSqlStatements } from './sqlUtils';
 import { POSTGRES_RESERVED_KEYWORDS } from './reservedKeywords';
 import {
     attributeKey,
@@ -424,6 +424,34 @@ export class QueryRunner {
             fkColumn: row.fk_column,
             localColumn: row.local_column
         }));
+    }
+
+    /**
+     * Run a SQL script the user edited in the commit preview as one
+     * transaction: either every statement is applied or none.
+     */
+    async executeStatements(sql: string): Promise<void> {
+        const statements = splitSqlStatements(sql).map(s => s.trim()).filter(s => s.length > 0);
+        if (statements.length === 0) {
+            throw new Error('There is no statement to execute.');
+        }
+        const pool = this.connectionManager.getPool();
+        if (!pool) {
+            throw new Error('Not connected to database');
+        }
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            for (const statement of statements) {
+                await client.query(statement);
+            }
+            await client.query('COMMIT');
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
+        }
     }
 
     async commitChanges(targets: ReadonlyArray<CommitTarget>): Promise<void> {

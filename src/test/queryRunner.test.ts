@@ -820,7 +820,54 @@ test('generateSQL emits the statements of every target', () => {
     );
 });
 
+// ===== 2.2.2: executing statements edited in the commit preview =====
+
+test('executeStatements runs every statement of the edited script in one transaction', async () => {
+    const client = createRecordingClient();
+    const { runner } = createRunner({ pool: { connect: async () => client } });
+
+    await runner.executeStatements("UPDATE t SET a = 1;\nDELETE FROM t WHERE b = 'x;y';");
+
+    assert.deepEqual(client.statements.map(s => s.sql), [
+        'BEGIN',
+        'UPDATE t SET a = 1',
+        "DELETE FROM t WHERE b = 'x;y'",
+        'COMMIT'
+    ]);
+    assert.equal(client.released, true);
+});
+
+test('executeStatements rolls back when a statement fails', async () => {
+    const statements: string[] = [];
+    const client = {
+        query: async (sql: string) => {
+            statements.push(sql);
+            if (sql.startsWith('DELETE')) { throw new Error('boom'); }
+            return { rowCount: 1 };
+        },
+        released: false,
+        release() { this.released = true; }
+    };
+    const { runner } = createRunner({ pool: { connect: async () => client } });
+
+    await assert.rejects(() => runner.executeStatements('UPDATE t SET a = 1; DELETE FROM t;'), /boom/);
+
+    assert.deepEqual(statements, ['BEGIN', 'UPDATE t SET a = 1', 'DELETE FROM t', 'ROLLBACK']);
+    assert.equal(client.released, true);
+});
+
+test('executeStatements rejects an empty script before connecting', async () => {
+    const { runner } = createRunner({ pool: undefined });
+    await assert.rejects(() => runner.executeStatements('   ;  '), /no statement to execute/i);
+});
+
+test('executeStatements throws when there is no connection', async () => {
+    const { runner } = createRunner({ pool: undefined });
+    await assert.rejects(() => runner.executeStatements('DELETE FROM t'), /Not connected to database/);
+});
+
 // ===== 2.2.2: on-demand row count for an arbitrary query =====
+
 
 test('getQueryRowCount counts the rows of a query without fetching them', async () => {
     const { runner, queryCalls } = createRunner({
