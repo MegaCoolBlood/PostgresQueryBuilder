@@ -242,3 +242,23 @@ test('custom-query panel: commands it does not share stay unhandled', async () =
     await send({ command: 'commitChanges', changes: [] });
     assert.equal(panel.posted.some(m => m.command === 'commitSuccess'), false);
 });
+
+test('custom-query panel: init carries the alwaysQuote setting', () => {
+    const originalGetConfig = vscodeStub.workspace.getConfiguration;
+    vscodeStub.workspace.getConfiguration = (_section?: string) => ({
+        get<T>(key: string, defaultValue?: T): T {
+            return (key === 'alwaysQuote' ? true : defaultValue) as T;
+        }
+    });
+    let panel;
+    try {
+        ({ panel } = openCustomQueryPanel());
+    } finally {
+        vscodeStub.workspace.getConfiguration = originalGetConfig;
+    }
+
+    const init = panel.posted.find(m => m.command === 'init');
+    assert.ok(init, 'expected an init message');
+    assert.equal(init.alwaysQuote, true);
+    assert.equal(init.customQuery, 'SELECT 1 AS n');
+});

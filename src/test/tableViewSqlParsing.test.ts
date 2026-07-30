@@ -20,7 +20,9 @@ const {
     isFreshRowLoad,
     recordFieldReadonlyAttr,
     buildConnectionBadge,
-    canApplyQueryFilters
+    canApplyQueryFilters,
+    canManageTableMetadata,
+    defaultInsertTableName
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== 0.2.0: "Load More" for custom queries (stripTrailingLimitOffset) =====
@@ -461,6 +463,33 @@ test('canApplyQueryFilters is false when neither a table nor a custom query is p
     assert.equal(canApplyQueryFilters('', '', false), false);
     assert.equal(canApplyQueryFilters('public', '', false), false);
     assert.equal(canApplyQueryFilters('', 'users', false), false);
+});
+
+// ===== 2.2.2: table-bound actions are hidden in the custom-query view =====
+
+test('canManageTableMetadata is true for an editable standard table view', () => {
+    assert.equal(canManageTableMetadata('public', 'users', false), true);
+});
+
+test('canManageTableMetadata is false for a read-only custom-query result', () => {
+    assert.equal(canManageTableMetadata('', '', true), false);
+    assert.equal(canManageTableMetadata('public', 'users', true), false);
+});
+
+test('canManageTableMetadata is false when schema or table is unknown', () => {
+    assert.equal(canManageTableMetadata('', '', false), false);
+    assert.equal(canManageTableMetadata('public', '', false), false);
+    assert.equal(canManageTableMetadata('', 'users', false), false);
+});
+
+test('defaultInsertTableName keeps a known table reference', () => {
+    assert.equal(defaultInsertTableName('public.users'), 'public.users');
+    assert.equal(defaultInsertTableName('"Public"."Users"'), '"Public"."Users"');
+});
+
+test('defaultInsertTableName falls back when there is no source table', () => {
+    assert.equal(defaultInsertTableName(''), 'exported_data');
+    assert.equal(defaultInsertTableName(undefined), 'exported_data');
 });
 
 

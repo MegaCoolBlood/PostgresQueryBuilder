@@ -761,6 +761,19 @@ function canApplyQueryFilters(schema, table, customQueryActive) {
     return (!!schema && !!table) || !!customQueryActive;
 }
 
+// True when actions bound to a concrete table (permanent constraints, custom
+// column mappings) are available. A read-only ad-hoc query result has no table
+// to attach them to, so those affordances are hidden there.
+function canManageTableMetadata(schema, table, readOnly) {
+    return !readOnly && !!schema && !!table;
+}
+
+// Table name pre-filled for the INSERT export. A custom-query result has no
+// source table, so a neutral placeholder is used instead of an empty name.
+function defaultInsertTableName(tableReference) {
+    return tableReference || 'exported_data';
+}
+
 // Compute the connection badge state shown in the Data Viewer toolbar. The
 // badge is always clickable (to switch connection); `lastUsedConnection` is the
 // connection the displayed rows came from and `currentConnection` is the now
@@ -1464,7 +1477,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     // Hide editing affordances when the view is read-only.
     function applyReadOnlyMode() {
-        [insertRowBtn, commitBtn, discardBtn].forEach(btn => {
+        [insertRowBtn, commitBtn, discardBtn, constraintsBtn].forEach(btn => {
             if (btn) btn.style.display = 'none';
         });
     }
@@ -2213,19 +2226,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         // 6. Create/Manage custom mapping
-        items.push({ separator: true });
-        items.push({
-            label: 'Create Custom Mapping...',
-            action: () => {
-                openMappingDialog(colName);
-            }
-        });
-        items.push({
-            label: 'Manage Mappings...',
-            action: () => {
-                openManageMappingsDialog();
-            }
-        });
+        if (canManageTableMetadata(schema, table, readOnly)) {
+            items.push({ separator: true });
+            items.push({
+                label: 'Create Custom Mapping...',
+                action: () => {
+                    openMappingDialog(colName);
+                }
+            });
+            items.push({
+                label: 'Manage Mappings...',
+                action: () => {
+                    openManageMappingsDialog();
+                }
+            });
+        }
 
         if (items.length === 0) return;
 
@@ -3160,7 +3175,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         exportFilename.value = table || 'export';
         const insertTableName = document.getElementById('insertTableName');
         if (insertTableName) {
-            insertTableName.value = getDefaultTableReference();
+            insertTableName.value = defaultInsertTableName(getDefaultTableReference());
         }
         onExportFormatChange();
         exportDialogOverlay.style.display = 'flex';
@@ -3246,7 +3261,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             opts.xmlRootElement = document.getElementById('xmlRootElement').value || 'data';
             opts.xmlRowElement = document.getElementById('xmlRowElement').value || 'row';
         } else if (fmt === 'insert') {
-            opts.insertTableName = document.getElementById('insertTableName').value || getDefaultTableReference();
+            opts.insertTableName = document.getElementById('insertTableName').value || defaultInsertTableName(getDefaultTableReference());
             opts.insertBatchSize = parseInt(document.getElementById('insertBatchSize').value) || 1;
         } else if (fmt === 'excel') {
             opts.excelIncludeHeaders = document.getElementById('excelIncludeHeaders').checked;
@@ -3300,6 +3315,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function getDefaultTableReference() {
         if (tableReference) {
             return tableReference;
+        }
+        if (!table) {
+            return '';
         }
 
         const formattedTable = formatIdentifier(table);
@@ -4202,6 +4220,8 @@ if (typeof module !== 'undefined' && module.exports) {
         recordFieldReadonlyAttr,
         buildConnectionBadge,
         canApplyQueryFilters,
+        canManageTableMetadata,
+        defaultInsertTableName,
         rowValueMatchesFilter,
         compareCellValues,
         normalizeCellInput,

@@ -2,6 +2,12 @@
 
 ## 2.2.2
 
+- **The "View Data" result no longer offers actions it cannot perform:** In the read-only custom-query view the **Constraints** button and the cell context-menu entries *"Create Custom Mapping…"* / *"Manage Mappings…"* were shown even though that panel has no table to attach them to — the messages they sent were dropped. Saving a permanent constraint there even overwrote the query bar with a nonsense `SELECT * FROM ""` and left the grid stuck on the loading spinner. All three affordances are now hidden whenever the view has no source table.
+
+- **`INSERT` export from a "View Data" result uses a usable table name:** Because such a result has no source table, the INSERT export pre-filled the target with an empty quoted identifier and produced `INSERT INTO "" …`. It now falls back to `exported_data`, which can be edited in the export dialog as usual.
+
+- **The `alwaysQuote` setting now also applies to the "View Data" result:** The custom-query panel never received the setting, so identifiers added by column filters, ORDER BY and the context-menu actions were quoted differently there than in a regular table view.
+
 - **Export works again in a Data Viewer opened from a SELECT statement:** In the read-only custom-query view (the "View Data" command on a `SELECT`), the Export dialog was inert — clicking **Browse** opened no folder picker, the saved export defaults were never loaded, and **Export** itself did nothing at all. That panel has its own message handler which only knew about the query commands, so every export message from the webview was silently dropped. It now forwards `browseExportLocation`, `getExportDefaults`, `saveExportDefaults` and `exportData` to the same handlers the regular table view uses, so browsing for a folder, saving defaults and exporting the full result set behave identically in both views. If such a panel has no query text to export, the export now reports a clear error instead of trying to read from a non-existent table.
 
 ## 2.2.1

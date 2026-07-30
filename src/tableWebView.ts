@@ -757,6 +757,7 @@ export class TableWebViewManager {
         panel.webview.html = this.getWebviewContent(panel.webview);
 
         const thousandSeparator = vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('thousandSeparator', ' ');
+        const alwaysQuote = vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false);
         panel.webview.postMessage({
             command: 'init',
             schema: '',
@@ -764,6 +765,7 @@ export class TableWebViewManager {
             customQuery: sql,
             viewTitle: title,
             thousandSeparator,
+            alwaysQuote,
             connectionName: this.getConnectionName()
         });
 
