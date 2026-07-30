@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.2
+
+- **Export works again in a Data Viewer opened from a SELECT statement:** In the read-only custom-query view (the "View Data" command on a `SELECT`), the Export dialog was inert — clicking **Browse** opened no folder picker, the saved export defaults were never loaded, and **Export** itself did nothing at all. That panel has its own message handler which only knew about the query commands, so every export message from the webview was silently dropped. It now forwards `browseExportLocation`, `getExportDefaults`, `saveExportDefaults` and `exportData` to the same handlers the regular table view uses, so browsing for a folder, saving defaults and exporting the full result set behave identically in both views. If such a panel has no query text to export, the export now reports a clear error instead of trying to read from a non-existent table.
+
 ## 2.2.1
 
 - **Files with Windows line endings (CRLF) are no longer skipped by the formatter:** The renderer joins its output with `\n`, so in a CRLF file the `\r` inside multi-line block comments and multi-line string literals was lost. Because such tokens are compared byte-for-byte, the safety net (correctly) rejected the result and reported *"formatting would have changed the code at token N: expected `/****…` but the formatted output had `/****…`"* — two comments that looked identical but differed in their line endings. Formatting now runs on LF-normalised text and restores the file's original CRLF endings afterwards.

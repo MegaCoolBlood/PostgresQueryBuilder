@@ -19,6 +19,19 @@ interface MessageContext {
     queryRunner: QueryRunner;
 }
 
+/**
+ * Webview messages that the read-only custom-query panel does not implement
+ * itself but forwards to the shared table-panel handlers. Without this the
+ * Export dialog is inert in that panel (Browse opens nothing, Export does
+ * nothing), because its message switch only knows about query commands.
+ */
+export const CUSTOM_QUERY_SHARED_COMMANDS = [
+    'browseExportLocation',
+    'getExportDefaults',
+    'saveExportDefaults',
+    'exportData'
+] as const;
+
 /** Minimal shape of a `pg` field descriptor used to build result columns. */
 export interface ResultFieldInfo {
     name: string;
@@ -597,6 +610,12 @@ export class TableWebViewManager {
     private async handleExportData(ctx: MessageContext): Promise<void> {
         const { panel, schema, table, message, queryRunner } = ctx;
         const opts = message.options;
+        // A custom-query panel has no table to fall back to, so it can only
+        // export the query it currently shows.
+        if (!message.sql && !table) {
+            vscode.window.showErrorMessage('Export failed: no query to export.');
+            return;
+        }
         const extensions: Record<string, string> = { csv: '.csv', json: '.json', xml: '.xml', insert: '.sql', excel: '.xlsx' };
         const ext = extensions[opts.format] || '';
         const filterMap: Record<string, { [key: string]: string[] }> = {
@@ -817,6 +836,14 @@ export class TableWebViewManager {
                     }
                     case 'selectConnection': {
                         await this.connectionManager.selectConnection();
+                        break;
+                    }
+                    default: {
+                        if ((CUSTOM_QUERY_SHARED_COMMANDS as readonly string[]).includes(message.command)) {
+                            await this.messageHandlers[message.command].call(this, {
+                                panel, schema: '', table: '', key: customHistoryKey, message, queryRunner
+                            });
+                        }
                         break;
                     }
                 }

@@ -73,8 +73,12 @@ const vscodeStub = {
     window: {
         showWarningMessage: (..._args: any[]) => Promise.resolve(undefined),
         showInformationMessage: (..._args: any[]) => Promise.resolve(undefined),
-        showErrorMessage: (..._args: any[]) => Promise.resolve(undefined)
+        showErrorMessage: (..._args: any[]) => Promise.resolve(undefined),
+        showOpenDialog: (_options?: any): Promise<any> => Promise.resolve(undefined),
+        showSaveDialog: (_options?: any): Promise<any> => Promise.resolve(undefined),
+        createWebviewPanel: (..._args: any[]): any => undefined
     },
+    ViewColumn: { One: 1, Two: 2, Three: 3, Beside: -2, Active: -1 },
     Uri: {
         file: (p: string) => ({ fsPath: p, path: p }),
         joinPath: (base: any, ...segs: string[]) => ({

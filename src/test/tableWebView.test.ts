@@ -1,7 +1,9 @@
 import './helpers/vscodeMock';
+import { vscodeStub } from './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCustomResultColumns, buildColumnProbeSql } from '../tableWebView';
+import * as path from 'node:path';
+import { buildCustomResultColumns, buildColumnProbeSql, TableWebViewManager } from '../tableWebView';
 
 test('buildCustomResultColumns resolves type names and column comments', () => {
     const fields = [
@@ -100,4 +102,143 @@ test('buildColumnProbeSql returns null for empty or non-string input', () => {
 
 test('buildColumnProbeSql does not treat "selection" as a SELECT keyword', () => {
     assert.equal(buildColumnProbeSql('selective_function()'), null);
+});
+
+// ===== Export in the read-only custom-query panel =====
+
+/** Repo root, so the panel can read the real webview html/css/js assets. */
+const EXTENSION_PATH = path.join(__dirname, '..', '..', '..');
+
+function createFakePanel() {
+    const posted: any[] = [];
+    const state: { onMessage: (m: any) => any } = { onMessage: async () => {} };
+    const panel = {
+        posted,
+        state,
+        webview: {
+            html: '',
+            postMessage: (m: any) => { posted.push(m); return Promise.resolve(true); },
+            onDidReceiveMessage: (cb: any) => { state.onMessage = cb; return { dispose() {} }; }
+        },
+        onDidDispose: (_cb: any) => ({ dispose() {} }),
+        reveal() {}
+    };
+    return panel;
+}
+
+function createManager() {
+    const globalStateStore: Record<string, any> = {};
+    const context: any = {
+        subscriptions: [],
+        extensionPath: EXTENSION_PATH,
+        globalState: {
+            get: (key: string, def?: any) => (key in globalStateStore ? globalStateStore[key] : def),
+            update: (key: string, value: any) => { globalStateStore[key] = value; return Promise.resolve(); }
+        }
+    };
+    const connectionManager: any = {
+        onConnectionChanged: () => ({ dispose() {} }),
+        getActiveConnectionConfig: () => undefined,
+        ensureConnected: async () => true,
+        query: async () => ({ rows: [], fields: [] }),
+        queryMetadata: async () => []
+    };
+    const columnMappingManager: any = {
+        onDidChange: () => ({ dispose() {} }),
+        getMappingsForTable: () => []
+    };
+    const permanentConstraintManager: any = { getConstraints: () => [] };
+    const manager = new TableWebViewManager(context, connectionManager, columnMappingManager, permanentConstraintManager);
+    return { manager, globalStateStore };
+}
+
+/** Open a custom-query panel and return it together with its message callback. */
+function openCustomQueryPanel() {
+    const { manager, globalStateStore } = createManager();
+    const panel = createFakePanel();
+    const originalCreate = vscodeStub.window.createWebviewPanel;
+    vscodeStub.window.createWebviewPanel = () => panel;
+    try {
+        manager.openCustomQueryView('SELECT 1 AS n', 'Custom');
+    } finally {
+        vscodeStub.window.createWebviewPanel = originalCreate;
+    }
+    return { panel, send: (m: any) => panel.state.onMessage(m), globalStateStore };
+}
+
+test('custom-query panel: Browse opens the folder dialog and reports the choice', async () => {
+    const { panel, send } = openCustomQueryPanel();
+    const originalOpen = vscodeStub.window.showOpenDialog;
+    let dialogOptions: any;
+    vscodeStub.window.showOpenDialog = (options?: any) => {
+        dialogOptions = options;
+        return Promise.resolve([{ fsPath: 'C:\\exports' }]);
+    };
+    try {
+        await send({ command: 'browseExportLocation' });
+    } finally {
+        vscodeStub.window.showOpenDialog = originalOpen;
+    }
+
+    assert.equal(dialogOptions.canSelectFolders, true);
+    assert.equal(dialogOptions.canSelectFiles, false);
+    const msg = panel.posted.find(m => m.command === 'exportLocationSelected');
+    assert.ok(msg, 'expected exportLocationSelected to be posted back to the webview');
+    assert.equal(msg.path, 'C:\\exports');
+});
+
+test('custom-query panel: cancelling the folder dialog posts nothing', async () => {
+    const { panel, send } = openCustomQueryPanel();
+    const originalOpen = vscodeStub.window.showOpenDialog;
+    vscodeStub.window.showOpenDialog = () => Promise.resolve(undefined);
+    try {
+        await send({ command: 'browseExportLocation' });
+    } finally {
+        vscodeStub.window.showOpenDialog = originalOpen;
+    }
+    assert.equal(panel.posted.some(m => m.command === 'exportLocationSelected'), false);
+});
+
+test('custom-query panel: export defaults can be loaded and saved', async () => {
+    const { panel, send, globalStateStore } = openCustomQueryPanel();
+
+    await send({ command: 'saveExportDefaults', format: 'csv', options: { csvSeparator: ';' }, saveLocation: 'C:\\exports' });
+    assert.deepEqual(globalStateStore['exportDefaults'], { csv: { csvSeparator: ';' } });
+    assert.equal(globalStateStore['exportSaveLocation'], 'C:\\exports');
+
+    await send({ command: 'getExportDefaults' });
+    const msg = panel.posted.find(m => m.command === 'exportDefaultsLoaded');
+    assert.ok(msg, 'expected exportDefaultsLoaded to be posted back to the webview');
+    assert.equal(msg.defaults.csv.csvSeparator, ';');
+    assert.equal(msg.defaults._saveLocation, 'C:\\exports');
+});
+
+test('custom-query panel: exporting opens the save dialog in the saved location', async () => {
+    const { send } = openCustomQueryPanel();
+    const originalSave = vscodeStub.window.showSaveDialog;
+    let saveOptions: any;
+    vscodeStub.window.showSaveDialog = (options?: any) => {
+        saveOptions = options;
+        return Promise.resolve(undefined); // user cancels
+    };
+    try {
+        await send({
+            command: 'exportData',
+            options: { format: 'csv', filename: 'result.csv', saveLocation: 'C:\\exports' },
+            sql: 'SELECT 1 AS n',
+            columns: [{ name: 'n', dataType: 'int4' }]
+        });
+    } finally {
+        vscodeStub.window.showSaveDialog = originalSave;
+    }
+
+    assert.ok(saveOptions, 'expected the save dialog to be shown');
+    assert.equal(saveOptions.defaultUri.fsPath, path.join('C:\\exports', 'result.csv'));
+    assert.deepEqual(saveOptions.filters, { 'CSV Files': ['csv'] });
+});
+
+test('custom-query panel: commands it does not share stay unhandled', async () => {
+    const { panel, send } = openCustomQueryPanel();
+    await send({ command: 'commitChanges', changes: [] });
+    assert.equal(panel.posted.some(m => m.command === 'commitSuccess'), false);
 });
