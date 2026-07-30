@@ -408,6 +408,40 @@ th.sorted-desc::after {
     font-size: 10px;
 }
 
+/* Header colour tells how reliably a column can be written back:
+   plain editor background = identified by a primary key, greyed = matched by
+   all displayed values, blue tint = computed column without a source table.
+   The tints are mixed from theme colours so they work in every theme; the
+   first declaration is the fallback where color-mix() is unavailable. */
+th.col-editable {
+    background: var(--vscode-editor-background);
+    color: var(--vscode-editor-foreground);
+}
+
+th.col-unsafe {
+    background: var(--vscode-editorWidget-background);
+    background: color-mix(in srgb, var(--vscode-editor-foreground) 18%, var(--vscode-editor-background));
+    color: var(--vscode-editor-foreground);
+}
+
+th.col-readonly {
+    background: var(--vscode-editorWidget-background);
+    background: color-mix(in srgb, var(--vscode-textLink-foreground) 22%, var(--vscode-editor-background));
+    color: var(--vscode-editor-foreground);
+}
+
+th.col-editable:hover {
+    background: color-mix(in srgb, var(--vscode-editor-foreground) 8%, var(--vscode-editor-background));
+}
+
+th.col-unsafe:hover {
+    background: color-mix(in srgb, var(--vscode-editor-foreground) 28%, var(--vscode-editor-background));
+}
+
+th.col-readonly:hover {
+    background: color-mix(in srgb, var(--vscode-textLink-foreground) 34%, var(--vscode-editor-background));
+}
+
 /* Drag-and-drop column reordering */
 th[draggable="true"] {
     cursor: grab;

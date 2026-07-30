@@ -1008,6 +1008,20 @@ function describeRowCount(showing, totalCount, moreAvailable) {
     return `${showing} rows loaded` + (moreAvailable ? ' (more available)' : '');
 }
 
+// How trustworthy writing back a column is, used to colour its header:
+// 'editable' (traced to a table column identified by a primary key),
+// 'unsafe' (traced to a table column, but rows are matched by their values)
+// and 'readonly' (computed column with no source table).
+function columnWriteMode(caps, colName) {
+    const capabilities = normalizeCapabilities(caps);
+    const source = capabilities.columnSources[colName];
+    if (!source) {
+        return 'readonly';
+    }
+    const plan = capabilities.tables.find(t => t.tableOid === source.tableOid);
+    return (plan && plan.identityStrategy === 'pk') ? 'editable' : 'unsafe';
+}
+
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 (function() {
     const vscode = acquireVsCodeApi();
@@ -2036,6 +2050,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (sortColumn === col.name) {
                 cls = sortDirection === 'asc' ? 'sorted-asc' : 'sorted-desc';
             }
+            cls += ` col-${columnWriteMode(caps, col.name)}`;
             const commentTitle = buildColumnHeaderTitle(col);
             const titleAttr = commentTitle ? ` title="${escapeAttr(commentTitle)}"` : '';
             const commentMark = commentTitle ? ' <span class="col-comment-indicator" aria-hidden="true">🛈</span>' : '';
@@ -4315,6 +4330,7 @@ if (typeof module !== 'undefined' && module.exports) {
         emptyCapabilities,
         normalizeCapabilities,
         buildCommitTargets,
-        describeRowCount
+        describeRowCount,
+        columnWriteMode
     };
 }

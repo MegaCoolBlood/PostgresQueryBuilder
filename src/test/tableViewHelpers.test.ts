@@ -19,7 +19,8 @@ const {
     emptyCapabilities,
     normalizeCapabilities,
     buildCommitTargets,
-    describeRowCount
+    describeRowCount,
+    columnWriteMode
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== cellToString =====
@@ -634,5 +635,47 @@ test('describeRowCount reports the loaded rows while the total is unknown', () =
     assert.equal(describeRowCount(50, null, false), '50 rows loaded');
     assert.equal(describeRowCount(50, null, true), '50 rows loaded (more available)');
     assert.equal(describeRowCount(50, undefined, false), '50 rows loaded');
+});
+
+// ===== 2.2.2: column header colour =====
+
+test('columnWriteMode reports "editable" for a column identified by a primary key', () => {
+    assert.equal(columnWriteMode(usersCaps(), 'name'), 'editable');
+});
+
+test('columnWriteMode reports "unsafe" when the source table has no primary key', () => {
+    const caps = usersCaps() as any;
+    caps.tables[0].identityStrategy = 'row';
+    assert.equal(columnWriteMode(caps, 'name'), 'unsafe');
+});
+
+test('columnWriteMode reports "unsafe" for a column of a read-only relation', () => {
+    const caps = usersCaps() as any;
+    caps.tables[0].identityStrategy = 'none';
+    assert.equal(columnWriteMode(caps, 'name'), 'unsafe');
+});
+
+test('columnWriteMode reports "readonly" for a column without a source table', () => {
+    assert.equal(columnWriteMode(usersCaps(), 'computed'), 'readonly');
+    assert.equal(columnWriteMode(undefined, 'anything'), 'readonly');
+});
+
+test('columnWriteMode judges every table of a joined result separately', () => {
+    const userId = { name: 'user_id', tableOid: 100, schema: 'public', table: 'users', sourceColumn: 'id' };
+    const logMsg = { name: 'msg', tableOid: 300, schema: 'app', table: 'log', sourceColumn: 'msg' };
+    const caps = {
+        canEdit: true, canInsert: false, canDelete: false, canConstrain: false, canMap: false,
+        schema: null, table: null, identityStrategy: 'row',
+        tables: [
+            { tableOid: 100, schema: 'public', table: 'users', identityStrategy: 'pk', identityColumns: [userId], columns: [userId] },
+            { tableOid: 300, schema: 'app', table: 'log', identityStrategy: 'row', identityColumns: [logMsg], columns: [logMsg] }
+        ],
+        columnSources: { user_id: userId, msg: logMsg },
+        editableColumns: ['user_id', 'msg'],
+        warning: 'no pk for app.log'
+    };
+
+    assert.equal(columnWriteMode(caps, 'user_id'), 'editable');
+    assert.equal(columnWriteMode(caps, 'msg'), 'unsafe');
 });
 
