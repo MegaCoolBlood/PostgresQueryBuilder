@@ -1,36 +1,41 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
-import { QueryRunner, buildRelationListQuery } from './queryRunner';
+import { QueryRunner, buildRelationListQuery, type CommitTarget } from './queryRunner';
 import { ExportService } from './exportService';
 import { ColumnMappingManager } from './columnMappingManager';
 import { PermanentConstraintManager } from './permanentConstraintManager';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
 import { getErrorMessage } from './logger';
+import type { ViewCapabilities } from './resultSource';
 import * as path from 'path';
 import * as fs from 'fs';
 
-/** Shared context passed to each webview message handler. */
-interface MessageContext {
+/**
+ * One open Data Viewer panel. Both entry points — a table opened from the tree
+ * and an ad-hoc SELECT opened via "View Data" — create the same kind of
+ * session, so every feature is available in both. The difference is only the
+ * SQL the panel starts with; what the panel may do with the result is derived
+ * from the result itself (see {@link ViewCapabilities}).
+ */
+interface PanelSession {
+    /** Unique key in {@link TableWebViewManager.sessions}. */
+    id: string;
     panel: vscode.WebviewPanel;
+    origin: 'table' | 'query';
+    /** Source table of the current result, once known. */
     schema: string;
     table: string;
-    key: string;
+    /** Bucket used to store this panel's query history. */
+    historyKey: string;
+    disposed: boolean;
+}
+
+/** Shared context passed to each webview message handler. */
+interface MessageContext {
+    session: PanelSession;
     message: any;
     queryRunner: QueryRunner;
 }
-
-/**
- * Webview messages that the read-only custom-query panel does not implement
- * itself but forwards to the shared table-panel handlers. Without this the
- * Export dialog is inert in that panel (Browse opens nothing, Export does
- * nothing), because its message switch only knows about query commands.
- */
-export const CUSTOM_QUERY_SHARED_COMMANDS = [
-    'browseExportLocation',
-    'getExportDefaults',
-    'saveExportDefaults',
-    'exportData'
-] as const;
 
 /** Minimal shape of a `pg` field descriptor used to build result columns. */
 export interface ResultFieldInfo {
@@ -102,7 +107,7 @@ export function buildColumnProbeSql(singleStatement: string): string | null {
 }
 
 export class TableWebViewManager {
-    private panels: Map<string, vscode.WebviewPanel> = new Map();
+    private sessions: Map<string, PanelSession> = new Map();
     private pendingFilters: Map<string, { column: string; value: string; conditions?: any[] }> = new Map();
     private context: vscode.ExtensionContext;
     private connectionManager: ConnectionManager;
@@ -110,6 +115,7 @@ export class TableWebViewManager {
     private columnMappingManager: ColumnMappingManager;
     private permanentConstraintManager: PermanentConstraintManager;
     private modifyHistoryStore?: ModifyHistoryStore;
+    private querySessionCounter = 0;
 
     constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager, columnMappingManager: ColumnMappingManager, permanentConstraintManager: PermanentConstraintManager, modifyHistoryStore?: ModifyHistoryStore) {
         this.context = context;
@@ -127,39 +133,45 @@ export class TableWebViewManager {
     }
 
     private broadcastMappings(): void {
-        for (const [key, panel] of this.panels.entries()) {
-            const dot = key.indexOf('.');
-            if (dot < 0) continue;
-            const schema = key.substring(0, dot);
-            const table = key.substring(dot + 1);
-            const mappings = this.columnMappingManager.getMappingsForTable(schema, table);
-            try {
-                panel.webview.postMessage({ command: 'customMappingsLoaded', mappings });
-            } catch {
-                // Panel may be disposed; ignore.
+        for (const session of this.sessions.values()) {
+            if (session.disposed || !session.schema || !session.table) {
+                continue;
             }
+            const mappings = this.columnMappingManager.getMappingsForTable(session.schema, session.table);
+            this.post(session, { command: 'customMappingsLoaded', mappings });
         }
     }
 
-    async openTableView(schema: string, table: string): Promise<void> {
-        const key = `${schema}.${table}`;
-
-        const existingPanel = this.panels.get(key);
-        if (existingPanel) {
-            existingPanel.reveal();
+    /** Post a message to a panel unless it has already been disposed. */
+    private post(session: PanelSession, message: any): void {
+        if (session.disposed) {
             return;
         }
-
-        // Opening a table requires a live connection to load its data. If none
-        // is active, prompt the user to pick one before creating the panel.
-        if (!await this.connectionManager.ensureConnected()) {
-            return;
+        try {
+            session.panel.webview.postMessage(message);
+        } catch {
+            // Panel may have been disposed between the check and the post.
         }
+    }
 
+    /**
+     * Create a Data Viewer panel and wire it to the shared message handlers.
+     * Used for both entry points so a panel opened for an ad-hoc SELECT behaves
+     * exactly like one opened for a table.
+     */
+    private createSession(
+        id: string,
+        title: string,
+        origin: 'table' | 'query',
+        schema: string,
+        table: string,
+        historyKey: string,
+        viewColumn: vscode.ViewColumn
+    ): PanelSession {
         const panel = vscode.window.createWebviewPanel(
             'postgresTableView',
-            `${schema}.${table}`,
-            vscode.ViewColumn.One,
+            title,
+            viewColumn,
             {
                 enableScripts: true,
                 retainContextWhenHidden: true,
@@ -169,46 +181,19 @@ export class TableWebViewManager {
             }
         );
 
-        this.panels.set(key, panel);
+        const session: PanelSession = { id, panel, origin, schema, table, historyKey, disposed: false };
+        this.sessions.set(id, session);
 
-        // Tracks whether the panel has been disposed so async work that resolves
-        // after the user closed the view does not post to a dead webview.
-        let disposed = false;
         panel.onDidDispose(() => {
-            disposed = true;
-            this.panels.delete(key);
+            session.disposed = true;
+            this.sessions.delete(id);
         });
 
         panel.webview.html = this.getWebviewContent(panel.webview);
 
-        // Send initial info immediately so the webview can show query + loading state
-        const alwaysQuote = vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false);
-        const thousandSeparator = vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('thousandSeparator', ' ');
-        let tableReference = `${schema}.${table}`;
-        try {
-            const initQueryRunner = new QueryRunner(this.connectionManager);
-            const initSelectBuildInfo = await initQueryRunner.getSelectBuildInfo(schema, table);
-            tableReference = initSelectBuildInfo.tableReference;
-        } catch {
-            // Ignore init formatting errors; loadData will provide the authoritative value
-        }
-        panel.webview.postMessage({
-            command: 'init',
-            schema: schema,
-            table: table,
-            alwaysQuote: alwaysQuote,
-            tableReference: tableReference,
-            thousandSeparator: thousandSeparator,
-            connectionName: this.getConnectionName(),
-            permanentConstraints: this.permanentConstraintManager.getConstraints(schema, table)
-        });
-
-        // Push connection updates to the webview while it's open
+        // Push connection updates to the webview while it's open.
         const connSub = this.connectionManager.onConnectionChanged(() => {
-            if (disposed) {
-                return;
-            }
-            panel.webview.postMessage({
+            this.post(session, {
                 command: 'connectionChanged',
                 connectionName: this.getConnectionName()
             });
@@ -218,32 +203,107 @@ export class TableWebViewManager {
         panel.webview.onDidReceiveMessage(async (message) => {
             const handler = this.messageHandlers[message.command];
             if (!handler) {
+                console.warn(`Data Viewer: unhandled webview message "${message.command}"`);
                 return;
             }
             const queryRunner = new QueryRunner(this.connectionManager);
-            const ctx: MessageContext = { panel, schema, table, key, message, queryRunner };
-
             try {
-                await handler.call(this, ctx);
+                await handler.call(this, { session, message, queryRunner });
             } catch (err: unknown) {
-                if (!disposed) {
-                    panel.webview.postMessage({
-                        command: 'error',
-                        text: getErrorMessage(err)
-                    });
-                }
+                // Always release the loading state, otherwise the grid keeps
+                // showing a spinner for a query that already failed.
+                this.post(session, { command: 'error', text: getErrorMessage(err) });
                 vscode.window.showErrorMessage(`Query error: ${getErrorMessage(err)}`);
             }
+        });
+
+        return session;
+    }
+
+    async openTableView(schema: string, table: string): Promise<void> {
+        const id = `table:${schema}.${table}`;
+
+        const existing = this.sessions.get(id);
+        if (existing) {
+            existing.panel.reveal();
+            return;
+        }
+
+        // Opening a table requires a live connection to load its data. If none
+        // is active, prompt the user to pick one before creating the panel.
+        if (!await this.connectionManager.ensureConnected()) {
+            return;
+        }
+
+        let tableReference = `${schema}.${table}`;
+        try {
+            const initQueryRunner = new QueryRunner(this.connectionManager);
+            tableReference = (await initQueryRunner.getSelectBuildInfo(schema, table)).tableReference;
+        } catch {
+            // Ignore init formatting errors; the first load provides the
+            // authoritative value.
+        }
+
+        const session = this.createSession(
+            id, `${schema}.${table}`, 'table', schema, table, `${schema}.${table}`, vscode.ViewColumn.One
+        );
+
+        this.post(session, {
+            command: 'init',
+            origin: 'table',
+            schema,
+            table,
+            title: `${schema}.${table}`,
+            tableReference,
+            alwaysQuote: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false),
+            thousandSeparator: vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('thousandSeparator', ' '),
+            connectionName: this.getConnectionName(),
+            permanentConstraints: this.permanentConstraintManager.getConstraints(schema, table)
+        });
+    }
+
+    /**
+     * Open the Data Viewer for an ad-hoc SELECT (e.g. the "View Data" command
+     * run inside a procedure body). The panel offers the same features as one
+     * opened from the table tree — editing, constraints, mappings and export
+     * are enabled as far as the result's source columns allow.
+     *
+     * @param sql The runnable SELECT statement.
+     * @param title A short label shown in the toolbar.
+     * @param viewColumn Where to place the panel (defaults to a side-by-side split).
+     */
+    async openQueryView(sql: string, title: string, viewColumn: vscode.ViewColumn = vscode.ViewColumn.Beside): Promise<void> {
+        // Running the query needs a connection; without this the panel would
+        // open and spin forever.
+        if (!await this.connectionManager.ensureConnected()) {
+            return;
+        }
+
+        const id = `query:${++this.querySessionCounter}`;
+        const session = this.createSession(id, title, 'query', '', '', `query:${title}`, viewColumn);
+
+        this.post(session, {
+            command: 'init',
+            origin: 'query',
+            schema: '',
+            table: '',
+            title,
+            sql,
+            tableReference: '',
+            alwaysQuote: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false),
+            thousandSeparator: vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('thousandSeparator', ' '),
+            connectionName: this.getConnectionName(),
+            permanentConstraints: []
         });
     }
 
     /** Maps each webview message command to its handler method. */
     private readonly messageHandlers: Record<string, (ctx: MessageContext) => Promise<void> | void> = {
-        loadData: this.handleLoadData,
+        loadRows: this.handleLoadRows,
+        getTotalCount: this.handleGetTotalCount,
         previewSQL: this.handlePreviewSQL,
         commitChanges: this.handleCommitChanges,
         showError: this.handleShowError,
-        runCustomQuery: this.handleRunCustomQuery,
         saveQueryHistory: this.handleSaveQueryHistory,
         getQueryHistory: this.handleGetQueryHistory,
         openForeignKey: this.handleOpenForeignKey,
@@ -260,105 +320,172 @@ export class TableWebViewManager {
         selectConnection: this.handleSelectConnection
     };
 
-    private async handleLoadData(ctx: MessageContext): Promise<void> {
-        const { panel, schema, table, key, message, queryRunner } = ctx;
-        const selectBuildInfo = await queryRunner.getSelectBuildInfo(schema, table);
+    /**
+     * Run the SQL currently shown in a panel and push rows, columns and the
+     * resulting capabilities back. This is the single data path of the Data
+     * Viewer: the default table view is simply the query the panel starts with.
+     */
+    private async handleLoadRows(ctx: MessageContext): Promise<void> {
+        const { session, message, queryRunner } = ctx;
+        const sql: string = message.sql;
+        const baseSql: string = message.baseSql || sql;
+        const append = !!message.append;
 
-        // Optional permanent WHERE constraint applied to the default table view.
-        const where = typeof message.where === 'string' ? message.where : '';
+        if (!sql || !sql.trim()) {
+            this.post(session, { command: 'loadingFinished' });
+            return;
+        }
+        if (!await this.connectionManager.ensureConnected()) {
+            this.post(session, { command: 'loadingFinished' });
+            return;
+        }
 
-        // Start metadata fetches in parallel with data fetch
-        const pkPromise = queryRunner.getPrimaryKeys(schema, table);
-        const fkPromise = queryRunner.getForeignKeys(schema, table);
-        const refsPromise = queryRunner.getReferencingTables(schema, table);
+        // Render columns + filter row immediately while the full query runs.
+        let capabilities = append ? undefined : await this.tryPostEarlyColumns(session, baseSql);
 
-        // Fetch rows + columns (fast essentials)
-        const columns = await queryRunner.getColumns(schema, table);
+        const execStart = Date.now();
+        const result = await queryRunner.executeSQL(sql);
+        const durationMs = Date.now() - execStart;
 
-        // Push the column list to the webview as soon as it is available so the
-        // table header renders immediately — even while the (potentially slow)
-        // row and count queries are still running. This lets the user add a
-        // permanent constraint before the data has finished loading.
-        panel.webview.postMessage({
-            command: 'columnsLoaded',
-            columns: columns,
-            schema: schema,
-            table: table,
-            alwaysQuote: selectBuildInfo.alwaysQuote,
-            tableReference: selectBuildInfo.tableReference,
-            offset: message.offset || 0
-        });
+        if (this.modifyHistoryStore) {
+            for (const stmt of splitSqlStatements(sql)) {
+                if (isModifyingSql(stmt)) {
+                    this.modifyHistoryStore.add({ sql: stmt, schema: session.schema, table: session.table });
+                }
+            }
+        }
 
-        const fetchStart = Date.now();
-        const data = await queryRunner.fetchRows(
-            schema, table, message.offset || 0, message.limit || 50, where
-        );
-        const durationMs = Date.now() - fetchStart;
-        const totalCount = await queryRunner.getRowCount(schema, table, where);
+        const columns = await this.resolveResultColumns(result.fields || []);
+        if (!append && !capabilities) {
+            capabilities = await queryRunner.resolveEditPlan(result.fields || []);
+        }
 
-        panel.webview.postMessage({
-            command: 'dataLoaded',
-            data: data,
-            totalCount: totalCount,
-            columns: columns,
-            schema: schema,
-            table: table,
-            alwaysQuote: selectBuildInfo.alwaysQuote,
-            tableReference: selectBuildInfo.tableReference,
+        const tableInfo = capabilities ? await this.adoptSourceTable(session, capabilities, queryRunner) : undefined;
+
+        this.post(session, {
+            command: 'rowsLoaded',
+            rows: result.rows,
+            columns,
+            capabilities,
+            append,
             connectionName: this.getConnectionName(),
-            durationMs: durationMs
+            durationMs,
+            ...tableInfo
         });
 
-        // Send pending filter after data is loaded
-        const pendingFilter = this.pendingFilters.get(key);
+        if (append) {
+            return;
+        }
+
+        if (message.wantTotal) {
+            const totalCount = await queryRunner.getQueryRowCount(baseSql);
+            this.post(session, { command: 'totalCountLoaded', totalCount });
+        }
+
+        // Deliver relation metadata for the single source table (if any) as it
+        // resolves, so foreign-key navigation and mappings work for ad-hoc
+        // queries too.
+        if (capabilities && capabilities.schema && capabilities.table) {
+            this.loadRelationMetadata(session, capabilities.schema, capabilities.table, queryRunner);
+        }
+
+        const pendingFilter = this.pendingFilters.get(session.id);
         if (pendingFilter) {
-            this.pendingFilters.delete(key);
-            panel.webview.postMessage({
+            this.pendingFilters.delete(session.id);
+            this.post(session, {
                 command: 'applyFilter',
                 column: pendingFilter.column,
                 value: pendingFilter.value,
                 conditions: pendingFilter.conditions || []
             });
         }
+    }
 
-        // Deliver metadata results as they resolve
-        pkPromise.then(primaryKeys => {
-            panel.webview.postMessage({
-                command: 'primaryKeysLoaded',
-                primaryKeys: primaryKeys
-            });
-        }).catch(err => console.warn(`Failed to load PKs: ${err.message}`));
+    /**
+     * Remember the table a result came from and return the extra fields the
+     * webview needs to treat it as that table's view (constraints, mappings,
+     * default query).
+     */
+    private async adoptSourceTable(
+        session: PanelSession,
+        capabilities: ViewCapabilities,
+        queryRunner: QueryRunner
+    ): Promise<{ schema: string; table: string; tableReference: string; alwaysQuote: boolean; permanentConstraints: any[] } | undefined> {
+        if (!capabilities.schema || !capabilities.table) {
+            return undefined;
+        }
+        session.schema = capabilities.schema;
+        session.table = capabilities.table;
+        const info = await queryRunner.getSelectBuildInfo(capabilities.schema, capabilities.table);
+        return {
+            schema: capabilities.schema,
+            table: capabilities.table,
+            tableReference: info.tableReference,
+            alwaysQuote: info.alwaysQuote,
+            permanentConstraints: this.permanentConstraintManager.getConstraints(capabilities.schema, capabilities.table)
+        };
+    }
 
-        fkPromise.then(foreignKeys => {
-            panel.webview.postMessage({
-                command: 'foreignKeysLoaded',
-                foreignKeys: foreignKeys
-            });
-        }).catch(err => console.warn(`Failed to load FKs: ${err.message}`));
+    /** Load primary keys, foreign keys, referencing tables and mappings. */
+    private loadRelationMetadata(session: PanelSession, schema: string, table: string, queryRunner: QueryRunner): void {
+        queryRunner.getPrimaryKeys(schema, table)
+            .then(primaryKeys => this.post(session, { command: 'primaryKeysLoaded', primaryKeys }))
+            .catch(err => console.warn(`Failed to load PKs: ${getErrorMessage(err)}`));
 
-        refsPromise.then(referencingTables => {
-            panel.webview.postMessage({
-                command: 'referencingTablesLoaded',
-                referencingTables: referencingTables
-            });
-        }).catch(err => console.warn(`Failed to load referencing tables: ${err.message}`));
+        queryRunner.getForeignKeys(schema, table)
+            .then(foreignKeys => this.post(session, { command: 'foreignKeysLoaded', foreignKeys }))
+            .catch(err => console.warn(`Failed to load FKs: ${getErrorMessage(err)}`));
 
-        // Send custom column mappings
-        const customMappings = this.columnMappingManager.getMappingsForTable(schema, table);
-        panel.webview.postMessage({
+        queryRunner.getReferencingTables(schema, table)
+            .then(referencingTables => this.post(session, { command: 'referencingTablesLoaded', referencingTables }))
+            .catch(err => console.warn(`Failed to load referencing tables: ${getErrorMessage(err)}`));
+
+        this.post(session, {
             command: 'customMappingsLoaded',
-            mappings: customMappings
+            mappings: this.columnMappingManager.getMappingsForTable(schema, table)
         });
     }
 
+    /**
+     * Count all rows the current query returns. Requested explicitly (by
+     * clicking the row-count indicator) because counting an arbitrary query can
+     * be expensive.
+     */
+    private async handleGetTotalCount(ctx: MessageContext): Promise<void> {
+        const { session, message, queryRunner } = ctx;
+        const sql: string = message.sql;
+        if (!sql || !sql.trim()) {
+            return;
+        }
+        const totalCount = await queryRunner.getQueryRowCount(sql);
+        this.post(session, { command: 'totalCountLoaded', totalCount });
+    }
+
+    /**
+     * Normalize the write targets sent by the webview. Each target names the
+     * source table its changes belong to, so a result joined from several
+     * tables can be committed in one go.
+     */
+    private toCommitTargets(message: any): CommitTarget[] {
+        const targets = Array.isArray(message.targets) ? message.targets : [];
+        return targets
+            .filter((t: any) => t && t.schema && t.table && t.changes)
+            .map((t: any) => ({
+                schema: String(t.schema),
+                table: String(t.table),
+                identityStrategy: t.identityStrategy,
+                changes: {
+                    updates: Array.isArray(t.changes.updates) ? t.changes.updates : [],
+                    inserts: Array.isArray(t.changes.inserts) ? t.changes.inserts : [],
+                    deletes: Array.isArray(t.changes.deletes) ? t.changes.deletes : []
+                }
+            }));
+    }
+
     private async handlePreviewSQL(ctx: MessageContext): Promise<void> {
-        const { panel, schema, table, message, queryRunner } = ctx;
-        const sql = queryRunner.generateSQL(
-            schema,
-            table,
-            message.changes
-        );
-        panel.webview.postMessage({
+        const { session, message, queryRunner } = ctx;
+        const sql = queryRunner.generateSQL(this.toCommitTargets(message));
+        this.post(session, {
             command: 'sqlPreview',
             sql,
             connectionName: this.getConnectionName()
@@ -366,23 +493,26 @@ export class TableWebViewManager {
     }
 
     private async handleCommitChanges(ctx: MessageContext): Promise<void> {
-        const { panel, schema, table, message, queryRunner } = ctx;
-        await queryRunner.commitChanges(
-            schema,
-            table,
-            message.changes
-        );
+        const { session, message, queryRunner } = ctx;
+        const targets = this.toCommitTargets(message);
+        if (targets.length === 0) {
+            // Nothing could be mapped back to a table (e.g. computed columns
+            // only) - tell the user instead of silently dropping the changes.
+            throw new Error('These changes cannot be saved: no writable source table could be determined for them.');
+        }
+        await queryRunner.commitChanges(targets);
         if (this.modifyHistoryStore) {
             try {
-                const sqlText = queryRunner.generateSQL(schema, table, message.changes);
-                const stmts = splitSqlStatements(sqlText).map(sql => ({ sql, schema, table }));
-                if (stmts.length > 0) this.modifyHistoryStore.addMany(stmts);
+                const stmts = targets.flatMap(target =>
+                    splitSqlStatements(queryRunner.generateSQL([target]))
+                        .map(sql => ({ sql, schema: target.schema, table: target.table }))
+                );
+                if (stmts.length > 0) { this.modifyHistoryStore.addMany(stmts); }
             } catch { /* ignore history failures */ }
         }
-        panel.webview.postMessage({ command: 'commitSuccess' });
-        vscode.window.showInformationMessage(
-            `Changes committed to ${schema}.${table}`
-        );
+        this.post(session, { command: 'commitSuccess' });
+        const names = [...new Set(targets.map(t => `${t.schema}.${t.table}`))].join(', ');
+        vscode.window.showInformationMessage(`Changes committed to ${names}`);
     }
 
     private handleShowError(ctx: MessageContext): void {
@@ -430,74 +560,52 @@ export class TableWebViewManager {
     }
 
     /**
-     * Try to resolve the columns of a custom SELECT quickly (without fetching
-     * its rows) and post them to the webview so the header and filter row render
-     * immediately, before the full query returns. Failures are ignored: the real
-     * result still renders the columns afterwards.
+     * Try to resolve the columns of a query quickly (without fetching its rows)
+     * and post them to the webview so the header and filter row render
+     * immediately, before the full query returns. Returns the capabilities
+     * derived from the probe, or `undefined` when the query cannot be probed
+     * (non-SELECT, multiple statements, ...).
      */
-    private async tryPostEarlyQueryColumns(panel: vscode.WebviewPanel, sql: string): Promise<void> {
+    private async tryPostEarlyColumns(session: PanelSession, sql: string): Promise<ViewCapabilities | undefined> {
         try {
             const statements = splitSqlStatements(sql).map((s) => s.trim()).filter((s) => s.length > 0);
             if (statements.length !== 1) {
-                return;
+                return undefined;
             }
             const probeSql = buildColumnProbeSql(statements[0]);
             if (!probeSql) {
-                return;
+                return undefined;
             }
             const probe = await this.connectionManager.query(probeSql);
             if (!probe.fields || probe.fields.length === 0) {
-                return;
+                return undefined;
             }
-            const cols = await this.resolveResultColumns(probe.fields);
-            panel.webview.postMessage({ command: 'queryColumns', columns: cols });
+            const columns = await this.resolveResultColumns(probe.fields);
+            const queryRunner = new QueryRunner(this.connectionManager);
+            const capabilities = await queryRunner.resolveEditPlan(probe.fields);
+            this.post(session, { command: 'columnsLoaded', columns, capabilities });
+            return capabilities;
         } catch {
             // Ignore probe failures (non-SELECT, multi-statement, invalid wrap,
-            // etc.); the full query result will render the columns as before.
+            // etc.); the full query result renders the columns afterwards.
+            return undefined;
         }
-    }
-
-    private async handleRunCustomQuery(ctx: MessageContext): Promise<void> {
-        const { panel, schema, table, message, queryRunner } = ctx;
-        if (!await this.connectionManager.ensureConnected()) {
-            return;
-        }
-        // Render the columns + filter row immediately while the full query runs.
-        await this.tryPostEarlyQueryColumns(panel, message.sql);
-        const execStart = Date.now();
-        const result = await queryRunner.executeSQL(message.sql);
-        const durationMs = Date.now() - execStart;
-        if (this.modifyHistoryStore) {
-            for (const stmt of splitSqlStatements(message.sql)) {
-                if (isModifyingSql(stmt)) {
-                    this.modifyHistoryStore.add({ sql: stmt, schema, table });
-                }
-            }
-        }
-        const cols = await this.resolveResultColumns(result.fields);
-        panel.webview.postMessage({
-            command: 'queryResult',
-            rows: result.rows,
-            columns: cols,
-            connectionName: this.getConnectionName(),
-            durationMs: durationMs
-        });
     }
 
     private handleSaveQueryHistory(ctx: MessageContext): void {
-        const { panel, schema, table, message } = ctx;
-        this.saveQueryToHistory(schema, table, message.sql);
-        panel.webview.postMessage({
+        const { session, message } = ctx;
+        this.saveQueryToHistory(session.historyKey, message.sql);
+        this.post(session, {
             command: 'queryHistoryUpdated',
-            history: this.getQueryHistory(schema, table)
+            history: this.getQueryHistory(session.historyKey)
         });
     }
 
     private handleGetQueryHistory(ctx: MessageContext): void {
-        const { panel, schema, table } = ctx;
-        panel.webview.postMessage({
+        const { session } = ctx;
+        this.post(session, {
             command: 'queryHistoryUpdated',
-            history: this.getQueryHistory(schema, table)
+            history: this.getQueryHistory(session.historyKey)
         });
     }
 
@@ -533,19 +641,23 @@ export class TableWebViewManager {
     }
 
     private async handleSavePermanentConstraints(ctx: MessageContext): Promise<void> {
-        const { schema, table, message } = ctx;
+        const { session, message } = ctx;
+        if (!session.schema || !session.table) {
+            vscode.window.showErrorMessage('Constraints can only be saved for a result that comes from a single table.');
+            return;
+        }
         await this.permanentConstraintManager.setConstraints(
-            schema, table, Array.isArray(message.conditions) ? message.conditions : []
+            session.schema, session.table, Array.isArray(message.conditions) ? message.conditions : []
         );
     }
 
     private async handleGetTablesForTypeahead(ctx: MessageContext): Promise<void> {
-        const { panel } = ctx;
+        const { session } = ctx;
         try {
             const tables = await this.connectionManager.queryMetadata(
                 buildRelationListQuery()
             );
-            panel.webview.postMessage({
+            this.post(session, {
                 command: 'tablesForTypeahead',
                 tables: tables.map((r) => ({ schema: r.table_schema, table: r.table_name }))
             });
@@ -555,7 +667,7 @@ export class TableWebViewManager {
     }
 
     private async handleGetColumnsForTypeahead(ctx: MessageContext): Promise<void> {
-        const { panel, message } = ctx;
+        const { session, message } = ctx;
         try {
             const cols = await this.connectionManager.queryMetadata(
                 `SELECT column_name FROM information_schema.columns
@@ -563,7 +675,7 @@ export class TableWebViewManager {
                  ORDER BY ordinal_position`,
                 [message.schema, message.table]
             );
-            panel.webview.postMessage({
+            this.post(session, {
                 command: 'columnsForTypeahead',
                 columns: cols.map((r) => r.column_name),
                 forSchema: message.schema,
@@ -575,7 +687,7 @@ export class TableWebViewManager {
     }
 
     private async handleBrowseExportLocation(ctx: MessageContext): Promise<void> {
-        const { panel } = ctx;
+        const { session } = ctx;
         const folderUri = await vscode.window.showOpenDialog({
             canSelectFiles: false,
             canSelectFolders: true,
@@ -583,7 +695,7 @@ export class TableWebViewManager {
             openLabel: 'Select Export Folder'
         });
         if (folderUri && folderUri.length > 0) {
-            panel.webview.postMessage({
+            this.post(session, {
                 command: 'exportLocationSelected',
                 path: folderUri[0].fsPath
             });
@@ -591,10 +703,9 @@ export class TableWebViewManager {
     }
 
     private handleGetExportDefaults(ctx: MessageContext): void {
-        const defaults = this.exportService.getDefaults();
-        ctx.panel.webview.postMessage({
+        this.post(ctx.session, {
             command: 'exportDefaultsLoaded',
-            defaults: defaults
+            defaults: this.exportService.getDefaults()
         });
     }
 
@@ -608,10 +719,10 @@ export class TableWebViewManager {
     }
 
     private async handleExportData(ctx: MessageContext): Promise<void> {
-        const { panel, schema, table, message, queryRunner } = ctx;
+        const { session, message, queryRunner } = ctx;
         const opts = message.options;
-        // A custom-query panel has no table to fall back to, so it can only
-        // export the query it currently shows.
+        const { schema, table } = session;
+        // Without a query and without a source table there is nothing to export.
         if (!message.sql && !table) {
             vscode.window.showErrorMessage('Export failed: no query to export.');
             return;
@@ -656,7 +767,7 @@ export class TableWebViewManager {
                 message.columns,
                 { ...opts, filePath: uri.fsPath }
             );
-            panel.webview.postMessage({
+            this.post(session, {
                 command: 'exportSuccess',
                 filePath: uri.fsPath
             });
@@ -688,14 +799,14 @@ export class TableWebViewManager {
         return cfg.name || `${cfg.host}:${cfg.port}/${cfg.database}`;
     }
 
-    private getQueryHistory(schema: string, table: string): { sql: string; lastUsed: number }[] {
-        const key = `queryHistory:${schema}.${table}`;
+    private getQueryHistory(historyKey: string): { sql: string; lastUsed: number }[] {
+        const key = `queryHistory:${historyKey}`;
         const history = this.context.globalState.get<{ sql: string; lastUsed: number }[]>(key, []);
         return history.sort((a, b) => b.lastUsed - a.lastUsed);
     }
 
-    private saveQueryToHistory(schema: string, table: string, sql: string): void {
-        const key = `queryHistory:${schema}.${table}`;
+    private saveQueryToHistory(historyKey: string, sql: string): void {
+        const key = `queryHistory:${historyKey}`;
         let history = this.context.globalState.get<{ sql: string; lastUsed: number }[]>(key, []);
         // Remove existing entry for same SQL
         history = history.filter(h => h.sql !== sql);
@@ -709,152 +820,22 @@ export class TableWebViewManager {
     }
 
     async openTableViewWithFilter(schema: string, table: string, column: string, value: any, conditions: any[] = []): Promise<void> {
-        const key = `${schema}.${table}`;
-        const existingPanel = this.panels.get(key);
+        const id = `table:${schema}.${table}`;
+        const existing = this.sessions.get(id);
 
-        if (existingPanel) {
+        if (existing) {
             // Panel already exists and has data loaded — send filter directly
-            existingPanel.reveal();
-            existingPanel.webview.postMessage({
+            existing.panel.reveal();
+            this.post(existing, {
                 command: 'applyFilter',
                 column: column,
                 value: String(value),
                 conditions: conditions || []
             });
         } else {
-            // Panel will be created — store filter to send after first dataLoaded
-            this.pendingFilters.set(key, { column, value: String(value), conditions: conditions || [] });
+            // Panel will be created — store filter to send after the first load
+            this.pendingFilters.set(id, { column, value: String(value), conditions: conditions || [] });
             await this.openTableView(schema, table);
         }
-    }
-
-    /**
-     * Open the data viewer in read-only "custom query" mode for an ad-hoc SELECT
-     * (e.g. the "View Data" command run inside a procedure body). The panel runs
-     * the given SQL and renders the result grid; table editing is disabled.
-     *
-     * @param sql The runnable SELECT statement.
-     * @param title A short label shown in the toolbar.
-     * @param viewColumn Where to place the panel (defaults to a side-by-side split).
-     */
-    openCustomQueryView(sql: string, title: string, viewColumn: vscode.ViewColumn = vscode.ViewColumn.Beside): void {
-        const panel = vscode.window.createWebviewPanel(
-            'postgresTableView',
-            title,
-            viewColumn,
-            {
-                enableScripts: true,
-                retainContextWhenHidden: true,
-                localResourceRoots: [
-                    vscode.Uri.file(path.join(this.context.extensionPath, 'src', 'webview'))
-                ]
-            }
-        );
-
-        let disposed = false;
-        panel.onDidDispose(() => { disposed = true; });
-
-        panel.webview.html = this.getWebviewContent(panel.webview);
-
-        const thousandSeparator = vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('thousandSeparator', ' ');
-        const alwaysQuote = vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false);
-        panel.webview.postMessage({
-            command: 'init',
-            schema: '',
-            table: '',
-            customQuery: sql,
-            viewTitle: title,
-            thousandSeparator,
-            alwaysQuote,
-            connectionName: this.getConnectionName()
-        });
-
-        const connSub = this.connectionManager.onConnectionChanged(() => {
-            if (disposed) return;
-            panel.webview.postMessage({
-                command: 'connectionChanged',
-                connectionName: this.getConnectionName()
-            });
-        });
-        panel.onDidDispose(() => connSub.dispose());
-
-        const customHistoryKey = 'customQuery';
-        panel.webview.onDidReceiveMessage(async (message) => {
-            const queryRunner = new QueryRunner(this.connectionManager);
-            try {
-                switch (message.command) {
-                    case 'runCustomQuery': {
-                        if (!await this.connectionManager.ensureConnected()) {
-                            break;
-                        }
-                        // Render columns + filter row immediately while running.
-                        if (!disposed) {
-                            await this.tryPostEarlyQueryColumns(panel, message.sql);
-                        }
-                        const execStart = Date.now();
-                        const result = await queryRunner.executeSQL(message.sql);
-                        const durationMs = Date.now() - execStart;
-                        if (this.modifyHistoryStore) {
-                            for (const stmt of splitSqlStatements(message.sql)) {
-                                if (isModifyingSql(stmt)) {
-                                    this.modifyHistoryStore.add({ sql: stmt });
-                                }
-                            }
-                        }
-                        const cols = await this.resolveResultColumns(result.fields);
-                        if (!disposed) {
-                            panel.webview.postMessage({
-                                command: 'queryResult',
-                                rows: result.rows,
-                                columns: cols,
-                                connectionName: this.getConnectionName(),
-                                durationMs: durationMs
-                            });
-                        }
-                        break;
-                    }
-                    case 'saveQueryHistory': {
-                        this.saveQueryToHistory('', customHistoryKey, message.sql);
-                        if (!disposed) {
-                            panel.webview.postMessage({
-                                command: 'queryHistoryUpdated',
-                                history: this.getQueryHistory('', customHistoryKey)
-                            });
-                        }
-                        break;
-                    }
-                    case 'getQueryHistory': {
-                        if (!disposed) {
-                            panel.webview.postMessage({
-                                command: 'queryHistoryUpdated',
-                                history: this.getQueryHistory('', customHistoryKey)
-                            });
-                        }
-                        break;
-                    }
-                    case 'showError': {
-                        vscode.window.showErrorMessage(message.text);
-                        break;
-                    }
-                    case 'selectConnection': {
-                        await this.connectionManager.selectConnection();
-                        break;
-                    }
-                    default: {
-                        if ((CUSTOM_QUERY_SHARED_COMMANDS as readonly string[]).includes(message.command)) {
-                            await this.messageHandlers[message.command].call(this, {
-                                panel, schema: '', table: '', key: customHistoryKey, message, queryRunner
-                            });
-                        }
-                        break;
-                    }
-                }
-            } catch (err: unknown) {
-                if (!disposed) {
-                    panel.webview.postMessage({ command: 'error', text: getErrorMessage(err) });
-                }
-                vscode.window.showErrorMessage(`Query error: ${getErrorMessage(err)}`);
-            }
-        });
     }
 }

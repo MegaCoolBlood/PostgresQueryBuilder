@@ -15,7 +15,11 @@ const {
     buildColumnHeaderTitle,
     computeResizedRowHeight,
     remainingRowCount,
-    formatExecutionTime
+    formatExecutionTime,
+    emptyCapabilities,
+    normalizeCapabilities,
+    buildCommitTargets,
+    describeRowCount
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== cellToString =====
@@ -442,5 +446,193 @@ test('formatExecutionTime returns an empty string for missing or invalid values'
     assert.equal(formatExecutionTime('12' as any), '');
     assert.equal(formatExecutionTime(NaN), '');
     assert.equal(formatExecutionTime(Infinity), '');
+});
+
+// ===== 2.2.2: capabilities of the unified data viewer =====
+
+/** Capabilities for a single-table result with a primary key. */
+function usersCaps() {
+    const idSource = { name: 'id', tableOid: 100, schema: 'public', table: 'users', sourceColumn: 'id' };
+    const nameSource = { name: 'name', tableOid: 100, schema: 'public', table: 'users', sourceColumn: 'name' };
+    return {
+        canEdit: true, canInsert: true, canDelete: true, canConstrain: true, canMap: true,
+        schema: 'public', table: 'users', identityStrategy: 'pk',
+        tables: [{
+            tableOid: 100, schema: 'public', table: 'users',
+            identityStrategy: 'pk', identityColumns: [idSource], columns: [idSource, nameSource]
+        }],
+        columnSources: { id: idSource, name: nameSource },
+        editableColumns: ['id', 'name'],
+        warning: null
+    };
+}
+
+test('emptyCapabilities describes a read-only result', () => {
+    const caps = emptyCapabilities();
+    assert.equal(caps.canEdit, false);
+    assert.equal(caps.canInsert, false);
+    assert.equal(caps.canDelete, false);
+    assert.equal(caps.canConstrain, false);
+    assert.equal(caps.canMap, false);
+    assert.equal(caps.identityStrategy, 'none');
+    assert.deepEqual(caps.tables, []);
+});
+
+test('normalizeCapabilities falls back to the read-only defaults', () => {
+    assert.deepEqual(normalizeCapabilities(undefined), emptyCapabilities());
+    assert.deepEqual(normalizeCapabilities(null), emptyCapabilities());
+    assert.deepEqual(normalizeCapabilities('nonsense'), emptyCapabilities());
+});
+
+test('normalizeCapabilities repairs a partial payload', () => {
+    const caps = normalizeCapabilities({ canEdit: 1, table: 'users', editableColumns: 'oops' });
+    assert.equal(caps.canEdit, true);
+    assert.equal(caps.canInsert, false);
+    assert.equal(caps.table, 'users');
+    assert.equal(caps.schema, null);
+    assert.deepEqual(caps.editableColumns, []);
+    assert.deepEqual(caps.tables, []);
+});
+
+test('buildCommitTargets identifies updated rows by the primary key', () => {
+    const rows = [{ id: 7, name: 'Alice' }];
+    const targets = buildCommitTargets(usersCaps(), rows, { updates: [[0, { name: 'Bob' }]] });
+
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0].schema, 'public');
+    assert.equal(targets[0].table, 'users');
+    assert.equal(targets[0].identityStrategy, 'pk');
+    assert.deepEqual(targets[0].changes.updates, [{ primaryKey: { id: 7 }, changes: { name: 'Bob' } }]);
+});
+
+test('buildCommitTargets translates aliases back to the real column names', () => {
+    const caps = usersCaps() as any;
+    const key = { name: 'key', tableOid: 100, schema: 'public', table: 'users', sourceColumn: 'id' };
+    caps.columnSources = {
+        key,
+        label: { name: 'label', tableOid: 100, schema: 'public', table: 'users', sourceColumn: 'name' }
+    };
+    caps.tables[0].identityColumns = [key];
+    const targets = buildCommitTargets(caps, [{ key: 7, label: 'Alice' }], { updates: [[0, { label: 'Bob' }]] });
+
+    assert.deepEqual(targets[0].changes.updates, [{ primaryKey: { id: 7 }, changes: { name: 'Bob' } }]);
+});
+
+test('buildCommitTargets splits a joined result into one target per table', () => {
+    const userId = { name: 'user_id', tableOid: 100, schema: 'public', table: 'users', sourceColumn: 'id' };
+    const userName = { name: 'user_name', tableOid: 100, schema: 'public', table: 'users', sourceColumn: 'name' };
+    const orderId = { name: 'order_id', tableOid: 200, schema: 'public', table: 'orders', sourceColumn: 'id' };
+    const orderQty = { name: 'qty', tableOid: 200, schema: 'public', table: 'orders', sourceColumn: 'qty' };
+    const caps = {
+        canEdit: true, canInsert: false, canDelete: false, canConstrain: false, canMap: false,
+        schema: null, table: null, identityStrategy: 'pk',
+        tables: [
+            { tableOid: 100, schema: 'public', table: 'users', identityStrategy: 'pk', identityColumns: [userId], columns: [userId, userName] },
+            { tableOid: 200, schema: 'public', table: 'orders', identityStrategy: 'pk', identityColumns: [orderId], columns: [orderId, orderQty] }
+        ],
+        columnSources: { user_id: userId, user_name: userName, order_id: orderId, qty: orderQty },
+        editableColumns: ['user_id', 'user_name', 'order_id', 'qty'],
+        warning: null
+    };
+    const rows = [{ user_id: 1, user_name: 'Alice', order_id: 9, qty: 2 }];
+
+    const targets = buildCommitTargets(caps, rows, { updates: [[0, { user_name: 'Bob', qty: 5 }]] });
+
+    assert.deepEqual(targets.map((t: any) => t.table), ['users', 'orders']);
+    assert.deepEqual(targets[0].changes.updates, [{ primaryKey: { id: 1 }, changes: { name: 'Bob' } }]);
+    assert.deepEqual(targets[1].changes.updates, [{ primaryKey: { id: 9 }, changes: { qty: 5 } }]);
+});
+
+test('buildCommitTargets skips columns without a source table', () => {
+    const caps = usersCaps();
+    const targets = buildCommitTargets(caps, [{ id: 7, name: 'Alice' }], { updates: [[0, { computed: 3 }]] });
+    assert.deepEqual(targets, []);
+});
+
+test('buildCommitTargets identifies rows by all displayed columns without a primary key', () => {
+    const ts = { name: 'ts', tableOid: 300, schema: 'app', table: 'log', sourceColumn: 'ts' };
+    const msg = { name: 'msg', tableOid: 300, schema: 'app', table: 'log', sourceColumn: 'msg' };
+    const caps = {
+        canEdit: true, canInsert: true, canDelete: true, canConstrain: true, canMap: true,
+        schema: 'app', table: 'log', identityStrategy: 'row',
+        tables: [{ tableOid: 300, schema: 'app', table: 'log', identityStrategy: 'row', identityColumns: [ts, msg], columns: [ts, msg] }],
+        columnSources: { ts, msg },
+        editableColumns: ['ts', 'msg'],
+        warning: 'no pk'
+    };
+
+    const targets = buildCommitTargets(caps, [{ ts: '2026-01-01', msg: 'hi' }], { updates: [[0, { msg: 'ho' }]] });
+
+    assert.equal(targets[0].identityStrategy, 'row');
+    assert.deepEqual(targets[0].changes.updates, [
+        { primaryKey: { ts: '2026-01-01', msg: 'hi' }, changes: { msg: 'ho' } }
+    ]);
+});
+
+test('buildCommitTargets collects deletes and inserts for a single source table', () => {
+    const rows = [{ id: 7, name: 'Alice' }, { id: 8, name: 'Bob' }];
+    const targets = buildCommitTargets(usersCaps(), rows, {
+        deletes: [1],
+        inserts: [{ id: 9, name: 'Carol' }]
+    });
+
+    assert.deepEqual(targets[0].changes.deletes, [{ id: 8 }]);
+    assert.deepEqual(targets[0].changes.inserts, [{ id: 9, name: 'Carol' }]);
+});
+
+test('buildCommitTargets drops empty insert fields and fully empty inserts', () => {
+    const targets = buildCommitTargets(usersCaps(), [], {
+        inserts: [{ id: 9, name: '' }, { id: '', name: null }]
+    });
+
+    assert.deepEqual(targets[0].changes.inserts, [{ id: 9 }]);
+});
+
+test('buildCommitTargets refuses inserts and deletes for a multi-table result', () => {
+    const userId = { name: 'user_id', tableOid: 100, schema: 'public', table: 'users', sourceColumn: 'id' };
+    const orderId = { name: 'order_id', tableOid: 200, schema: 'public', table: 'orders', sourceColumn: 'id' };
+    const caps = {
+        canEdit: true, canInsert: false, canDelete: false, canConstrain: false, canMap: false,
+        schema: null, table: null, identityStrategy: 'pk',
+        tables: [
+            { tableOid: 100, schema: 'public', table: 'users', identityStrategy: 'pk', identityColumns: [userId], columns: [userId] },
+            { tableOid: 200, schema: 'public', table: 'orders', identityStrategy: 'pk', identityColumns: [orderId], columns: [orderId] }
+        ],
+        columnSources: { user_id: userId, order_id: orderId },
+        editableColumns: ['user_id', 'order_id'],
+        warning: null
+    };
+
+    const targets = buildCommitTargets(caps, [{ user_id: 1, order_id: 9 }], {
+        deletes: [0],
+        inserts: [{ user_id: 2 }]
+    });
+
+    assert.deepEqual(targets, []);
+});
+
+test('buildCommitTargets ignores changes to a table that cannot identify its rows', () => {
+    const caps = usersCaps();
+    caps.tables[0].identityStrategy = 'none';
+    caps.tables[0].identityColumns = [];
+
+    assert.deepEqual(buildCommitTargets(caps, [{ id: 7 }], { updates: [[0, { name: 'Bob' }]] }), []);
+});
+
+test('buildCommitTargets returns nothing when there is no pending edit', () => {
+    assert.deepEqual(buildCommitTargets(usersCaps(), [{ id: 1 }], {}), []);
+});
+
+// ===== 2.2.2: row-count indicator =====
+
+test('describeRowCount shows the exact total once it is known', () => {
+    assert.equal(describeRowCount(50, 200, true), 'Showing 50 of 200 rows');
+    assert.equal(describeRowCount(0, 0, false), 'Showing 0 of 0 rows');
+});
+
+test('describeRowCount reports the loaded rows while the total is unknown', () => {
+    assert.equal(describeRowCount(50, null, false), '50 rows loaded');
+    assert.equal(describeRowCount(50, null, true), '50 rows loaded (more available)');
+    assert.equal(describeRowCount(50, undefined, false), '50 rows loaded');
 });
 

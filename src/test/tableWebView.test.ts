@@ -152,22 +152,22 @@ function createManager() {
     return { manager, globalStateStore };
 }
 
-/** Open a custom-query panel and return it together with its message callback. */
-function openCustomQueryPanel() {
+/** Open a query panel and return it together with its message callback. */
+async function openCustomQueryPanel() {
     const { manager, globalStateStore } = createManager();
     const panel = createFakePanel();
     const originalCreate = vscodeStub.window.createWebviewPanel;
     vscodeStub.window.createWebviewPanel = () => panel;
     try {
-        manager.openCustomQueryView('SELECT 1 AS n', 'Custom');
+        await manager.openQueryView('SELECT 1 AS n', 'Custom');
     } finally {
         vscodeStub.window.createWebviewPanel = originalCreate;
     }
     return { panel, send: (m: any) => panel.state.onMessage(m), globalStateStore };
 }
 
-test('custom-query panel: Browse opens the folder dialog and reports the choice', async () => {
-    const { panel, send } = openCustomQueryPanel();
+test('query panel: Browse opens the folder dialog and reports the choice', async () => {
+    const { panel, send } = await openCustomQueryPanel();
     const originalOpen = vscodeStub.window.showOpenDialog;
     let dialogOptions: any;
     vscodeStub.window.showOpenDialog = (options?: any) => {
@@ -187,8 +187,8 @@ test('custom-query panel: Browse opens the folder dialog and reports the choice'
     assert.equal(msg.path, 'C:\\exports');
 });
 
-test('custom-query panel: cancelling the folder dialog posts nothing', async () => {
-    const { panel, send } = openCustomQueryPanel();
+test('query panel: cancelling the folder dialog posts nothing', async () => {
+    const { panel, send } = await openCustomQueryPanel();
     const originalOpen = vscodeStub.window.showOpenDialog;
     vscodeStub.window.showOpenDialog = () => Promise.resolve(undefined);
     try {
@@ -199,8 +199,8 @@ test('custom-query panel: cancelling the folder dialog posts nothing', async () 
     assert.equal(panel.posted.some(m => m.command === 'exportLocationSelected'), false);
 });
 
-test('custom-query panel: export defaults can be loaded and saved', async () => {
-    const { panel, send, globalStateStore } = openCustomQueryPanel();
+test('query panel: export defaults can be loaded and saved', async () => {
+    const { panel, send, globalStateStore } = await openCustomQueryPanel();
 
     await send({ command: 'saveExportDefaults', format: 'csv', options: { csvSeparator: ';' }, saveLocation: 'C:\\exports' });
     assert.deepEqual(globalStateStore['exportDefaults'], { csv: { csvSeparator: ';' } });
@@ -213,8 +213,8 @@ test('custom-query panel: export defaults can be loaded and saved', async () => 
     assert.equal(msg.defaults._saveLocation, 'C:\\exports');
 });
 
-test('custom-query panel: exporting opens the save dialog in the saved location', async () => {
-    const { send } = openCustomQueryPanel();
+test('query panel: exporting opens the save dialog in the saved location', async () => {
+    const { send } = await openCustomQueryPanel();
     const originalSave = vscodeStub.window.showSaveDialog;
     let saveOptions: any;
     vscodeStub.window.showSaveDialog = (options?: any) => {
@@ -237,13 +237,14 @@ test('custom-query panel: exporting opens the save dialog in the saved location'
     assert.deepEqual(saveOptions.filters, { 'CSV Files': ['csv'] });
 });
 
-test('custom-query panel: commands it does not share stay unhandled', async () => {
-    const { panel, send } = openCustomQueryPanel();
-    await send({ command: 'commitChanges', changes: [] });
+test('query panel: committing without targets reports an error instead of succeeding', async () => {
+    const { panel, send } = await openCustomQueryPanel();
+    await send({ command: 'commitChanges', targets: [] });
     assert.equal(panel.posted.some(m => m.command === 'commitSuccess'), false);
+    assert.ok(panel.posted.some(m => m.command === 'error'), 'expected an error to be reported');
 });
 
-test('custom-query panel: init carries the alwaysQuote setting', () => {
+test('query panel: init carries the alwaysQuote setting and the query', async () => {
     const originalGetConfig = vscodeStub.workspace.getConfiguration;
     vscodeStub.workspace.getConfiguration = (_section?: string) => ({
         get<T>(key: string, defaultValue?: T): T {
@@ -252,7 +253,7 @@ test('custom-query panel: init carries the alwaysQuote setting', () => {
     });
     let panel;
     try {
-        ({ panel } = openCustomQueryPanel());
+        ({ panel } = await openCustomQueryPanel());
     } finally {
         vscodeStub.workspace.getConfiguration = originalGetConfig;
     }
@@ -260,5 +261,6 @@ test('custom-query panel: init carries the alwaysQuote setting', () => {
     const init = panel.posted.find(m => m.command === 'init');
     assert.ok(init, 'expected an init message');
     assert.equal(init.alwaysQuote, true);
-    assert.equal(init.customQuery, 'SELECT 1 AS n');
+    assert.equal(init.sql, 'SELECT 1 AS n');
+    assert.equal(init.origin, 'query');
 });

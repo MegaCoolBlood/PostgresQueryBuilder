@@ -16,7 +16,6 @@ const {
     formatConstraintOperand,
     formatConstraintCondition,
     buildConstraintWhere,
-    shouldRenderEarlyColumns,
     isFreshRowLoad,
     recordFieldReadonlyAttr,
     buildConnectionBadge,
@@ -366,22 +365,6 @@ test('buildConstraintWhere returns empty string for no conditions', () => {
     assert.equal(buildConstraintWhere(undefined, fmtCol), '');
 });
 
-// ===== 1.3.0: early column rendering while data is still loading =====
-
-test('shouldRenderEarlyColumns is true for the initial page of a table view', () => {
-    assert.equal(shouldRenderEarlyColumns(0, false), true);
-    assert.equal(shouldRenderEarlyColumns(undefined, false), true);
-});
-
-test('shouldRenderEarlyColumns is false for paged "Load More" requests', () => {
-    assert.equal(shouldRenderEarlyColumns(50, false), false);
-    assert.equal(shouldRenderEarlyColumns(100, false), false);
-});
-
-test('shouldRenderEarlyColumns is false while a custom query is active', () => {
-    assert.equal(shouldRenderEarlyColumns(0, true), false);
-});
-
 // ===== 2.1.5: pending edits are discarded when rows are reloaded =====
 
 test('isFreshRowLoad is true for the initial page (offset 0)', () => {
@@ -451,18 +434,15 @@ test('buildConnectionBadge falls back to the current connection when no load is 
 
 // ===== 2.1.5: filters can refine a custom query =====
 
-test('canApplyQueryFilters is true for a standard table view', () => {
-    assert.equal(canApplyQueryFilters('public', 'users', false), true);
+test('canApplyQueryFilters is true whenever a query is shown in the query bar', () => {
+    assert.equal(canApplyQueryFilters('SELECT * FROM public.users'), true);
+    assert.equal(canApplyQueryFilters('SELECT 1'), true);
 });
 
-test('canApplyQueryFilters is true for an active custom query without schema/table', () => {
-    assert.equal(canApplyQueryFilters('', '', true), true);
-});
-
-test('canApplyQueryFilters is false when neither a table nor a custom query is present', () => {
-    assert.equal(canApplyQueryFilters('', '', false), false);
-    assert.equal(canApplyQueryFilters('public', '', false), false);
-    assert.equal(canApplyQueryFilters('', 'users', false), false);
+test('canApplyQueryFilters is false without a query', () => {
+    assert.equal(canApplyQueryFilters(''), false);
+    assert.equal(canApplyQueryFilters('   '), false);
+    assert.equal(canApplyQueryFilters(undefined), false);
 });
 
 // ===== 2.2.2: table-bound actions are hidden in the custom-query view =====

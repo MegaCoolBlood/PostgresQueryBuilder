@@ -2,6 +2,16 @@ import { ConnectionManager } from './connectionManager';
 import { Logger } from './logger';
 import { escapeSqlLiteral } from './sqlUtils';
 import { POSTGRES_RESERVED_KEYWORDS } from './reservedKeywords';
+import {
+    attributeKey,
+    buildEditPlan,
+    isWritableRelkind,
+    resolveFieldSources,
+    type IdentityStrategy,
+    type RelationInfo,
+    type ResultFieldInfo,
+    type ViewCapabilities
+} from './resultSource';
 import type { QueryResultRow, FieldDef } from 'pg';
 
 /**
@@ -89,6 +99,23 @@ export interface ChangeSet {
     updates: Array<{ primaryKey: Record<string, any>; changes: Record<string, any> }>;
     inserts: Array<Record<string, any>>;
     deletes: Array<Record<string, any>>;
+}
+
+/**
+ * One source table a set of pending edits is written to. A single result can
+ * span several tables (a join), so a commit applies a list of targets inside
+ * one transaction.
+ */
+export interface CommitTarget {
+    schema: string;
+    table: string;
+    /**
+     * How the rows of this target are identified. `'row'` means the identity is
+     * built from all displayed values and may be ambiguous, so every UPDATE and
+     * DELETE must be proven to affect exactly one row.
+     */
+    identityStrategy?: IdentityStrategy;
+    changes: ChangeSet;
 }
 
 export interface ForeignKeyInfo {
@@ -270,6 +297,81 @@ export class QueryRunner {
         return rows.map((row) => row.attname);
     }
 
+    /**
+     * Resolve which table column each field of a query result came from and
+     * derive what the Data Viewer may offer for it (editing, inserting, ...).
+     *
+     * PostgreSQL reports the source relation and column for every field that
+     * maps 1:1 onto a table column, so this works for arbitrary SELECTs — only
+     * computed columns, aggregates and literals stay unresolved.
+     */
+    async resolveEditPlan(fields: ReadonlyArray<ResultFieldInfo>): Promise<ViewCapabilities> {
+        const oids = [...new Set(fields.map(f => f.tableID).filter((id): id is number => !!id))];
+        if (oids.length === 0) {
+            return buildEditPlan([], {});
+        }
+
+        const relationRows = await this.connectionManager.queryMetadata(
+            `SELECT c.oid, n.nspname, c.relname, c.relkind
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.oid = ANY($1)`,
+            [oids]
+        );
+        const relations: Record<number, RelationInfo> = {};
+        const readOnlyTables = new Set<number>();
+        for (const row of relationRows) {
+            const oid = Number(row.oid);
+            relations[oid] = { schema: row.nspname, table: row.relname, relkind: row.relkind };
+            if (!isWritableRelkind(row.relkind)) {
+                readOnlyTables.add(oid);
+            }
+        }
+
+        const attnums = [...new Set(fields.map(f => f.columnID).filter((n): n is number => !!n && n > 0))];
+        const attributes: Record<string, string> = {};
+        if (attnums.length > 0) {
+            const attributeRows = await this.connectionManager.queryMetadata(
+                `SELECT attrelid, attnum, attname
+                 FROM pg_attribute
+                 WHERE attrelid = ANY($1) AND attnum = ANY($2)`,
+                [oids, attnums]
+            );
+            for (const row of attributeRows) {
+                attributes[attributeKey(Number(row.attrelid), Number(row.attnum))] = row.attname;
+            }
+        }
+
+        const sources = resolveFieldSources(fields, relations, attributes);
+        const primaryKeys: Record<number, string[]> = {};
+        for (const oid of oids) {
+            if (!relations[oid] || readOnlyTables.has(oid)) { continue; }
+            const pkRows = await this.connectionManager.queryMetadata(
+                `SELECT a.attname
+                 FROM pg_index i
+                 JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                 WHERE i.indrelid = $1 AND i.indisprimary`,
+                [oid]
+            );
+            primaryKeys[oid] = pkRows.map((row) => row.attname);
+        }
+
+        return buildEditPlan(sources, primaryKeys, readOnlyTables);
+    }
+
+    /**
+     * Count all rows an arbitrary SELECT would return, without fetching them.
+     * Used for the exact total of an ad-hoc query, which is only determined on
+     * demand because it can be expensive.
+     */
+    async getQueryRowCount(sql: string): Promise<number> {
+        const trimmed = sql.trim().replace(/;\s*$/, '');
+        const result = await this.connectionManager.query(
+            `SELECT COUNT(*) AS count FROM (${trimmed}) AS _pqb_count`
+        );
+        return parseInt(result.rows[0].count, 10);
+    }
+
     async getForeignKeys(schema: string, table: string): Promise<ForeignKeyInfo[]> {
         const rows = await this.connectionManager.queryMetadata(
             `SELECT
@@ -324,7 +426,7 @@ export class QueryRunner {
         }));
     }
 
-    async commitChanges(schema: string, table: string, changes: ChangeSet): Promise<void> {
+    async commitChanges(targets: ReadonlyArray<CommitTarget>): Promise<void> {
         const pool = this.connectionManager.getPool();
         if (!pool) {
             throw new Error('Not connected to database');
@@ -335,80 +437,88 @@ export class QueryRunner {
         try {
             await client.query('BEGIN');
 
-            const tableRef = `${this.formatIdentifier(schema, alwaysQuote)}.${this.formatIdentifier(table, alwaysQuote)}`;
+            for (const target of targets) {
+                const { schema, table, changes } = target;
+                // A row identified by all of its values may match several rows,
+                // so such a statement must be proven to hit exactly one.
+                const verifyRowCount = target.identityStrategy === 'row';
+                const tableRef = `${this.formatIdentifier(schema, alwaysQuote)}.${this.formatIdentifier(table, alwaysQuote)}`;
 
-            for (const update of changes.updates) {
-                const setClauses: string[] = [];
-                const values: unknown[] = [];
-                let paramIndex = 1;
+                for (const update of changes.updates) {
+                    const setClauses: string[] = [];
+                    const values: unknown[] = [];
+                    let paramIndex = 1;
 
-                for (const [col, val] of Object.entries(update.changes)) {
-                    setClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
-                    values.push(val);
-                    paramIndex++;
-                }
-
-                const whereClauses: string[] = [];
-                for (const [col, val] of Object.entries(update.primaryKey)) {
-                    if (val === null || val === undefined) {
-                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
-                    } else {
-                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
+                    for (const [col, val] of Object.entries(update.changes)) {
+                        setClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
                         values.push(val);
                         paramIndex++;
                     }
-                }
 
-                if (whereClauses.length === 0) {
-                    throw new Error(
-                        `Cannot UPDATE rows in ${schema}.${table}: no columns available to identify the row.`
-                    );
-                }
-
-                await client.query(
-                    `UPDATE ${tableRef} SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')}`,
-                    values
-                );
-            }
-
-            for (const insert of changes.inserts) {
-                const columns = Object.keys(insert).filter(k => insert[k] !== null && insert[k] !== '');
-                if (columns.length === 0) { continue; }
-
-                const values = columns.map(c => insert[c]);
-                const placeholders = columns.map((_, i) => `$${i + 1}`);
-
-                await client.query(
-                    `INSERT INTO ${tableRef} (${columns.map(c => this.formatIdentifier(c, alwaysQuote)).join(', ')}) VALUES (${placeholders.join(', ')})`,
-                    values
-                );
-            }
-
-            for (const del of changes.deletes) {
-                const whereClauses: string[] = [];
-                const values: unknown[] = [];
-                let paramIndex = 1;
-
-                for (const [col, val] of Object.entries(del)) {
-                    if (val === null || val === undefined) {
-                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
-                    } else {
-                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
-                        values.push(val);
-                        paramIndex++;
+                    const whereClauses: string[] = [];
+                    for (const [col, val] of Object.entries(update.primaryKey)) {
+                        if (val === null || val === undefined) {
+                            whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
+                        } else {
+                            whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
+                            values.push(val);
+                            paramIndex++;
+                        }
                     }
+
+                    if (whereClauses.length === 0) {
+                        throw new Error(
+                            `Cannot UPDATE rows in ${schema}.${table}: no columns available to identify the row.`
+                        );
+                    }
+
+                    const result = await client.query(
+                        `UPDATE ${tableRef} SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')}`,
+                        values
+                    );
+                    this.assertSingleRow(verifyRowCount, result, 'UPDATE', schema, table);
                 }
 
-                if (whereClauses.length === 0) {
-                    throw new Error(
-                        `Cannot DELETE rows from ${schema}.${table}: no columns available to identify the row.`
+                for (const insert of changes.inserts) {
+                    const columns = Object.keys(insert).filter(k => insert[k] !== null && insert[k] !== '');
+                    if (columns.length === 0) { continue; }
+
+                    const values = columns.map(c => insert[c]);
+                    const placeholders = columns.map((_, i) => `$${i + 1}`);
+
+                    await client.query(
+                        `INSERT INTO ${tableRef} (${columns.map(c => this.formatIdentifier(c, alwaysQuote)).join(', ')}) VALUES (${placeholders.join(', ')})`,
+                        values
                     );
                 }
 
-                await client.query(
-                    `DELETE FROM ${tableRef} WHERE ${whereClauses.join(' AND ')}`,
-                    values
-                );
+                for (const del of changes.deletes) {
+                    const whereClauses: string[] = [];
+                    const values: unknown[] = [];
+                    let paramIndex = 1;
+
+                    for (const [col, val] of Object.entries(del)) {
+                        if (val === null || val === undefined) {
+                            whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
+                        } else {
+                            whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
+                            values.push(val);
+                            paramIndex++;
+                        }
+                    }
+
+                    if (whereClauses.length === 0) {
+                        throw new Error(
+                            `Cannot DELETE rows from ${schema}.${table}: no columns available to identify the row.`
+                        );
+                    }
+
+                    const result = await client.query(
+                        `DELETE FROM ${tableRef} WHERE ${whereClauses.join(' AND ')}`,
+                        values
+                    );
+                    this.assertSingleRow(verifyRowCount, result, 'DELETE', schema, table);
+                }
             }
 
             await client.query('COMMIT');
@@ -417,6 +527,26 @@ export class QueryRunner {
             throw err;
         } finally {
             client.release();
+        }
+    }
+
+    /** Guard for rows that are only identified by their displayed values. */
+    private assertSingleRow(
+        verify: boolean,
+        result: { rowCount?: number | null } | undefined,
+        verb: string,
+        schema: string,
+        table: string
+    ): void {
+        if (!verify || !result || typeof result.rowCount !== 'number') {
+            return;
+        }
+        if (result.rowCount !== 1) {
+            throw new Error(
+                `${verb} on ${schema}.${table} would have affected ${result.rowCount} rows instead of exactly one. `
+                + 'The rows of this result have no primary key, so they are identified by all of their displayed '
+                + 'values. Nothing was changed.'
+            );
         }
     }
 
@@ -429,53 +559,56 @@ export class QueryRunner {
         };
     }
 
-    generateSQL(schema: string, table: string, changes: ChangeSet): string {
+    generateSQL(targets: ReadonlyArray<CommitTarget>): string {
         const { alwaysQuote } = this.getSelectOptions();
-        const tableRef = `${this.formatIdentifier(schema, alwaysQuote)}.${this.formatIdentifier(table, alwaysQuote)}`;
         const statements: string[] = [];
 
-        for (const update of changes.updates) {
-            const setClauses: string[] = [];
-            for (const [col, val] of Object.entries(update.changes)) {
-                setClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
-            }
+        for (const { schema, table, changes } of targets) {
+            const tableRef = `${this.formatIdentifier(schema, alwaysQuote)}.${this.formatIdentifier(table, alwaysQuote)}`;
 
-            const whereClauses: string[] = [];
-            for (const [col, val] of Object.entries(update.primaryKey)) {
-                if (val === null || val === undefined) {
-                    whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
-                } else {
-                    whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
+            for (const update of changes.updates) {
+                const setClauses: string[] = [];
+                for (const [col, val] of Object.entries(update.changes)) {
+                    setClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
                 }
-            }
 
-            statements.push(
-                `UPDATE ${tableRef} SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')};`
-            );
-        }
-
-        for (const insert of changes.inserts) {
-            const columns = Object.keys(insert).filter(k => insert[k] !== null && insert[k] !== '');
-            if (columns.length === 0) { continue; }
-
-            const values = columns.map(c => this.formatValue(insert[c]));
-            statements.push(
-                `INSERT INTO ${tableRef} (${columns.map(c => this.formatIdentifier(c, alwaysQuote)).join(', ')}) VALUES (${values.join(', ')});`
-            );
-        }
-
-        for (const del of changes.deletes) {
-            const whereClauses: string[] = [];
-            for (const [col, val] of Object.entries(del)) {
-                if (val === null || val === undefined) {
-                    whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
-                } else {
-                    whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
+                const whereClauses: string[] = [];
+                for (const [col, val] of Object.entries(update.primaryKey)) {
+                    if (val === null || val === undefined) {
+                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
+                    } else {
+                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
+                    }
                 }
+
+                statements.push(
+                    `UPDATE ${tableRef} SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')};`
+                );
             }
-            statements.push(
-                `DELETE FROM ${tableRef} WHERE ${whereClauses.join(' AND ')};`
-            );
+
+            for (const insert of changes.inserts) {
+                const columns = Object.keys(insert).filter(k => insert[k] !== null && insert[k] !== '');
+                if (columns.length === 0) { continue; }
+
+                const values = columns.map(c => this.formatValue(insert[c]));
+                statements.push(
+                    `INSERT INTO ${tableRef} (${columns.map(c => this.formatIdentifier(c, alwaysQuote)).join(', ')}) VALUES (${values.join(', ')});`
+                );
+            }
+
+            for (const del of changes.deletes) {
+                const whereClauses: string[] = [];
+                for (const [col, val] of Object.entries(del)) {
+                    if (val === null || val === undefined) {
+                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
+                    } else {
+                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
+                    }
+                }
+                statements.push(
+                    `DELETE FROM ${tableRef} WHERE ${whereClauses.join(' AND ')};`
+                );
+            }
         }
 
         return statements.join('\n\n');

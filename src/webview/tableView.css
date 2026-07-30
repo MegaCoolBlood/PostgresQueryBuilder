@@ -229,6 +229,25 @@ body {
     font-size: 12px;
 }
 
+/* The row count becomes actionable when the exact total is not known yet. */
+.row-count.clickable {
+    cursor: pointer;
+    text-decoration: underline dotted;
+}
+
+/* Explains why editing is limited for the current result (e.g. no primary key). */
+.capability-warning {
+    padding: 4px 10px;
+    font-size: 12px;
+    color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+    background: var(--vscode-inputValidation-warningBackground);
+    border-bottom: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-panel-border));
+}
+
+.capability-warning.hidden {
+    display: none;
+}
+
 .connection-info {
     color: var(--vscode-descriptionForeground);
     font-size: 12px;

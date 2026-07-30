@@ -48,7 +48,7 @@ export class ViewDataFromSelect {
         const variables = await this.filterKnownColumns(extraction.sql, extraction.variables);
 
         if (variables.length === 0) {
-            this.tableWebViewManager.openCustomQueryView(extraction.sql, this.makeTitle(extraction.sql));
+            await this.tableWebViewManager.openQueryView(extraction.sql, this.makeTitle(extraction.sql));
             return;
         }
 
@@ -69,7 +69,7 @@ export class ViewDataFromSelect {
         await this.context.globalState.update(VARIABLE_CACHE_KEY, newCache);
 
         const finalSql = substituteVariables(extraction.sql, values);
-        this.tableWebViewManager.openCustomQueryView(finalSql, this.makeTitle(finalSql));
+        await this.tableWebViewManager.openQueryView(finalSql, this.makeTitle(finalSql));
     }
 
     /**

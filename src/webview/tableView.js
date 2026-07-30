@@ -724,17 +724,6 @@ function reorderSelectColumns(sql, fromIndex, toIndex) {
     return clauses.map(c => (c.content ? `${c.kw} ${c.content}` : c.kw)).join(' ').trim();
 }
 
-// Decide whether an early `columnsLoaded` message should render the header.
-// Only the initial page (offset 0) of a standard table view qualifies: paged
-// "Load More" requests already have columns, and custom-query results must keep
-// their own column list.
-function shouldRenderEarlyColumns(offset, customQueryActive) {
-    if (customQueryActive) {
-        return false;
-    }
-    return !offset || offset <= 0;
-}
-
 // Decide whether a data-load message replaces the current rows wholesale (a
 // fresh first page or a re-run query) rather than appending a "Load More" page.
 // Fresh loads must discard pending edits, since those edits are keyed by a
@@ -754,16 +743,15 @@ function recordFieldReadonlyAttr(isDeleted, readOnly) {
 }
 
 // True when WHERE clauses can be merged into the current view's query and the
-// query re-run: either a standard table view (schema + table are known) or an
-// active custom query (whose SQL lives in the query bar). Lets the column
-// filter row and the cell context-menu refine a custom SELECT as well.
-function canApplyQueryFilters(schema, table, customQueryActive) {
-    return (!!schema && !!table) || !!customQueryActive;
+// query re-run. The query bar always holds the SQL that produced the current
+// result, so this only requires a non-empty query.
+function canApplyQueryFilters(sql) {
+    return !!(sql && String(sql).trim());
 }
 
 // True when actions bound to a concrete table (permanent constraints, custom
-// column mappings) are available. A read-only ad-hoc query result has no table
-// to attach them to, so those affordances are hidden there.
+// column mappings) are available. A result that cannot be traced back to a
+// single table has nothing to attach them to, so those affordances are hidden.
 function canManageTableMetadata(schema, table, readOnly) {
     return !readOnly && !!schema && !!table;
 }
@@ -889,6 +877,137 @@ function buildRowIdentity(primaryKeys, columnNames, row) {
     return id;
 }
 
+// Capabilities of a result that could not be traced back to any table: the
+// grid is shown read-only until the extension reports something better.
+function emptyCapabilities() {
+    return {
+        canEdit: false,
+        canInsert: false,
+        canDelete: false,
+        canConstrain: false,
+        canMap: false,
+        schema: null,
+        table: null,
+        identityStrategy: 'none',
+        tables: [],
+        columnSources: {},
+        editableColumns: [],
+        warning: null
+    };
+}
+
+// Merge the capabilities reported by the extension with the defaults so a
+// partial or missing payload cannot leave the view in an inconsistent state.
+function normalizeCapabilities(raw) {
+    const base = emptyCapabilities();
+    if (!raw || typeof raw !== 'object') {
+        return base;
+    }
+    return {
+        canEdit: !!raw.canEdit,
+        canInsert: !!raw.canInsert,
+        canDelete: !!raw.canDelete,
+        canConstrain: !!raw.canConstrain,
+        canMap: !!raw.canMap,
+        schema: raw.schema || null,
+        table: raw.table || null,
+        identityStrategy: raw.identityStrategy || 'none',
+        tables: Array.isArray(raw.tables) ? raw.tables : [],
+        columnSources: raw.columnSources || {},
+        editableColumns: Array.isArray(raw.editableColumns) ? raw.editableColumns : [],
+        warning: raw.warning || null
+    };
+}
+
+// Group the pending edits of the grid by the table each edited column really
+// belongs to, so a result joined from several tables writes every change back
+// to its own table within one transaction.
+//
+// `edits.updates` is a list of `[rowIndex, { resultColumn: newValue }]` pairs,
+// `edits.deletes` a list of row indices and `edits.inserts` a list of new row
+// objects keyed by result column name. Rows are identified through the identity
+// columns of the respective table (its primary key when available).
+function buildCommitTargets(caps, rows, edits) {
+    const capabilities = normalizeCapabilities(caps);
+    const sources = capabilities.columnSources;
+    const tables = capabilities.tables;
+    const planFor = (tableOid) => tables.find(t => t.tableOid === tableOid) || null;
+    const targets = new Map();
+
+    function targetFor(plan) {
+        if (!targets.has(plan.tableOid)) {
+            targets.set(plan.tableOid, {
+                tableOid: plan.tableOid,
+                schema: plan.schema,
+                table: plan.table,
+                identityStrategy: plan.identityStrategy,
+                changes: { updates: [], inserts: [], deletes: [] }
+            });
+        }
+        return targets.get(plan.tableOid);
+    }
+
+    function identityFor(plan, row) {
+        const id = {};
+        (plan.identityColumns || []).forEach(col => {
+            id[col.sourceColumn] = row ? row[col.name] : undefined;
+        });
+        return id;
+    }
+
+    (edits.updates || []).forEach(([rowIdx, changed]) => {
+        const row = (rows || [])[rowIdx];
+        const perTable = new Map();
+        Object.keys(changed || {}).forEach(colName => {
+            const source = sources[colName];
+            if (!source) { return; }
+            if (!perTable.has(source.tableOid)) { perTable.set(source.tableOid, {}); }
+            perTable.get(source.tableOid)[source.sourceColumn] = changed[colName];
+        });
+        perTable.forEach((changes, tableOid) => {
+            const plan = planFor(tableOid);
+            if (!plan || plan.identityStrategy === 'none') { return; }
+            targetFor(plan).changes.updates.push({ primaryKey: identityFor(plan, row), changes });
+        });
+    });
+
+    // Inserting or deleting a row is only meaningful when the whole result
+    // comes from exactly one table.
+    const single = tables.length === 1 ? tables[0] : null;
+    if (single && single.identityStrategy !== 'none') {
+        (edits.deletes || []).forEach(rowIdx => {
+            targetFor(single).changes.deletes.push(identityFor(single, (rows || [])[rowIdx]));
+        });
+        (edits.inserts || []).forEach(row => {
+            const clean = {};
+            Object.keys(row || {}).forEach(colName => {
+                const source = sources[colName];
+                const value = row[colName];
+                if (!source || source.tableOid !== single.tableOid) { return; }
+                if (value === '' || value === null || value === undefined) { return; }
+                clean[source.sourceColumn] = value;
+            });
+            if (Object.keys(clean).length > 0) {
+                targetFor(single).changes.inserts.push(clean);
+            }
+        });
+    }
+
+    return Array.from(targets.values()).filter(t =>
+        t.changes.updates.length > 0 || t.changes.inserts.length > 0 || t.changes.deletes.length > 0
+    );
+}
+
+// Text for the row-count indicator. An exact total is only known when it was
+// counted (always for the default table view, on demand for other queries);
+// until then the loaded row count is shown instead.
+function describeRowCount(showing, totalCount, moreAvailable) {
+    if (typeof totalCount === 'number') {
+        return `Showing ${showing} of ${totalCount} rows`;
+    }
+    return `${showing} rows loaded` + (moreAvailable ? ' (more available)' : '');
+}
+
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 (function() {
     const vscode = acquireVsCodeApi();
@@ -905,30 +1024,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let tableReference = '';
     let alwaysQuote = false;
     let thousandSeparator = ' ';
-    let totalCount = 0;
+    // Exact number of rows the current query returns, or null while unknown
+    // (counting an arbitrary query is only done on request).
+    let totalCount = null;
     let currentOffset = 0;
     // Permanent per-table WHERE constraints (array of ConstraintCondition).
     // Applied to the default table view's query every time it loads.
     let permanentConstraints = [];
     let lastUsedConnection = '';
     let currentConnection = '';
-    // Read-only mode: set when the view is opened for an ad-hoc SELECT (e.g.
-    // "View Data" from a procedure). Editing/commit/insert is disabled and the
-    // grid only displays query results.
-    let readOnly = false;
-    // Custom-query pagination state. When the user runs a custom SQL via the
-    // query bar (or via FK/PK/filter helpers that send runCustomQuery), we keep
-    // the base SQL (with any trailing LIMIT/OFFSET stripped) so Load More can
-    // page through the same query.
-    let customQueryActive = false;
-    let customQueryBase = '';      // SQL without trailing LIMIT/OFFSET clause
-    let customQueryUserPaged = false; // true when the user wrote an explicit LIMIT/OFFSET
-    let customQueryOffset = 0;
-    let customQueryAppendPending = false;
-    // Set when the user pressed "Load All" for a custom query: the next result
-    // has fetched every remaining row, so pagination buttons stay disabled even
-    // though the heuristic (a full last batch) cannot tell there is no more.
-    let customQueryAllLoaded = false;
+    // What the current result allows. Derived by the extension from the source
+    // tables of the displayed columns, so an ad-hoc SELECT gets the same
+    // features as a table opened from the tree whenever that is possible.
+    let caps = emptyCapabilities();
+    // Pagination state of the query currently displayed. `currentSql` is the
+    // query without a trailing LIMIT/OFFSET so Load More can page through it.
+    let currentSql = '';           // SQL without trailing LIMIT/OFFSET clause
+    let userPaged = false;         // true when the user wrote an explicit LIMIT/OFFSET
+    let appendPending = false;
+    let moreAvailable = false;
+    // Set when the user pressed "Load All": the next result has fetched every
+    // remaining row, so pagination buttons stay disabled even though the
+    // heuristic (a full last batch) cannot tell there is no more.
+    let allLoaded = false;
     // Execution time (ms) of the most recent data/custom query, shown next to
     // the row-count indicator. null when not yet known.
     let lastQueryDurationMs = null;
@@ -1022,6 +1140,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const tableBody = document.getElementById('tableBody');
     const tableName = document.getElementById('tableName');
     const rowCount = document.getElementById('rowCount');
+    const capabilityWarning = document.getElementById('capabilityWarning');
     const commitBtn = document.getElementById('commitBtn');
     const discardBtn = document.getElementById('discardBtn');
     const insertRowBtn = document.getElementById('insertRowBtn');
@@ -1077,6 +1196,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     insertRowBtn.addEventListener('click', insertRow);
     loadMoreBtn.addEventListener('click', loadMore);
     loadAllBtn.addEventListener('click', loadAll);
+    // Counting all rows of an arbitrary query can be expensive, so it only runs
+    // when the user asks for it by clicking the row-count indicator.
+    if (rowCount) {
+        rowCount.addEventListener('click', () => {
+            if (typeof totalCount === 'number' || !currentSql) return;
+            rowCount.textContent = 'Counting rows…';
+            vscode.postMessage({ command: 'getTotalCount', sql: currentSql });
+        });
+    }
     // Clicking the connection badge lets the user switch to another saved
     // connection (handled by the extension host).
     if (connectionInfo) {
@@ -1089,7 +1217,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     sqlDialogCancel.addEventListener('click', closeSqlDialog);
     sqlDialogClose.addEventListener('click', closeSqlDialog);
     sqlDialogExecute.addEventListener('click', executePendingChanges);
-    queryRunBtn.addEventListener('click', runCustomQuery);
+    queryRunBtn.addEventListener('click', runQuery);
     if (queryFormatBtn) {
         queryFormatBtn.addEventListener('click', () => {
             setQueryText(queryInput.value);
@@ -1101,7 +1229,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // line, Ctrl/Cmd+Enter runs the query.
         if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
             e.preventDefault();
-            runCustomQuery();
+            runQuery();
         }
     });
     queryInput.addEventListener('input', autoSizeQueryInput);
@@ -1379,11 +1507,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'init':
                 handleInit(msg);
                 break;
-            case 'dataLoaded':
-                handleDataLoaded(msg);
+            case 'rowsLoaded':
+                handleRowsLoaded(msg);
                 break;
             case 'columnsLoaded':
                 handleColumnsLoaded(msg);
+                break;
+            case 'totalCountLoaded':
+                totalCount = msg.totalCount;
+                updateRowCount();
+                break;
+            case 'loadingFinished':
+                dataLoading.classList.add('hidden');
                 break;
             case 'primaryKeysLoaded':
                 handlePrimaryKeysLoaded(msg);
@@ -1404,12 +1539,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 handleColumnsForTypeahead(msg);
                 break;
 
-            case 'queryResult':
-                handleQueryResult(msg);
-                break;
-            case 'queryColumns':
-                handleQueryColumns(msg);
-                break;
             case 'queryHistoryUpdated':
                 updateQueryHistoryDropdown(msg.history);
                 break;
@@ -1445,8 +1574,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     });
 
     function handleInit(msg) {
-        schema = msg.schema;
-        table = msg.table;
+        schema = msg.schema || '';
+        table = msg.table || '';
         tableReference = msg.tableReference || '';
         alwaysQuote = Boolean(msg.alwaysQuote);
         permanentConstraints = Array.isArray(msg.permanentConstraints) ? msg.permanentConstraints : [];
@@ -1456,86 +1585,106 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             updateConnectionDisplay();
         }
 
-        if (msg.customQuery) {
-            // Read-only ad-hoc query view (e.g. "View Data" from a procedure).
-            readOnly = true;
-            applyReadOnlyMode();
-            tableName.textContent = msg.viewTitle || 'Query result';
-            setQueryText(msg.customQuery);
-            metaLoading.classList.add('hidden');
-            runCustomQuery();
-            return;
-        }
-
-        tableName.textContent = `${schema}.${table}`;
-        setQueryText(getDefaultQuery());
-        // Standard table view: load the table and its relation metadata.
-        metaLoading.classList.remove('hidden');
-        postDefaultLoadData(0);
+        tableName.textContent = msg.title || (table ? `${schema}.${table}` : 'Query result');
+        // Both entry points start by running a query: a table view simply starts
+        // with the default query for that table.
+        setQueryText(msg.sql || getDefaultQuery());
+        applyCapabilities(caps);
+        if (table) { metaLoading.classList.remove('hidden'); }
+        runQuery();
         vscode.postMessage({ command: 'getQueryHistory' });
     }
 
-    // Hide editing affordances when the view is read-only.
-    function applyReadOnlyMode() {
-        [insertRowBtn, commitBtn, discardBtn, constraintsBtn].forEach(btn => {
-            if (btn) btn.style.display = 'none';
-        });
+    // Enable/disable the affordances that depend on what the current result
+    // allows: editing needs rows that can be traced back to a table, while
+    // inserting, deleting, constraints and mappings need a single source table.
+    function applyCapabilities(next) {
+        caps = normalizeCapabilities(next);
+        const toggle = (btn, enabled) => {
+            if (btn) { btn.style.display = enabled ? '' : 'none'; }
+        };
+        toggle(insertRowBtn, caps.canInsert);
+        toggle(commitBtn, caps.canEdit || caps.canInsert || caps.canDelete);
+        toggle(discardBtn, caps.canEdit || caps.canInsert || caps.canDelete);
+        toggle(constraintsBtn, caps.canConstrain);
+        if (capabilityWarning) {
+            capabilityWarning.textContent = caps.warning || '';
+            capabilityWarning.classList.toggle('hidden', !caps.warning);
+        }
+        // Relation metadata is only fetched for a single source table; without
+        // one nothing will arrive and the indicator must not keep spinning.
+        if (caps.table) {
+            metaLoading.classList.remove('hidden');
+        } else {
+            metaLoading.classList.add('hidden');
+        }
+    }
+
+    // True when a specific result column can be written back to its table.
+    function isColumnEditable(colName) {
+        return caps.canEdit && caps.editableColumns.indexOf(colName) !== -1;
     }
 
     function handleColumnsLoaded(msg) {
-        // Columns arrive before the (possibly slow) row/count queries finish.
-        // Render the header right away so the grid structure and the
-        // "Constraints" editor become usable while data is still loading.
-        // Ignore for paged "Load More" requests (columns already known) and for
-        // custom-query results (don't clobber their column list).
-        if (!shouldRenderEarlyColumns(msg.offset, customQueryActive)) {
-            return;
-        }
+        // Columns arrive before the (possibly slow) row query finishes. Render
+        // the header right away so the grid structure and the "Constraints"
+        // editor become usable while data is still loading.
+        const wasDefaultQuery = isDefaultQueryText(queryInput.value);
         columns = msg.columns || [];
-        schema = msg.schema;
-        table = msg.table;
-        tableReference = msg.tableReference || '';
-        alwaysQuote = Boolean(msg.alwaysQuote);
-        tableName.textContent = `${schema}.${table}`;
+        applyCapabilities(msg.capabilities);
+        adoptSourceTable(msg);
         renderHeader();
-        // Now that the columns are known, refresh the query bar so it lists all
-        // columns explicitly instead of the initial `*` placeholder.
-        setQueryText(getDefaultQuery());
+        // Now that the columns are known, refresh an untouched default query so
+        // it lists all columns explicitly instead of the `*` placeholder.
+        if (wasDefaultQuery) {
+            setQueryText(getDefaultQuery());
+        }
     }
 
-    function handleDataLoaded(msg) {
-        if (isFreshRowLoad(currentOffset, false)) {
-            allRows = msg.data;
-            // A fresh first page replaces the row set entirely; any pending
-            // edits refer to the previous rows and must not leak onto the newly
-            // loaded ones (which share the same 0-based indices).
-            resetPendingChanges();
-        } else {
-            allRows = allRows.concat(msg.data);
-        }
-        columns = msg.columns;
-        if (msg.primaryKeys) { primaryKeys = msg.primaryKeys; }
-        totalCount = msg.totalCount;
-        schema = msg.schema;
+    // Take over the table a result originates from, so table-bound features
+    // (default query, constraints, mappings) work for ad-hoc queries too.
+    function adoptSourceTable(msg) {
+        if (!msg.table) { return; }
+        schema = msg.schema || '';
         table = msg.table;
         tableReference = msg.tableReference || '';
-        alwaysQuote = Boolean(msg.alwaysQuote);
-        // Standard table view active — not a custom query result.
-        customQueryActive = false;
-        customQueryBase = '';
-        customQueryUserPaged = false;
-        customQueryOffset = 0;
-        customQueryAppendPending = false;
+        if (msg.alwaysQuote !== undefined) { alwaysQuote = Boolean(msg.alwaysQuote); }
+        if (Array.isArray(msg.permanentConstraints)) { permanentConstraints = msg.permanentConstraints; }
+    }
+
+    function handleRowsLoaded(msg) {
+        const incoming = msg.rows || [];
+        const isAppend = !!msg.append;
+        appendPending = false;
+        if (isFreshRowLoad(currentOffset, isAppend)) {
+            allRows = incoming;
+            // A fresh load replaces the row set entirely; any pending edits
+            // refer to the previous rows and must not leak onto the newly loaded
+            // ones (which share the same 0-based indices).
+            resetPendingChanges();
+        } else {
+            allRows = allRows.concat(incoming);
+        }
+        columns = msg.columns || columns;
+        if (!isAppend) {
+            applyCapabilities(msg.capabilities);
+            adoptSourceTable(msg);
+            // Without an explicit count the total is unknown until requested.
+            totalCount = null;
+        }
         if (typeof msg.connectionName === 'string') {
             lastUsedConnection = msg.connectionName;
-            if (!currentConnection) currentConnection = msg.connectionName;
+            if (!currentConnection) { currentConnection = msg.connectionName; }
             updateConnectionDisplay();
         }
 
-        tableName.textContent = `${schema}.${table}`;
-        setQueryText(getDefaultQuery());
-        dataLoading.classList.add('hidden');
+        if (table) {
+            tableName.textContent = `${schema}.${table}`;
+        }
+        // A full last batch means there may be more rows to page through.
+        moreAvailable = !userPaged && !allLoaded && incoming.length >= PAGE_SIZE;
         lastQueryDurationMs = (typeof msg.durationMs === 'number') ? msg.durationMs : null;
+        dataLoading.classList.add('hidden');
         updateRowCount();
         renderTable();
     }
@@ -1570,56 +1719,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (fkLoaded && refsLoaded) {
             metaLoading.classList.add('hidden');
         }
-    }
-
-    function handleQueryColumns(msg) {
-        // Early column metadata for a custom query: render the header and filter
-        // row immediately, before the (possibly slow) full result arrives. Ignore
-        // stale messages once a query is no longer active.
-        if (!customQueryActive) return;
-        columns = msg.columns || [];
-        if (!readOnly) {
-            tableName.textContent = `${schema}.${table} (custom query)`;
-        }
-        renderHeader();
-    }
-
-    function handleQueryResult(msg) {
-        const incoming = msg.rows || [];
-        const isAppend = customQueryAppendPending;
-        customQueryAppendPending = false;
-        if (isFreshRowLoad(0, isAppend)) {
-            allRows = incoming;
-            // Re-running the query replaces the rows; discard pending edits so
-            // they are not re-applied to unrelated rows by their stale index.
-            resetPendingChanges();
-        } else {
-            allRows = allRows.concat(incoming);
-        }
-        columns = msg.columns;
-        totalCount = allRows.length;
-        if (typeof msg.connectionName === 'string') {
-            lastUsedConnection = msg.connectionName;
-            if (!currentConnection) currentConnection = msg.connectionName;
-            updateConnectionDisplay();
-        }
-        if (!readOnly) {
-            tableName.textContent = `${schema}.${table} (custom query)`;
-        }
-        // Re-enable Load More when this looks like a paged custom query and the
-        // last batch came back full (i.e. there may be more rows).
-        const canPage = customQueryActive && !customQueryUserPaged;
-        const moreLikely = canPage && incoming.length >= PAGE_SIZE && !customQueryAllLoaded;
-        loadMoreBtn.disabled = !moreLikely;
-        loadAllBtn.disabled = !moreLikely;
-        lastQueryDurationMs = (typeof msg.durationMs === 'number') ? msg.durationMs : null;
-        const time = formatExecutionTime(lastQueryDurationMs);
-        const baseText = canPage
-            ? `${allRows.length} rows loaded` + (moreLikely ? ' (more available)' : '')
-            : `${incoming.length} rows returned`;
-        rowCount.textContent = baseText + (time ? ` · ${time}` : '');
-        dataLoading.classList.add('hidden');
-        renderTable();
     }
 
     function updateQueryHistoryDropdown(history) {
@@ -1718,23 +1817,41 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         queryInput.focus();
     }
 
-    function runCustomQuery() {
+    // Run the query currently shown in the query bar. This is the single data
+    // path of the viewer: the default table view is just the query the panel
+    // was opened with.
+    function runQuery() {
         const raw = queryInput.value.trim();
         if (!raw) return;
         // Save to history (raw, user-entered form)
         vscode.postMessage({ command: 'saveQueryHistory', sql: raw });
         const stripped = stripTrailingLimitOffset(raw);
-        customQueryActive = true;
-        customQueryBase = stripped.base;
-        customQueryUserPaged = stripped.hadLimit;
-        customQueryOffset = 0;
-        customQueryAppendPending = false;
-        customQueryAllLoaded = false;
-        const sql = customQueryUserPaged
-            ? raw
-            : (customQueryBase + ' LIMIT ' + PAGE_SIZE + ' OFFSET 0');
+        currentSql = stripped.base;
+        userPaged = stripped.hadLimit;
+        currentOffset = 0;
+        appendPending = false;
+        allLoaded = false;
+        moreAvailable = false;
+        const sql = userPaged ? raw : (currentSql + ' LIMIT ' + PAGE_SIZE + ' OFFSET 0');
         dataLoading.classList.remove('hidden');
-        vscode.postMessage({ command: 'runCustomQuery', sql });
+        // An exact row count is cheap and expected for the plain table view, but
+        // can be very expensive for an arbitrary query — there it is only
+        // counted when the user asks for it.
+        vscode.postMessage({
+            command: 'loadRows',
+            sql,
+            baseSql: currentSql,
+            append: false,
+            wantTotal: !userPaged && isDefaultQueryText(raw)
+        });
+    }
+
+    // True when the query bar still shows the untouched default query of the
+    // current table.
+    function isDefaultQueryText(sql) {
+        if (!table) return false;
+        return collapseSqlWhitespace(String(sql || '')).trim().toLowerCase()
+            === collapseSqlWhitespace(getDefaultQuery()).trim().toLowerCase();
     }
 
     function handleApplyFilter(msg) {
@@ -1744,7 +1861,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function applyExactMatchToQuery(colName, value, extraConditions) {
-        if (!canApplyQueryFilters(schema, table, customQueryActive)) return;
+        if (!canApplyQueryFilters(queryInput.value)) return;
         if (value === null || value === undefined) return;
         const colMeta = columns.find(c => c.name === colName);
         const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
@@ -1759,7 +1876,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (clause) clausesByCol[cond.column] = clause;
         });
         mergeWhereClausesIntoQuery(clausesByCol);
-        runCustomQuery();
+        runQuery();
     }
 
     function buildMappingConditionClause(cond) {
@@ -1774,7 +1891,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const fmtCol = formatIdentifier(colName);
         const clause = buildNullConstraintClause(fmtCol, isNull);
         mergeWhereClausesIntoQuery({ [colName]: clause });
-        runCustomQuery();
+        runQuery();
     }
 
     function mergeWhereClausesIntoQuery(clausesByCol) {
@@ -1795,8 +1912,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function updateRowCount() {
         const showing = allRows.length + insertedRows.length + duplicatedRows.length;
         const time = formatExecutionTime(lastQueryDurationMs);
-        rowCount.textContent = `Showing ${showing} of ${totalCount} rows` + (time ? ` · ${time}` : '');
-        const noMore = remainingRowCount(allRows.length, totalCount) === 0;
+        const known = typeof totalCount === 'number';
+        rowCount.textContent = describeRowCount(showing, totalCount, moreAvailable) + (time ? ` · ${time}` : '');
+        rowCount.classList.toggle('clickable', !known);
+        rowCount.title = known ? '' : 'Click to count all rows of this query';
+        const noMore = known ? remainingRowCount(allRows.length, totalCount) === 0 : !moreAvailable;
         loadMoreBtn.disabled = noMore;
         loadAllBtn.disabled = noMore;
     }
@@ -1902,7 +2022,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const reordered = reorderSelectColumns((queryInput.value || '').trim(), fromIndex, toIndex);
         if (reordered) {
             setQueryText(reordered);
-        } else if (!readOnly && !customQueryActive) {
+        } else if (table) {
             setQueryText(getDefaultQuery());
         }
     }
@@ -2079,7 +2199,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function applyFiltersToQuery() {
-        if (!canApplyQueryFilters(schema, table, customQueryActive)) return;
+        if (!canApplyQueryFilters(queryInput.value)) return;
 
         const newClausesByCol = {};
         for (const [col, val] of Object.entries(filters)) {
@@ -2095,7 +2215,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         // Merge into the existing SQL, preserving user-written clauses.
         mergeWhereClausesIntoQuery(newClausesByCol);
-        runCustomQuery();
+        runQuery();
     }
 
     function showCellContextMenu(e, td) {
@@ -2136,7 +2256,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             items.push({
                 label: 'Exclude this Value from Query',
                 action: () => {
-                    if (!canApplyQueryFilters(schema, table, customQueryActive)) return;
+                    if (!canApplyQueryFilters(queryInput.value)) return;
                     const escaped = escapeSqlString(cellValue);
                     const fmtCol = formatIdentifier(colName);
                     const colMeta = columns.find(c => c.name === colName);
@@ -2155,7 +2275,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     let sql = parsed.base + ` WHERE ${clauses.join(' AND ')}`;
                     if (parsed.orderBy) sql += ` ORDER BY ${parsed.orderBy}`;
                     setQueryText(sql);
-                    runCustomQuery();
+                    runQuery();
                 }
             });
         }
@@ -2226,7 +2346,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         // 6. Create/Manage custom mapping
-        if (canManageTableMetadata(schema, table, readOnly)) {
+        if (canManageTableMetadata(schema, table, !caps.canMap)) {
             items.push({ separator: true });
             items.push({
                 label: 'Create Custom Mapping...',
@@ -2303,7 +2423,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         setQueryText(parts.length > 0
             ? `${parsed.base} ORDER BY ${parts.join(', ')}`
             : parsed.base);
-        runCustomQuery();
+        runQuery();
     }
 
     function applyOrderBy(colName, direction, mode) {
@@ -2323,7 +2443,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             newOrder = parts.join(', ');
         }
         setQueryText(`${parsed.base} ORDER BY ${newOrder}`);
-        runCustomQuery();
+        runQuery();
     }
 
     function clearOrderBy() {
@@ -2331,7 +2451,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!baseSql) return;
         const parsed = parseSqlForOrder(baseSql);
         setQueryText(parsed.base);
-        runCustomQuery();
+        runQuery();
     }
 
     function showContextMenu(e, items) {
@@ -2488,7 +2608,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             html += `<tr class="${rowClass}" data-row-index="${idx}">`;
             html += `<td class="row-num-cell">${rowNum}<div class="row-resize-handle" title="Drag to change row height"></div></td>`;
             html += `<td class="actions-cell">`;
-            if (readOnly) {
+            if (!caps.canDelete) {
                 html += `<button class="btn-view-record" onclick="openRecordDialog(${idx})" title="View full record">&#128065;</button>`;
             } else if (!isDeleted) {
                 html += `<button class="btn-view-record" onclick="openRecordDialog(${idx})" title="View full record">&#128065;</button>`;
@@ -2521,7 +2641,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 } else if (fk && currentVal !== null && currentVal !== undefined) {
                     fkBtn = `<button class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(cellToString(currentVal))}" title="Open ${fk.refSchema}.${fk.refTable}">&#8599;</button>`;
                 }
-                const editableAttr = !isDeleted && !readOnly ? 'true' : 'false';
+                const editableAttr = !isDeleted && isColumnEditable(col.name) ? 'true' : 'false';
                 const cellExtraClass = fkBtn ? ' has-fk-btn' : '';
                 html += `<td class="${cellClass}${cellExtraClass}" data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}"><span class="cell-content" contenteditable="${editableAttr}">${displayVal}</span>${fkBtn}</td>`;
             });
@@ -2780,40 +2900,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function loadMore() {
-        if (customQueryActive && !customQueryUserPaged) {
-            customQueryOffset += PAGE_SIZE;
-            customQueryAppendPending = true;
-            const sql = customQueryBase + ' LIMIT ' + PAGE_SIZE + ' OFFSET ' + customQueryOffset;
-            dataLoading.classList.remove('hidden');
-            vscode.postMessage({ command: 'runCustomQuery', sql });
-            return;
-        }
+        if (userPaged || !currentSql) return;
         currentOffset += PAGE_SIZE;
-        postDefaultLoadData(currentOffset);
+        appendPending = true;
+        postLoadRows(currentSql + ' LIMIT ' + PAGE_SIZE + ' OFFSET ' + currentOffset, true);
     }
 
     // Load every remaining row in a single request (the "Load All" button).
     function loadAll() {
-        if (customQueryActive && !customQueryUserPaged) {
-            const nextOffset = allRows.length;
-            customQueryOffset = nextOffset;
-            customQueryAppendPending = true;
-            customQueryAllLoaded = true;
-            loadMoreBtn.disabled = true;
-            loadAllBtn.disabled = true;
-            // No LIMIT -> fetch all rows from the current offset onward.
-            const sql = customQueryBase + ' OFFSET ' + nextOffset;
-            dataLoading.classList.remove('hidden');
-            vscode.postMessage({ command: 'runCustomQuery', sql });
-            return;
-        }
-        const remaining = remainingRowCount(allRows.length, totalCount);
-        if (remaining <= 0) return;
+        if (userPaged || !currentSql) return;
+        if (typeof totalCount === 'number' && remainingRowCount(allRows.length, totalCount) <= 0) return;
         currentOffset = allRows.length;
+        appendPending = true;
+        allLoaded = true;
         loadMoreBtn.disabled = true;
         loadAllBtn.disabled = true;
+        // No LIMIT -> fetch all rows from the current offset onward.
+        postLoadRows(currentSql + ' OFFSET ' + currentOffset, true);
+    }
+
+    function postLoadRows(sql, append) {
         dataLoading.classList.remove('hidden');
-        vscode.postMessage({ command: 'loadData', offset: currentOffset, limit: remaining, where: getDefaultWhere() });
+        vscode.postMessage({ command: 'loadRows', sql, baseSql: currentSql, append: !!append });
     }
 
     function updateChangeIndicator() {
@@ -2840,12 +2948,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const totalChanges = modifiedCells.size + deletedRows.size + insertedRows.length + duplicatedRows.length;
         if (totalChanges === 0) return;
 
-        const changes = {
-            updates: [],
-            inserts: [],
-            deletes: []
-        };
-
         // Build updates grouped by row
         const rowUpdates = new Map();
         for (const [key, value] of modifiedCells.entries()) {
@@ -2859,30 +2961,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             rowUpdates.get(rowIdx)[colName] = value;
         }
 
-        for (const [rowIdx, changedCols] of rowUpdates.entries()) {
-            const pk = buildRowIdentity(primaryKeys, columns.map(c => c.name), allRows[rowIdx]);
-            changes.updates.push({ primaryKey: pk, changes: changedCols });
-        }
-
-        // Inserts (both new and duplicated)
-        changes.inserts = [...insertedRows, ...duplicatedRows].map(entry => {
-            const row = entry.row;
-            const clean = {};
-            columns.forEach(col => {
-                if (row[col.name] !== '' && row[col.name] !== null && row[col.name] !== undefined) {
-                    clean[col.name] = row[col.name];
-                }
-            });
-            return clean;
+        // Each edited column is written back to the table it really came from,
+        // so a result joined from several tables commits correctly.
+        const targets = buildCommitTargets(caps, allRows, {
+            updates: Array.from(rowUpdates.entries()),
+            deletes: Array.from(deletedRows),
+            inserts: [...insertedRows, ...duplicatedRows].map(entry => entry.row)
         });
 
-        for (const rowIdx of deletedRows) {
-            const pk = buildRowIdentity(primaryKeys, columns.map(c => c.name), allRows[rowIdx]);
-            changes.deletes.push(pk);
+        if (targets.length === 0) {
+            showError('Nothing can be written back: the edited columns cannot be traced to a table row.');
+            return;
         }
 
-        pendingChanges = changes;
-        vscode.postMessage({ command: 'previewSQL', changes });
+        pendingChanges = targets;
+        vscode.postMessage({ command: 'previewSQL', targets });
     }
 
     function showSqlDialog(sql, connectionName) {
@@ -2922,27 +3015,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function executePendingChanges() {
         if (pendingChanges) {
-            vscode.postMessage({ command: 'commitChanges', changes: pendingChanges });
+            vscode.postMessage({ command: 'commitChanges', targets: pendingChanges });
             sqlDialogOverlay.style.display = 'none';
             pendingChanges = null;
         }
     }
 
     function handleCommitSuccess() {
-        // Reset state and reload
+        // Reset state and re-run the query the grid currently shows, so a
+        // filtered or custom view is not silently replaced by the default one.
         resetPendingChanges();
-        currentOffset = 0;
-        postDefaultLoadData(0);
+        runQuery();
     }
 
     function discardChanges() {
         resetPendingChanges();
-        currentOffset = 0;
-        postDefaultLoadData(0);
+        runQuery();
         updateChangeIndicator();
     }
 
     function showError(text) {
+        // A failed query leaves the grid in its loading state; release it so the
+        // view does not keep spinning forever.
+        dataLoading.classList.add('hidden');
         changeCount.textContent = `Error: ${text}`;
         changeCount.style.color = 'var(--vscode-errorForeground)';
         setTimeout(() => {
@@ -3128,9 +3223,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         vscode.postMessage({ command: 'savePermanentConstraints', conditions: permanentConstraints });
         closeConstraintsDialog();
         setQueryText(getDefaultQuery());
-        currentOffset = 0;
-        dataLoading.classList.remove('hidden');
-        postDefaultLoadData(0);
+        runQuery();
     }
 
     // ===== Export Dialog Logic =====
@@ -3340,12 +3433,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const where = getDefaultWhere();
         const columnList = buildSelectColumnList(columns, formatIdentifier);
         return `SELECT ${columnList} FROM ${getDefaultTableReference()}${where ? ` WHERE ${where}` : ''}`;
-    }
-
-    // Post a default-path loadData request carrying the permanent WHERE so the
-    // extension applies it to fetchRows/getRowCount.
-    function postDefaultLoadData(offset) {
-        vscode.postMessage({ command: 'loadData', offset: offset, limit: PAGE_SIZE, where: getDefaultWhere() });
     }
 
     // NOTE: Keep in sync with formatIdentifier/needsQuoting in src/queryRunner.ts
@@ -3662,7 +3749,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const lineCount = isNull ? 1 : Math.min(15, Math.max(1, displayVal.split('\n').length));
             const charInfo = isNull ? '(NULL)' : (displayVal.length + ' chars');
 
-            const editableAttr = recordFieldReadonlyAttr(isDeleted, readOnly);
+            const editableAttr = recordFieldReadonlyAttr(isDeleted, !isColumnEditable(col.name));
             const valueClass = 'record-value' + (isNull ? ' is-null' : '');
             const rowClass = 'record-row' + (isModified ? ' record-row-modified' : '');
 
@@ -3789,7 +3876,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     // Mirrors handleCellEdit: writes to modifiedCells / clears it if equal to original
     function applyRecordEdit(rowIdx, colName, rawText) {
-        if (readOnly) return;
+        if (!isColumnEditable(colName)) return;
         if (deletedRows.has(rowIdx)) return;
         const originalVal = allRows[rowIdx][colName];
         const colMeta = columns.find(c => c.name === colName);
@@ -4215,7 +4302,6 @@ if (typeof module !== 'undefined' && module.exports) {
         formatExecutionTime,
         reorderColumns,
         reorderSelectColumns,
-        shouldRenderEarlyColumns,
         isFreshRowLoad,
         recordFieldReadonlyAttr,
         buildConnectionBadge,
@@ -4225,6 +4311,10 @@ if (typeof module !== 'undefined' && module.exports) {
         rowValueMatchesFilter,
         compareCellValues,
         normalizeCellInput,
-        buildRowIdentity
+        buildRowIdentity,
+        emptyCapabilities,
+        normalizeCapabilities,
+        buildCommitTargets,
+        describeRowCount
     };
 }

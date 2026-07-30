@@ -263,7 +263,7 @@ test('generateSQL includes update, insert, delete, and reserved keyword quoting 
         deletes: [{ id: 3 }]
     };
 
-    const sql = runner.generateSQL('public', 'test_table', changes);
+    const sql = runner.generateSQL([{ schema: 'public', table: 'test_table', changes }]);
 
     assert.equal(
         sql,
@@ -278,11 +278,15 @@ test('generateSQL quotes identifiers when alwaysQuote is enabled', () => {
         options: { alwaysQualifySchema: true, alwaysQuote: true }
     });
 
-    const sql = runner.generateSQL('public', 'users', {
-        updates: [],
-        inserts: [{ userId: 1 }],
-        deletes: []
-    });
+    const sql = runner.generateSQL([{
+        schema: 'public',
+        table: 'users',
+        changes: {
+            updates: [],
+            inserts: [{ userId: 1 }],
+            deletes: []
+        }
+    }]);
 
     assert.equal(sql, 'INSERT INTO "public"."users" ("userId") VALUES (1);');
 });
@@ -292,7 +296,7 @@ test('commitChanges throws when not connected', async () => {
         pool: undefined
     });
 
-    await assert.rejects(() => runner.commitChanges('public', 'users', { updates: [], inserts: [], deletes: [] }), /Not connected to database/);
+    await assert.rejects(() => runner.commitChanges([{ schema: 'public', table: 'users', changes: { updates: [], inserts: [], deletes: [] } }]), /Not connected to database/);
 });
 
 test('commitChanges runs update, insert and delete statements inside one transaction', async () => {
@@ -313,11 +317,15 @@ test('commitChanges runs update, insert and delete statements inside one transac
         pool: { connect: async () => client }
     });
 
-    await runner.commitChanges('public', 'users', {
-        updates: [{ primaryKey: { id: 1 }, changes: { name: 'Alice' } }],
-        inserts: [{ id: 2, name: 'Bob' }, { emptyField: '' }],
-        deletes: [{ id: 3 }]
-    });
+    await runner.commitChanges([{
+        schema: 'public',
+        table: 'users',
+        changes: {
+            updates: [{ primaryKey: { id: 1 }, changes: { name: 'Alice' } }],
+            inserts: [{ id: 2, name: 'Bob' }, { emptyField: '' }],
+            deletes: [{ id: 3 }]
+        }
+    }]);
 
     assert.deepEqual(statements.map(s => s.sql), [
         'BEGIN',
@@ -356,11 +364,15 @@ test('commitChanges rolls back and releases client when a statement fails', asyn
 
     await assert.rejects(
         () =>
-            runner.commitChanges('public', 'users', {
-                updates: [{ primaryKey: { id: 1 }, changes: { name: 'Alice' } }],
-                inserts: [],
-                deletes: []
-            }),
+            runner.commitChanges([{
+                schema: 'public',
+                table: 'users',
+                changes: {
+                    updates: [{ primaryKey: { id: 1 }, changes: { name: 'Alice' } }],
+                    inserts: [],
+                    deletes: []
+                }
+            }]),
         /boom/
     );
 
@@ -384,11 +396,15 @@ test('commitChanges identifies rows by all columns (with IS NULL) when there is 
         pool: { connect: async () => client }
     });
 
-    await runner.commitChanges('public', 'log', {
-        updates: [{ primaryKey: { ts: '2026-01-01', level: 'info', note: null }, changes: { level: 'warn' } }],
-        inserts: [],
-        deletes: [{ ts: '2026-01-02', level: 'error', note: null }]
-    });
+    await runner.commitChanges([{
+        schema: 'public',
+        table: 'log',
+        changes: {
+            updates: [{ primaryKey: { ts: '2026-01-01', level: 'info', note: null }, changes: { level: 'warn' } }],
+            inserts: [],
+            deletes: [{ ts: '2026-01-02', level: 'error', note: null }]
+        }
+    }]);
 
     assert.deepEqual(statements.map(s => s.sql), [
         'BEGIN',
@@ -416,11 +432,15 @@ test('commitChanges refuses an UPDATE with an empty row identity', async () => {
     });
 
     await assert.rejects(
-        () => runner.commitChanges('public', 'log', {
-            updates: [{ primaryKey: {}, changes: { level: 'warn' } }],
-            inserts: [],
-            deletes: []
-        }),
+        () => runner.commitChanges([{
+            schema: 'public',
+            table: 'log',
+            changes: {
+                updates: [{ primaryKey: {}, changes: { level: 'warn' } }],
+                inserts: [],
+                deletes: []
+            }
+        }]),
         /no columns available to identify the row/
     );
     // The bad UPDATE must never reach the database; the transaction rolls back.
@@ -443,11 +463,15 @@ test('commitChanges refuses a DELETE with an empty row identity', async () => {
     });
 
     await assert.rejects(
-        () => runner.commitChanges('public', 'log', {
-            updates: [],
-            inserts: [],
-            deletes: [{}]
-        }),
+        () => runner.commitChanges([{
+            schema: 'public',
+            table: 'log',
+            changes: {
+                updates: [],
+                inserts: [],
+                deletes: [{}]
+            }
+        }]),
         /no columns available to identify the row/
     );
     assert.ok(!statements.some(s => s.startsWith('DELETE')));
@@ -460,11 +484,15 @@ test('generateSQL formats NULL values correctly', () => {
         options: { alwaysQualifySchema: true, alwaysQuote: false }
     });
 
-    const sql = runner.generateSQL('public', 'users', {
-        updates: [{ primaryKey: { id: 1 }, changes: { name: null, score: undefined } }],
-        inserts: [],
-        deletes: []
-    });
+    const sql = runner.generateSQL([{
+        schema: 'public',
+        table: 'users',
+        changes: {
+            updates: [{ primaryKey: { id: 1 }, changes: { name: null, score: undefined } }],
+            inserts: [],
+            deletes: []
+        }
+    }]);
 
     assert.equal(sql, "UPDATE public.users SET name = NULL, score = NULL WHERE id = 1;");
 });
@@ -475,14 +503,18 @@ test('generateSQL builds a full-row WHERE clause when the table has no primary k
     });
 
     // Without a primary key the webview sends every column as the row identity.
-    const sql = runner.generateSQL('public', 'log', {
-        updates: [{
-            primaryKey: { ts: '2026-01-01', level: 'info', msg: "it's fine" },
-            changes: { level: 'warn' }
-        }],
-        inserts: [],
-        deletes: [{ ts: '2026-01-02', level: 'error', msg: 'boom' }]
-    });
+    const sql = runner.generateSQL([{
+        schema: 'public',
+        table: 'log',
+        changes: {
+            updates: [{
+                primaryKey: { ts: '2026-01-01', level: 'info', msg: "it's fine" },
+                changes: { level: 'warn' }
+            }],
+            inserts: [],
+            deletes: [{ ts: '2026-01-02', level: 'error', msg: 'boom' }]
+        }
+    }]);
 
     assert.equal(
         sql,
@@ -496,11 +528,15 @@ test('generateSQL emits IS NULL for null identity columns in UPDATE and DELETE',
         options: { alwaysQualifySchema: true, alwaysQuote: false }
     });
 
-    const sql = runner.generateSQL('public', 'log', {
-        updates: [{ primaryKey: { a: 1, note: null }, changes: { note: 'set' } }],
-        inserts: [],
-        deletes: [{ a: 2, note: null }]
-    });
+    const sql = runner.generateSQL([{
+        schema: 'public',
+        table: 'log',
+        changes: {
+            updates: [{ primaryKey: { a: 1, note: null }, changes: { note: 'set' } }],
+            inserts: [],
+            deletes: [{ a: 2, note: null }]
+        }
+    }]);
 
     assert.equal(
         sql,
@@ -514,11 +550,15 @@ test('generateSQL skips inserts where all fields are empty or null', () => {
         options: { alwaysQualifySchema: true, alwaysQuote: false }
     });
 
-    const sql = runner.generateSQL('public', 'users', {
-        updates: [],
-        inserts: [{ name: '', age: null }],
-        deletes: []
-    });
+    const sql = runner.generateSQL([{
+        schema: 'public',
+        table: 'users',
+        changes: {
+            updates: [],
+            inserts: [{ name: '', age: null }],
+            deletes: []
+        }
+    }]);
 
     assert.equal(sql, '');
 });
@@ -528,11 +568,15 @@ test('formatIdentifier quotes identifiers with uppercase letters', () => {
         options: { alwaysQualifySchema: true, alwaysQuote: false }
     });
 
-    const sql = runner.generateSQL('public', 'Users', {
-        updates: [],
-        inserts: [{ UserId: 1 }],
-        deletes: []
-    });
+    const sql = runner.generateSQL([{
+        schema: 'public',
+        table: 'Users',
+        changes: {
+            updates: [],
+            inserts: [{ UserId: 1 }],
+            deletes: []
+        }
+    }]);
 
     assert.equal(sql, 'INSERT INTO public."Users" ("UserId") VALUES (1);');
 });
@@ -542,11 +586,15 @@ test('formatIdentifier escapes double quotes in identifiers', () => {
         options: { alwaysQualifySchema: false, alwaysQuote: true }
     });
 
-    const sql = runner.generateSQL('public', 'ta"ble', {
-        updates: [],
-        inserts: [],
-        deletes: [{ id: 1 }]
-    });
+    const sql = runner.generateSQL([{
+        schema: 'public',
+        table: 'ta"ble',
+        changes: {
+            updates: [],
+            inserts: [],
+            deletes: [{ id: 1 }]
+        }
+    }]);
 
     assert.equal(sql, 'DELETE FROM "public"."ta""ble" WHERE "id" = 1;');
 });
@@ -600,11 +648,15 @@ test('commitChanges passes null values as parameters', async () => {
         pool: { connect: async () => client }
     });
 
-    await runner.commitChanges('public', 'users', {
-        updates: [{ primaryKey: { id: 1 }, changes: { name: null } }],
-        inserts: [],
-        deletes: []
-    });
+    await runner.commitChanges([{
+        schema: 'public',
+        table: 'users',
+        changes: {
+            updates: [{ primaryKey: { id: 1 }, changes: { name: null } }],
+            inserts: [],
+            deletes: []
+        }
+    }]);
 
     assert.equal(statements[1].sql, 'UPDATE public.users SET name = $1 WHERE id = $2');
     assert.deepEqual(statements[1].params, [null, 1]);
@@ -625,12 +677,239 @@ test('commitChanges with alwaysQuote quotes all identifiers', async () => {
         pool: { connect: async () => client }
     });
 
-    await runner.commitChanges('public', 'users', {
-        updates: [],
-        inserts: [{ id: 5, name: 'Test' }],
-        deletes: []
-    });
+    await runner.commitChanges([{
+        schema: 'public',
+        table: 'users',
+        changes: {
+            updates: [],
+            inserts: [{ id: 5, name: 'Test' }],
+            deletes: []
+        }
+    }]);
 
     assert.equal(statements[1].sql, 'INSERT INTO "public"."users" ("id", "name") VALUES ($1, $2)');
     assert.deepEqual(statements[1].params, [5, 'Test']);
+});
+
+// ===== 2.2.2: writing back to several source tables and verified row identity =====
+
+/** Fake pooled client that records statements and reports a fixed rowCount. */
+function createRecordingClient(rowCount: number | undefined = 1) {
+    const statements: Array<{ sql: string; params?: any[] }> = [];
+    const client = {
+        statements,
+        query: async (sql: string, params?: any[]) => {
+            statements.push({ sql, params });
+            return rowCount === undefined ? {} : { rowCount };
+        },
+        released: false,
+        release() { this.released = true; }
+    };
+    return client;
+}
+
+test('commitChanges writes to every target table inside a single transaction', async () => {
+    const client = createRecordingClient();
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        pool: { connect: async () => client }
+    });
+
+    await runner.commitChanges([
+        {
+            schema: 'public',
+            table: 'users',
+            identityStrategy: 'pk',
+            changes: { updates: [{ primaryKey: { id: 1 }, changes: { name: 'Alice' } }], inserts: [], deletes: [] }
+        },
+        {
+            schema: 'public',
+            table: 'orders',
+            identityStrategy: 'pk',
+            changes: { updates: [{ primaryKey: { id: 9 }, changes: { qty: 5 } }], inserts: [], deletes: [] }
+        }
+    ]);
+
+    assert.deepEqual(client.statements.map(s => s.sql), [
+        'BEGIN',
+        'UPDATE public.users SET name = $1 WHERE id = $2',
+        'UPDATE public.orders SET qty = $1 WHERE id = $2',
+        'COMMIT'
+    ]);
+    assert.equal(client.released, true);
+});
+
+test('commitChanges rolls back when a row without a primary key matches more than one row', async () => {
+    const client = createRecordingClient(2);
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        pool: { connect: async () => client }
+    });
+
+    await assert.rejects(
+        () => runner.commitChanges([{
+            schema: 'app',
+            table: 'log',
+            identityStrategy: 'row',
+            changes: {
+                updates: [{ primaryKey: { msg: 'hi' }, changes: { msg: 'ho' } }],
+                inserts: [],
+                deletes: []
+            }
+        }]),
+        /2 rows/
+    );
+
+    assert.ok(client.statements.some(s => s.sql === 'ROLLBACK'));
+    assert.equal(client.released, true);
+});
+
+test('commitChanges accepts an unambiguous match without a primary key', async () => {
+    const client = createRecordingClient(1);
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        pool: { connect: async () => client }
+    });
+
+    await runner.commitChanges([{
+        schema: 'app',
+        table: 'log',
+        identityStrategy: 'row',
+        changes: { updates: [], inserts: [], deletes: [{ msg: 'hi' }] }
+    }]);
+
+    assert.deepEqual(client.statements.map(s => s.sql), [
+        'BEGIN',
+        'DELETE FROM app.log WHERE msg = $1',
+        'COMMIT'
+    ]);
+});
+
+test('commitChanges does not verify the affected row count when a primary key identifies the row', async () => {
+    const client = createRecordingClient(0);
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        pool: { connect: async () => client }
+    });
+
+    // A primary-key match is unique by definition, so a 0-row result (e.g. the
+    // row was deleted meanwhile) must not abort the whole transaction here.
+    await runner.commitChanges([{
+        schema: 'public',
+        table: 'users',
+        identityStrategy: 'pk',
+        changes: { updates: [{ primaryKey: { id: 1 }, changes: { name: 'Alice' } }], inserts: [], deletes: [] }
+    }]);
+
+    assert.ok(client.statements.some(s => s.sql === 'COMMIT'));
+});
+
+test('generateSQL emits the statements of every target', () => {
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false }
+    });
+
+    const sql = runner.generateSQL([
+        { schema: 'public', table: 'users', changes: { updates: [], inserts: [{ id: 1 }], deletes: [] } },
+        { schema: 'public', table: 'orders', changes: { updates: [], inserts: [], deletes: [{ id: 9 }] } }
+    ]);
+
+    assert.equal(
+        sql,
+        'INSERT INTO public.users (id) VALUES (1);\n\nDELETE FROM public.orders WHERE id = 9;'
+    );
+});
+
+// ===== 2.2.2: on-demand row count for an arbitrary query =====
+
+test('getQueryRowCount counts the rows of a query without fetching them', async () => {
+    const { runner, queryCalls } = createRunner({
+        queryHandler: () => ({ rows: [{ count: '42' }] })
+    });
+
+    const count = await runner.getQueryRowCount('SELECT * FROM public.users WHERE active');
+
+    assert.equal(count, 42);
+    assert.equal(
+        queryCalls[0].sql,
+        'SELECT COUNT(*) AS count FROM (SELECT * FROM public.users WHERE active) AS _pqb_count'
+    );
+});
+
+test('getQueryRowCount strips a trailing semicolon before wrapping the query', async () => {
+    const { runner, queryCalls } = createRunner({
+        queryHandler: () => ({ rows: [{ count: '1' }] })
+    });
+
+    await runner.getQueryRowCount('SELECT 1;  ');
+
+    assert.equal(queryCalls[0].sql, 'SELECT COUNT(*) AS count FROM (SELECT 1) AS _pqb_count');
+});
+
+// ===== 2.2.2: capabilities resolved from the result metadata =====
+
+test('resolveEditPlan maps result fields to their source table and primary key', async () => {
+    const { runner } = createRunner({
+        metadataHandler: (sql: string) => {
+            if (sql.includes('pg_class')) {
+                return [{ oid: 100, nspname: 'public', relname: 'users', relkind: 'r' }];
+            }
+            if (sql.includes('pg_index')) {
+                return [{ attname: 'id' }];
+            }
+            if (sql.includes('pg_attribute')) {
+                return [
+                    { attrelid: 100, attnum: 1, attname: 'id' },
+                    { attrelid: 100, attnum: 2, attname: 'name' }
+                ];
+            }
+            return [];
+        }
+    });
+
+    const caps = await runner.resolveEditPlan([
+        { name: 'id', dataTypeID: 23, tableID: 100, columnID: 1 },
+        { name: 'full_name', dataTypeID: 25, tableID: 100, columnID: 2 },
+        { name: 'computed', dataTypeID: 23, tableID: 0, columnID: 0 }
+    ]);
+
+    assert.equal(caps.canEdit, true);
+    assert.equal(caps.canInsert, true);
+    assert.equal(caps.table, 'users');
+    assert.equal(caps.identityStrategy, 'pk');
+    assert.deepEqual(caps.editableColumns, ['id', 'full_name']);
+    assert.equal(caps.columnSources['full_name'].sourceColumn, 'name');
+});
+
+test('resolveEditPlan reports a read-only result when no field comes from a table', async () => {
+    const { runner, metadataCalls } = createRunner();
+
+    const caps = await runner.resolveEditPlan([{ name: '?column?', dataTypeID: 23, tableID: 0, columnID: 0 }]);
+
+    assert.equal(caps.canEdit, false);
+    assert.equal(caps.table, null);
+    // No relation to look up, so the catalog is not queried at all.
+    assert.equal(metadataCalls.length, 0);
+});
+
+test('resolveEditPlan marks a view as not editable', async () => {
+    const { runner } = createRunner({
+        metadataHandler: (sql: string) => {
+            if (sql.includes('pg_class')) {
+                return [{ oid: 100, nspname: 'public', relname: 'active_users', relkind: 'v' }];
+            }
+            if (sql.includes('pg_attribute')) {
+                return [{ attrelid: 100, attnum: 1, attname: 'id' }];
+            }
+            return [];
+        }
+    });
+
+    const caps = await runner.resolveEditPlan([{ name: 'id', dataTypeID: 23, tableID: 100, columnID: 1 }]);
+
+    assert.equal(caps.canEdit, false);
+    assert.equal(caps.canInsert, false);
+    // A single relation still allows constraints and column mappings.
+    assert.equal(caps.canConstrain, true);
+    assert.equal(caps.table, 'active_users');
 });
