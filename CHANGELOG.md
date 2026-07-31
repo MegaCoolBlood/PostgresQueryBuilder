@@ -2,6 +2,8 @@
 
 ## 2.2.2
 
+- **Clearing a column filter removes it from the query again:** Typing into a filter box and pressing Enter adds the condition to the `WHERE` clause — but emptying the box and pressing Enter did nothing, because only non-empty filter boxes were considered when the query was rebuilt, so the old condition stayed in the SQL and kept filtering. An emptied filter box now drops exactly its own condition; hand-written clauses and the filters of other columns stay untouched.
+
 - **A cell whose value the column cannot store is outlined in red:** Until now a typo was only noticed when saving failed — the whole transaction was rejected and the change had to be found again. An edited cell is now checked as soon as it is left and marked with a red border and a tooltip explaining the problem (text in an `integer` column, `40000` in a `smallint`, six characters in a `varchar(5)`, a string that is not a timestamp, …). Saving stays blocked while any cell is marked, and the indicator next to the buttons shows how many values still need fixing.
 
     - **The rules come from the database, and so does the verdict for everything else.** Each result column now carries its real type including the modifier (`character varying(5)`, `numeric(10,2)`, `smallint`) as reported by `format_type()`, so numbers, ranges, text lengths, booleans and UUIDs are checked instantly in the grid without asking the server. Types whose text format only PostgreSQL can judge — timestamps, dates, intervals, JSON, enums, arrays, network and custom types — are handed to the database, which tries to cast the entered text and reports its own error message as the reason. That check runs once per edited cell (not per keystroke) and never writes anything.

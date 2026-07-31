@@ -8,6 +8,7 @@ const {
     findTopLevelKeywordIndex,
     splitWhereByAnd,
     whereClauseTargetsColumn,
+    mergeWhereClauses,
     parseSqlForOrder,
     formatSql,
     buildNullConstraintClause,
@@ -162,6 +163,47 @@ test('whereClauseTargetsColumn matches a qualified column', () => {
 
 test('whereClauseTargetsColumn matches a quoted column case-insensitively', () => {
     assert.equal(whereClauseTargetsColumn('"Amount" = 5', 'amount'), true);
+});
+
+// ===== 2.2.2: applying and clearing column filters =====
+
+test('mergeWhereClauses adds a clause for a newly filtered column', () => {
+    assert.deepEqual(
+        mergeWhereClauses(['"other" = 1'], { status: `"status" = 'open'` }),
+        ['"other" = 1', `"status" = 'open'`]
+    );
+});
+
+test('mergeWhereClauses replaces the existing clause of the same column', () => {
+    assert.deepEqual(
+        mergeWhereClauses([`"status" = 'open'`, '"other" = 1'], { status: `"status" = 'done'` }),
+        ['"other" = 1', `"status" = 'done'`]
+    );
+});
+
+test('mergeWhereClauses removes the clause when a filter was cleared', () => {
+    assert.deepEqual(
+        mergeWhereClauses([`"status" = 'open'`, '"other" = 1'], { status: '' }),
+        ['"other" = 1']
+    );
+});
+
+test('mergeWhereClauses can clear the last remaining clause', () => {
+    assert.deepEqual(mergeWhereClauses([`"status" = 'open'`], { status: '' }), []);
+});
+
+test('mergeWhereClauses leaves clauses of untouched columns alone', () => {
+    assert.deepEqual(
+        mergeWhereClauses(['"a" = 1', '"b" = 2'], {}),
+        ['"a" = 1', '"b" = 2']
+    );
+});
+
+test('mergeWhereClauses adds and removes several columns at once', () => {
+    assert.deepEqual(
+        mergeWhereClauses(['"a" = 1', '"b" = 2'], { a: '', b: '"b" = 9', c: '"c" = 3' }),
+        ['"b" = 9', '"c" = 3']
+    );
 });
 
 // ===== 0.2.0: ORDER BY context menu (parseSqlForOrder) =====
