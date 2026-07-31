@@ -27,6 +27,8 @@ interface PanelSession {
     table: string;
     /** Bucket used to store this panel's query history. */
     historyKey: string;
+    /** Columns of the result currently shown, used to check entered values. */
+    columns: ResultColumn[];
     disposed: boolean;
 }
 
@@ -41,6 +43,8 @@ interface MessageContext {
 export interface ResultFieldInfo {
     name: string;
     dataTypeID: number;
+    /** Postgres type modifier (`varchar(5)` -> 9, no modifier -> -1). */
+    dataTypeModifier?: number;
     tableID?: number;
     columnID?: number;
 }
@@ -49,6 +53,8 @@ export interface ResultFieldInfo {
 export interface ResultColumn {
     name: string;
     dataType: string;
+    /** Type including its modifier, e.g. `character varying(5)`, `numeric(10,2)`. */
+    fullType: string;
     isNullable: boolean;
     columnDefault: null;
     comment: string | null;
@@ -56,15 +62,17 @@ export interface ResultColumn {
 
 /**
  * Map raw `pg` field descriptors to Data Viewer column objects, resolving the
- * type name (via `typeMap`, keyed by data-type OID) and the column comment (via
- * `commentMap`, keyed by `"tableOID:columnNumber"`). Fields that do not
- * originate from a table column (`tableID`/`columnID` <= 0, e.g. computed
- * expressions or literals in a custom SELECT) get no comment.
+ * type name (via `typeMap`, keyed by data-type OID), the type including its
+ * modifier (via `fullTypeMap`, keyed by `"typeOID:typeModifier"`) and the
+ * column comment (via `commentMap`, keyed by `"tableOID:columnNumber"`). Fields
+ * that do not originate from a table column (`tableID`/`columnID` <= 0, e.g.
+ * computed expressions or literals in a custom SELECT) get no comment.
  */
 export function buildCustomResultColumns(
     fields: ReadonlyArray<ResultFieldInfo>,
     typeMap: Record<number, string>,
-    commentMap: Record<string, string>
+    commentMap: Record<string, string>,
+    fullTypeMap: Record<string, string> = {}
 ): ResultColumn[] {
     return fields.map((f) => {
         const tableId = f.tableID ?? 0;
@@ -72,9 +80,11 @@ export function buildCustomResultColumns(
         const comment = (tableId > 0 && columnId > 0)
             ? (commentMap[`${tableId}:${columnId}`] ?? null)
             : null;
+        const dataType = typeMap[f.dataTypeID] || '';
         return {
             name: f.name,
-            dataType: typeMap[f.dataTypeID] || '',
+            dataType,
+            fullType: fullTypeMap[`${f.dataTypeID}:${f.dataTypeModifier ?? -1}`] || dataType,
             isNullable: true,
             columnDefault: null,
             comment
@@ -181,7 +191,7 @@ export class TableWebViewManager {
             }
         );
 
-        const session: PanelSession = { id, panel, origin, schema, table, historyKey, disposed: false };
+        const session: PanelSession = { id, panel, origin, schema, table, historyKey, columns: [], disposed: false };
         this.sessions.set(id, session);
 
         panel.onDidDispose(() => {
@@ -317,7 +327,8 @@ export class TableWebViewManager {
         getExportDefaults: this.handleGetExportDefaults,
         saveExportDefaults: this.handleSaveExportDefaults,
         exportData: this.handleExportData,
-        selectConnection: this.handleSelectConnection
+        selectConnection: this.handleSelectConnection,
+        validateValue: this.handleValidateValue
     };
 
     /**
@@ -356,6 +367,7 @@ export class TableWebViewManager {
         }
 
         const columns = await this.resolveResultColumns(result.fields || []);
+        session.columns = columns;
         if (!append && !capabilities) {
             capabilities = await queryRunner.resolveEditPlan(result.fields || []);
         }
@@ -540,22 +552,49 @@ export class TableWebViewManager {
     }
 
     /**
+     * Let the database decide whether an entered value fits its column. The
+     * grid only asks for types it cannot judge itself (timestamps, enums, JSON,
+     * custom types), so this costs one cheap round trip per such edit.
+     */
+    private async handleValidateValue(ctx: MessageContext): Promise<void> {
+        const { session, message, queryRunner } = ctx;
+        const column = session.columns.find((c) => c.name === message.column);
+        const result = column
+            ? await queryRunner.checkValueCast(column.fullType, message.value)
+            : { valid: true };
+        this.post(session, {
+            command: 'validationResult',
+            requestId: message.requestId,
+            valid: result.valid,
+            reason: (result as { reason?: string }).reason
+        });
+    }
+
+    /**
      * Resolve the columns of a custom-query result: map each field's type OID to
      * a type name and look up the column comment for fields that come straight
      * from a table column (`tableID`/`columnID`). This makes the column-comment
      * tooltip work for custom SELECTs too, not just the default table view.
      */
     private async resolveResultColumns(fields: ReadonlyArray<ResultFieldInfo>): Promise<ResultColumn[]> {
-        // Resolve field type OIDs to type names.
-        const oids = fields.map((f) => f.dataTypeID).filter((id: number) => id > 0);
+        // Resolve field type OIDs to type names, and (OID, modifier) pairs to the
+        // type as it is written in DDL: `format_type` is what tells the client
+        // about `varchar(5)` or `numeric(10,2)`, so it can check entered values.
+        const typed = fields.filter((f) => f.dataTypeID > 0);
         const typeMap: Record<number, string> = {};
-        if (oids.length > 0) {
+        const fullTypeMap: Record<string, string> = {};
+        if (typed.length > 0) {
             const typeRows = await this.connectionManager.query(
-                `SELECT oid, typname FROM pg_type WHERE oid = ANY($1)`,
-                [oids]
+                `SELECT u.oid, u.typmod, t.typname, format_type(u.oid, u.typmod) AS full_type
+                 FROM unnest($1::oid[], $2::int4[]) AS u(oid, typmod)
+                 JOIN pg_type t ON t.oid = u.oid`,
+                [typed.map((f) => f.dataTypeID), typed.map((f) => f.dataTypeModifier ?? -1)]
             );
             for (const row of typeRows.rows) {
                 typeMap[row.oid] = row.typname;
+                if (row.full_type) {
+                    fullTypeMap[`${row.oid}:${row.typmod}`] = row.full_type;
+                }
             }
         }
 
@@ -576,7 +615,7 @@ export class TableWebViewManager {
             }
         }
 
-        return buildCustomResultColumns(fields, typeMap, commentMap);
+        return buildCustomResultColumns(fields, typeMap, commentMap, fullTypeMap);
     }
 
     /**
@@ -601,6 +640,7 @@ export class TableWebViewManager {
                 return undefined;
             }
             const columns = await this.resolveResultColumns(probe.fields);
+            session.columns = columns;
             const queryRunner = new QueryRunner(this.connectionManager);
             const capabilities = await queryRunner.resolveEditPlan(probe.fields);
             this.post(session, { command: 'columnsLoaded', columns, capabilities });

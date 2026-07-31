@@ -22,7 +22,10 @@ const {
     describeRowCount,
     columnWriteMode,
     buildCommitWarnings,
-    isSqlEdited
+    isSqlEdited,
+    parsePgType,
+    validateCellValue,
+    describePendingChanges
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== cellToString =====
@@ -719,5 +722,101 @@ test('isSqlEdited ignores pure whitespace and indentation changes', () => {
 
 test('isSqlEdited keeps whitespace inside string literals significant', () => {
     assert.equal(isSqlEdited("UPDATE t SET a = 'x  y';", "UPDATE t SET a = 'x y';"), true);
+});
+
+// ===== 2.2.2: checking an entered value against its column type =====
+
+test('parsePgType splits length, precision and scale off a type name', () => {
+    assert.deepEqual(parsePgType('character varying(5)'), { base: 'character varying', isArray: false, length: 5 });
+    assert.deepEqual(parsePgType('numeric(10,2)'), { base: 'numeric', isArray: false, precision: 10, scale: 2 });
+    assert.deepEqual(parsePgType('numeric(10)'), { base: 'numeric', isArray: false, precision: 10, scale: 0 });
+    assert.deepEqual(parsePgType('timestamp without time zone'), { base: 'timestamp without time zone', isArray: false });
+    assert.deepEqual(parsePgType('text[]'), { base: 'text', isArray: true });
+    assert.deepEqual(parsePgType(''), { base: '', isArray: false });
+});
+
+test('validateCellValue accepts an empty cell as NULL for every type', () => {
+    assert.equal(validateCellValue('', 'integer').state, 'valid');
+    assert.equal(validateCellValue(null, 'timestamp without time zone').state, 'valid');
+});
+
+test('validateCellValue rejects text in an integer column', () => {
+    const result = validateCellValue('abc', 'integer');
+    assert.equal(result.state, 'invalid');
+    assert.match(result.reason, /whole number/);
+    assert.equal(validateCellValue('1.5', 'integer').state, 'invalid');
+    assert.equal(validateCellValue('-42', 'integer').state, 'valid');
+});
+
+test('validateCellValue enforces the range of each integer type', () => {
+    assert.equal(validateCellValue('32767', 'smallint').state, 'valid');
+    const tooBig = validateCellValue('40000', 'smallint');
+    assert.equal(tooBig.state, 'invalid');
+    assert.match(tooBig.reason, /out of range for smallint/);
+    assert.equal(validateCellValue('-32769', 'smallint').state, 'invalid');
+    assert.equal(validateCellValue('40000', 'integer').state, 'valid');
+    assert.equal(validateCellValue('9223372036854775807', 'bigint').state, 'valid');
+    assert.equal(validateCellValue('9223372036854775808', 'bigint').state, 'invalid');
+});
+
+test('validateCellValue checks the digits before the decimal point of a numeric', () => {
+    assert.equal(validateCellValue('12345678.99', 'numeric(10,2)').state, 'valid');
+    const overflow = validateCellValue('123456789.99', 'numeric(10,2)');
+    assert.equal(overflow.state, 'invalid');
+    assert.match(overflow.reason, /at most 8 digit/);
+    assert.equal(validateCellValue('0.99', 'numeric(10,2)').state, 'valid');
+    assert.equal(validateCellValue('abc', 'numeric').state, 'invalid');
+    assert.equal(validateCellValue('NaN', 'numeric').state, 'valid');
+});
+
+test('validateCellValue rejects text that is too long for a varchar column', () => {
+    assert.equal(validateCellValue('12345', 'character varying(5)').state, 'valid');
+    const tooLong = validateCellValue('123456', 'character varying(5)');
+    assert.equal(tooLong.state, 'invalid');
+    assert.match(tooLong.reason, /Too long/);
+    assert.equal(validateCellValue('any length at all', 'text').state, 'valid');
+});
+
+test('validateCellValue counts characters, not bytes, for a varchar column', () => {
+    assert.equal(validateCellValue('äöüß€', 'character varying(5)').state, 'valid');
+});
+
+test('validateCellValue checks booleans and uuids locally', () => {
+    assert.equal(validateCellValue('t', 'boolean').state, 'valid');
+    assert.equal(validateCellValue('maybe', 'boolean').state, 'invalid');
+    assert.equal(validateCellValue('123e4567-e89b-12d3-a456-426614174000', 'uuid').state, 'valid');
+    assert.equal(validateCellValue('not-a-uuid', 'uuid').state, 'invalid');
+});
+
+test('validateCellValue leaves types only Postgres can judge to the database', () => {
+    for (const type of ['timestamp without time zone', 'date', 'interval', 'jsonb', 'my_enum', 'text[]', 'inet']) {
+        assert.equal(validateCellValue('whatever', type).state, 'unknown', type);
+    }
+});
+
+test('validateCellValue asks the database when the column type is unknown', () => {
+    assert.equal(validateCellValue('x', '').state, 'unknown');
+});
+
+// ===== 2.2.2: pending-changes indicator =====
+
+test('describePendingChanges reports nothing to do for an unchanged grid', () => {
+    assert.deepEqual(describePendingChanges({}, 0), {
+        text: 'No pending changes', canCommit: false, canDiscard: false
+    });
+});
+
+test('describePendingChanges lists every kind of pending change', () => {
+    const state = describePendingChanges({ modified: 2, inserted: 1, duplicated: 3, deleted: 4 }, 0);
+    assert.equal(state.text, 'Pending: 2 modified, 1 inserted, 3 duplicated, 4 deleted');
+    assert.equal(state.canCommit, true);
+});
+
+test('describePendingChanges blocks saving while a value is invalid', () => {
+    const state = describePendingChanges({ modified: 3 }, 1);
+    assert.match(state.text, /1 invalid value$/);
+    assert.equal(state.canCommit, false);
+    assert.equal(state.canDiscard, true);
+    assert.match(describePendingChanges({ modified: 3 }, 2).text, /2 invalid values$/);
 });
 

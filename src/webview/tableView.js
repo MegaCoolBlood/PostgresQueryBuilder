@@ -859,6 +859,155 @@ function normalizeCellInput(rawText, isNumeric, thousandSeparator) {
     return raw;
 }
 
+// Value range of the Postgres integer types, as strings because bigint does
+// not fit into a JS number.
+const PG_INTEGER_RANGES = {
+    'smallint': ['-32768', '32767'],
+    'int2': ['-32768', '32767'],
+    'integer': ['-2147483648', '2147483647'],
+    'int': ['-2147483648', '2147483647'],
+    'int4': ['-2147483648', '2147483647'],
+    'bigint': ['-9223372036854775808', '9223372036854775807'],
+    'int8': ['-9223372036854775808', '9223372036854775807']
+};
+
+// Split a type as reported by the database (`format_type`) into the parts a
+// value has to satisfy: 'character varying(5)' -> { base: 'character varying',
+// length: 5 }, 'numeric(10,2)' -> { base: 'numeric', precision: 10, scale: 2 }.
+function parsePgType(fullType) {
+    const raw = String(fullType || '').trim().toLowerCase();
+    if (!raw) return { base: '', isArray: false };
+    const isArray = /\[\s*\]\s*$/.test(raw);
+    const withoutArray = raw.replace(/(\s*\[\s*\])+\s*$/, '');
+    const match = withoutArray.match(/^(.*?)\s*\((\d+)(?:\s*,\s*(\d+))?\)\s*$/);
+    if (!match) {
+        return { base: withoutArray, isArray };
+    }
+    const base = match[1];
+    const first = parseInt(match[2], 10);
+    const second = match[3] === undefined ? undefined : parseInt(match[3], 10);
+    if (base === 'numeric' || base === 'decimal') {
+        return { base, isArray, precision: first, scale: second === undefined ? 0 : second };
+    }
+    return { base, isArray, length: first };
+}
+
+// Compare two integers given as digit strings (may exceed Number precision).
+function compareIntegerStrings(a, b) {
+    const left = BigInt(a);
+    const right = BigInt(b);
+    return left < right ? -1 : (left > right ? 1 : 0);
+}
+
+// Check an entered cell value against the column type the database reported.
+// Returns 'valid', 'invalid' (with a reason to show on the cell) or 'unknown'
+// for every type whose text format only Postgres itself can judge (dates,
+// timestamps, intervals, JSON, enums, domains, ...) - the caller then asks the
+// database. Arrays and NULL are never judged here.
+function validateCellValue(value, fullType) {
+    if (value === null || value === undefined || value === '') {
+        return { state: 'valid' };
+    }
+    const text = String(value);
+    const type = parsePgType(fullType);
+    if (!type.base || type.isArray) {
+        return { state: 'unknown' };
+    }
+
+    const range = PG_INTEGER_RANGES[type.base];
+    if (range) {
+        if (!/^[+-]?\d+$/.test(text.trim())) {
+            return { state: 'invalid', reason: `"${text}" is not a whole number (${type.base})` };
+        }
+        const digits = text.trim();
+        if (compareIntegerStrings(digits, range[0]) < 0 || compareIntegerStrings(digits, range[1]) > 0) {
+            return { state: 'invalid', reason: `${digits} is out of range for ${type.base} (${range[0]} … ${range[1]})` };
+        }
+        return { state: 'valid' };
+    }
+
+    if (type.base === 'numeric' || type.base === 'decimal') {
+        const trimmed = text.trim();
+        if (/^[+-]?(nan|infinity)$/i.test(trimmed)) {
+            return { state: 'valid' };
+        }
+        const num = trimmed.match(/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/);
+        if (!num) {
+            return { state: 'invalid', reason: `"${text}" is not a valid ${type.base} value` };
+        }
+        if (type.precision !== undefined && !/[eE]/.test(trimmed)) {
+            const intDigits = trimmed.replace(/^[+-]/, '').split('.')[0].replace(/^0+(?=\d)/, '');
+            const allowed = type.precision - (type.scale || 0);
+            if (intDigits !== '0' && intDigits.length > allowed) {
+                return { state: 'invalid', reason: `Too large for numeric(${type.precision},${type.scale || 0}): at most ${allowed} digit(s) before the decimal point` };
+            }
+        }
+        return { state: 'valid' };
+    }
+
+    if (type.base === 'real' || type.base === 'double precision' || type.base === 'float4' || type.base === 'float8') {
+        const trimmed = text.trim();
+        if (/^[+-]?(nan|infinity)$/i.test(trimmed)) {
+            return { state: 'valid' };
+        }
+        if (!/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(trimmed)) {
+            return { state: 'invalid', reason: `"${text}" is not a valid ${type.base} value` };
+        }
+        return { state: 'valid' };
+    }
+
+    if (type.base === 'character varying' || type.base === 'varchar' ||
+        type.base === 'character' || type.base === 'char' || type.base === 'bpchar') {
+        if (type.length !== undefined && Array.from(text).length > type.length) {
+            return { state: 'invalid', reason: `Too long for ${type.base}(${type.length}): ${Array.from(text).length} characters` };
+        }
+        return { state: 'valid' };
+    }
+
+    if (type.base === 'text' || type.base === 'name' || type.base === 'citext') {
+        return { state: 'valid' };
+    }
+
+    if (type.base === 'boolean' || type.base === 'bool') {
+        if (!/^(t|f|true|false|y|n|yes|no|on|off|1|0)$/i.test(text.trim())) {
+            return { state: 'invalid', reason: `"${text}" is not a boolean value` };
+        }
+        return { state: 'valid' };
+    }
+
+    if (type.base === 'uuid') {
+        if (!/^\{?[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\}?$/i.test(text.trim())) {
+            return { state: 'invalid', reason: `"${text}" is not a valid uuid` };
+        }
+        return { state: 'valid' };
+    }
+
+    return { state: 'unknown' };
+}
+
+// Text and button state of the pending-changes indicator. Saving is blocked
+// while a cell holds a value the column cannot store.
+function describePendingChanges(counts, invalidCount) {
+    const c = counts || {};
+    const parts = [];
+    if (c.modified > 0) parts.push(`${c.modified} modified`);
+    if (c.inserted > 0) parts.push(`${c.inserted} inserted`);
+    if (c.duplicated > 0) parts.push(`${c.duplicated} duplicated`);
+    if (c.deleted > 0) parts.push(`${c.deleted} deleted`);
+    const invalid = invalidCount || 0;
+    if (parts.length === 0) {
+        return { text: 'No pending changes', canCommit: false, canDiscard: false };
+    }
+    if (invalid > 0) {
+        return {
+            text: `Pending: ${parts.join(', ')} — ${invalid} invalid value${invalid === 1 ? '' : 's'}`,
+            canCommit: false,
+            canDiscard: true
+        };
+    }
+    return { text: `Pending: ${parts.join(', ')}`, canCommit: true, canDiscard: true };
+}
+
 // Build the set of column/value pairs that uniquely identifies a row for an
 // UPDATE/DELETE WHERE clause. Tables with a primary key use only the PK
 // columns. Tables WITHOUT a primary key fall back to matching every column of
@@ -1112,6 +1261,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let deletedRows = new Set();   // rowIndex
     let insertedRows = [];          // [{ row: {col: val, ...}, anchor: number|null }]
     let duplicatedRows = [];        // [{ row: {col: val, ...}, anchor: number|null }]
+    let invalidCells = new Map();  // cell key -> why the column cannot store the value
 
     // Drop every pending (uncommitted) edit. Called whenever a fresh page of
     // data replaces the current rows, so that per-row-index changes are never
@@ -1121,6 +1271,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         deletedRows.clear();
         insertedRows = [];
         duplicatedRows = [];
+        invalidCells.clear();
         selectedRowIdx = null;
     }
 
@@ -1609,6 +1760,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 break;
             case 'error':
                 showError(msg.text);
+                break;
+            case 'validationResult':
+                handleValidationResult(msg);
                 break;
             case 'connectionChanged':
                 currentConnection = msg.connectionName || '';
@@ -2615,7 +2769,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 html += `<td class="actions-cell"><button class="btn btn-danger" onclick="removeInsertedRow(${w.iIdx})">✕</button></td>`;
                 columns.forEach(col => {
                     const val = row[col.name] || '';
-                    html += `<td contenteditable="true" data-insert="${w.iIdx}" data-col="${escapeAttr(col.name)}">${escapeHtml(val)}</td>`;
+                    const invalid = invalidCells.get(`ins:${w.iIdx}:${col.name}`);
+                    html += `<td class="${invalid ? 'cell-invalid' : ''}" ${invalid ? `title="${escapeAttr(invalid)}"` : ''} contenteditable="true" data-insert="${w.iIdx}" data-col="${escapeAttr(col.name)}">${escapeHtml(val)}</td>`;
                 });
                 html += '</tr>';
             } else {
@@ -2625,7 +2780,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 html += `<td class="actions-cell"><button class="btn btn-danger" onclick="removeDuplicatedRow(${w.dIdx})">✕</button></td>`;
                 columns.forEach(col => {
                     const val = row[col.name] !== null && row[col.name] !== undefined ? cellToString(row[col.name]) : '';
-                    html += `<td contenteditable="true" data-dup="${w.dIdx}" data-col="${escapeAttr(col.name)}">${escapeHtml(val)}</td>`;
+                    const invalid = invalidCells.get(`dup:${w.dIdx}:${col.name}`);
+                    html += `<td class="${invalid ? 'cell-invalid' : ''}" ${invalid ? `title="${escapeAttr(invalid)}"` : ''} contenteditable="true" data-dup="${w.dIdx}" data-col="${escapeAttr(col.name)}">${escapeHtml(val)}</td>`;
                 });
                 html += '</tr>';
             }
@@ -2666,7 +2822,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 const modKey = `${idx}:${col.name}`;
                 const currentVal = modifiedCells.has(modKey) ? modifiedCells.get(modKey) : originalVal;
                 const isModifiedCell = modifiedCells.has(modKey);
-                const cellClass = isModifiedCell ? 'cell-modified' : '';
+                const invalidReason = invalidCells.get(modKey);
+                const cellClass = `${isModifiedCell ? 'cell-modified' : ''}${invalidReason ? ' cell-invalid' : ''}`;
                 const displayVal = currentVal === null ? '<span class="null-value">NULL</span>' : (
                     getColumnFilterType(col.dataType) === 'numeric'
                         ? escapeHtml(formatNumberDisplay(currentVal, thousandSeparator))
@@ -2684,7 +2841,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 }
                 const editableAttr = !isDeleted && isColumnEditable(col.name) ? 'true' : 'false';
                 const cellExtraClass = fkBtn ? ' has-fk-btn' : '';
-                html += `<td class="${cellClass}${cellExtraClass}" data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}"><span class="cell-content" contenteditable="${editableAttr}">${displayVal}</span>${fkBtn}</td>`;
+                html += `<td class="${cellClass}${cellExtraClass}" ${invalidReason ? `title="${escapeAttr(invalidReason)}"` : ''} data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}"><span class="cell-content" contenteditable="${editableAttr}">${displayVal}</span>${fkBtn}</td>`;
             });
             html += '</tr>';
 
@@ -2834,9 +2991,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (newValue === original || (newValue === '' && original === null)) {
             modifiedCells.delete(modKey);
             td.classList.remove('cell-modified');
+            setCellValidity(td, modKey, null);
         } else {
             modifiedCells.set(modKey, newValue === '' ? null : newValue);
             td.classList.add('cell-modified');
+            checkCellValue(td, modKey, newValue === '' ? null : newValue);
         }
 
         // Re-format display for numeric columns
@@ -2867,7 +3026,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const colName = td.getAttribute('data-col');
         const colMeta = columns.find(c => c.name === colName);
         const isNumeric = !!colMeta && getColumnFilterType(colMeta.dataType) === 'numeric';
-        rows[idx].row[colName] = normalizeCellInput(td.textContent, isNumeric, thousandSeparator);
+        const value = normalizeCellInput(td.textContent, isNumeric, thousandSeparator);
+        rows[idx].row[colName] = value;
+        checkCellValue(td, `${idxAttr === 'data-insert' ? 'ins' : 'dup'}:${idx}:${colName}`, value);
         updateChangeIndicator();
     }
 
@@ -2877,6 +3038,89 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function handleDupCellEdit(e) {
         applyDataRowCellEdit(e, duplicatedRows, 'data-dup');
+    }
+
+    // Pending database checks, keyed by request id, so a late answer for a cell
+    // that has been edited again in the meantime can be discarded.
+    let validationSeq = 0;
+    const pendingValidations = new Map();
+
+    // Check an edited value against its column type and mark the cell when the
+    // column cannot store it. Types whose text format only Postgres can judge
+    // (timestamps, JSON, enums, ...) are sent to the database for a cast test.
+    function checkCellValue(td, key, value) {
+        const colMeta = columns.find(c => c.name === td.getAttribute('data-col'));
+        const result = colMeta ? validateCellValue(value, colMeta.fullType || colMeta.dataType) : { state: 'valid' };
+        if (result.state === 'unknown') {
+            const requestId = ++validationSeq;
+            pendingValidations.set(requestId, { key, value });
+            vscode.postMessage({ command: 'validateValue', requestId, column: colMeta.name, value });
+            return;
+        }
+        setCellValidity(td, key, result.state === 'invalid' ? result.reason : null);
+    }
+
+    function setCellValidity(td, key, reason) {
+        if (reason) {
+            invalidCells.set(key, reason);
+        } else {
+            invalidCells.delete(key);
+        }
+        if (td) {
+            td.classList.toggle('cell-invalid', !!reason);
+            if (reason) td.setAttribute('title', reason);
+            else td.removeAttribute('title');
+        }
+        updateChangeIndicator();
+    }
+
+    function handleValidationResult(msg) {
+        const pending = pendingValidations.get(msg.requestId);
+        pendingValidations.delete(msg.requestId);
+        if (!pending || currentCellValue(pending.key) !== pending.value) {
+            return; // the cell was edited again; a newer check is on its way
+        }
+        setCellValidity(findCellByKey(pending.key), pending.key, msg.valid ? null : (msg.reason || 'Invalid value'));
+    }
+
+    // The value a cell key currently holds, or undefined when the edit was
+    // reverted or the row is gone.
+    function currentCellValue(key) {
+        const parts = key.split(':');
+        if (parts[0] === 'ins' || parts[0] === 'dup') {
+            const rows = parts[0] === 'ins' ? insertedRows : duplicatedRows;
+            const entry = rows[parseInt(parts[1])];
+            return entry ? entry.row[parts.slice(2).join(':')] : undefined;
+        }
+        return modifiedCells.has(key) ? modifiedCells.get(key) : undefined;
+    }
+
+    function findCellByKey(key) {
+        const parts = key.split(':');
+        const colName = parts[0] === 'ins' || parts[0] === 'dup' ? parts.slice(2).join(':') : parts.slice(1).join(':');
+        const rowSelector = parts[0] === 'ins' ? `[data-insert="${parts[1]}"]`
+            : parts[0] === 'dup' ? `[data-dup="${parts[1]}"]`
+            : `[data-row="${parts[0]}"]`;
+        return tableBody.querySelector(`td${rowSelector}[data-col="${cssEscape(colName)}"]`);
+    }
+
+    function cssEscape(value) {
+        return typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(value) : String(value).replace(/"/g, '\\"');
+    }
+
+    // Keep the invalid-cell keys of inserted/duplicated rows aligned after one
+    // of those rows was removed from its backing array.
+    function reindexInvalidRowKeys(prefix, removedIdx) {
+        const next = new Map();
+        for (const [key, reason] of invalidCells.entries()) {
+            const parts = key.split(':');
+            if (parts[0] !== prefix) { next.set(key, reason); continue; }
+            const idx = parseInt(parts[1]);
+            if (idx === removedIdx) { continue; }
+            const shifted = idx > removedIdx ? idx - 1 : idx;
+            next.set(`${prefix}:${shifted}:${parts.slice(2).join(':')}`, reason);
+        }
+        invalidCells = next;
     }
 
     function hasModifications(rowIdx) {
@@ -2912,12 +3156,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     window.removeInsertedRow = function(idx) {
         insertedRows.splice(idx, 1);
+        reindexInvalidRowKeys('ins', idx);
         renderBody();
         updateRowCount();
     };
 
     window.removeDuplicatedRow = function(idx) {
         duplicatedRows.splice(idx, 1);
+        reindexInvalidRowKeys('dup', idx);
         renderBody();
         updateRowCount();
     };
@@ -2966,21 +3212,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function updateChangeIndicator() {
-        const totalChanges = modifiedCells.size + deletedRows.size + insertedRows.length + duplicatedRows.length;
-        if (totalChanges === 0) {
-            changeCount.textContent = 'No pending changes';
-            commitBtn.disabled = true;
-            discardBtn.disabled = true;
-        } else {
-            const parts = [];
-            if (modifiedCells.size > 0) parts.push(`${modifiedCells.size} modified`);
-            if (insertedRows.length > 0) parts.push(`${insertedRows.length} inserted`);
-            if (duplicatedRows.length > 0) parts.push(`${duplicatedRows.length} duplicated`);
-            if (deletedRows.size > 0) parts.push(`${deletedRows.size} deleted`);
-            changeCount.textContent = `Pending: ${parts.join(', ')}`;
-            commitBtn.disabled = false;
-            discardBtn.disabled = false;
-        }
+        const state = describePendingChanges({
+            modified: modifiedCells.size,
+            inserted: insertedRows.length,
+            duplicated: duplicatedRows.length,
+            deleted: deletedRows.size
+        }, invalidCells.size);
+        changeCount.textContent = state.text;
+        commitBtn.disabled = !state.canCommit;
+        discardBtn.disabled = !state.canDiscard;
     }
 
     let pendingChanges = null;
@@ -2991,6 +3231,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function commitChanges() {
         const totalChanges = modifiedCells.size + deletedRows.size + insertedRows.length + duplicatedRows.length;
         if (totalChanges === 0) return;
+        if (invalidCells.size > 0) {
+            showError('Some cells hold a value their column cannot store. Fix the cells marked in red first.');
+            return;
+        }
 
         // Build updates grouped by row
         const rowUpdates = new Map();
@@ -4366,6 +4610,9 @@ if (typeof module !== 'undefined' && module.exports) {
         describeRowCount,
         columnWriteMode,
         buildCommitWarnings,
-        isSqlEdited
+        isSqlEdited,
+        parsePgType,
+        validateCellValue,
+        describePendingChanges
     };
 }

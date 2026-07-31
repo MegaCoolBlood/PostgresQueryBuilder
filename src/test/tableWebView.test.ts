@@ -14,9 +14,32 @@ test('buildCustomResultColumns resolves type names and column comments', () => {
     const commentMap = { '100:1': 'Primary key', '100:2': 'Display name' };
 
     assert.deepEqual(buildCustomResultColumns(fields, typeMap, commentMap), [
-        { name: 'id', dataType: 'int4', isNullable: true, columnDefault: null, comment: 'Primary key' },
-        { name: 'name', dataType: 'text', isNullable: true, columnDefault: null, comment: 'Display name' }
+        { name: 'id', dataType: 'int4', fullType: 'int4', isNullable: true, columnDefault: null, comment: 'Primary key' },
+        { name: 'name', dataType: 'text', fullType: 'text', isNullable: true, columnDefault: null, comment: 'Display name' }
     ]);
+});
+
+test('buildCustomResultColumns reports the type including its modifier', () => {
+    const fields = [
+        { name: 'code', dataTypeID: 1043, dataTypeModifier: 9, tableID: 1, columnID: 1 },
+        { name: 'amount', dataTypeID: 1700, dataTypeModifier: 655366, tableID: 1, columnID: 2 },
+        { name: 'note', dataTypeID: 25, dataTypeModifier: -1, tableID: 1, columnID: 3 }
+    ];
+    const fullTypeMap = {
+        '1043:9': 'character varying(5)',
+        '1700:655366': 'numeric(10,2)',
+        '25:-1': 'text'
+    };
+    const cols = buildCustomResultColumns(fields, { 1043: 'varchar', 1700: 'numeric', 25: 'text' }, {}, fullTypeMap);
+
+    assert.deepEqual(cols.map(c => c.fullType), ['character varying(5)', 'numeric(10,2)', 'text']);
+    assert.deepEqual(cols.map(c => c.dataType), ['varchar', 'numeric', 'text']);
+});
+
+test('buildCustomResultColumns falls back to the plain type name when no modifier is known', () => {
+    const fields = [{ name: 'x', dataTypeID: 1043, dataTypeModifier: 9 }];
+    const cols = buildCustomResultColumns(fields, { 1043: 'varchar' }, {}, {});
+    assert.equal(cols[0].fullType, 'varchar');
 });
 
 test('buildCustomResultColumns leaves a table column without a comment as null', () => {

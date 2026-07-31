@@ -1,5 +1,5 @@
 import { ConnectionManager } from './connectionManager';
-import { Logger } from './logger';
+import { Logger, getErrorMessage } from './logger';
 import { escapeSqlLiteral, splitSqlStatements } from './sqlUtils';
 import { POSTGRES_RESERVED_KEYWORDS } from './reservedKeywords';
 import {
@@ -168,6 +168,34 @@ export class QueryRunner {
         const { alwaysQuote } = this.getSelectOptions();
         const tableReference = await this.getSelectTableReference(schema, table);
         return { alwaysQuote, tableReference };
+    }
+
+    /**
+     * Ask the database whether `value` can be stored in a column of `typeName`
+     * by letting it cast the text — the only check that is right for every
+     * type, including timestamps, enums, JSON and domains with constraints.
+     */
+    async checkValueCast(typeName: string, value: string | null): Promise<{ valid: boolean; reason?: string }> {
+        if (value === null || value === undefined || !QueryRunner.isPlainTypeName(typeName)) {
+            return { valid: true };
+        }
+        try {
+            await this.connectionManager.query(`SELECT CAST($1::text AS ${typeName})`, [String(value)]);
+            return { valid: true };
+        } catch (err) {
+            const message = getErrorMessage(err).split('\n')[0].trim();
+            return { valid: false, reason: message || `Not a valid ${typeName} value` };
+        }
+    }
+
+    /**
+     * Accept only the shape `format_type()` produces for built-in and plain
+     * user types (`numeric(10,2)`, `timestamp without time zone`, `text[]`), so
+     * a type name can never smuggle SQL into the cast above.
+     */
+    static isPlainTypeName(typeName: string): boolean {
+        return typeof typeName === 'string'
+            && /^[a-z_][a-z0-9_ ]*(\(\d+(\s*,\s*\d+)?\))?(\s*\[\])*$/i.test(typeName.trim());
     }
 
     async getColumns(schema: string, table: string): Promise<ColumnInfo[]> {

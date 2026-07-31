@@ -820,6 +820,48 @@ test('generateSQL emits the statements of every target', () => {
     );
 });
 
+// ===== 2.2.2: letting the database check an entered value =====
+
+test('isPlainTypeName accepts the type names format_type() produces', () => {
+    for (const name of ['integer', 'character varying(5)', 'numeric(10,2)', 'timestamp without time zone', 'text[]', 'my_type']) {
+        assert.equal(QueryRunner.isPlainTypeName(name), true, name);
+    }
+});
+
+test('isPlainTypeName rejects anything that could smuggle SQL into a cast', () => {
+    for (const name of ['text); DROP TABLE users --', "text'", '"MySchema".mytype', 'text; SELECT 1', '']) {
+        assert.equal(QueryRunner.isPlainTypeName(name), false, name);
+    }
+});
+
+test('checkValueCast asks the database to cast the value to the column type', async () => {
+    const { runner, queryCalls } = createRunner({});
+    const result = await runner.checkValueCast('smallint', '42');
+
+    assert.deepEqual(result, { valid: true });
+    assert.equal(queryCalls[0].sql, 'SELECT CAST($1::text AS smallint)');
+    assert.deepEqual(queryCalls[0].params, ['42']);
+});
+
+test('checkValueCast reports the database error as the reason', async () => {
+    const { runner } = createRunner({
+        queryHandler: () => { throw new Error('invalid input syntax for type timestamp: "31-31-2024"\nLINE 1: ...'); }
+    });
+
+    const result = await runner.checkValueCast('timestamp without time zone', '31-31-2024');
+
+    assert.equal(result.valid, false);
+    assert.equal(result.reason, 'invalid input syntax for type timestamp: "31-31-2024"');
+});
+
+test('checkValueCast skips NULL and unsafe type names without querying', async () => {
+    const { runner, queryCalls } = createRunner({});
+
+    assert.deepEqual(await runner.checkValueCast('integer', null), { valid: true });
+    assert.deepEqual(await runner.checkValueCast('text); DROP TABLE t --', 'x'), { valid: true });
+    assert.equal(queryCalls.length, 0);
+});
+
 // ===== 2.2.2: executing statements edited in the commit preview =====
 
 test('executeStatements runs every statement of the edited script in one transaction', async () => {
