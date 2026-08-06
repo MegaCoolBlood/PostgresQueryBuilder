@@ -11,6 +11,8 @@
 
 - **The connection form is protected by a content security policy like every other view:** It was the one webview that was still loaded as a raw HTML file, which meant it ran without a CSP and without a script nonce — the protection every other panel already had. It is now built through the same shared document builder, so it gets the strict policy, the nonce and the shared design at once.
 
+- **The design rules are written down instead of living in people's heads:** `STYLEGUIDE.md` describes for contributors and AI assistants how a surface is assembled, which tokens, button classes and layout blocks exist, and how a new icon is drawn. The document is kept honest by tests: a token, button modifier or template placeholder that is added, renamed or removed without updating the guide makes the test suite fail.
+
 ## 2.2.3
 
 - **Queries can be saved with placeholders and run from anywhere:** A query that took effort to write was gone as soon as the panel closed — the history helped only within the same panel, and a recurring query had to be re-typed with different values every time. The Data Viewer now has a *"☆ Save Query"* button that stores the statement under a name, and any `:name` written in the SQL becomes a placeholder that is asked for before the query runs. Saved queries live in a *"Saved Queries"* view in the activity bar and are reachable independently of any table: no panel needs to be open, and *"Run Saved Query"* in the command palette offers the same list. Running one opens a normal Data Viewer panel, so filtering, editing, export and everything else works as usual, and the values entered last are remembered as the defaults for the next run.

@@ -8,6 +8,7 @@ eslint.config.*
 .eslintrc*
 tsconfig.json
 esbuild.js
+STYLEGUIDE.md
 
 # TypeScript sources and the tsc/test output are not needed at runtime: the
 # extension entry point is the bundled dist/extension.js. The webview assets are

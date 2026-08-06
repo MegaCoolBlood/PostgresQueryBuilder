@@ -205,3 +205,4 @@ All commands are available via the Command Palette (`Ctrl+Shift+P`) under the **
 
 - Run `npm run compile` to compile TypeScript
 - Run `npm run test` to execute the automated Node.js test suite
+- Read [STYLEGUIDE.md](STYLEGUIDE.md) before touching any user interface

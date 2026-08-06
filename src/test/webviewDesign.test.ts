@@ -129,3 +129,42 @@ test('the sprite contains no unused symbol', () => {
     const unused = available.filter(name => !all.includes(`#icon-${name}`) && !all.includes(`icon('${name}')`));
     assert.deepEqual(unused, [], `unused sprite symbols: ${unused.join(', ')}`);
 });
+
+// ===== The style guide must keep describing the code it documents =====
+
+const STYLEGUIDE = fs.readFileSync(path.join(ROOT, 'STYLEGUIDE.md'), 'utf8');
+
+test('the style guide documents every design token', () => {
+    const defined = (getSharedStyles().match(/^\s{4}(--[a-z0-9-]+):/gm) || [])
+        .map(m => m.trim().replace(/:$/, ''));
+    assert.ok(defined.length >= 20, 'expected shared.css to define the token block');
+    const undocumented = defined.filter(token => !STYLEGUIDE.includes(token));
+    assert.deepEqual(undocumented, [], `tokens missing from STYLEGUIDE.md: ${undocumented.join(', ')}`);
+});
+
+test('the style guide describes no token that no longer exists', () => {
+    const css = getSharedStyles();
+    const mentioned = [...new Set(STYLEGUIDE.match(/--(?:sp|fs|c|z|radius|font)-[a-z0-9-]+/g) || [])];
+    assert.ok(mentioned.length >= 20, 'expected the guide to list the tokens');
+    const stale = mentioned.filter(token => !css.includes(token + ':'));
+    assert.deepEqual(stale, [], `tokens documented but not defined: ${stale.join(', ')}`);
+});
+
+test('the style guide describes every button modifier that exists', () => {
+    const modifiers = [...new Set((getSharedStyles().match(/^\.btn[a-z-]*/gm) || []))];
+    const undocumented = modifiers.filter(cls => !STYLEGUIDE.includes(cls));
+    assert.deepEqual(undocumented, [], `button classes missing from STYLEGUIDE.md: ${undocumented.join(', ')}`);
+});
+
+test('the placeholders named by the style guide exist in the data viewer template', () => {
+    const html = fs.readFileSync(path.join(WEBVIEW, 'tableView.html'), 'utf8');
+    for (const placeholder of [
+        '/* SHARED_CSS_PLACEHOLDER */',
+        '/* CSS_PLACEHOLDER */',
+        '/* JS_PLACEHOLDER */',
+        '<!-- ICON_SPRITE_PLACEHOLDER -->'
+    ]) {
+        assert.ok(STYLEGUIDE.includes(placeholder), `${placeholder} is not documented`);
+        assert.ok(html.includes(placeholder), `${placeholder} is documented but absent from tableView.html`);
+    }
+});
