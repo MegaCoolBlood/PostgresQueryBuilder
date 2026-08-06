@@ -218,37 +218,37 @@
       "view/item/context": [
         {
           "command": "postgresQueryBuilder.runSavedQuery",
-          "when": "view == postgresSavedQueries && viewItem == savedQuery",
+          "when": "view == postgresSavedQueries && viewItem =~ /^savedQuery\\./",
           "group": "inline"
         },
         {
           "command": "postgresQueryBuilder.renameSavedQuery",
-          "when": "view == postgresSavedQueries && viewItem == savedQuery",
+          "when": "view == postgresSavedQueries && viewItem =~ /^savedQuery\\./",
           "group": "1_modify@1"
         },
         {
           "command": "postgresQueryBuilder.editSavedQuerySql",
-          "when": "view == postgresSavedQueries && viewItem == savedQuery",
+          "when": "view == postgresSavedQueries && viewItem =~ /^savedQuery\\./",
           "group": "1_modify@2"
         },
         {
           "command": "postgresQueryBuilder.duplicateSavedQuery",
-          "when": "view == postgresSavedQueries && viewItem == savedQuery",
+          "when": "view == postgresSavedQueries && viewItem =~ /^savedQuery\\./",
           "group": "1_modify@3"
         },
         {
           "command": "postgresQueryBuilder.moveSavedQueryToWorkspace",
-          "when": "view == postgresSavedQueries && viewItem == savedQuery",
+          "when": "view == postgresSavedQueries && viewItem == savedQuery.global",
           "group": "2_scope@1"
         },
         {
           "command": "postgresQueryBuilder.moveSavedQueryToGlobal",
-          "when": "view == postgresSavedQueries && viewItem == savedQuery",
+          "when": "view == postgresSavedQueries && viewItem == savedQuery.workspace",
           "group": "2_scope@2"
         },
         {
           "command": "postgresQueryBuilder.deleteSavedQuery",
-          "when": "view == postgresSavedQueries && viewItem == savedQuery",
+          "when": "view == postgresSavedQueries && viewItem =~ /^savedQuery\\./",
           "group": "3_delete@1"
         }
       ],

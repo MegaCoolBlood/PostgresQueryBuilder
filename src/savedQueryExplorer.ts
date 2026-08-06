@@ -30,6 +30,11 @@ export function describeParameters(query: SavedQuery): string {
     return params.map(p => `:${p.name}`).join(', ');
 }
 
+/** Context value carrying the scope, so the menu can offer only the move that applies. */
+export function savedQueryContextValue(query: SavedQuery): string {
+    return `savedQuery.${query.scope === 'workspace' ? 'workspace' : 'global'}`;
+}
+
 /**
  * Lists the saved queries in the activity bar. Queries are grouped by scope as
  * soon as both scopes are in use, so a shared workspace file is visibly
@@ -58,9 +63,9 @@ export class SavedQueryExplorerProvider implements vscode.TreeDataProvider<Saved
         const query = element.query;
         const item = new vscode.TreeItem(query.name, vscode.TreeItemCollapsibleState.None);
         item.iconPath = new vscode.ThemeIcon('bookmark');
-        item.contextValue = 'savedQuery';
+        item.contextValue = savedQueryContextValue(query);
         item.description = describeParameters(query);
-        item.tooltip = describeSavedQuery(query);
+        item.tooltip = `${GROUP_LABEL[query.scope === 'workspace' ? 'workspace' : 'global']}\n${describeSavedQuery(query)}`;
         item.command = {
             command: 'postgresQueryBuilder.runSavedQuery',
             title: 'Run Saved Query',

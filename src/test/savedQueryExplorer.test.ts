@@ -5,10 +5,13 @@ import {
     SavedQueryExplorerProvider,
     describeSavedQuery,
     describeParameters,
+    savedQueryContextValue,
     SavedQueryTreeNode
 } from '../savedQueryExplorer';
 import { SavedQuery, SavedQueryStore } from '../savedQueryStore';
 import * as vscode from 'vscode';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 function makeQuery(over: Partial<SavedQuery> = {}): SavedQuery {
     return {
@@ -57,6 +60,17 @@ test('describeParameters lists the placeholders', () => {
 
 test('describeParameters is empty without placeholders', () => {
     assert.equal(describeParameters(makeQuery()), '');
+});
+
+// ===== savedQueryContextValue =====
+
+test('savedQueryContextValue reflects the scope', () => {
+    assert.equal(savedQueryContextValue(makeQuery({ scope: 'workspace' })), 'savedQuery.workspace');
+    assert.equal(savedQueryContextValue(makeQuery({ scope: 'global' })), 'savedQuery.global');
+});
+
+test('savedQueryContextValue treats a query without scope as personal', () => {
+    assert.equal(savedQueryContextValue(makeQuery({ scope: undefined })), 'savedQuery.global');
 });
 
 // ===== getChildren =====
@@ -111,10 +125,32 @@ test('getTreeItem wires a query to the run command', () => {
     const query = makeQuery({ id: 'x1', name: 'Orders', parameters: [{ name: 'from', kind: 'text' }] });
     const item = new SavedQueryExplorerProvider(store).getTreeItem({ type: 'query', query });
     assert.equal(item.label, 'Orders');
-    assert.equal(item.contextValue, 'savedQuery');
+    assert.equal(item.contextValue, 'savedQuery.global');
     assert.equal(item.description, ':from');
     assert.equal(item.command?.command, 'postgresQueryBuilder.runSavedQuery');
     assert.deepEqual(item.command?.arguments, ['x1']);
+});
+
+test('getTreeItem marks a workspace query so only its move stays available', () => {
+    const { store } = createFakeStore([]);
+    const item = new SavedQueryExplorerProvider(store).getTreeItem({
+        type: 'query',
+        query: makeQuery({ scope: 'workspace' })
+    });
+    assert.equal(item.contextValue, 'savedQuery.workspace');
+});
+
+test('getTreeItem names the scope in the tooltip', () => {
+    const { store } = createFakeStore([]);
+    const provider = new SavedQueryExplorerProvider(store);
+    assert.equal(
+        provider.getTreeItem({ type: 'query', query: makeQuery({ scope: 'workspace', sql: 'SELECT 1' }) }).tooltip,
+        'Workspace\nSELECT 1'
+    );
+    assert.equal(
+        provider.getTreeItem({ type: 'query', query: makeQuery({ sql: 'SELECT 1' }) }).tooltip,
+        'Personal\nSELECT 1'
+    );
 });
 
 test('getTreeItem marks a group with its scope', () => {
@@ -136,4 +172,19 @@ test('a store change refreshes the tree', () => {
     provider.onDidChangeTreeData(() => { fired++; });
     fire();
     assert.equal(fired, 1);
+});
+
+// ===== menu contract =====
+
+test('the move commands are bound to the opposite scope in package.json', () => {
+    const pkg = JSON.parse(
+        readFileSync(join(__dirname, '../../../package.json'), 'utf8')
+    );
+    const items: any[] = pkg.contributes.menus['view/item/context'];
+    const whenOf = (command: string) => items.find(i => i.command === command)?.when;
+    assert.match(whenOf('postgresQueryBuilder.moveSavedQueryToWorkspace'), /viewItem == savedQuery\.global/);
+    assert.match(whenOf('postgresQueryBuilder.moveSavedQueryToGlobal'), /viewItem == savedQuery\.workspace/);
+    for (const command of ['runSavedQuery', 'renameSavedQuery', 'deleteSavedQuery']) {
+        assert.match(whenOf(`postgresQueryBuilder.${command}`), /savedQuery\\\./, command);
+    }
 });
