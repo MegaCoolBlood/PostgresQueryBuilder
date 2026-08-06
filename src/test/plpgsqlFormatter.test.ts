@@ -1876,3 +1876,53 @@ test('puts each AND on its own indented line, except the AND of BETWEEN', () => 
 test('keeps INSERT INTO on one line (does not break before INTO)', () => {
     assert.equal(formatSql('insert into t (a) values (1);'), 'INSERT INTO t(a)\nVALUES (1);');
 });
+
+// ===== 2.2.2: backslashes in ordinary string literals =====
+
+test("treats a lone backslash literal as closed (LIKE ... ESCAPE '\\')", () => {
+    // With standard_conforming_strings a backslash carries no escaping meaning in
+    // a plain literal, so '\' is a complete string. Treating it as an escape used
+    // to swallow the closing quote and desynchronise everything after it.
+    const src = "select a from t where x like 'W\\_%' escape '\\'; select b from u;";
+    const res = formatSqlChecked(src);
+    assert.ok(res.ok, 'literal with a trailing backslash must not trip the safety net: ' + res.reason);
+    assert.equal(
+        res.text,
+        "SELECT a FROM t WHERE x LIKE 'W\\_%' escape '\\';\nSELECT b FROM u;"
+    );
+});
+
+test('formats statements that follow a backslash literal', () => {
+    const src = [
+        "select a from t where x like 'W\\_%' escape '\\';",
+        "select 'DISPLAY_' || b as c from u where d = 1;",
+    ].join('\n');
+    const res = formatSqlChecked(src);
+    assert.ok(res.ok, res.reason);
+    // The second statement is formatted (keywords upper-cased) and its string
+    // literal is copied through byte for byte.
+    assert.ok(res.text.includes("SELECT 'DISPLAY_' || b AS c"), res.text);
+    assert.ok(!res.text.includes("' DISPLAY_ '"), 'string literals must never be rewritten\n' + res.text);
+});
+
+test('keeps a Windows path literal intact', () => {
+    const res = formatSqlChecked("select 'C:\\temp\\' as p, 1 as q;");
+    assert.ok(res.ok, res.reason);
+    assert.ok(res.text.includes("'C:\\temp\\'"), res.text);
+    assert.ok(res.text.includes('1 AS q'), 'the rest of the statement is still formatted\n' + res.text);
+});
+
+test("still honours backslash escapes inside E'...' literals", () => {
+    // E'\'' is one string: the backslash escapes the quote.
+    const res = formatSqlChecked("select E'\\'' as a, 2 as b;");
+    assert.ok(res.ok, res.reason);
+    assert.ok(res.text.includes("E'\\''"), res.text);
+    assert.ok(res.text.includes('2 AS b'), res.text);
+    // E'\n' is passed through unchanged as a single token.
+    assert.equal(formatSql("select E'\\n';"), "SELECT E'\\n';");
+});
+
+test('does not apply backslash escapes to B/X/U& literals', () => {
+    assert.equal(formatSql("select x'ff' as a;"), "SELECT x'ff' AS a;");
+    assert.equal(formatSql("select b'1010' as a;"), "SELECT b'1010' AS a;");
+});

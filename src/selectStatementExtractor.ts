@@ -118,11 +118,11 @@ export function maskSql(text: string): string {
             i = j;
             continue;
         }
-        // Single-quoted string (handles '' and backslash escapes)
+        // Single-quoted string. A backslash is an ordinary character here
+        // (standard_conforming_strings); only a doubled quote continues it.
         if (c === "'") {
             let j = i + 1;
             while (j < n) {
-                if (text[j] === '\\') { j += 2; continue; }
                 if (text[j] === "'") {
                     if (text[j + 1] === "'") { j += 2; continue; }
                     j++;

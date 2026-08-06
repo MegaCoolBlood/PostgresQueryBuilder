@@ -599,9 +599,11 @@ function tokenize(input: string): Tok[] {
             if ((lc === 'e' || lc === 'b' || lc === 'x') && c2 === "'") pfx = 1;
             else if (lc === 'u' && c2 === '&' && input[i + 2] === "'") pfx = 2;
             if (pfx) {
+                // Only E'...' gives a backslash its escaping meaning.
+                const backslashEscapes = lc === 'e';
                 let j = i + pfx + 1;
                 while (j < n) {
-                    if (input[j] === '\\') { j += 2; continue; }
+                    if (backslashEscapes && input[j] === '\\') { j += 2; continue; }
                     if (input[j] === "'") {
                         if (input[j + 1] === "'") { j += 2; continue; }
                         j++; break;
@@ -612,11 +614,12 @@ function tokenize(input: string): Tok[] {
                 nl = 0; i = j; continue;
             }
         }
-        // Single-quoted string
+        // Single-quoted string. With standard_conforming_strings (the default
+        // since PostgreSQL 9.1) a backslash is an ordinary character here, so
+        // `'\'` is a complete literal - only a doubled quote continues it.
         if (c === "'") {
             let j = i + 1;
             while (j < n) {
-                if (input[j] === '\\') { j += 2; continue; }
                 if (input[j] === "'") {
                     if (input[j + 1] === "'") { j += 2; continue; }
                     j++; break;

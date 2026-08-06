@@ -37,6 +37,14 @@ test('maskSql blanks dollar-quoted strings', () => {
     assert.ok(masked.includes('FROM t'));
 });
 
+test('maskSql ends a literal at a backslash-quote pair', () => {
+    // A backslash is an ordinary character in a plain literal, so '\' closes it.
+    const sql = "SELECT a FROM t WHERE x LIKE 'W\\_%' ESCAPE '\\' AND y = 1";
+    const masked = maskSql(sql);
+    assert.equal(masked.length, sql.length);
+    assert.ok(masked.includes('AND y = 1'), 'text after the literal must stay visible: ' + masked);
+});
+
 // ===== findVariableTokens =====
 
 test('findVariableTokens skips keywords, qualified columns and tables', () => {
