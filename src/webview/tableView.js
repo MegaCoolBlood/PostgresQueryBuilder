@@ -626,6 +626,35 @@ function buildConstraintWhere(conditions, formatCol) {
         .join(' AND ');
 }
 
+// Directions offered in the permanent-sort editor.
+const CONSTRAINT_SORT_DIRECTIONS = ['ASC', 'DESC'];
+
+// Render one permanent sort entry to SQL text. Returns '' when no column is
+// selected, so incomplete rows are skipped.
+function formatConstraintSort(sort, formatCol) {
+    if (!sort) {
+        return '';
+    }
+    const col = (sort.column || '').trim();
+    if (!col) {
+        return '';
+    }
+    const direction = String(sort.direction || '').toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+    const left = formatCol ? formatCol(col) : col;
+    return `${left} ${direction}`;
+}
+
+// Join all permanent sort entries into a single ORDER BY clause body.
+function buildConstraintOrderBy(sorts, formatCol) {
+    if (!Array.isArray(sorts)) {
+        return '';
+    }
+    return sorts
+        .map((s) => formatConstraintSort(s, formatCol))
+        .filter((s) => s)
+        .join(', ');
+}
+
 // Build the explicit column list used by the default table-view query. Instead
 // of a `*` wildcard the query bar lists every column by name. When the columns
 // are not yet known (empty list) it falls back to `*` so the query bar still
@@ -1232,6 +1261,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // Permanent per-table WHERE constraints (array of ConstraintCondition).
     // Applied to the default table view's query every time it loads.
     let permanentConstraints = [];
+    // Permanent per-table ORDER BY entries ({ column, direction }), applied to
+    // the default table view's query alongside the constraints.
+    let permanentSorts = [];
     let lastUsedConnection = '';
     let currentConnection = '';
     // What the current result allows. Derived by the extension from the source
@@ -1791,6 +1823,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         tableReference = msg.tableReference || '';
         alwaysQuote = Boolean(msg.alwaysQuote);
         permanentConstraints = Array.isArray(msg.permanentConstraints) ? msg.permanentConstraints : [];
+        permanentSorts = Array.isArray(msg.permanentSorts) ? msg.permanentSorts : [];
         if (msg.thousandSeparator !== undefined) { thousandSeparator = msg.thousandSeparator; }
         if (typeof msg.connectionName === 'string') {
             currentConnection = msg.connectionName;
@@ -1858,6 +1891,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         tableReference = msg.tableReference || '';
         if (msg.alwaysQuote !== undefined) { alwaysQuote = Boolean(msg.alwaysQuote); }
         if (Array.isArray(msg.permanentConstraints)) { permanentConstraints = msg.permanentConstraints; }
+        if (Array.isArray(msg.permanentSorts)) { permanentSorts = msg.permanentSorts; }
     }
 
     function handleRowsLoaded(msg) {
@@ -3388,12 +3422,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const constraintsDialogClose = document.getElementById('constraintsDialogClose');
     const constraintsList = document.getElementById('constraintsList');
     const constraintsAdd = document.getElementById('constraintsAdd');
+    const constraintSortsList = document.getElementById('constraintSortsList');
+    const constraintSortsAdd = document.getElementById('constraintSortsAdd');
     const constraintsSave = document.getElementById('constraintsSave');
     const constraintsCancel = document.getElementById('constraintsCancel');
     const constraintsPreview = document.getElementById('constraintsPreview');
 
     // Working copy edited in the dialog; committed to permanentConstraints on Save.
     let constraintDraft = [];
+    // Working copy of the permanent ORDER BY entries, committed on Save.
+    let constraintSortDraft = [];
 
     if (constraintsBtn) constraintsBtn.addEventListener('click', openConstraintsDialog);
     if (constraintsDialogClose) constraintsDialogClose.addEventListener('click', closeConstraintsDialog);
@@ -3404,12 +3442,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         constraintDraft.push({ operator: '=', left, right: { kind: 'raw', text: '' } });
         renderConstraintRows();
     });
+    if (constraintSortsAdd) constraintSortsAdd.addEventListener('click', () => {
+        const cols = columns || [];
+        constraintSortDraft.push({ column: cols.length ? cols[0].name : '', direction: 'ASC' });
+        renderConstraintSortRows();
+    });
     if (constraintsSave) constraintsSave.addEventListener('click', saveConstraints);
 
     function openConstraintsDialog() {
         // Deep-clone current constraints into a draft so Cancel discards edits.
         constraintDraft = JSON.parse(JSON.stringify(permanentConstraints || []));
+        constraintSortDraft = JSON.parse(JSON.stringify(permanentSorts || []));
         renderConstraintRows();
+        renderConstraintSortRows();
         constraintsDialogOverlay.style.display = 'flex';
     }
 
@@ -3516,15 +3561,70 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function updateConstraintPreview() {
         const where = buildConstraintWhere(constraintDraft, formatIdentifier);
-        constraintsPreview.textContent = where
-            ? `SELECT * FROM ${getDefaultTableReference()} WHERE ${where}`
-            : `SELECT * FROM ${getDefaultTableReference()}`;
+        const orderBy = buildConstraintOrderBy(constraintSortDraft, formatIdentifier);
+        constraintsPreview.textContent = `SELECT * FROM ${getDefaultTableReference()}`
+            + (where ? ` WHERE ${where}` : '')
+            + (orderBy ? ` ORDER BY ${orderBy}` : '');
+    }
+
+    function renderConstraintSortRows() {
+        if (!constraintSortsList) return;
+        const cols = columns || [];
+        let html = '';
+        constraintSortDraft.forEach((s, si) => {
+            const known = cols.some(c => c.name === s.column);
+            const colOpts = cols.map(c =>
+                '<option value="' + escapeAttr(c.name) + '" ' + (c.name === s.column ? 'selected' : '') + '>' + escapeHtml(c.name) + '</option>'
+            ).join('');
+            // Keep a stored column that is not part of the current result, so
+            // switching queries does not silently drop it.
+            const missingOpt = (!known && s.column)
+                ? '<option value="' + escapeAttr(s.column) + '" selected>' + escapeHtml(s.column) + '</option>'
+                : '';
+            const dirOpts = CONSTRAINT_SORT_DIRECTIONS.map(d =>
+                '<option ' + (d === String(s.direction || '').toUpperCase() ? 'selected' : '') + '>' + d + '</option>'
+            ).join('');
+            html += '<div class="cond-row">' +
+                '<select class="operand-kind" data-sort-col="' + si + '">' + missingOpt + colOpts + '</select>' +
+                '<select class="operand-operator" data-sort-dir="' + si + '">' + dirOpts + '</select>' +
+                '<button class="btn btn-default" data-sort-rm="' + si + '">Remove</button>' +
+                '</div>';
+        });
+        constraintSortsList.innerHTML = html;
+        bindConstraintSortRows();
+        updateConstraintPreview();
+    }
+
+    function bindConstraintSortRows() {
+        constraintSortsList.querySelectorAll('[data-sort-col]').forEach(seln => {
+            seln.onchange = () => {
+                constraintSortDraft[Number(seln.dataset.sortCol)].column = seln.value;
+                updateConstraintPreview();
+            };
+        });
+        constraintSortsList.querySelectorAll('[data-sort-dir]').forEach(seln => {
+            seln.onchange = () => {
+                constraintSortDraft[Number(seln.dataset.sortDir)].direction = seln.value;
+                updateConstraintPreview();
+            };
+        });
+        constraintSortsList.querySelectorAll('[data-sort-rm]').forEach(b => {
+            b.onclick = () => {
+                constraintSortDraft.splice(Number(b.dataset.sortRm), 1);
+                renderConstraintSortRows();
+            };
+        });
     }
 
     function saveConstraints() {
         // Drop incomplete rows so persisted constraints always format to SQL.
         permanentConstraints = constraintDraft.filter(c => formatConstraintCondition(c, formatIdentifier));
-        vscode.postMessage({ command: 'savePermanentConstraints', conditions: permanentConstraints });
+        permanentSorts = constraintSortDraft.filter(s => formatConstraintSort(s, formatIdentifier));
+        vscode.postMessage({
+            command: 'savePermanentConstraints',
+            conditions: permanentConstraints,
+            sorts: permanentSorts
+        });
         closeConstraintsDialog();
         setQueryText(getDefaultQuery());
         runQuery();
@@ -3730,13 +3830,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return buildConstraintWhere(permanentConstraints, formatIdentifier);
     }
 
-    // The default table-view query including any permanent WHERE constraints.
-    // Lists all known columns explicitly instead of `*` (falls back to `*`
-    // while column metadata is still loading).
+    // SQL ORDER BY body for the permanent sorts, or '' when none apply.
+    function getDefaultOrderBy() {
+        return buildConstraintOrderBy(permanentSorts, formatIdentifier);
+    }
+
+    // The default table-view query including any permanent WHERE constraints
+    // and ORDER BY entries. Lists all known columns explicitly instead of `*`
+    // (falls back to `*` while column metadata is still loading).
     function getDefaultQuery() {
         const where = getDefaultWhere();
+        const orderBy = getDefaultOrderBy();
         const columnList = buildSelectColumnList(columns, formatIdentifier);
-        return `SELECT ${columnList} FROM ${getDefaultTableReference()}${where ? ` WHERE ${where}` : ''}`;
+        return `SELECT ${columnList} FROM ${getDefaultTableReference()}`
+            + (where ? ` WHERE ${where}` : '')
+            + (orderBy ? ` ORDER BY ${orderBy}` : '');
     }
 
     // NOTE: Keep in sync with formatIdentifier/needsQuoting in src/queryRunner.ts
@@ -4600,6 +4708,9 @@ if (typeof module !== 'undefined' && module.exports) {
         formatConstraintOperand,
         formatConstraintCondition,
         buildConstraintWhere,
+        CONSTRAINT_SORT_DIRECTIONS,
+        formatConstraintSort,
+        buildConstraintOrderBy,
         buildSelectColumnList,
         buildColumnHeaderTitle,
         computeResizedRowHeight,

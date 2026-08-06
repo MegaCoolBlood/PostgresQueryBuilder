@@ -20,7 +20,7 @@
                 <button class="btn btn-primary" id="insertRowBtn" title="Insert new row">+ Insert Row</button>
                 <button class="btn btn-success" id="commitBtn" title="Save all changes" disabled>Save</button>
                 <button class="btn btn-warning" id="discardBtn" title="Discard all changes" disabled>Discard Changes</button>
-                <button class="btn btn-default" id="constraintsBtn" title="Add permanent constraints applied every time this table is viewed">Constraints</button>
+                <button class="btn btn-default" id="constraintsBtn" title="Add permanent constraints and sorting applied every time this table is viewed">Constraints</button>
                 <button class="btn btn-default" id="exportBtn" title="Export data">Export</button>
                 <button class="btn btn-default" id="loadMoreBtn" title="Load more rows">Load More</button>
                 <button class="btn btn-default" id="loadAllBtn" title="Load all remaining rows">Load All</button>
@@ -300,7 +300,7 @@
     <div class="sql-dialog-overlay" id="constraintsDialogOverlay" style="display:none;">
         <div class="sql-dialog constraints-dialog">
             <div class="sql-dialog-header">
-                <span>Permanent Constraints</span>
+                <span>Permanent Constraints &amp; Sorting</span>
                 <button class="sql-dialog-close" id="constraintsDialogClose">&times;</button>
             </div>
             <div class="constraints-dialog-content">
@@ -308,6 +308,11 @@
                 <div id="constraintsList"></div>
                 <div class="cond-row">
                     <button class="btn btn-default" id="constraintsAdd">+ Add fixed condition</button>
+                </div>
+                <p class="mapping-hint">These columns are applied to the ORDER BY clause every time you open this table.</p>
+                <div id="constraintSortsList"></div>
+                <div class="cond-row">
+                    <button class="btn btn-default" id="constraintSortsAdd">+ Add sort column</button>
                 </div>
                 <div class="constraints-preview-wrap">
                     <label>Preview:</label>

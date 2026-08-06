@@ -21,13 +21,20 @@ export interface ConstraintCondition {
     right2?: ConstraintOperand;
 }
 
+/** One entry of a permanent ORDER BY clause. */
+export interface ConstraintSort {
+    column: string;
+    direction: 'ASC' | 'DESC';
+}
+
 /**
- * Persists per-table permanent WHERE constraints in the extension's global
- * state. When a table is opened in the Data View, its stored constraints are
- * automatically appended to the default query.
+ * Persists per-table permanent WHERE constraints and ORDER BY entries in the
+ * extension's global state. When a table is opened in the Data View, its stored
+ * constraints and sorts are automatically applied to the default query.
  */
 export class PermanentConstraintManager {
     private static readonly STORAGE_KEY = 'permanentConstraints';
+    private static readonly SORT_STORAGE_KEY = 'permanentSorts';
     private readonly context: vscode.ExtensionContext;
 
     constructor(context: vscode.ExtensionContext) {
@@ -63,6 +70,49 @@ export class PermanentConstraintManager {
         }
         await this.context.globalState.update(PermanentConstraintManager.STORAGE_KEY, store);
     }
+
+    private getSortStore(): Record<string, ConstraintSort[]> {
+        return this.context.globalState.get<Record<string, ConstraintSort[]>>(
+            PermanentConstraintManager.SORT_STORAGE_KEY, {}
+        );
+    }
+
+    /** Return the stored sort entries for a table (empty array when none). */
+    getSorts(schema: string, table: string): ConstraintSort[] {
+        const store = this.getSortStore();
+        const list = store[PermanentConstraintManager.key(schema, table)];
+        return Array.isArray(list) ? list : [];
+    }
+
+    /** Replace the sort entries for a table. An empty list removes the entry. */
+    async setSorts(schema: string, table: string, sorts: ConstraintSort[]): Promise<void> {
+        const store = { ...this.getSortStore() };
+        const key = PermanentConstraintManager.key(schema, table);
+        const sanitized = normalizeSorts(sorts);
+        if (sanitized.length === 0) {
+            delete store[key];
+        } else {
+            store[key] = sanitized;
+        }
+        await this.context.globalState.update(PermanentConstraintManager.SORT_STORAGE_KEY, store);
+    }
+}
+
+/** Keep only sort entries with a column name; default the direction to ASC. */
+export function normalizeSorts(sorts: unknown): ConstraintSort[] {
+    if (!Array.isArray(sorts)) {
+        return [];
+    }
+    const result: ConstraintSort[] = [];
+    for (const s of sorts) {
+        const column = typeof s?.column === 'string' ? s.column.trim() : '';
+        if (!column) {
+            continue;
+        }
+        const direction = String(s?.direction || '').toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+        result.push({ column, direction });
+    }
+    return result;
 }
 
 /** Keep only well-formed operands/conditions, dropping incomplete entries. */

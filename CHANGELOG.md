@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.3
+
+- **The Constraints button now also stores a sort order:** The permanent per-table settings could only pin conditions to the `WHERE` clause — a table that is only useful newest-first had to be re-sorted by hand after every open. The dialog (now *"Permanent Constraints & Sorting"*) has a second section where any number of columns can be added with `ASC`/`DESC`; they are stored per table just like the conditions and applied to the default query as an `ORDER BY` clause, after the `WHERE` clause. The preview in the dialog shows the resulting statement including the sorting, incomplete rows are dropped on save, and a stored sort column that is not part of the current result is kept instead of being silently discarded. Sorting and conditions are stored independently, so clearing one does not affect the other.
+
 ## 2.2.2
 
 - **The formatter no longer stops working after a literal that ends with a backslash:** In PostgreSQL a backslash is an ordinary character inside a normal `'…'` literal (`standard_conforming_strings`), but the formatter treated it as an escape. A perfectly valid `LIKE 'W\_%' ESCAPE '\'` therefore swallowed the closing quote, and from that point on the whole file was read with quotes inverted: everything after it was left completely unformatted, and text that was actually inside a string could be reformatted as if it were code — a literal such as `'DISPLAY_'` came back as `' DISPLAY_ '`. Because the safety net compared the input with the output using the same faulty reading, it did not notice. Backslash escapes are now honoured only where PostgreSQL applies them, in `E'…'` literals. The same reading error also affected the detection of the statement under the cursor for *"View Data"* and has been corrected there as well.

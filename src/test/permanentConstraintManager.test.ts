@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import {
     PermanentConstraintManager,
     normalizeConstraints,
-    ConstraintCondition
+    normalizeSorts,
+    ConstraintCondition,
+    ConstraintSort
 } from '../permanentConstraintManager';
 
 function createMockContext() {
@@ -99,4 +101,79 @@ test('setConstraints with only malformed conditions removes the entry', async ()
     ]);
     await manager.setConstraints('public', 'orders', [{ operator: '', left: { kind: 'column', column: '' } } as any]);
     assert.deepEqual(manager.getConstraints('public', 'orders'), []);
+});
+
+// ===== 2.2.3: permanent sort orders =====
+
+test('normalizeSorts returns empty array for non-array input', () => {
+    assert.deepEqual(normalizeSorts(undefined), []);
+    assert.deepEqual(normalizeSorts(null), []);
+    assert.deepEqual(normalizeSorts('nope' as any), []);
+});
+
+test('normalizeSorts keeps well-formed entries', () => {
+    const input: ConstraintSort[] = [
+        { column: 'created_at', direction: 'DESC' },
+        { column: 'name', direction: 'ASC' }
+    ];
+    assert.deepEqual(normalizeSorts(input), input);
+});
+
+test('normalizeSorts defaults an unknown direction to ASC', () => {
+    assert.deepEqual(
+        normalizeSorts([{ column: 'name' }, { column: 'age', direction: 'sideways' }] as any),
+        [{ column: 'name', direction: 'ASC' }, { column: 'age', direction: 'ASC' }]
+    );
+});
+
+test('normalizeSorts accepts a lowercase direction', () => {
+    assert.deepEqual(
+        normalizeSorts([{ column: 'name', direction: 'desc' }] as any),
+        [{ column: 'name', direction: 'DESC' }]
+    );
+});
+
+test('normalizeSorts drops entries without a column name', () => {
+    assert.deepEqual(
+        normalizeSorts([{ column: '', direction: 'ASC' }, { direction: 'DESC' }, { column: '  ' }] as any),
+        []
+    );
+});
+
+test('getSorts returns empty array when nothing is stored', () => {
+    const manager = new PermanentConstraintManager(createMockContext());
+    assert.deepEqual(manager.getSorts('public', 'orders'), []);
+});
+
+test('setSorts persists and getSorts reads them back', async () => {
+    const manager = new PermanentConstraintManager(createMockContext());
+    const sorts: ConstraintSort[] = [{ column: 'created_at', direction: 'DESC' }];
+    await manager.setSorts('public', 'orders', sorts);
+    assert.deepEqual(manager.getSorts('public', 'orders'), sorts);
+});
+
+test('setSorts keys sorts per schema.table', async () => {
+    const manager = new PermanentConstraintManager(createMockContext());
+    await manager.setSorts('public', 'orders', [{ column: 'id', direction: 'ASC' }]);
+    assert.deepEqual(manager.getSorts('public', 'customers'), []);
+});
+
+test('setSorts with only malformed entries removes the entry', async () => {
+    const manager = new PermanentConstraintManager(createMockContext());
+    await manager.setSorts('public', 'orders', [{ column: 'id', direction: 'ASC' }]);
+    await manager.setSorts('public', 'orders', [{ column: '' } as any]);
+    assert.deepEqual(manager.getSorts('public', 'orders'), []);
+});
+
+test('sorts and constraints are stored independently of each other', async () => {
+    const manager = new PermanentConstraintManager(createMockContext());
+    const conditions: ConstraintCondition[] = [
+        { operator: '=', left: { kind: 'column', column: 'status' }, right: { kind: 'raw', text: "'active'" } }
+    ];
+    await manager.setConstraints('public', 'orders', conditions);
+    await manager.setSorts('public', 'orders', [{ column: 'created_at', direction: 'DESC' }]);
+
+    await manager.setSorts('public', 'orders', []);
+    assert.deepEqual(manager.getConstraints('public', 'orders'), conditions);
+    assert.deepEqual(manager.getSorts('public', 'orders'), []);
 });

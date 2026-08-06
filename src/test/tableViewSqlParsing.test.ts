@@ -17,6 +17,9 @@ const {
     formatConstraintOperand,
     formatConstraintCondition,
     buildConstraintWhere,
+    CONSTRAINT_SORT_DIRECTIONS,
+    formatConstraintSort,
+    buildConstraintOrderBy,
     isFreshRowLoad,
     recordFieldReadonlyAttr,
     buildConnectionBadge,
@@ -405,6 +408,63 @@ test('buildConstraintWhere joins multiple conditions with AND and skips incomple
 test('buildConstraintWhere returns empty string for no conditions', () => {
     assert.equal(buildConstraintWhere([], fmtCol), '');
     assert.equal(buildConstraintWhere(undefined, fmtCol), '');
+});
+
+// ===== 2.2.3: permanent per-table sort orders =====
+
+test('CONSTRAINT_SORT_DIRECTIONS offers ASC and DESC', () => {
+    assert.deepEqual(CONSTRAINT_SORT_DIRECTIONS, ['ASC', 'DESC']);
+});
+
+test('formatConstraintSort quotes the column and appends the direction', () => {
+    assert.equal(formatConstraintSort({ column: 'created_at', direction: 'DESC' }, fmtCol), '"created_at" DESC');
+});
+
+test('formatConstraintSort defaults a missing or unknown direction to ASC', () => {
+    assert.equal(formatConstraintSort({ column: 'name' }, fmtCol), '"name" ASC');
+    assert.equal(formatConstraintSort({ column: 'name', direction: 'sideways' }, fmtCol), '"name" ASC');
+});
+
+test('formatConstraintSort accepts a lowercase direction', () => {
+    assert.equal(formatConstraintSort({ column: 'name', direction: 'desc' }, fmtCol), '"name" DESC');
+});
+
+test('formatConstraintSort returns empty string without a column', () => {
+    assert.equal(formatConstraintSort({ column: '', direction: 'ASC' }, fmtCol), '');
+    assert.equal(formatConstraintSort({ column: '   ' }, fmtCol), '');
+    assert.equal(formatConstraintSort(undefined, fmtCol), '');
+});
+
+test('buildConstraintOrderBy joins entries with commas and skips incomplete rows', () => {
+    const sorts = [
+        { column: 'created_at', direction: 'DESC' },
+        { column: '' },
+        { column: 'name', direction: 'ASC' }
+    ];
+    assert.equal(buildConstraintOrderBy(sorts, fmtCol), '"created_at" DESC, "name" ASC');
+});
+
+test('buildConstraintOrderBy returns empty string for no sorts', () => {
+    assert.equal(buildConstraintOrderBy([], fmtCol), '');
+    assert.equal(buildConstraintOrderBy(undefined, fmtCol), '');
+});
+
+test('a default query with constraints and sorts puts WHERE before ORDER BY', () => {
+    const where = buildConstraintWhere(
+        [{ operator: '=', left: { kind: 'column', column: 'status' }, right: { kind: 'raw', text: "'active'" } }],
+        fmtCol
+    );
+    const orderBy = buildConstraintOrderBy([{ column: 'created_at', direction: 'DESC' }], fmtCol);
+    const sql = `SELECT * FROM "t"` + (where ? ` WHERE ${where}` : '') + (orderBy ? ` ORDER BY ${orderBy}` : '');
+    assert.equal(sql, `SELECT * FROM "t" WHERE "status" = 'active' ORDER BY "created_at" DESC`);
+});
+
+test('a permanent ORDER BY survives parseSqlForOrder round-tripping', () => {
+    const orderBy = buildConstraintOrderBy([{ column: 'created_at', direction: 'DESC' }], fmtCol);
+    assert.deepEqual(
+        parseSqlForOrder(`SELECT * FROM "t" ORDER BY ${orderBy} LIMIT 50 OFFSET 0`),
+        { base: 'SELECT * FROM "t"', orderBy: '"created_at" DESC' }
+    );
 });
 
 // ===== 2.1.5: pending edits are discarded when rows are reloaded =====

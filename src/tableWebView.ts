@@ -268,7 +268,8 @@ export class TableWebViewManager {
             alwaysQuote: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false),
             thousandSeparator: vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('thousandSeparator', ' '),
             connectionName: this.getConnectionName(),
-            permanentConstraints: this.permanentConstraintManager.getConstraints(schema, table)
+            permanentConstraints: this.permanentConstraintManager.getConstraints(schema, table),
+            permanentSorts: this.permanentConstraintManager.getSorts(schema, table)
         });
     }
 
@@ -303,7 +304,8 @@ export class TableWebViewManager {
             alwaysQuote: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false),
             thousandSeparator: vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('thousandSeparator', ' '),
             connectionName: this.getConnectionName(),
-            permanentConstraints: []
+            permanentConstraints: [],
+            permanentSorts: []
         });
     }
 
@@ -422,7 +424,7 @@ export class TableWebViewManager {
         session: PanelSession,
         capabilities: ViewCapabilities,
         queryRunner: QueryRunner
-    ): Promise<{ schema: string; table: string; tableReference: string; alwaysQuote: boolean; permanentConstraints: any[] } | undefined> {
+    ): Promise<{ schema: string; table: string; tableReference: string; alwaysQuote: boolean; permanentConstraints: any[]; permanentSorts: any[] } | undefined> {
         if (!capabilities.schema || !capabilities.table) {
             return undefined;
         }
@@ -434,7 +436,8 @@ export class TableWebViewManager {
             table: capabilities.table,
             tableReference: info.tableReference,
             alwaysQuote: info.alwaysQuote,
-            permanentConstraints: this.permanentConstraintManager.getConstraints(capabilities.schema, capabilities.table)
+            permanentConstraints: this.permanentConstraintManager.getConstraints(capabilities.schema, capabilities.table),
+            permanentSorts: this.permanentConstraintManager.getSorts(capabilities.schema, capabilities.table)
         };
     }
 
@@ -708,6 +711,9 @@ export class TableWebViewManager {
         }
         await this.permanentConstraintManager.setConstraints(
             session.schema, session.table, Array.isArray(message.conditions) ? message.conditions : []
+        );
+        await this.permanentConstraintManager.setSorts(
+            session.schema, session.table, Array.isArray(message.sorts) ? message.sorts : []
         );
     }
 
