@@ -44,10 +44,23 @@ class TreeItem {
     }
 }
 
+class DataTransferItem {
+    constructor(public value: any) {}
+    asString(): Promise<string> {
+        return Promise.resolve(String(this.value));
+    }
+}
+
+class DocumentDropEdit {
+    constructor(public insertText: any) {}
+}
+
 const vscodeStub = {
     EventEmitter,
     ThemeIcon,
     TreeItem,
+    DataTransferItem,
+    DocumentDropEdit,
     TreeItemCollapsibleState,
     workspace: {
         workspaceFolders: undefined as any,

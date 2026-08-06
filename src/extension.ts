@@ -11,6 +11,7 @@ import { PermanentConstraintManager } from './permanentConstraintManager';
 import { SavedQueryStore, SavedQuery } from './savedQueryStore';
 import { SavedQueryExplorerProvider } from './savedQueryExplorer';
 import { SavedQueryEditor } from './savedQueryEditor';
+import { SavedQueryDragController, SavedQueryDropProvider } from './savedQueryDrop';
 import { ManageMappingsPanel } from './manageMappingsPanel';
 import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore } from './tableStatementDrop';
@@ -310,7 +311,12 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(treeView);
 
         context.subscriptions.push(
-            vscode.window.createTreeView('postgresSavedQueries', { treeDataProvider: savedQueryExplorer })
+            vscode.window.createTreeView('postgresSavedQueries', {
+                treeDataProvider: savedQueryExplorer,
+                canSelectMany: true,
+                dragAndDropController: new SavedQueryDragController()
+            }),
+            vscode.languages.registerDocumentDropEditProvider('*', new SavedQueryDropProvider(savedQueryStore))
         );
         registerSavedQueryCommands(context);
 
