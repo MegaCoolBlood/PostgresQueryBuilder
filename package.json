@@ -18,6 +18,7 @@
     "onView:postgresTableExplorer",
     "onView:postgresTableSearch",
     "onView:postgresModifyHistory",
+    "onView:postgresSavedQueries",
     "onStartupFinished"
   ],
   "main": "./dist/extension.js",
@@ -46,6 +47,10 @@
           "id": "postgresModifyHistory",
           "name": "Modify History",
           "type": "webview"
+        },
+        {
+          "id": "postgresSavedQueries",
+          "name": "Saved Queries"
         }
       ]
     },
@@ -122,6 +127,54 @@
         "command": "postgresQueryBuilder.exportFormatConfig",
         "title": "Export Formatter Settings to .pgformat.json",
         "category": "PostgreSQL Query Builder"
+      },
+      {
+        "command": "postgresQueryBuilder.runSavedQuery",
+        "title": "Run Saved Query...",
+        "category": "PostgreSQL Query Builder",
+        "icon": "$(play)"
+      },
+      {
+        "command": "postgresQueryBuilder.refreshSavedQueries",
+        "title": "Refresh Saved Queries",
+        "category": "PostgreSQL Query Builder",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "postgresQueryBuilder.renameSavedQuery",
+        "title": "Rename Saved Query...",
+        "category": "PostgreSQL Query Builder"
+      },
+      {
+        "command": "postgresQueryBuilder.editSavedQuerySql",
+        "title": "Edit Saved Query SQL...",
+        "category": "PostgreSQL Query Builder"
+      },
+      {
+        "command": "postgresQueryBuilder.duplicateSavedQuery",
+        "title": "Duplicate Saved Query",
+        "category": "PostgreSQL Query Builder"
+      },
+      {
+        "command": "postgresQueryBuilder.deleteSavedQuery",
+        "title": "Delete Saved Query",
+        "category": "PostgreSQL Query Builder"
+      },
+      {
+        "command": "postgresQueryBuilder.moveSavedQueryToWorkspace",
+        "title": "Move Saved Query to Workspace",
+        "category": "PostgreSQL Query Builder"
+      },
+      {
+        "command": "postgresQueryBuilder.moveSavedQueryToGlobal",
+        "title": "Move Saved Query to Personal",
+        "category": "PostgreSQL Query Builder"
+      },
+      {
+        "command": "postgresQueryBuilder.openSavedQueriesFile",
+        "title": "Open Workspace Saved Queries File",
+        "category": "PostgreSQL Query Builder",
+        "icon": "$(go-to-file)"
       }
     ],
     "menus": {
@@ -140,6 +193,53 @@
           "command": "postgresQueryBuilder.selectConnection",
           "when": "view == postgresTableExplorer",
           "group": "navigation"
+        },
+        {
+          "command": "postgresQueryBuilder.refreshSavedQueries",
+          "when": "view == postgresSavedQueries",
+          "group": "navigation"
+        },
+        {
+          "command": "postgresQueryBuilder.openSavedQueriesFile",
+          "when": "view == postgresSavedQueries",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "postgresQueryBuilder.runSavedQuery",
+          "when": "view == postgresSavedQueries && viewItem == savedQuery",
+          "group": "inline"
+        },
+        {
+          "command": "postgresQueryBuilder.renameSavedQuery",
+          "when": "view == postgresSavedQueries && viewItem == savedQuery",
+          "group": "1_modify@1"
+        },
+        {
+          "command": "postgresQueryBuilder.editSavedQuerySql",
+          "when": "view == postgresSavedQueries && viewItem == savedQuery",
+          "group": "1_modify@2"
+        },
+        {
+          "command": "postgresQueryBuilder.duplicateSavedQuery",
+          "when": "view == postgresSavedQueries && viewItem == savedQuery",
+          "group": "1_modify@3"
+        },
+        {
+          "command": "postgresQueryBuilder.moveSavedQueryToWorkspace",
+          "when": "view == postgresSavedQueries && viewItem == savedQuery",
+          "group": "2_scope@1"
+        },
+        {
+          "command": "postgresQueryBuilder.moveSavedQueryToGlobal",
+          "when": "view == postgresSavedQueries && viewItem == savedQuery",
+          "group": "2_scope@2"
+        },
+        {
+          "command": "postgresQueryBuilder.deleteSavedQuery",
+          "when": "view == postgresSavedQueries && viewItem == savedQuery",
+          "group": "3_delete@1"
         }
       ],
       "editor/context": [
@@ -159,6 +259,10 @@
       {
         "view": "postgresTableExplorer",
         "contents": "Keine aktive PostgreSQL-Verbindung.\n[Verbindung auswählen](command:postgresQueryBuilder.selectConnection)\n[Neue Verbindung](command:postgresQueryBuilder.connect)"
+      },
+      {
+        "view": "postgresSavedQueries",
+        "contents": "No saved queries yet.\nRun a query in the Data Viewer and use \"Save Query\" to store it here. Placeholders written as :name are filled in every time the query runs."
       }
     ],
     "configuration": {
@@ -203,6 +307,11 @@
           "type": "string",
           "default": ".vscode/postgres-query-builder.mappings.json",
           "description": "Workspace-relative path to the JSON file used to share custom column mappings via git. Mappings stored here are visible to everyone who opens the workspace; personal mappings remain in VS Code global state."
+        },
+        "postgresQueryBuilder.savedQueriesFile": {
+          "type": "string",
+          "default": ".vscode/postgres-query-builder.queries.json",
+          "description": "Workspace-relative path to the JSON file used to share saved queries via git. Queries stored here are visible to everyone who opens the workspace; personal queries remain in VS Code global state."
         },
         "postgresQueryBuilder.format.enable": {
           "type": "boolean",

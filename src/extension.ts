@@ -8,6 +8,9 @@ import { ModifyHistoryStore } from './modifyHistoryStore';
 import { ModifyHistoryViewProvider } from './modifyHistoryViewProvider';
 import { ColumnMappingManager } from './columnMappingManager';
 import { PermanentConstraintManager } from './permanentConstraintManager';
+import { SavedQueryStore, SavedQuery } from './savedQueryStore';
+import { SavedQueryExplorerProvider } from './savedQueryExplorer';
+import { SavedQueryEditor } from './savedQueryEditor';
 import { ManageMappingsPanel } from './manageMappingsPanel';
 import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore } from './tableStatementDrop';
@@ -23,6 +26,9 @@ let sqlEditorManager: SqlEditorManager;
 let modifyHistoryStore: ModifyHistoryStore;
 let columnMappingManager: ColumnMappingManager;
 let permanentConstraintManager: PermanentConstraintManager;
+let savedQueryStore: SavedQueryStore;
+let savedQueryExplorer: SavedQueryExplorerProvider;
+let savedQueryEditor: SavedQueryEditor;
 let viewDataFromSelect: ViewDataFromSelect;
 let statusBarItem: vscode.StatusBarItem;
 let outputChannel: vscode.OutputChannel;
@@ -282,7 +288,10 @@ export function activate(context: vscode.ExtensionContext) {
         modifyHistoryStore = new ModifyHistoryStore(context);
         columnMappingManager = new ColumnMappingManager(context);
         permanentConstraintManager = new PermanentConstraintManager(context);
-        tableWebViewManager = new TableWebViewManager(context, connectionManager, columnMappingManager, permanentConstraintManager, modifyHistoryStore);
+        savedQueryStore = new SavedQueryStore(context);
+        savedQueryExplorer = new SavedQueryExplorerProvider(savedQueryStore);
+        savedQueryEditor = new SavedQueryEditor(context, savedQueryStore);
+        tableWebViewManager = new TableWebViewManager(context, connectionManager, columnMappingManager, permanentConstraintManager, modifyHistoryStore, savedQueryStore);
         sqlEditorManager = new SqlEditorManager(context, connectionManager, modifyHistoryStore);
         viewDataFromSelect = new ViewDataFromSelect(context, connectionManager, tableWebViewManager);
 
@@ -299,6 +308,11 @@ export function activate(context: vscode.ExtensionContext) {
             dragAndDropController: new TableDragAndDropController()
         });
         context.subscriptions.push(treeView);
+
+        context.subscriptions.push(
+            vscode.window.createTreeView('postgresSavedQueries', { treeDataProvider: savedQueryExplorer })
+        );
+        registerSavedQueryCommands(context);
 
         // Allow dropping a table from the tree view into any text editor to
         // insert a generated SQL statement at the drop position.
@@ -416,4 +430,153 @@ export function deactivate() {
     if (connectionManager) {
         connectionManager.dispose();
     }
+}
+
+/**
+ * Ask the user to pick a saved query. Returns the picked query, or undefined
+ * when nothing is stored or the pick was cancelled.
+ */
+async function pickSavedQuery(): Promise<SavedQuery | undefined> {
+    const queries = savedQueryStore.getAll();
+    if (queries.length === 0) {
+        vscode.window.showInformationMessage(
+            'No saved queries yet. Use "Save Query" in the Data Viewer to store one.'
+        );
+        return undefined;
+    }
+    const picked = await vscode.window.showQuickPick(
+        queries.map(q => ({
+            label: q.name,
+            description: q.scope === 'workspace' ? 'Workspace' : 'Personal',
+            detail: q.sql.replace(/\s+/g, ' ').trim(),
+            query: q
+        })),
+        { placeHolder: 'Select a saved query to run' }
+    );
+    return picked?.query;
+}
+
+/** Resolve the query a tree-view command was invoked on, or ask for one. */
+async function resolveSavedQuery(arg: unknown): Promise<SavedQuery | undefined> {
+    if (typeof arg === 'string') {
+        return savedQueryStore.get(arg);
+    }
+    const node = arg as { query?: SavedQuery } | undefined;
+    if (node?.query?.id) {
+        return savedQueryStore.get(node.query.id);
+    }
+    return pickSavedQuery();
+}
+
+function registerSavedQueryCommands(context: vscode.ExtensionContext): void {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('postgresQueryBuilder.runSavedQuery', async (arg?: unknown) => {
+            const query = await resolveSavedQuery(arg);
+            if (!query) {
+                return;
+            }
+            await savedQueryStore.touch(query.id);
+            await tableWebViewManager.openQueryView(
+                query.sql,
+                query.name,
+                vscode.ViewColumn.Active,
+                {
+                    id: query.id,
+                    parameters: query.parameters,
+                    values: savedQueryStore.getParameterValues(query.id)
+                }
+            );
+        }),
+
+        vscode.commands.registerCommand('postgresQueryBuilder.refreshSavedQueries', () => {
+            savedQueryExplorer.refresh();
+        }),
+
+        vscode.commands.registerCommand('postgresQueryBuilder.renameSavedQuery', async (arg?: unknown) => {
+            const query = await resolveSavedQuery(arg);
+            if (!query) {
+                return;
+            }
+            const name = await vscode.window.showInputBox({
+                prompt: 'New name for the saved query',
+                value: query.name,
+                validateInput: v => v.trim() ? undefined : 'The name must not be empty.'
+            });
+            if (name === undefined) {
+                return;
+            }
+            await savedQueryStore.update(query.id, { name: name.trim() });
+        }),
+
+        vscode.commands.registerCommand('postgresQueryBuilder.editSavedQuerySql', async (arg?: unknown) => {
+            const query = await resolveSavedQuery(arg);
+            if (!query) {
+                return;
+            }
+            await savedQueryEditor.open(query.id);
+        }),
+
+        vscode.commands.registerCommand('postgresQueryBuilder.duplicateSavedQuery', async (arg?: unknown) => {
+            const query = await resolveSavedQuery(arg);
+            if (!query) {
+                return;
+            }
+            await savedQueryStore.add(
+                {
+                    name: `${query.name} (copy)`,
+                    sql: query.sql,
+                    parameters: query.parameters,
+                    schema: query.schema,
+                    table: query.table
+                },
+                query.scope === 'workspace' ? 'workspace' : 'global'
+            );
+        }),
+
+        vscode.commands.registerCommand('postgresQueryBuilder.deleteSavedQuery', async (arg?: unknown) => {
+            const query = await resolveSavedQuery(arg);
+            if (!query) {
+                return;
+            }
+            const answer = await vscode.window.showWarningMessage(
+                `Delete the saved query "${query.name}"?`, { modal: true }, 'Delete'
+            );
+            if (answer === 'Delete') {
+                await savedQueryStore.delete(query.id);
+            }
+        }),
+
+        vscode.commands.registerCommand('postgresQueryBuilder.moveSavedQueryToWorkspace', async (arg?: unknown) => {
+            const query = await resolveSavedQuery(arg);
+            if (!query) {
+                return;
+            }
+            if (!await savedQueryStore.move(query.id, 'workspace')) {
+                vscode.window.showWarningMessage(
+                    'Could not move the query: it is already shared, or no workspace folder is open.'
+                );
+            }
+        }),
+
+        vscode.commands.registerCommand('postgresQueryBuilder.moveSavedQueryToGlobal', async (arg?: unknown) => {
+            const query = await resolveSavedQuery(arg);
+            if (!query) {
+                return;
+            }
+            if (!await savedQueryStore.move(query.id, 'global')) {
+                vscode.window.showWarningMessage('The query is already stored personally.');
+            }
+        }),
+
+        vscode.commands.registerCommand('postgresQueryBuilder.openSavedQueriesFile', async () => {
+            const uri = savedQueryStore.getWorkspaceFileUri();
+            if (!uri || !savedQueryStore.hasWorkspaceFile()) {
+                vscode.window.showInformationMessage(
+                    'No workspace saved-queries file yet. Move a query to the workspace scope to create it.'
+                );
+                return;
+            }
+            await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+        })
+    );
 }

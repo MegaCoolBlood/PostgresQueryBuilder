@@ -36,6 +36,8 @@
                 </div>
             </div>
             <textarea id="queryInput" class="query-input" rows="1" spellcheck="false" wrap="off"></textarea>
+            <button class="btn" id="queryParamsBtn" title="Change the placeholder values of this saved query" style="display:none;">Parameters&hellip;</button>
+            <button class="btn" id="querySaveBtn" title="Save this query for reuse">&#9734; Save Query</button>
             <button class="btn" id="queryFormatBtn" title="Format SQL">Format</button>
             <button class="btn btn-primary" id="queryRunBtn" title="Run query (Ctrl+Enter)">&#9654; Run</button>
         </div>
@@ -337,6 +339,61 @@
             </div>
             <div class="sql-dialog-footer">
                 <button class="btn btn-default" id="errorDialogOk">Close</button>
+            </div>
+        </div>
+    </div>
+    <!-- Save Query Dialog -->
+    <div class="sql-dialog-overlay" id="saveQueryDialogOverlay" style="display:none;">
+        <div class="sql-dialog constraints-dialog">
+            <div class="sql-dialog-header">
+                <span id="saveQueryDialogTitle">Save Query</span>
+                <button class="sql-dialog-close" id="saveQueryDialogClose">&times;</button>
+            </div>
+            <div class="constraints-dialog-content">
+                <p class="mapping-hint">Write <code>:name</code> anywhere in the statement to turn it into a placeholder you are asked for every time the query runs.</p>
+                <div class="cond-row">
+                    <label for="saveQueryName">Name</label>
+                    <input type="text" id="saveQueryName" class="cond-input" placeholder="e.g. Orders in period">
+                </div>
+                <div class="cond-row">
+                    <label for="saveQueryScope">Store in</label>
+                    <select id="saveQueryScope" class="cond-select">
+                        <option value="global">Personal (only for me)</option>
+                        <option value="workspace">Workspace (shared via git)</option>
+                    </select>
+                </div>
+                <label for="saveQuerySql">SQL</label>
+                <textarea id="saveQuerySql" class="cond-input" rows="8" spellcheck="false"></textarea>
+                <p class="mapping-hint">Placeholders</p>
+                <div id="saveQueryParamsList"></div>
+                <div class="constraints-preview-wrap">
+                    <label>Existing saved queries:</label>
+                    <div id="saveQueryExisting"></div>
+                </div>
+            </div>
+            <div class="sql-dialog-footer">
+                <button class="btn btn-primary" id="saveQuerySave">Save</button>
+                <button class="btn btn-default" id="saveQueryCancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+    <!-- Query Parameters Dialog -->
+    <div class="sql-dialog-overlay" id="queryParamsDialogOverlay" style="display:none;">
+        <div class="sql-dialog constraints-dialog">
+            <div class="sql-dialog-header">
+                <span id="queryParamsDialogTitle">Query Parameters</span>
+                <button class="sql-dialog-close" id="queryParamsDialogClose">&times;</button>
+            </div>
+            <div class="constraints-dialog-content">
+                <div id="queryParamsList"></div>
+                <div class="constraints-preview-wrap">
+                    <label>Preview:</label>
+                    <pre class="constraints-preview" id="queryParamsPreview"></pre>
+                </div>
+            </div>
+            <div class="sql-dialog-footer">
+                <button class="btn btn-primary" id="queryParamsRun">Run</button>
+                <button class="btn btn-default" id="queryParamsCancel">Cancel</button>
             </div>
         </div>
     </div>

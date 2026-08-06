@@ -4,6 +4,7 @@ import { QueryRunner, buildRelationListQuery, type CommitTarget } from './queryR
 import { ExportService } from './exportService';
 import { ColumnMappingManager } from './columnMappingManager';
 import { PermanentConstraintManager } from './permanentConstraintManager';
+import { SavedQueryStore, SavedQueryParameter, mergeParameters } from './savedQueryStore';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
 import { getErrorMessage } from './logger';
 import type { ViewCapabilities } from './resultSource';
@@ -124,22 +125,36 @@ export class TableWebViewManager {
     private exportService: ExportService;
     private columnMappingManager: ColumnMappingManager;
     private permanentConstraintManager: PermanentConstraintManager;
+    private savedQueryStore?: SavedQueryStore;
     private modifyHistoryStore?: ModifyHistoryStore;
     private querySessionCounter = 0;
 
-    constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager, columnMappingManager: ColumnMappingManager, permanentConstraintManager: PermanentConstraintManager, modifyHistoryStore?: ModifyHistoryStore) {
+    constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager, columnMappingManager: ColumnMappingManager, permanentConstraintManager: PermanentConstraintManager, modifyHistoryStore?: ModifyHistoryStore, savedQueryStore?: SavedQueryStore) {
         this.context = context;
         this.connectionManager = connectionManager;
         this.exportService = new ExportService(context);
         this.columnMappingManager = columnMappingManager;
         this.permanentConstraintManager = permanentConstraintManager;
         this.modifyHistoryStore = modifyHistoryStore;
+        this.savedQueryStore = savedQueryStore;
 
         // Push refreshed mappings to every open panel when the underlying store
         // changes (e.g. workspace file edit, import, scope move).
         context.subscriptions.push(
             this.columnMappingManager.onDidChange(() => this.broadcastMappings())
         );
+        if (this.savedQueryStore) {
+            context.subscriptions.push(
+                this.savedQueryStore.onDidChange(() => this.broadcastSavedQueries())
+            );
+        }
+    }
+
+    private broadcastSavedQueries(): void {
+        const queries = this.savedQueryStore?.getAll() ?? [];
+        for (const session of this.sessions.values()) {
+            this.post(session, { command: 'savedQueriesLoaded', queries });
+        }
     }
 
     private broadcastMappings(): void {
@@ -282,8 +297,14 @@ export class TableWebViewManager {
      * @param sql The runnable SELECT statement.
      * @param title A short label shown in the toolbar.
      * @param viewColumn Where to place the panel (defaults to a side-by-side split).
+     * @param savedQuery A saved query whose `:name` placeholders the panel asks for before running.
      */
-    async openQueryView(sql: string, title: string, viewColumn: vscode.ViewColumn = vscode.ViewColumn.Beside): Promise<void> {
+    async openQueryView(
+        sql: string,
+        title: string,
+        viewColumn: vscode.ViewColumn = vscode.ViewColumn.Beside,
+        savedQuery?: { id: string; parameters: SavedQueryParameter[]; values: Record<string, string> }
+    ): Promise<void> {
         // Running the query needs a connection; without this the panel would
         // open and spin forever.
         if (!await this.connectionManager.ensureConnected()) {
@@ -292,6 +313,7 @@ export class TableWebViewManager {
 
         const id = `query:${++this.querySessionCounter}`;
         const session = this.createSession(id, title, 'query', '', '', `query:${title}`, viewColumn);
+        const parameters = savedQuery?.parameters ?? [];
 
         this.post(session, {
             command: 'init',
@@ -305,7 +327,12 @@ export class TableWebViewManager {
             thousandSeparator: vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('thousandSeparator', ' '),
             connectionName: this.getConnectionName(),
             permanentConstraints: [],
-            permanentSorts: []
+            permanentSorts: [],
+            savedQueryId: savedQuery?.id || '',
+            savedQueryParameters: parameters,
+            savedQueryValues: savedQuery?.values ?? {},
+            // With placeholders the panel must collect values before it can run.
+            awaitParameters: parameters.length > 0
         });
     }
 
@@ -323,6 +350,10 @@ export class TableWebViewManager {
         updateCustomMapping: this.handleUpdateCustomMapping,
         deleteCustomMapping: this.handleDeleteCustomMapping,
         savePermanentConstraints: this.handleSavePermanentConstraints,
+        getSavedQueries: this.handleGetSavedQueries,
+        saveSavedQuery: this.handleSaveSavedQuery,
+        deleteSavedQuery: this.handleDeleteSavedQuery,
+        saveSavedQueryValues: this.handleSaveSavedQueryValues,
         getTablesForTypeahead: this.handleGetTablesForTypeahead,
         getColumnsForTypeahead: this.handleGetColumnsForTypeahead,
         browseExportLocation: this.handleBrowseExportLocation,
@@ -717,6 +748,57 @@ export class TableWebViewManager {
         );
     }
 
+    private handleGetSavedQueries(ctx: MessageContext): void {
+        this.post(ctx.session, {
+            command: 'savedQueriesLoaded',
+            queries: this.savedQueryStore?.getAll() ?? []
+        });
+    }
+
+    /** Create or update a saved query from the panel's "Save Query" dialog. */
+    private async handleSaveSavedQuery(ctx: MessageContext): Promise<void> {
+        const { session, message } = ctx;
+        if (!this.savedQueryStore) {
+            return;
+        }
+        const name = typeof message.name === 'string' ? message.name.trim() : '';
+        const sql = typeof message.sql === 'string' ? message.sql.trim() : '';
+        if (!name || !sql) {
+            vscode.window.showErrorMessage('A saved query needs a name and a SELECT statement.');
+            return;
+        }
+        // Reconcile against the placeholders actually present, so a parameter
+        // list edited in the dialog can never drift away from the SQL.
+        const parameters = mergeParameters(sql, message.parameters);
+        const scope = message.scope === 'workspace' ? 'workspace' : 'global';
+
+        if (typeof message.id === 'string' && message.id && this.savedQueryStore.get(message.id)) {
+            await this.savedQueryStore.update(message.id, { name, sql, parameters });
+            this.post(session, { command: 'savedQuerySaved', id: message.id });
+            vscode.window.showInformationMessage(`Updated saved query "${name}".`);
+            return;
+        }
+        const created = await this.savedQueryStore.add(
+            { name, sql, parameters, schema: session.schema, table: session.table }, scope
+        );
+        this.post(session, { command: 'savedQuerySaved', id: created.id });
+        vscode.window.showInformationMessage(`Saved query "${name}".`);
+    }
+
+    private async handleDeleteSavedQuery(ctx: MessageContext): Promise<void> {
+        if (typeof ctx.message.id === 'string' && ctx.message.id) {
+            await this.savedQueryStore?.delete(ctx.message.id);
+        }
+    }
+
+    private async handleSaveSavedQueryValues(ctx: MessageContext): Promise<void> {
+        const { message } = ctx;
+        if (typeof message.id === 'string' && message.id) {
+            await this.savedQueryStore?.setParameterValues(message.id, message.values || {});
+            await this.savedQueryStore?.touch(message.id);
+        }
+    }
+
     private async handleGetTablesForTypeahead(ctx: MessageContext): Promise<void> {
         const { session } = ctx;
         try {
@@ -852,9 +934,12 @@ export class TableWebViewManager {
         const css = fs.readFileSync(cssPath, 'utf8');
         const js = fs.readFileSync(jsPath, 'utf8');
 
-        // Inject CSS and JS inline for simplicity
-        html = html.replace('/* CSS_PLACEHOLDER */', css);
-        html = html.replace('/* JS_PLACEHOLDER */', js);
+        // Inject CSS and JS inline for simplicity. The replacement must be a
+        // function: with a string replacement, `$'`/`$&` inside the script (e.g.
+        // a comparison against a '$' character) would expand to parts of the
+        // HTML and corrupt the injected code.
+        html = html.replace('/* CSS_PLACEHOLDER */', () => css);
+        html = html.replace('/* JS_PLACEHOLDER */', () => js);
 
         return html;
     }

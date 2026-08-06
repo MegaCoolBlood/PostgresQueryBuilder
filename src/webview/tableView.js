@@ -19,6 +19,158 @@ function escapeSqlString(value) {
     return String(value).replace(/'/g, "''");
 }
 
+// NOTE: Keep in sync with maskSql in src/selectStatementExtractor.ts.
+// Replaces comments and string literals by spaces while preserving offsets so
+// the placeholder scanner never matches a `:name` inside a literal or comment.
+function maskSqlForPlaceholders(text) {
+    const out = String(text).split('');
+    const n = out.length;
+    const src = String(text);
+    let i = 0;
+    const blank = (from, to) => {
+        for (let k = from; k < to && k < n; k++) {
+            if (out[k] !== '\n' && out[k] !== '\r') out[k] = ' ';
+        }
+    };
+    while (i < n) {
+        const c = src[i], c2 = src[i + 1];
+        if (c === '-' && c2 === '-') {
+            let j = i + 2;
+            while (j < n && src[j] !== '\n') j++;
+            blank(i, j); i = j; continue;
+        }
+        if (c === '/' && c2 === '*') {
+            let j = i + 2, depth = 1;
+            while (j < n && depth > 0) {
+                if (src[j] === '/' && src[j + 1] === '*') { depth++; j += 2; }
+                else if (src[j] === '*' && src[j + 1] === '/') { depth--; j += 2; }
+                else j++;
+            }
+            blank(i, j); i = j; continue;
+        }
+        if (c === "'") {
+            let j = i + 1;
+            while (j < n) {
+                if (src[j] === "'") {
+                    if (src[j + 1] === "'") { j += 2; continue; }
+                    j++; break;
+                }
+                j++;
+            }
+            blank(i, j); i = j; continue;
+        }
+        if (c === '$') {
+            const tagMatch = /^\$[A-Za-z_]?[A-Za-z0-9_]*\$/.exec(src.slice(i));
+            if (tagMatch) {
+                const tag = tagMatch[0];
+                const end = src.indexOf(tag, i + tag.length);
+                const j = end === -1 ? n : end + tag.length;
+                blank(i, j); i = j; continue;
+            }
+        }
+        if (c === '"') {
+            let j = i + 1;
+            while (j < n) {
+                if (src[j] === '"') {
+                    if (src[j + 1] === '"') { j += 2; continue; }
+                    j++; break;
+                }
+                j++;
+            }
+            i = j; continue;
+        }
+        i++;
+    }
+    return out.join('');
+}
+
+// NOTE: Keep in sync with parseQueryPlaceholders in src/savedQueryStore.ts.
+function parseQueryPlaceholders(sql) {
+    if (typeof sql !== 'string' || !sql) return [];
+    const masked = maskSqlForPlaceholders(sql);
+    const result = [];
+    const re = /:([A-Za-z_][A-Za-z0-9_]*)/g;
+    let m;
+    while ((m = re.exec(masked)) !== null) {
+        if (m.index > 0 && masked[m.index - 1] === ':') continue;
+        result.push({ name: m[1], start: m.index, end: m.index + m[0].length });
+    }
+    return result;
+}
+
+// NOTE: Keep in sync with placeholderNames in src/savedQueryStore.ts.
+function placeholderNames(sql) {
+    const seen = new Set();
+    const names = [];
+    for (const occ of parseQueryPlaceholders(sql)) {
+        const key = occ.name.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        names.push(occ.name);
+    }
+    return names;
+}
+
+// NOTE: Keep in sync with renderParameterValue in src/savedQueryStore.ts.
+function renderParameterValue(value, kind) {
+    const text = value === null || value === undefined ? '' : String(value);
+    if (kind === 'number') {
+        if (!/^-?\d+(\.\d+)?$/.test(text.trim())) {
+            throw new Error('"' + text + '" is not a valid number.');
+        }
+        return text.trim();
+    }
+    if (kind === 'identifier') return '"' + text.replace(/"/g, '""') + '"';
+    if (kind === 'raw') return text;
+    return "'" + escapeSqlString(text) + "'";
+}
+
+// NOTE: Keep in sync with applyQueryParameters in src/savedQueryStore.ts.
+// Occurrences are spliced in from right to left so a value that itself contains
+// `:name` is never substituted again.
+function applyQueryParameters(sql, values, parameters) {
+    const occurrences = parseQueryPlaceholders(sql);
+    if (occurrences.length === 0) return sql;
+    const byName = new Map();
+    for (const p of Array.isArray(parameters) ? parameters : []) {
+        if (p && typeof p.name === 'string') byName.set(p.name.toLowerCase(), p);
+    }
+    const lookup = new Map();
+    for (const key of Object.keys(values || {})) {
+        const v = values[key];
+        if (v !== undefined && v !== null) lookup.set(key.toLowerCase(), String(v));
+    }
+    let result = sql;
+    for (let i = occurrences.length - 1; i >= 0; i--) {
+        const occ = occurrences[i];
+        const key = occ.name.toLowerCase();
+        const param = byName.get(key) || { name: occ.name, kind: 'text' };
+        let value = lookup.get(key);
+        if (value === undefined || value === '') value = param.defaultValue;
+        if (value === undefined || value === '') {
+            throw new Error('No value supplied for :' + occ.name + '.');
+        }
+        result = result.slice(0, occ.start)
+            + renderParameterValue(value, param.kind || 'text')
+            + result.slice(occ.end);
+    }
+    return result;
+}
+
+// NOTE: Keep in sync with mergeParameters in src/savedQueryStore.ts.
+function mergeQueryParameters(sql, existing) {
+    const known = new Map();
+    for (const p of Array.isArray(existing) ? existing : []) {
+        if (p && typeof p.name === 'string') known.set(p.name.toLowerCase(), p);
+    }
+    return placeholderNames(sql).map(name => {
+        const prev = known.get(name.toLowerCase());
+        return prev
+            ? { name, kind: prev.kind || 'text', label: prev.label, defaultValue: prev.defaultValue }
+            : { name, kind: 'text' };
+    });
+}
+
 function normalizeNumericInput(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (value === null || value === undefined) return value;
     const str = String(value).trim();
@@ -1264,6 +1416,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // Permanent per-table ORDER BY entries ({ column, direction }), applied to
     // the default table view's query alongside the constraints.
     let permanentSorts = [];
+    // Saved query the panel currently runs: the template still holds the
+    // `:name` placeholders, while the query bar shows the substituted SQL.
+    let savedQueryId = '';
+    let savedQueryTemplate = '';
+    let savedQueryParameters = [];
+    let savedQueryValues = {};
+    // All stored queries, kept for the overwrite list in the Save dialog.
+    let savedQueries = [];
+    // SQL/parameters sent to the extension, adopted once the save is confirmed.
+    let savedQueryPending = null;
+    // True while the initial parameter prompt of a saved query is open.
+    let queryParamsPendingInitialRun = false;
     let lastUsedConnection = '';
     let currentConnection = '';
     // What the current result allows. Derived by the extension from the source
@@ -1773,6 +1937,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'customMappingsLoaded':
                 handleCustomMappingsLoaded(msg);
                 break;
+            case 'savedQueriesLoaded':
+                handleSavedQueriesLoaded(msg);
+                break;
+            case 'savedQuerySaved':
+                handleSavedQuerySaved(msg);
+                break;
             case 'tablesForTypeahead':
                 handleTablesForTypeahead(msg);
                 break;
@@ -1831,13 +2001,32 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         tableName.textContent = msg.title || (table ? `${schema}.${table}` : 'Query result');
+        savedQueryId = typeof msg.savedQueryId === 'string' ? msg.savedQueryId : '';
+        savedQueryParameters = Array.isArray(msg.savedQueryParameters) ? msg.savedQueryParameters : [];
+        savedQueryValues = msg.savedQueryValues && typeof msg.savedQueryValues === 'object' ? msg.savedQueryValues : {};
+        savedQueryTemplate = msg.sql || '';
+        updateQueryParamsButton();
         // Both entry points start by running a query: a table view simply starts
         // with the default query for that table.
         setQueryText(msg.sql || getDefaultQuery());
         applyCapabilities(caps);
         if (table) { metaLoading.classList.remove('hidden'); }
-        runQuery();
+        if (msg.awaitParameters && savedQueryParameters.length) {
+            // The template cannot run as-is: ask for the placeholder values and
+            // let the dialog trigger the first query.
+            openQueryParamsDialog(true);
+        } else {
+            runQuery();
+        }
         vscode.postMessage({ command: 'getQueryHistory' });
+        vscode.postMessage({ command: 'getSavedQueries' });
+    }
+
+    // The "Parameters…" button only makes sense while a parameterized template
+    // is loaded in this panel.
+    function updateQueryParamsButton() {
+        if (!queryParamsBtn) return;
+        queryParamsBtn.style.display = savedQueryParameters.length ? '' : 'none';
     }
 
     // Enable/disable the affordances that depend on what the current result
@@ -3630,6 +3819,268 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         runQuery();
     }
 
+    // ===== Saved Queries Logic =====
+    const querySaveBtn = document.getElementById('querySaveBtn');
+    const queryParamsBtn = document.getElementById('queryParamsBtn');
+    const saveQueryDialogOverlay = document.getElementById('saveQueryDialogOverlay');
+    const saveQueryDialogTitle = document.getElementById('saveQueryDialogTitle');
+    const saveQueryDialogClose = document.getElementById('saveQueryDialogClose');
+    const saveQueryName = document.getElementById('saveQueryName');
+    const saveQueryScope = document.getElementById('saveQueryScope');
+    const saveQuerySql = document.getElementById('saveQuerySql');
+    const saveQueryParamsList = document.getElementById('saveQueryParamsList');
+    const saveQueryExisting = document.getElementById('saveQueryExisting');
+    const saveQuerySave = document.getElementById('saveQuerySave');
+    const saveQueryCancel = document.getElementById('saveQueryCancel');
+    const queryParamsDialogOverlay = document.getElementById('queryParamsDialogOverlay');
+    const queryParamsDialogTitle = document.getElementById('queryParamsDialogTitle');
+    const queryParamsDialogClose = document.getElementById('queryParamsDialogClose');
+    const queryParamsList = document.getElementById('queryParamsList');
+    const queryParamsPreview = document.getElementById('queryParamsPreview');
+    const queryParamsRun = document.getElementById('queryParamsRun');
+    const queryParamsCancel = document.getElementById('queryParamsCancel');
+
+    const PARAMETER_KINDS = [
+        { value: 'text', label: 'Text (quoted)' },
+        { value: 'number', label: 'Number' },
+        { value: 'identifier', label: 'Identifier (quoted)' },
+        { value: 'raw', label: 'Raw SQL (unchecked!)' }
+    ];
+
+    // Working copy of the parameter list edited in the Save Query dialog.
+    let saveQueryDraft = [];
+    // Id of the saved query being overwritten, or '' when saving a new one.
+    let saveQueryEditId = '';
+    // Values entered in the parameter dialog before they are applied.
+    let queryParamsDraft = {};
+
+    if (querySaveBtn) querySaveBtn.addEventListener('click', openSaveQueryDialog);
+    if (saveQueryDialogClose) saveQueryDialogClose.addEventListener('click', closeSaveQueryDialog);
+    if (saveQueryCancel) saveQueryCancel.addEventListener('click', closeSaveQueryDialog);
+    if (saveQuerySave) saveQuerySave.addEventListener('click', submitSaveQuery);
+    if (saveQuerySql) saveQuerySql.addEventListener('input', () => {
+        saveQueryDraft = mergeQueryParameters(saveQuerySql.value, saveQueryDraft);
+        renderSaveQueryParams();
+    });
+    if (queryParamsBtn) queryParamsBtn.addEventListener('click', () => openQueryParamsDialog(false));
+    if (queryParamsDialogClose) queryParamsDialogClose.addEventListener('click', closeQueryParamsDialog);
+    if (queryParamsCancel) queryParamsCancel.addEventListener('click', closeQueryParamsDialog);
+    if (queryParamsRun) queryParamsRun.addEventListener('click', applyQueryParamsDialog);
+
+    function openSaveQueryDialog() {
+        const sql = (queryInput.value || '').trim();
+        // Editing a running saved query starts from its template, so the
+        // placeholders are preserved instead of the values already filled in.
+        const source = savedQueryId && savedQueryTemplate ? savedQueryTemplate : sql;
+        saveQueryEditId = savedQueryId || '';
+        saveQuerySql.value = source;
+        saveQueryName.value = saveQueryEditId
+            ? (savedQueries.find(q => q.id === saveQueryEditId) || {}).name || ''
+            : (table ? schema + '.' + table : '');
+        saveQueryScope.value = 'global';
+        saveQueryDraft = mergeQueryParameters(source, savedQueryParameters);
+        updateSaveQueryTitle();
+        renderSaveQueryParams();
+        renderSaveQueryExisting();
+        saveQueryDialogOverlay.style.display = 'flex';
+        saveQueryName.focus();
+        vscode.postMessage({ command: 'getSavedQueries' });
+    }
+
+    function closeSaveQueryDialog() {
+        saveQueryDialogOverlay.style.display = 'none';
+    }
+
+    function updateSaveQueryTitle() {
+        saveQueryDialogTitle.textContent = saveQueryEditId ? 'Update Saved Query' : 'Save Query';
+        saveQuerySave.textContent = saveQueryEditId ? 'Update' : 'Save';
+        saveQueryScope.disabled = Boolean(saveQueryEditId);
+    }
+
+    function renderSaveQueryParams() {
+        if (saveQueryDraft.length === 0) {
+            saveQueryParamsList.innerHTML =
+                '<p class="mapping-hint">No placeholders. Add <code>:name</code> to the SQL to create one.</p>';
+            return;
+        }
+        saveQueryParamsList.innerHTML = saveQueryDraft.map((p, i) => {
+            const kindOpts = PARAMETER_KINDS.map(k =>
+                '<option value="' + k.value + '"' + (k.value === p.kind ? ' selected' : '') + '>' + k.label + '</option>'
+            ).join('');
+            return '<div class="cond-row">' +
+                '<span><code>:' + escapeHtml(p.name) + '</code></span>' +
+                '<select class="operand-kind" data-param-kind="' + i + '">' + kindOpts + '</select>' +
+                '<input class="cust-raw" data-param-label="' + i + '" value="' + escapeAttr(p.label || '') + '" placeholder="label (optional)">' +
+                '<input class="cust-raw" data-param-default="' + i + '" value="' + escapeAttr(p.defaultValue || '') + '" placeholder="default (optional)">' +
+                '</div>';
+        }).join('');
+        saveQueryParamsList.querySelectorAll('[data-param-kind]').forEach(el => {
+            el.onchange = () => { saveQueryDraft[Number(el.dataset.paramKind)].kind = el.value; };
+        });
+        saveQueryParamsList.querySelectorAll('[data-param-label]').forEach(el => {
+            el.oninput = () => { saveQueryDraft[Number(el.dataset.paramLabel)].label = el.value; };
+        });
+        saveQueryParamsList.querySelectorAll('[data-param-default]').forEach(el => {
+            el.oninput = () => { saveQueryDraft[Number(el.dataset.paramDefault)].defaultValue = el.value; };
+        });
+    }
+
+    // List the stored queries so one of them can be overwritten instead of
+    // piling up near-identical copies.
+    function renderSaveQueryExisting() {
+        if (!savedQueries.length) {
+            saveQueryExisting.innerHTML = '<p class="mapping-hint">None yet.</p>';
+            return;
+        }
+        saveQueryExisting.innerHTML = savedQueries.map(q =>
+            '<div class="cond-row">' +
+            '<span>' + escapeHtml(q.name) + '</span>' +
+            '<span class="mapping-hint">' + (q.scope === 'workspace' ? 'Workspace' : 'Personal') + '</span>' +
+            '<button class="btn btn-default" data-saved-overwrite="' + escapeAttr(q.id) + '">Overwrite</button>' +
+            '</div>'
+        ).join('');
+        saveQueryExisting.querySelectorAll('[data-saved-overwrite]').forEach(b => {
+            b.onclick = () => {
+                const q = savedQueries.find(x => x.id === b.dataset.savedOverwrite);
+                if (!q) return;
+                saveQueryEditId = q.id;
+                saveQueryName.value = q.name;
+                saveQueryDraft = mergeQueryParameters(saveQuerySql.value, q.parameters);
+                updateSaveQueryTitle();
+                renderSaveQueryParams();
+            };
+        });
+    }
+
+    function submitSaveQuery() {
+        const name = (saveQueryName.value || '').trim();
+        const sql = (saveQuerySql.value || '').trim();
+        if (!name || !sql) {
+            showError('A saved query needs a name and a SELECT statement.');
+            return;
+        }
+        const parameters = mergeQueryParameters(sql, saveQueryDraft);
+        // Remember what was sent so the panel can adopt it once the extension
+        // confirms the id of the stored query.
+        savedQueryPending = { sql, parameters };
+        vscode.postMessage({
+            command: 'saveSavedQuery',
+            id: saveQueryEditId,
+            name,
+            sql,
+            scope: saveQueryScope.value,
+            parameters
+        });
+        closeSaveQueryDialog();
+    }
+
+    /**
+     * Ask for the placeholder values of the running saved query.
+     * @param {boolean} initial true when the panel just opened and must not
+     *   show a result until the values are known.
+     */
+    function openQueryParamsDialog(initial) {
+        queryParamsPendingInitialRun = Boolean(initial);
+        queryParamsDraft = {};
+        savedQueryParameters.forEach(p => {
+            const stored = savedQueryValues[p.name];
+            queryParamsDraft[p.name] = stored !== undefined && stored !== null && stored !== ''
+                ? String(stored)
+                : (p.defaultValue || '');
+        });
+        queryParamsDialogTitle.textContent = 'Parameters for "' + (tableName.textContent || 'query') + '"';
+        renderQueryParamRows();
+        queryParamsDialogOverlay.style.display = 'flex';
+        const first = queryParamsList.querySelector('input');
+        if (first) first.focus();
+    }
+
+    function closeQueryParamsDialog() {
+        queryParamsDialogOverlay.style.display = 'none';
+        if (queryParamsPendingInitialRun) {
+            // The panel opened for a saved query but the values were dismissed,
+            // so nothing was ever run — say so instead of showing an empty grid.
+            queryParamsPendingInitialRun = false;
+            rowCount.textContent = 'Waiting for parameters — press "Parameters…" to run the query.';
+        }
+    }
+
+    function renderQueryParamRows() {
+        queryParamsList.innerHTML = savedQueryParameters.map((p, i) => {
+            const kind = PARAMETER_KINDS.find(k => k.value === p.kind) || PARAMETER_KINDS[0];
+            const warn = p.kind === 'raw'
+                ? '<span class="mapping-hint">inserted unchanged</span>'
+                : '<span class="mapping-hint">' + escapeHtml(kind.label) + '</span>';
+            return '<div class="cond-row">' +
+                '<label for="queryParamInput' + i + '">' + escapeHtml(p.label || (':' + p.name)) + '</label>' +
+                '<input class="cust-raw" id="queryParamInput' + i + '" data-query-param="' + escapeAttr(p.name) + '" value="' +
+                escapeAttr(queryParamsDraft[p.name] || '') + '">' +
+                warn +
+                '</div>';
+        }).join('');
+        queryParamsList.querySelectorAll('[data-query-param]').forEach(el => {
+            el.oninput = () => {
+                queryParamsDraft[el.dataset.queryParam] = el.value;
+                updateQueryParamsPreview();
+            };
+            el.onkeydown = (e) => {
+                if (e.key === 'Enter') { e.preventDefault(); applyQueryParamsDialog(); }
+            };
+        });
+        updateQueryParamsPreview();
+    }
+
+    function updateQueryParamsPreview() {
+        try {
+            queryParamsPreview.textContent =
+                applyQueryParameters(savedQueryTemplate, queryParamsDraft, savedQueryParameters);
+        } catch (err) {
+            queryParamsPreview.textContent = err && err.message ? err.message : String(err);
+        }
+    }
+
+    function applyQueryParamsDialog() {
+        let sql;
+        try {
+            sql = applyQueryParameters(savedQueryTemplate, queryParamsDraft, savedQueryParameters);
+        } catch (err) {
+            showError(err && err.message ? err.message : String(err));
+            return;
+        }
+        savedQueryValues = Object.assign({}, queryParamsDraft);
+        if (savedQueryId) {
+            vscode.postMessage({
+                command: 'saveSavedQueryValues',
+                id: savedQueryId,
+                values: savedQueryValues
+            });
+        }
+        queryParamsPendingInitialRun = false;
+        closeQueryParamsDialog();
+        setQueryText(sql);
+        runQuery();
+    }
+
+    function handleSavedQueriesLoaded(msg) {
+        savedQueries = Array.isArray(msg.queries) ? msg.queries : [];
+        if (saveQueryDialogOverlay && saveQueryDialogOverlay.style.display === 'flex') {
+            renderSaveQueryExisting();
+        }
+    }
+
+    // Reflect the identity of a freshly stored query so a second "Save Query"
+    // updates it instead of creating another copy.
+    function handleSavedQuerySaved(msg) {
+        if (typeof msg.id !== 'string' || !msg.id) return;
+        savedQueryId = msg.id;
+        if (savedQueryPending) {
+            savedQueryTemplate = savedQueryPending.sql;
+            savedQueryParameters = savedQueryPending.parameters;
+            savedQueryPending = null;
+            updateQueryParamsButton();
+        }
+    }
+
     // ===== Export Dialog Logic =====
     const exportBtn = document.getElementById('exportBtn');
     const exportDialogOverlay = document.getElementById('exportDialogOverlay');
@@ -4682,6 +5133,11 @@ if (typeof module !== 'undefined' && module.exports) {
         formatExactMatchValue,
         normalizeFilterInputValue,
         escapeSqlString,
+        parseQueryPlaceholders,
+        placeholderNames,
+        renderParameterValue,
+        applyQueryParameters,
+        mergeQueryParameters,
         liveFormatNumeric,
         stripThousandSeparators,
         cellRangeToTsv,

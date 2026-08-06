@@ -51,8 +51,11 @@ const vscodeStub = {
     TreeItemCollapsibleState,
     workspace: {
         workspaceFolders: undefined as any,
+        textDocuments: [] as any[],
         onDidChangeConfiguration: (_listener: any) => ({ dispose() {} }),
         onDidChangeWorkspaceFolders: (_listener: any) => ({ dispose() {} }),
+        onDidSaveTextDocument: (_listener: any) => ({ dispose() {} }),
+        openTextDocument: (uri: any): Promise<any> => Promise.resolve({ uri, getText: () => '' }),
         getConfiguration: (_section?: string) => ({
             get<T>(_key: string, defaultValue?: T): T {
                 return defaultValue as T;
@@ -74,6 +77,8 @@ const vscodeStub = {
         showWarningMessage: (..._args: any[]) => Promise.resolve(undefined),
         showInformationMessage: (..._args: any[]) => Promise.resolve(undefined),
         showErrorMessage: (..._args: any[]) => Promise.resolve(undefined),
+        showTextDocument: (..._args: any[]): Promise<any> => Promise.resolve(undefined),
+        setStatusBarMessage: (..._args: any[]) => ({ dispose() {} }),
         showOpenDialog: (_options?: any): Promise<any> => Promise.resolve(undefined),
         showSaveDialog: (_options?: any): Promise<any> => Promise.resolve(undefined),
         createWebviewPanel: (..._args: any[]): any => undefined

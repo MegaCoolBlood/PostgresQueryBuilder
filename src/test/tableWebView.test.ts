@@ -178,22 +178,47 @@ function createManager() {
         getMappingsForTable: () => []
     };
     const permanentConstraintManager: any = { getConstraints: () => [] };
-    const manager = new TableWebViewManager(context, connectionManager, columnMappingManager, permanentConstraintManager);
-    return { manager, globalStateStore, executed };
+    // Stand-in for SavedQueryStore: records what the panel asks it to persist.
+    const savedQueryStore: any = {
+        queries: [] as any[],
+        added: [] as any[],
+        updated: [] as any[],
+        deleted: [] as string[],
+        values: {} as Record<string, any>,
+        touched: [] as string[],
+        onDidChange: () => ({ dispose() {} }),
+        getAll() { return this.queries; },
+        get(id: string) { return this.queries.find((q: any) => q.id === id); },
+        add(query: any, scope: string) {
+            const created = { ...query, id: 'new-id', scope };
+            this.queries.push(created);
+            this.added.push({ query, scope });
+            return Promise.resolve(created);
+        },
+        update(id: string, patch: any) { this.updated.push({ id, patch }); return Promise.resolve(true); },
+        delete(id: string) { this.deleted.push(id); return Promise.resolve(true); },
+        setParameterValues(id: string, values: any) { this.values[id] = values; return Promise.resolve(); },
+        touch(id: string) { this.touched.push(id); return Promise.resolve(); },
+        getParameterValues(id: string) { return this.values[id] || {}; }
+    };
+    const manager = new TableWebViewManager(
+        context, connectionManager, columnMappingManager, permanentConstraintManager, undefined, savedQueryStore
+    );
+    return { manager, globalStateStore, executed, savedQueryStore };
 }
 
 /** Open a query panel and return it together with its message callback. */
-async function openCustomQueryPanel() {
-    const { manager, globalStateStore, executed } = createManager();
+async function openCustomQueryPanel(savedQuery?: any) {
+    const { manager, globalStateStore, executed, savedQueryStore } = createManager();
     const panel = createFakePanel();
     const originalCreate = vscodeStub.window.createWebviewPanel;
     vscodeStub.window.createWebviewPanel = () => panel;
     try {
-        await manager.openQueryView('SELECT 1 AS n', 'Custom');
+        await manager.openQueryView('SELECT 1 AS n', 'Custom', undefined, savedQuery);
     } finally {
         vscodeStub.window.createWebviewPanel = originalCreate;
     }
-    return { panel, send: (m: any) => panel.state.onMessage(m), globalStateStore, executed };
+    return { panel, send: (m: any) => panel.state.onMessage(m), globalStateStore, executed, savedQueryStore };
 }
 
 test('query panel: Browse opens the folder dialog and reports the choice', async () => {
@@ -318,4 +343,111 @@ test('query panel: init carries the alwaysQuote setting and the query', async ()
     assert.equal(init.alwaysQuote, true);
     assert.equal(init.sql, 'SELECT 1 AS n');
     assert.equal(init.origin, 'query');
+});
+
+test('query panel: the injected script is not mangled by $ replacement patterns', async () => {
+    const { panel } = await openCustomQueryPanel();
+    const js = require('node:fs').readFileSync(
+        path.join(EXTENSION_PATH, 'src', 'webview', 'tableView.js'), 'utf8'
+    );
+    assert.ok(panel.webview.html.includes(js), 'expected the script to be injected verbatim');
+    assert.ok(panel.webview.html.trimEnd().endsWith('</html>'), 'expected intact HTML after the script');
+});
+
+// ===== Saved queries =====
+
+test('query panel: init without a saved query asks for no parameters', async () => {
+    const { panel } = await openCustomQueryPanel();
+    const init = panel.posted.find(m => m.command === 'init');
+    assert.equal(init.awaitParameters, false);
+    assert.equal(init.savedQueryId, '');
+    assert.deepEqual(init.savedQueryParameters, []);
+});
+
+test('query panel: init of a parameterized saved query waits for values', async () => {
+    const { panel } = await openCustomQueryPanel({
+        id: 'q1',
+        parameters: [{ name: 'from', kind: 'text' }],
+        values: { from: '2024-01-01' }
+    });
+    const init = panel.posted.find(m => m.command === 'init');
+    assert.equal(init.awaitParameters, true);
+    assert.equal(init.savedQueryId, 'q1');
+    assert.deepEqual(init.savedQueryParameters, [{ name: 'from', kind: 'text' }]);
+    assert.deepEqual(init.savedQueryValues, { from: '2024-01-01' });
+});
+
+test('query panel: a saved query without placeholders runs immediately', async () => {
+    const { panel } = await openCustomQueryPanel({ id: 'q1', parameters: [], values: {} });
+    const init = panel.posted.find(m => m.command === 'init');
+    assert.equal(init.awaitParameters, false);
+    assert.equal(init.savedQueryId, 'q1');
+});
+
+test('query panel: getSavedQueries posts the stored queries back', async () => {
+    const { panel, send, savedQueryStore } = await openCustomQueryPanel();
+    savedQueryStore.queries.push({ id: 'a', name: 'A', sql: 'SELECT 1', parameters: [] });
+    await send({ command: 'getSavedQueries' });
+    const msg = panel.posted.filter(m => m.command === 'savedQueriesLoaded').pop();
+    assert.ok(msg, 'expected savedQueriesLoaded');
+    assert.equal(msg.queries.length, 1);
+});
+
+test('query panel: saving a new query stores it and reports its id', async () => {
+    const { panel, send, savedQueryStore } = await openCustomQueryPanel();
+    await send({
+        command: 'saveSavedQuery',
+        id: '',
+        name: '  Orders  ',
+        sql: 'SELECT * FROM o WHERE d = :day ',
+        scope: 'workspace',
+        parameters: [{ name: 'day', kind: 'text' }]
+    });
+    assert.equal(savedQueryStore.added.length, 1);
+    assert.equal(savedQueryStore.added[0].scope, 'workspace');
+    assert.equal(savedQueryStore.added[0].query.name, 'Orders');
+    assert.equal(savedQueryStore.added[0].query.sql, 'SELECT * FROM o WHERE d = :day');
+    const msg = panel.posted.find(m => m.command === 'savedQuerySaved');
+    assert.ok(msg, 'expected savedQuerySaved');
+    assert.equal(msg.id, 'new-id');
+});
+
+test('query panel: saving reconciles the parameters with the SQL', async () => {
+    const { send, savedQueryStore } = await openCustomQueryPanel();
+    await send({
+        command: 'saveSavedQuery',
+        name: 'Q',
+        sql: 'SELECT * FROM t WHERE a = :a',
+        parameters: [{ name: 'gone', kind: 'number' }]
+    });
+    assert.deepEqual(savedQueryStore.added[0].query.parameters, [{ name: 'a', kind: 'text' }]);
+});
+
+test('query panel: saving over an existing query updates it', async () => {
+    const { send, savedQueryStore } = await openCustomQueryPanel();
+    savedQueryStore.queries.push({ id: 'a', name: 'A', sql: 'SELECT 1', parameters: [] });
+    await send({ command: 'saveSavedQuery', id: 'a', name: 'A2', sql: 'SELECT 2' });
+    assert.equal(savedQueryStore.added.length, 0);
+    assert.equal(savedQueryStore.updated[0].id, 'a');
+    assert.equal(savedQueryStore.updated[0].patch.name, 'A2');
+});
+
+test('query panel: saving without a name is rejected', async () => {
+    const { send, savedQueryStore } = await openCustomQueryPanel();
+    await send({ command: 'saveSavedQuery', name: '  ', sql: 'SELECT 1' });
+    assert.equal(savedQueryStore.added.length, 0);
+    assert.equal(savedQueryStore.updated.length, 0);
+});
+
+test('query panel: deleting a saved query is forwarded to the store', async () => {
+    const { send, savedQueryStore } = await openCustomQueryPanel();
+    await send({ command: 'deleteSavedQuery', id: 'a' });
+    assert.deepEqual(savedQueryStore.deleted, ['a']);
+});
+
+test('query panel: parameter values are cached and mark the query as used', async () => {
+    const { send, savedQueryStore } = await openCustomQueryPanel();
+    await send({ command: 'saveSavedQueryValues', id: 'a', values: { from: '1' } });
+    assert.deepEqual(savedQueryStore.values['a'], { from: '1' });
+    assert.deepEqual(savedQueryStore.touched, ['a']);
 });
