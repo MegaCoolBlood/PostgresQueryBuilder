@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ModifyHistoryStore } from './modifyHistoryStore';
 import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
+import { icon } from './webviewAssets';
 
 export class ModifyHistoryViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'postgresModifyHistory';
@@ -42,21 +43,19 @@ export class ModifyHistoryViewProvider implements vscode.WebviewViewProvider {
 
     private _getHtml(webview: vscode.Webview): string {
         const styles = `
-body { padding: 0; margin: 0; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); }
-.toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border); }
-.toolbar .count { font-size: 11px; color: var(--vscode-descriptionForeground); }
-.toolbar button { padding: 2px 8px; font-size: 11px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 1px solid var(--vscode-button-border, transparent); border-radius: 2px; cursor: pointer; }
-.toolbar button:hover { background: var(--vscode-button-secondaryHoverBackground); }
+body { padding: 0; }
+.toolbar { justify-content: space-between; padding: var(--sp-1) var(--sp-2); border-bottom: 1px solid var(--c-border); }
+.toolbar .count { font-size: var(--fs-xs); color: var(--c-muted); }
 .list { overflow-y: auto; }
-.empty { padding: 12px; text-align: center; font-size: 12px; color: var(--vscode-descriptionForeground); }
-.entry { padding: 6px 8px; border-bottom: 1px solid var(--vscode-panel-border); cursor: pointer; }
-.entry:hover { background: var(--vscode-list-hoverBackground); }
-.entry-meta { font-size: 10px; color: var(--vscode-descriptionForeground); display: flex; justify-content: space-between; gap: 8px; margin-bottom: 2px; }
-.entry-sql { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; white-space: pre-wrap; word-break: break-word; }`;
+.empty { padding: var(--sp-3); text-align: center; font-size: var(--fs-sm); color: var(--c-muted); }
+.entry { padding: var(--sp-2); border-bottom: 1px solid var(--c-border); cursor: pointer; }
+.entry:hover { background: var(--c-hover); }
+.entry-meta { font-size: var(--fs-xs); color: var(--c-muted); display: flex; justify-content: space-between; gap: var(--sp-2); margin-bottom: 2px; }
+.entry-sql { font-family: var(--font-mono); font-size: var(--fs-sm); white-space: pre-wrap; word-break: break-word; }`;
         const body = `
 <div class="toolbar">
     <span class="count" id="count">0 entries</span>
-    <button id="clearBtn" title="Clear modify history">Clear</button>
+    <button class="btn btn-sm" id="clearBtn" title="Clear modify history">${icon('trash')}Clear</button>
 </div>
 <div class="list" id="list"></div>`;
         const script = `

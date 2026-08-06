@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ColumnMappingManager, CustomColumnMapping, MappingScope } from './columnMappingManager';
 import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
+import { icon } from './webviewAssets';
 import { getErrorMessage } from './logger';
 
 export class ManageMappingsPanel {
@@ -115,50 +116,37 @@ export class ManageMappingsPanel {
 
     private getHtml(webview: vscode.Webview): string {
         const styles = `
-        body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 12px 16px; }
-        h2 { margin: 0 0 6px 0; font-size: 16px; }
-        .hint { color: var(--vscode-descriptionForeground); font-size: 12px; margin-bottom: 12px; }
-        .file-info { font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 10px; }
-        .file-info code { background: var(--vscode-textCodeBlock-background); padding: 1px 4px; border-radius: 3px; }
-        .toolbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-panel-border); }
-        .toolbar input[type="text"] { flex: 1 1 200px; min-width: 160px; padding: 4px 8px; border: 1px solid var(--vscode-input-border); background: var(--vscode-input-background); color: var(--vscode-input-foreground); border-radius: 2px; outline: none; }
-        button { padding: 4px 10px; font-size: 12px; border-radius: 2px; border: 1px solid var(--vscode-button-border, transparent); background: var(--vscode-button-background); color: var(--vscode-button-foreground); cursor: pointer; }
-        button:hover { background: var(--vscode-button-hoverBackground); }
-        button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
-        button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
-        button.danger { background: var(--vscode-errorForeground); color: var(--vscode-editor-background); border-color: transparent; }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .selection-info { font-size: 12px; color: var(--vscode-descriptionForeground); margin-left: auto; }
-        table { width: 100%; border-collapse: collapse; font-size: 12px; }
-        thead th { text-align: left; padding: 6px 8px; background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-panel-border); position: sticky; top: 0; }
-        tbody td { padding: 6px 8px; border-bottom: 1px solid var(--vscode-panel-border); vertical-align: top; }
-        tbody tr:hover { background: var(--vscode-list-hoverBackground); }
+        body { padding: var(--sp-3) var(--sp-4); }
+        h2 { margin: 0 0 var(--sp-2) 0; font-size: var(--fs-lg); }
+        .hint { margin-bottom: var(--sp-3); }
+        .file-info { font-size: var(--fs-xs); color: var(--c-muted); margin-bottom: var(--sp-3); }
+        .file-info code { background: var(--c-code-bg); padding: 1px var(--sp-1); border-radius: var(--radius); }
+        .toolbar { margin-bottom: var(--sp-2); padding-bottom: var(--sp-2); border-bottom: 1px solid var(--c-border); }
+        .toolbar input[type="text"] { flex: 1 1 200px; min-width: 160px; }
+        .selection-info { font-size: var(--fs-sm); color: var(--c-muted); margin-left: auto; }
+        thead th { position: sticky; top: 0; z-index: var(--z-sticky); }
+        tbody td { vertical-align: top; }
+        tbody tr:hover { background: var(--c-hover); }
         tbody tr.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
-        .badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 3px; margin-left: 4px; }
-        .badge-workspace { background: var(--vscode-gitDecoration-addedResourceForeground, #4caf50); color: var(--vscode-editor-background); }
-        .badge-personal { background: var(--vscode-descriptionForeground); color: var(--vscode-editor-background); }
+        .badge { margin-left: var(--sp-1); }
+        .badge-workspace { background: var(--vscode-gitDecoration-addedResourceForeground, var(--c-success)); color: var(--c-bg); }
+        .badge-personal { background: var(--c-muted); color: var(--c-bg); }
         .badge-default { background: var(--vscode-charts-blue, var(--vscode-badge-background)); color: var(--vscode-badge-foreground); }
-        .mono { font-family: var(--vscode-editor-font-family, monospace); }
-        .empty { padding: 24px; text-align: center; color: var(--vscode-descriptionForeground); }
-        .cond { font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 2px; font-style: italic; }
-        .row-btn { padding: 2px 8px; font-size: 11px; }
+        .empty { padding: var(--sp-6); text-align: center; color: var(--c-muted); }
+        .cond { font-size: var(--fs-xs); color: var(--c-muted); margin-top: 2px; font-style: italic; }
+        .muted { color: var(--c-muted); }
+        .push-right { margin-left: auto; }
         /* Edit dialog */
-        .dlg-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 100; }
-        .dlg-overlay.open { display: flex; }
-        .dlg { background: var(--vscode-editor-background); color: var(--vscode-foreground); border: 1px solid var(--vscode-panel-border); border-radius: 4px; width: 560px; max-width: 92vw; max-height: 90vh; display: flex; flex-direction: column; }
-        .dlg-header { padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border); display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
-        .dlg-close { background: none; border: none; color: var(--vscode-foreground); font-size: 18px; cursor: pointer; padding: 0 4px; }
-        .dlg-body { padding: 12px; overflow: auto; }
-        .dlg-footer { padding: 8px 12px; border-top: 1px solid var(--vscode-panel-border); display: flex; gap: 6px; justify-content: flex-end; }
-        .dlg fieldset { border: 1px solid var(--vscode-panel-border); border-radius: 3px; margin: 0 0 10px 0; padding: 8px 10px; }
-        .dlg legend { padding: 0 4px; font-size: 11px; color: var(--vscode-descriptionForeground); }
-        .dlg-grid { display: grid; grid-template-columns: 90px 1fr 60px 1fr; gap: 6px 8px; align-items: center; }
-        .dlg-grid label { font-size: 12px; color: var(--vscode-descriptionForeground); }
-        .dlg input[type="text"], .dlg select { width: 100%; padding: 3px 6px; box-sizing: border-box; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 2px; font-size: 12px; }
-        .dlg-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
-        .dlg-row label { font-size: 12px; }
-        .cond-row { display: grid; grid-template-columns: minmax(160px, 2fr) 80px minmax(120px, 1fr) 24px; gap: 4px; margin-top: 4px; align-items: center; }
-        .cond-row button { padding: 2px 6px; font-size: 12px; }`;
+        .dlg { width: 560px; }
+        .dlg fieldset { border: 1px solid var(--c-border); border-radius: var(--radius); margin: 0 0 var(--sp-3) 0; padding: var(--sp-2) var(--sp-3); }
+        .dlg legend { padding: 0 var(--sp-1); font-size: var(--fs-xs); color: var(--c-muted); }
+        .dlg-grid { display: grid; grid-template-columns: 90px 1fr 60px 1fr; gap: var(--sp-2); align-items: center; }
+        .dlg-grid label { font-size: var(--fs-sm); color: var(--c-muted); }
+        .dlg input[type="text"], .dlg select { width: 100%; }
+        .dlg-row { display: flex; gap: var(--sp-2); align-items: center; margin-top: var(--sp-2); }
+        .dlg-row label { font-size: var(--fs-sm); }
+        .cond-row { display: grid; grid-template-columns: minmax(160px, 2fr) 80px minmax(120px, 1fr) 28px; gap: var(--sp-1); margin-top: var(--sp-1); align-items: center; }
+        .mt-2 { margin-top: var(--sp-2); }`;
         const body = `
     <h2>Custom Column Mappings</h2>
     <div class="hint">Verwalte alle Mappings an einer Stelle. Wähle Einträge aus und ändere ihren Scope, um sie z. B. mit dem Team zu teilen (Workspace) oder wieder privat zu halten (Personal).</div>
@@ -166,18 +154,18 @@ export class ManageMappingsPanel {
 
     <div class="toolbar">
         <input type="text" id="filter" placeholder="Filter: source/target table, column, label..." />
-        <button id="selectAll" class="secondary">Select all</button>
-        <button id="selectNone" class="secondary">Clear</button>
-        <button id="invert" class="secondary">Invert</button>
-        <button id="selectPersonal" class="secondary">Select Personal</button>
-        <button id="selectWorkspace" class="secondary">Select Workspace</button>
+        <button class="btn btn-sm" id="selectAll">Select all</button>
+        <button class="btn btn-sm" id="selectNone">Clear</button>
+        <button class="btn btn-sm" id="invert">Invert</button>
+        <button class="btn btn-sm" id="selectPersonal">Personal</button>
+        <button class="btn btn-sm" id="selectWorkspace">Workspace</button>
         <span class="selection-info" id="selInfo">0 selected</span>
     </div>
     <div class="toolbar">
-        <button id="moveWorkspace" title="Move selected mappings to the workspace file (will be committed to git)">Move to Workspace (share)</button>
-        <button id="movePersonal" class="secondary" title="Move selected mappings to your personal store (not shared)">Move to Personal</button>
-        <button id="deleteSel" class="danger" title="Delete the selected mappings">Delete selected</button>
-        <button id="openFile" class="secondary" style="margin-left:auto;">Open workspace file</button>
+        <button class="btn btn-primary" id="moveWorkspace" title="Move selected mappings to the workspace file (will be committed to git)">${icon('goto')}To Workspace</button>
+        <button class="btn" id="movePersonal" title="Move selected mappings to your personal store (not shared)">${icon('goto')}To Personal</button>
+        <button class="btn btn-danger" id="deleteSel" title="Delete the selected mappings">${icon('trash')}Delete</button>
+        <button class="btn push-right" id="openFile" title="Open the workspace mappings file">${icon('edit')}Open workspace file</button>
     </div>
 
     <table id="tbl">
@@ -200,7 +188,7 @@ export class ManageMappingsPanel {
         <div class="dlg">
             <div class="dlg-header">
                 <span>Edit Custom Column Mapping</span>
-                <button class="dlg-close" id="editClose">&times;</button>
+                <button class="btn btn-ghost btn-icon" id="editClose" title="Close">${icon('close')}</button>
             </div>
             <div class="dlg-body">
                 <fieldset>
@@ -239,12 +227,12 @@ export class ManageMappingsPanel {
                 <fieldset>
                     <legend>Conditions (optional)</legend>
                     <div id="editConditions"></div>
-                    <button id="editAddCondition" class="secondary" style="margin-top:6px;">+ Add Condition</button>
+                    <button class="btn btn-sm mt-2" id="editAddCondition">${icon('add')}Add Condition</button>
                 </fieldset>
             </div>
             <div class="dlg-footer">
-                <button id="editSave">Save</button>
-                <button id="editCancel" class="secondary">Cancel</button>
+                <button class="btn btn-primary" id="editSave">${icon('check')}Save</button>
+                <button class="btn" id="editCancel">Cancel</button>
             </div>
         </div>
     </div>
@@ -295,8 +283,8 @@ export class ManageMappingsPanel {
                         + '<td>' + scopeBadge + defBadge + '</td>'
                         + '<td class="mono">' + escapeHtml(m.sourceSchema) + '.' + escapeHtml(m.sourceTable) + '.' + escapeHtml(m.sourceColumn) + '</td>'
                         + '<td class="mono">' + escapeHtml(m.targetSchema) + '.' + escapeHtml(m.targetTable) + '.' + escapeHtml(m.targetColumn) + '</td>'
-                        + '<td>' + label + cond + pairs + (label || cond || pairs ? '' : '<span style="color:var(--vscode-descriptionForeground);">—</span>') + '</td>'
-                        + '<td><button class="secondary row-btn edit-btn" title="Edit this mapping">Edit</button></td>'
+                        + '<td>' + label + cond + pairs + (label || cond || pairs ? '' : '<span class="muted">—</span>') + '</td>'
+                        + '<td><button class="btn btn-sm edit-btn" title="Edit this mapping">${icon('edit')}Edit</button></td>'
                         + '</tr>';
                 }).join('');
             }

@@ -7,6 +7,7 @@ import { PermanentConstraintManager } from './permanentConstraintManager';
 import { SavedQueryStore, SavedQueryParameter, mergeParameters } from './savedQueryStore';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
 import { getErrorMessage } from './logger';
+import { getIconSprite, getSharedStyles } from './webviewAssets';
 import type { ViewCapabilities } from './resultSource';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -938,6 +939,8 @@ export class TableWebViewManager {
         // function: with a string replacement, `$'`/`$&` inside the script (e.g.
         // a comparison against a '$' character) would expand to parts of the
         // HTML and corrupt the injected code.
+        html = html.replace('/* SHARED_CSS_PLACEHOLDER */', () => getSharedStyles());
+        html = html.replace('<!-- ICON_SPRITE_PLACEHOLDER -->', () => getIconSprite());
         html = html.replace('/* CSS_PLACEHOLDER */', () => css);
         html = html.replace('/* JS_PLACEHOLDER */', () => js);
 

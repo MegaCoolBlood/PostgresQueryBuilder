@@ -3,6 +3,7 @@ import { ConnectionManager } from './connectionManager';
 import { QueryRunner } from './queryRunner';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
 import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
+import { icon } from './webviewAssets';
 import { getErrorMessage } from './logger';
 import { formatSql } from './plpgsqlFormatter';
 import { resolveFormatOptions } from './formatConfig';
@@ -94,89 +95,53 @@ export class SqlEditorManager {
     private getHtml(webview: vscode.Webview): string {
         const styles = `
         body {
-            font-family: var(--vscode-font-family);
-            font-size: var(--vscode-font-size);
-            color: var(--vscode-foreground);
-            background: var(--vscode-editor-background);
-            padding: 16px;
-            margin: 0;
+            padding: var(--sp-4);
         }
         .editor-container {
             display: flex;
             flex-direction: column;
-            height: calc(100vh - 32px);
+            height: calc(100vh - 2 * var(--sp-4));
         }
         .sql-input {
             flex: 0 0 auto;
-            margin-bottom: 12px;
+            margin-bottom: var(--sp-3);
         }
         textarea {
             width: 100%;
             min-height: 150px;
-            background: var(--vscode-input-background);
-            color: var(--vscode-input-foreground);
-            border: 1px solid var(--vscode-input-border);
-            padding: 8px;
-            font-family: var(--vscode-editor-font-family);
+            padding: var(--sp-2);
             font-size: var(--vscode-editor-font-size);
-            resize: vertical;
-            box-sizing: border-box;
-        }
-        textarea:focus {
-            outline: 1px solid var(--vscode-focusBorder);
         }
         .toolbar {
-            margin-bottom: 12px;
-        }
-        button {
-            background: var(--vscode-button-background);
-            color: var(--vscode-button-foreground);
-            border: none;
-            padding: 6px 14px;
-            cursor: pointer;
-            font-size: 13px;
-        }
-        button:hover {
-            background: var(--vscode-button-hoverBackground);
-        }
-        .toolbar button + button {
-            margin-left: 8px;
-            background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
-            color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+            margin-bottom: var(--sp-3);
         }
         .result-container {
             flex: 1;
             overflow: auto;
         }
         .result-info {
-            margin-bottom: 8px;
-            color: var(--vscode-descriptionForeground);
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 12px;
+            margin-bottom: var(--sp-2);
+            color: var(--c-muted);
         }
         th, td {
-            border: 1px solid var(--vscode-panel-border);
-            padding: 4px 8px;
-            text-align: left;
+            border: 1px solid var(--c-border);
             white-space: nowrap;
         }
         th {
-            background: var(--vscode-editor-selectionBackground);
             position: sticky;
             top: 0;
+            z-index: var(--z-sticky);
         }
         tr:hover td {
-            background: var(--vscode-list-hoverBackground);
+            background: var(--c-hover);
         }
         .error {
-            color: var(--vscode-errorForeground);
-            padding: 8px;
+            color: var(--c-danger);
+            padding: var(--sp-2);
             background: var(--vscode-inputValidation-errorBackground);
             border: 1px solid var(--vscode-inputValidation-errorBorder);
-            margin-top: 8px;
+            border-radius: var(--radius);
+            margin-top: var(--sp-2);
         }`;
         const body = `
     <div class="editor-container">
@@ -184,8 +149,8 @@ export class SqlEditorManager {
             <textarea id="sqlInput" placeholder="Enter SQL query..."></textarea>
         </div>
         <div class="toolbar">
-            <button id="executeBtn">▶ Execute (Ctrl+Enter)</button>
-            <button id="formatBtn">Format PL/pgSQL</button>
+            <button class="btn btn-primary" id="executeBtn" title="Execute (Ctrl+Enter)">${icon('run')}Execute</button>
+            <button class="btn" id="formatBtn">${icon('format')}Format PL/pgSQL</button>
         </div>
         <div class="result-container" id="resultContainer"></div>
     </div>`;

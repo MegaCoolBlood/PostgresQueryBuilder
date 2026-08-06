@@ -55,8 +55,11 @@ export class SavedQueryExplorerProvider implements vscode.TreeDataProvider<Saved
     getTreeItem(element: SavedQueryTreeNode): vscode.TreeItem {
         if (element.type === 'group') {
             const item = new vscode.TreeItem(GROUP_LABEL[element.scope], vscode.TreeItemCollapsibleState.Expanded);
-            item.iconPath = new vscode.ThemeIcon(element.scope === 'workspace' ? 'folder-active' : 'account');
+            item.iconPath = new vscode.ThemeIcon(element.scope === 'workspace' ? 'folder' : 'account');
             item.contextValue = `savedQueryGroup:${element.scope}`;
+            item.tooltip = element.scope === 'workspace'
+                ? 'Queries stored with this workspace'
+                : 'Queries stored in your personal settings';
             return item;
         }
 

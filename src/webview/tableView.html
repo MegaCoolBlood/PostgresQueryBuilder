@@ -4,9 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Table View</title>
-    <style>/* CSS_PLACEHOLDER */</style>
+    <style>/* SHARED_CSS_PLACEHOLDER */
+/* CSS_PLACEHOLDER */</style>
 </head>
 <body>
+<!-- ICON_SPRITE_PLACEHOLDER -->
     <div class="container">
         <div class="toolbar">
             <div class="toolbar-left">
@@ -17,18 +19,26 @@
                 <span class="loading-indicator" id="metaLoading"><span class="spinner"></span> Loading relations...</span>
             </div>
             <div class="toolbar-right">
-                <button class="btn btn-primary" id="insertRowBtn" title="Insert new row">+ Insert Row</button>
-                <button class="btn btn-success" id="commitBtn" title="Save all changes" disabled>Save</button>
-                <button class="btn btn-warning" id="discardBtn" title="Discard all changes" disabled>Discard Changes</button>
-                <button class="btn btn-default" id="constraintsBtn" title="Add permanent constraints and sorting applied every time this table is viewed">Constraints</button>
-                <button class="btn btn-default" id="exportBtn" title="Export data">Export</button>
-                <button class="btn btn-default" id="loadMoreBtn" title="Load more rows">Load More</button>
-                <button class="btn btn-default" id="loadAllBtn" title="Load all remaining rows">Load All</button>
+                <div class="toolbar-group">
+                    <button class="btn" id="insertRowBtn" title="Insert new row"><svg class="ico" aria-hidden="true"><use href="#icon-add"/></svg>Insert</button>
+                    <button class="btn btn-primary" id="commitBtn" title="Save all changes" disabled><svg class="ico" aria-hidden="true"><use href="#icon-check"/></svg>Save</button>
+                    <button class="btn" id="discardBtn" title="Discard all changes" disabled><svg class="ico" aria-hidden="true"><use href="#icon-undo"/></svg>Discard</button>
+                </div>
+                <span class="toolbar-sep"></span>
+                <div class="toolbar-group">
+                    <button class="btn" id="constraintsBtn" title="Add permanent constraints and sorting applied every time this table is viewed"><svg class="ico" aria-hidden="true"><use href="#icon-filter"/></svg>Constraints</button>
+                    <button class="btn" id="exportBtn" title="Export data"><svg class="ico" aria-hidden="true"><use href="#icon-export"/></svg>Export</button>
+                </div>
+                <span class="toolbar-sep"></span>
+                <div class="toolbar-group">
+                    <button class="btn" id="loadMoreBtn" title="Load more rows"><svg class="ico" aria-hidden="true"><use href="#icon-arrow-down"/></svg>More</button>
+                    <button class="btn" id="loadAllBtn" title="Load all remaining rows"><svg class="ico" aria-hidden="true"><use href="#icon-arrow-down-line"/></svg>All</button>
+                </div>
             </div>
         </div>
         <div class="query-bar">
             <div class="query-history" id="queryHistoryContainer">
-                <button type="button" class="query-history-toggle" id="queryHistoryToggle" title="Query history">History &#9662;</button>
+                <button type="button" class="btn query-history-toggle" id="queryHistoryToggle" title="Query history"><svg class="ico" aria-hidden="true"><use href="#icon-history"/></svg>History<svg class="ico" aria-hidden="true"><use href="#icon-chevron-down"/></svg></button>
                 <div class="query-history-panel" id="queryHistoryPanel" style="display:none;">
                     <input type="text" class="query-history-search" id="queryHistorySearch" placeholder="Search history..." />
                     <ul class="query-history-list" id="queryHistoryList"></ul>
@@ -36,10 +46,10 @@
                 </div>
             </div>
             <textarea id="queryInput" class="query-input" rows="1" spellcheck="false" wrap="off"></textarea>
-            <button class="btn" id="queryParamsBtn" title="Change the placeholder values of this saved query" style="display:none;">Parameters&hellip;</button>
-            <button class="btn" id="querySaveBtn" title="Save this query for reuse">&#9734; Save Query</button>
-            <button class="btn" id="queryFormatBtn" title="Format SQL">Format</button>
-            <button class="btn btn-primary" id="queryRunBtn" title="Run query (Ctrl+Enter)">&#9654; Run</button>
+            <button class="btn btn-icon" id="queryParamsBtn" title="Change the placeholder values of this saved query" style="display:none;"><svg class="ico" aria-hidden="true"><use href="#icon-params"/></svg></button>
+            <button class="btn btn-icon" id="querySaveBtn" title="Save this query for reuse"><svg class="ico" aria-hidden="true"><use href="#icon-star"/></svg></button>
+            <button class="btn btn-icon" id="queryFormatBtn" title="Format SQL"><svg class="ico" aria-hidden="true"><use href="#icon-format"/></svg></button>
+            <button class="btn btn-primary" id="queryRunBtn" title="Run query (Ctrl+Enter)"><svg class="ico" aria-hidden="true"><use href="#icon-run"/></svg>Run</button>
         </div>
         <div class="table-wrapper" id="tableWrapper">
             <table id="dataTable">
@@ -59,16 +69,16 @@
             <div class="sql-dialog">
                 <div class="sql-dialog-header">
                     <span>SQL Preview</span>
-                    <button class="sql-dialog-close" id="sqlDialogClose">&times;</button>
+                    <button class="btn btn-ghost btn-icon sql-dialog-close" id="sqlDialogClose" title="Close"><svg class="ico" aria-hidden="true"><use href="#icon-close"/></svg></button>
                 </div>
                 <div class="sql-dialog-connection" id="sqlDialogConnection"></div>
                 <div class="sql-dialog-warning" id="sqlDialogWarning" style="display:none;"></div>
                 <textarea class="sql-dialog-content" id="sqlDialogContent" spellcheck="false" wrap="off" aria-label="Statements to execute"></textarea>
                 <div class="sql-dialog-hint">The statements can be edited before executing. They run as a single transaction.</div>
                 <div class="sql-dialog-footer">
-                    <button class="btn btn-success" id="sqlDialogExecute">Execute</button>
-                    <button class="btn btn-default" id="sqlDialogReset" title="Restore the generated statements">Reset</button>
-                    <button class="btn btn-default" id="sqlDialogCancel">Cancel</button>
+                    <button class="btn btn-primary" id="sqlDialogExecute"><svg class="ico" aria-hidden="true"><use href="#icon-run"/></svg>Execute</button>
+                    <button class="btn" id="sqlDialogReset" title="Restore the generated statements">Reset</button>
+                    <button class="btn" id="sqlDialogCancel">Cancel</button>
                 </div>
             </div>
         </div>
@@ -77,7 +87,7 @@
             <div class="sql-dialog export-dialog">
                 <div class="sql-dialog-header">
                     <span>Export Data</span>
-                    <button class="sql-dialog-close" id="exportDialogClose">&times;</button>
+                    <button class="btn btn-ghost btn-icon sql-dialog-close" id="exportDialogClose" title="Close"><svg class="ico" aria-hidden="true"><use href="#icon-close"/></svg></button>
                 </div>
                 <div class="export-dialog-content">
                     <div class="export-field">
@@ -97,7 +107,7 @@
                     <div class="export-field">
                         <label for="exportSaveLocation">Save location:</label>
                         <input type="text" id="exportSaveLocation" placeholder="(will prompt on export)" />
-                        <button class="btn btn-default" id="exportBrowseLocation" title="Browse for folder">Browse</button>
+                        <button class="btn" id="exportBrowseLocation" title="Browse for folder">Browse</button>
                     </div>
                     <!-- CSV Options -->
                     <div class="export-options-group" id="exportOptsCsv">
@@ -186,9 +196,9 @@
                     </div>
                 </div>
                 <div class="sql-dialog-footer">
-                    <button class="btn btn-default" id="exportSaveDefault" title="Save current settings as default for this format">Save as Default</button>
-                    <button class="btn btn-success" id="exportExecute">Export</button>
-                    <button class="btn btn-default" id="exportCancel">Cancel</button>
+                    <button class="btn" id="exportSaveDefault" title="Save current settings as default for this format">Save as Default</button>
+                    <button class="btn btn-primary" id="exportExecute"><svg class="ico" aria-hidden="true"><use href="#icon-export"/></svg>Export</button>
+                    <button class="btn" id="exportCancel">Cancel</button>
                 </div>
             </div>
         </div>
@@ -198,7 +208,7 @@
         <div class="sql-dialog mapping-dialog">
             <div class="sql-dialog-header">
                 <span id="mappingDialogTitle">Create Custom Column Mapping</span>
-                <button class="sql-dialog-close" id="mappingDialogClose">&times;</button>
+                <button class="btn btn-ghost btn-icon sql-dialog-close" id="mappingDialogClose" title="Close"><svg class="ico" aria-hidden="true"><use href="#icon-close"/></svg></button>
             </div>
             <div class="mapping-dialog-content">
                 <div class="export-field">
@@ -239,13 +249,13 @@
                     <legend>Additional column matches (optional)</legend>
                     <p class="mapping-hint">For composite keys, match more source columns to target columns. All matches are combined with AND.</p>
                     <div id="mappingColumnPairs"></div>
-                    <button class="btn btn-default btn-sm" id="mappingAddColumnPair">+ Add column match</button>
+                    <button class="btn btn-sm" id="mappingAddColumnPair"><svg class="ico" aria-hidden="true"><use href="#icon-add"/></svg>Add column match</button>
                 </fieldset>
                 <fieldset class="mapping-fieldset">
                     <legend>Conditions (optional)</legend>
                     <p class="mapping-hint">Only apply this mapping when these conditions are met on the current row.</p>
                     <div id="mappingConditions"></div>
-                    <button class="btn btn-default btn-sm" id="mappingAddCondition">+ Add Condition</button>
+                    <button class="btn btn-sm" id="mappingAddCondition"><svg class="ico" aria-hidden="true"><use href="#icon-add"/></svg>Add condition</button>
                 </fieldset>
                 <div class="export-field-checkbox">
                     <input type="checkbox" id="mappingIsDefault" />
@@ -257,9 +267,9 @@
                 </div>
             </div>
             <div class="sql-dialog-footer">
-                <button class="btn btn-success" id="mappingDialogSave">Save Mapping</button>
-                <button class="btn btn-danger" id="mappingDialogDelete" style="display:none;">Delete</button>
-                <button class="btn btn-default" id="mappingDialogCancel">Cancel</button>
+                <button class="btn btn-primary" id="mappingDialogSave">Save Mapping</button>
+                <button class="btn btn-danger" id="mappingDialogDelete" style="display:none;"><svg class="ico" aria-hidden="true"><use href="#icon-trash"/></svg>Delete</button>
+                <button class="btn" id="mappingDialogCancel">Cancel</button>
             </div>
         </div>
     </div>
@@ -268,15 +278,15 @@
         <div class="sql-dialog mapping-dialog">
             <div class="sql-dialog-header">
                 <span>Custom Column Mappings</span>
-                <button class="sql-dialog-close" id="manageMappingsClose">&times;</button>
+                <button class="btn btn-ghost btn-icon sql-dialog-close" id="manageMappingsClose" title="Close"><svg class="ico" aria-hidden="true"><use href="#icon-close"/></svg></button>
             </div>
             <div class="mapping-dialog-content">
                 <div id="mappingsList" class="mappings-list"></div>
                 <p id="noMappingsMsg" class="mapping-hint" style="display:none;">No custom mappings defined for this table.</p>
             </div>
             <div class="sql-dialog-footer">
-                <button class="btn btn-primary" id="manageMappingsAdd">+ New Mapping</button>
-                <button class="btn btn-default" id="manageMappingsCloseBtn">Close</button>
+                <button class="btn btn-primary" id="manageMappingsAdd"><svg class="ico" aria-hidden="true"><use href="#icon-add"/></svg>New Mapping</button>
+                <button class="btn" id="manageMappingsCloseBtn">Close</button>
             </div>
         </div>
     </div>
@@ -286,15 +296,15 @@
             <div class="sql-dialog-header">
                 <span>Record <span id="recordDialogIndex"></span> &mdash; <span id="recordDialogTitle"></span></span>
                 <div class="record-dialog-nav">
-                    <button class="btn btn-default btn-sm" id="recordDialogPrev" title="Previous record (Alt+&larr;)">&larr; Prev</button>
-                    <button class="btn btn-default btn-sm" id="recordDialogNext" title="Next record (Alt+&rarr;)">Next &rarr;</button>
-                    <button class="sql-dialog-close" id="recordDialogClose">&times;</button>
+                    <button class="btn btn-sm" id="recordDialogPrev" title="Previous record (Alt+&larr;)">&larr; Prev</button>
+                    <button class="btn btn-sm" id="recordDialogNext" title="Next record (Alt+&rarr;)">Next &rarr;</button>
+                    <button class="btn btn-ghost btn-icon sql-dialog-close" id="recordDialogClose" title="Close"><svg class="ico" aria-hidden="true"><use href="#icon-close"/></svg></button>
                 </div>
             </div>
             <div class="record-dialog-body" id="recordDialogBody"></div>
             <div class="sql-dialog-footer">
                 <span class="record-dialog-status" id="recordDialogStatus"></span>
-                <button class="btn btn-default" id="recordDialogCloseBtn">Close</button>
+                <button class="btn" id="recordDialogCloseBtn">Close</button>
             </div>
         </div>
     </div>
@@ -303,18 +313,18 @@
         <div class="sql-dialog constraints-dialog">
             <div class="sql-dialog-header">
                 <span>Permanent Constraints &amp; Sorting</span>
-                <button class="sql-dialog-close" id="constraintsDialogClose">&times;</button>
+                <button class="btn btn-ghost btn-icon sql-dialog-close" id="constraintsDialogClose" title="Close"><svg class="ico" aria-hidden="true"><use href="#icon-close"/></svg></button>
             </div>
             <div class="constraints-dialog-content">
                 <p class="mapping-hint">These conditions are applied to the WHERE clause every time you open this table.</p>
                 <div id="constraintsList"></div>
                 <div class="cond-row">
-                    <button class="btn btn-default" id="constraintsAdd">+ Add fixed condition</button>
+                    <button class="btn" id="constraintsAdd"><svg class="ico" aria-hidden="true"><use href="#icon-add"/></svg>Add fixed condition</button>
                 </div>
                 <p class="mapping-hint">These columns are applied to the ORDER BY clause every time you open this table.</p>
                 <div id="constraintSortsList"></div>
                 <div class="cond-row">
-                    <button class="btn btn-default" id="constraintSortsAdd">+ Add sort column</button>
+                    <button class="btn" id="constraintSortsAdd"><svg class="ico" aria-hidden="true"><use href="#icon-add"/></svg>Add sort column</button>
                 </div>
                 <div class="constraints-preview-wrap">
                     <label>Preview:</label>
@@ -323,7 +333,7 @@
             </div>
             <div class="sql-dialog-footer">
                 <button class="btn btn-primary" id="constraintsSave">Save &amp; Apply</button>
-                <button class="btn btn-default" id="constraintsCancel">Cancel</button>
+                <button class="btn" id="constraintsCancel">Cancel</button>
             </div>
         </div>
     </div>
@@ -332,13 +342,13 @@
         <div class="sql-dialog error-dialog">
             <div class="sql-dialog-header">
                 <span>Query Error</span>
-                <button class="sql-dialog-close" id="errorDialogClose">&times;</button>
+                <button class="btn btn-ghost btn-icon sql-dialog-close" id="errorDialogClose" title="Close"><svg class="ico" aria-hidden="true"><use href="#icon-close"/></svg></button>
             </div>
             <div class="error-dialog-body">
                 <pre class="error-dialog-message" id="errorDialogMessage"></pre>
             </div>
             <div class="sql-dialog-footer">
-                <button class="btn btn-default" id="errorDialogOk">Close</button>
+                <button class="btn" id="errorDialogOk">Close</button>
             </div>
         </div>
     </div>
@@ -347,7 +357,7 @@
         <div class="sql-dialog constraints-dialog">
             <div class="sql-dialog-header">
                 <span id="saveQueryDialogTitle">Save Query</span>
-                <button class="sql-dialog-close" id="saveQueryDialogClose">&times;</button>
+                <button class="btn btn-ghost btn-icon sql-dialog-close" id="saveQueryDialogClose" title="Close"><svg class="ico" aria-hidden="true"><use href="#icon-close"/></svg></button>
             </div>
             <div class="constraints-dialog-content">
                 <p class="mapping-hint">Write <code>:name</code> anywhere in the statement to turn it into a placeholder you are asked for every time the query runs.</p>
@@ -373,7 +383,7 @@
             </div>
             <div class="sql-dialog-footer">
                 <button class="btn btn-primary" id="saveQuerySave">Save</button>
-                <button class="btn btn-default" id="saveQueryCancel">Cancel</button>
+                <button class="btn" id="saveQueryCancel">Cancel</button>
             </div>
         </div>
     </div>
@@ -382,7 +392,7 @@
         <div class="sql-dialog constraints-dialog">
             <div class="sql-dialog-header">
                 <span id="queryParamsDialogTitle">Query Parameters</span>
-                <button class="sql-dialog-close" id="queryParamsDialogClose">&times;</button>
+                <button class="btn btn-ghost btn-icon sql-dialog-close" id="queryParamsDialogClose" title="Close"><svg class="ico" aria-hidden="true"><use href="#icon-close"/></svg></button>
             </div>
             <div class="constraints-dialog-content">
                 <div id="queryParamsList"></div>
@@ -392,8 +402,8 @@
                 </div>
             </div>
             <div class="sql-dialog-footer">
-                <button class="btn btn-primary" id="queryParamsRun">Run</button>
-                <button class="btn btn-default" id="queryParamsCancel">Cancel</button>
+                <button class="btn btn-primary" id="queryParamsRun"><svg class="ico" aria-hidden="true"><use href="#icon-run"/></svg>Run</button>
+                <button class="btn" id="queryParamsCancel">Cancel</button>
             </div>
         </div>
     </div>

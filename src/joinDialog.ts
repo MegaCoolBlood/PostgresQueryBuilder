@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { buildJoinSelect, JoinClause, JoinTableSpec, JoinType } from './statementBuilder';
 import { getNonce, buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
+import { icon } from './webviewAssets';
 
 /**
  * Source of the shared join-dialog helper logic, inlined into the webview
@@ -145,56 +146,43 @@ function getHtml(
     const joinTypes = JSON.stringify(JOIN_TYPES);
 
     const styles = `
-    body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 12px; }
-    h2 { margin: 0 0 8px; font-size: 1.1em; }
-    .hint { color: var(--vscode-descriptionForeground); margin-bottom: 12px; font-size: 0.9em; }
+    body { padding: var(--sp-3); }
+    h2 { margin: 0 0 var(--sp-2); font-size: var(--fs-lg); }
+    .hint { margin-bottom: var(--sp-3); }
     .table-row, .join-block {
-        border: 1px solid var(--vscode-panel-border);
-        border-radius: 4px; padding: 8px; margin-bottom: 8px;
-        background: var(--vscode-editorWidget-background);
+        border: 1px solid var(--c-border);
+        border-radius: var(--radius-lg); padding: var(--sp-2); margin-bottom: var(--sp-2);
+        background: var(--c-surface);
     }
-    .table-row { display: flex; align-items: center; gap: 8px; }
+    .table-row { display: flex; align-items: center; gap: var(--sp-2); }
     .table-row.dragging { opacity: 0.4; }
-    .table-row.drag-over { border-color: var(--vscode-focusBorder); border-style: dashed; }
-    .drag-handle { cursor: grab; user-select: none; padding: 0 4px; color: var(--vscode-descriptionForeground); }
+    .table-row.drag-over { border-color: var(--c-accent); border-style: dashed; }
+    .drag-handle { cursor: grab; user-select: none; display: inline-flex; color: var(--c-muted); }
     .drag-handle:active { cursor: grabbing; }
     .remove-table { margin-left: auto; }
     .table-row .name { font-weight: 600; }
-    .badge { font-size: 0.75em; padding: 1px 6px; border-radius: 8px;
-        background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
-    button {
-        background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);
-        border: none; padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: 0.85em;
-    }
-    button:hover { background: var(--vscode-button-secondaryHoverBackground); }
-    button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
-    button.primary:hover { background: var(--vscode-button-hoverBackground); }
-    button:disabled { opacity: 0.4; cursor: default; }
-    input, select {
-        background: var(--vscode-input-background); color: var(--vscode-input-foreground);
-        border: 1px solid var(--vscode-input-border); border-radius: 3px; padding: 2px 4px;
-    }
     input.alias { width: 90px; }
-    .cond-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
-    .cond-literal .lit-text { font-family: var(--vscode-editor-font-family, monospace); opacity: 0.85; }
-    .cust-raw { width: 160px; font-family: var(--vscode-editor-font-family, monospace); }
-    .join-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .cond-row { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); flex-wrap: wrap; }
+    .cond-literal .lit-text { font-family: var(--font-mono); opacity: 0.85; }
+    .cust-raw { width: 160px; font-family: var(--font-mono); }
+    .join-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-1); }
     pre {
-        background: var(--vscode-textCodeBlock-background); padding: 10px; border-radius: 4px;
+        background: var(--c-code-bg); padding: var(--sp-3); border-radius: var(--radius);
         white-space: pre-wrap; overflow-x: auto; max-height: 240px; overflow-y: auto;
+        font-family: var(--font-mono); font-size: var(--fs-sm);
     }
-    .actions { margin-top: 12px; display: flex; gap: 8px; }
-    .section-title { font-weight: 600; margin: 14px 0 6px; }
+    .actions { margin-top: var(--sp-3); display: flex; gap: var(--sp-2); }
+    .section-title { font-weight: 600; margin: var(--sp-4) 0 var(--sp-2); }
     #dropZone {
-        border: 1px dashed var(--vscode-panel-border); border-radius: 4px;
-        padding: 12px; margin-bottom: 8px; text-align: center; cursor: pointer;
-        color: var(--vscode-descriptionForeground); font-size: 0.9em;
+        border: 1px dashed var(--c-border); border-radius: var(--radius-lg);
+        padding: var(--sp-3); margin-bottom: var(--sp-2); text-align: center; cursor: pointer;
+        color: var(--c-muted); font-size: var(--fs-sm);
     }
-    #dropZone:hover { border-color: var(--vscode-focusBorder); color: var(--vscode-foreground); }
+    #dropZone:hover { border-color: var(--c-accent); color: var(--c-fg); }
     #dropZone.drag-over {
-        border-color: var(--vscode-focusBorder);
-        background: var(--vscode-editorWidget-background);
-        color: var(--vscode-foreground);
+        border-color: var(--c-accent);
+        background: var(--c-surface);
+        color: var(--c-fg);
     }`;
     const body = `
     <h2>Build JOIN SELECT</h2>
@@ -211,8 +199,8 @@ function getHtml(
     <pre id="preview"></pre>
 
     <div class="actions">
-        <button class="primary" id="confirm">Insert statement</button>
-        <button id="cancel">Cancel</button>
+        <button class="btn btn-primary" id="confirm">${icon('check')}Insert statement</button>
+        <button class="btn" id="cancel">Cancel</button>
     </div>
 `;
     const script = `
@@ -519,14 +507,14 @@ function getHtml(
             row.draggable = true;
             row.dataset.pos = String(pos);
             row.innerHTML =
-                '<span class="drag-handle" title="Drag to reorder">\u2630</span>' +
-                '<button data-up="' + pos + '" ' + (pos === 0 ? 'disabled' : '') + '>\u2191</button>' +
-                '<button data-down="' + pos + '" ' + (pos === order.length - 1 ? 'disabled' : '') + '>\u2193</button>' +
+                '<span class="drag-handle" title="Drag to reorder">${icon('grip')}</span>' +
+                '<button class="btn btn-sm btn-icon" title="Move up" data-up="' + pos + '" ' + (pos === 0 ? 'disabled' : '') + '>\u2191</button>' +
+                '<button class="btn btn-sm btn-icon" title="Move down" data-down="' + pos + '" ' + (pos === order.length - 1 ? 'disabled' : '') + '>\u2193</button>' +
                 '<span class="badge">' + (pos === 0 ? 'FROM' : 'JOIN') + '</span>' +
                 '<span class="name">' + escapeHtml(t.schema + '.' + t.table) + '</span>' +
                 ' as <input class="alias" data-alias="' + oi + '" value="' + escapeHtml(aliases[oi]) + '">' +
-                '<button class="remove-table" data-remove="' + pos + '" title="Remove table from join" ' +
-                (order.length <= 1 ? 'disabled' : '') + '>\u2715</button>';
+                '<button class="btn btn-ghost btn-icon remove-table" data-remove="' + pos + '" title="Remove table from join" ' +
+                (order.length <= 1 ? 'disabled' : '') + '>${icon('close')}</button>';
             tablesEl.appendChild(row);
         });
 
@@ -559,14 +547,14 @@ function getHtml(
                         ' = ' +
                         '<span>' + escapeHtml(aliases[oi]) + '.</span>' +
                         '<select data-right="' + oi + ':' + ci + '">' + rightOpts + '</select>' +
-                        '<button data-rmcond="' + oi + ':' + ci + '">Remove</button>' +
+                        '<button class="btn btn-sm" data-rmcond="' + oi + ':' + ci + '">Remove</button>' +
                         '</div>';
                 });
                 (j.literals || []).forEach((l, li) => {
                     html += '<div class="cond-row cond-literal" title="Condition from a custom mapping — click Edit to change it">' +
                         '<span class="lit-text">' + escapeHtml(aliases[l.litOrig] + '.' + l.litColumn + ' ' + l.operator + ' ' + fmtLiteral(l.value)) + '</span>' +
-                        '<button data-editlit="' + oi + ':' + li + '">Edit</button>' +
-                        '<button data-rmlit="' + oi + ':' + li + '">Remove</button>' +
+                        '<button class="btn btn-sm" data-editlit="' + oi + ':' + li + '">Edit</button>' +
+                        '<button class="btn btn-sm" data-rmlit="' + oi + ':' + li + '">Remove</button>' +
                         '</div>';
                 });
                 (customByOrig[oi] || []).forEach((c, ci) => {
@@ -583,12 +571,12 @@ function getHtml(
                     } else if (!isUnaryOperator(c.operator)) {
                         row += operandControls(oi, ci, 'right', c.right);
                     }
-                    row += '<button data-rmcustom="' + oi + ':' + ci + '">Remove</button></div>';
+                    row += '<button class="btn btn-sm" data-rmcustom="' + oi + ':' + ci + '">Remove</button></div>';
                     html += row;
                 });
                 html += '<div class="cond-row">' +
-                    '<button data-addcond="' + oi + '">+ Add condition</button>' +
-                    '<button data-addcustom="' + oi + '">+ Add fixed condition</button>' +
+                    '<button class="btn btn-sm" data-addcond="' + oi + '">${icon('add')}Add condition</button>' +
+                    '<button class="btn btn-sm" data-addcustom="' + oi + '">${icon('add')}Add fixed condition</button>' +
                     '</div>';
             }
 

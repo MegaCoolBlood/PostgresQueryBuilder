@@ -1,5 +1,11 @@
 const DEFAULT_THOUSAND_SEPARATOR = ' ';
 
+// Markup for one icon of the sprite inlined at the top of the document.
+// The icon inherits the surrounding text colour, so it needs no theme handling.
+function icon(name) {
+    return `<svg class="ico" aria-hidden="true"><use href="#icon-${name}"/></svg>`;
+}
+
 // Convert a raw cell value to its canonical string representation.
 // JSON/JSONB columns are parsed by the pg driver into JS objects/arrays;
 // String() would render them as "[object Object]", so stringify them as JSON.
@@ -2466,7 +2472,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const commentTitle = buildColumnHeaderTitle(col);
             const titleAttr = commentTitle ? ` title="${escapeAttr(commentTitle)}"` : '';
             const commentMark = commentTitle ? ' <span class="col-comment-indicator" aria-hidden="true">🛈</span>' : '';
-            html += `<th class="${cls}" draggable="true" data-col="${escapeAttr(col.name)}"${titleAttr}>${escapeHtml(col.name)}${commentMark}<br><small style="font-weight:normal;color:var(--vscode-descriptionForeground)">${escapeHtml(col.dataType)}</small></th>`;
+            html += `<th class="${cls}" draggable="true" data-col="${escapeAttr(col.name)}"${titleAttr}>${escapeHtml(col.name)}${commentMark}<br><small class="col-type">${escapeHtml(col.dataType)}</small></th>`;
         });
         html += '</tr>';
 
@@ -2492,7 +2498,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 html += `<option value="between"${mode === 'between' ? ' selected' : ''}>Between</option>`;
                 html += `</select>`;
 
-                const numWidthStyle = (filterType === 'numeric') ? ` style="width:${getMaxFormattedWidth(col.name) + 2}ch"` : '';
+                const numWidthStyle = (filterType === 'numeric') ? ` style="--col-w:${getMaxFormattedWidth(col.name) + 2}ch"` : '';
 
                 if (mode === 'between') {
                     const rangeVal = (typeof val === 'object' && val !== null) ? val : { from: '', to: '' };
@@ -3001,7 +3007,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 const row = insertedRows[w.iIdx].row;
                 html += `<tr class="row-inserted" data-insert-index="${w.iIdx}">`;
                 html += `<td class="row-num-cell">${rowNum}</td>`;
-                html += `<td class="actions-cell"><button class="btn btn-danger" onclick="removeInsertedRow(${w.iIdx})">✕</button></td>`;
+                html += `<td class="actions-cell"><button class="btn btn-danger btn-sm btn-icon" onclick="removeInsertedRow(${w.iIdx})" title="Remove this new row">${icon('close')}</button></td>`;
                 columns.forEach(col => {
                     const val = row[col.name] || '';
                     const invalid = invalidCells.get(`ins:${w.iIdx}:${col.name}`);
@@ -3012,7 +3018,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 const row = duplicatedRows[w.dIdx].row;
                 html += `<tr class="row-duplicated" data-dup-index="${w.dIdx}">`;
                 html += `<td class="row-num-cell">${rowNum}</td>`;
-                html += `<td class="actions-cell"><button class="btn btn-danger" onclick="removeDuplicatedRow(${w.dIdx})">✕</button></td>`;
+                html += `<td class="actions-cell"><button class="btn btn-danger btn-sm btn-icon" onclick="removeDuplicatedRow(${w.dIdx})" title="Remove this duplicate">${icon('close')}</button></td>`;
                 columns.forEach(col => {
                     const val = row[col.name] !== null && row[col.name] !== undefined ? cellToString(row[col.name]) : '';
                     const invalid = invalidCells.get(`dup:${w.dIdx}:${col.name}`);
@@ -3044,11 +3050,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 html += `<button class="btn-view-record" onclick="openRecordDialog(${idx})" title="View full record">&#128065;</button>`;
             } else if (!isDeleted) {
                 html += `<button class="btn-view-record" onclick="openRecordDialog(${idx})" title="View full record">&#128065;</button>`;
-                html += `<button class="btn btn-duplicate" onclick="duplicateRow(${idx})">⧉</button>`;
-                html += `<button class="btn btn-danger" onclick="deleteRow(${idx})">✕</button>`;
+                html += `<button class="btn btn-sm btn-icon" onclick="duplicateRow(${idx})" title="Duplicate row">${icon('copy')}</button>`;
+                html += `<button class="btn btn-danger btn-sm btn-icon" onclick="deleteRow(${idx})" title="Delete row">${icon('trash')}</button>`;
             } else {
                 html += `<button class="btn-view-record" onclick="openRecordDialog(${idx})" title="View full record">&#128065;</button>`;
-                html += `<button class="btn btn-default" onclick="undeleteRow(${idx})" style="padding:2px 6px;font-size:11px">↩</button>`;
+                html += `<button class="btn btn-sm btn-icon" onclick="undeleteRow(${idx})" title="Restore row">${icon('undo')}</button>`;
             }
             html += `</td>`;
 
@@ -3566,9 +3572,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // view does not keep spinning forever.
         dataLoading.classList.add('hidden');
         changeCount.textContent = `Error: ${text}`;
-        changeCount.style.color = 'var(--vscode-errorForeground)';
+        changeCount.classList.add('status-error');
         setTimeout(() => {
-            changeCount.style.color = '';
+            changeCount.classList.remove('status-error');
             updateChangeIndicator();
         }, 5000);
         showErrorDialog(text);
@@ -3687,7 +3693,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             } else if (!constraintIsUnary(c.operator)) {
                 row += constraintOperandControls(ci, 'right', c.right);
             }
-            row += '<button class="btn btn-default" data-cons-rm="' + ci + '">Remove</button></div>';
+            row += '<button class="btn" data-cons-rm="' + ci + '">Remove</button></div>';
             html += row;
         });
         constraintsList.innerHTML = html;
@@ -3776,7 +3782,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             html += '<div class="cond-row">' +
                 '<select class="operand-kind" data-sort-col="' + si + '">' + missingOpt + colOpts + '</select>' +
                 '<select class="operand-operator" data-sort-dir="' + si + '">' + dirOpts + '</select>' +
-                '<button class="btn btn-default" data-sort-rm="' + si + '">Remove</button>' +
+                '<button class="btn" data-sort-rm="' + si + '">Remove</button>' +
                 '</div>';
         });
         constraintSortsList.innerHTML = html;
@@ -3936,7 +3942,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             '<div class="cond-row">' +
             '<span>' + escapeHtml(q.name) + '</span>' +
             '<span class="mapping-hint">' + (q.scope === 'workspace' ? 'Workspace' : 'Personal') + '</span>' +
-            '<button class="btn btn-default" data-saved-overwrite="' + escapeAttr(q.id) + '">Overwrite</button>' +
+            '<button class="btn" data-saved-overwrite="' + escapeAttr(q.id) + '">Overwrite</button>' +
             '</div>'
         ).join('');
         saveQueryExisting.querySelectorAll('[data-saved-overwrite]').forEach(b => {
@@ -4618,7 +4624,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
             let actions = '';
             if (defaultMapping && !isNull) {
-                actions += '<button class="btn btn-default btn-sm record-fk-btn"' +
+                actions += '<button class="btn btn-sm record-fk-btn"' +
                     ' data-ref-schema="' + escapeAttr(defaultMapping.targetSchema) + '"' +
                     ' data-ref-table="' + escapeAttr(defaultMapping.targetTable) + '"' +
                     ' data-ref-column="' + escapeAttr(defaultMapping.targetColumn) + '"' +
@@ -4626,7 +4632,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     ' title="' + escapeAttr(defaultMapping.label || (defaultMapping.targetSchema + '.' + defaultMapping.targetTable)) + '"' +
                     '>&#8599; Jump</button>';
             } else if (fk && !isNull) {
-                actions += '<button class="btn btn-default btn-sm record-fk-btn"' +
+                actions += '<button class="btn btn-sm record-fk-btn"' +
                     ' data-ref-schema="' + escapeAttr(fk.refSchema) + '"' +
                     ' data-ref-table="' + escapeAttr(fk.refTable) + '"' +
                     ' data-ref-column="' + escapeAttr(fk.refColumn) + '"' +
@@ -4635,7 +4641,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     '>&#8599; Open</button>';
             }
             if (isModified) {
-                actions += '<button class="btn btn-default btn-sm record-reset-btn" title="Reset to original">&#8634; Reset</button>';
+                actions += '<button class="btn btn-sm record-reset-btn" title="Reset to original">&#8634; Reset</button>';
             }
 
             html += '<div class="' + rowClass + '" data-col="' + escapeAttr(col.name) + '">' +
@@ -5087,7 +5093,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             }
             const actions = mapping.reversed
                 ? '<span class="mapping-item-note" title="Edit this mapping on the originating table">read-only</span>'
-                : '<button class="btn btn-default btn-sm mapping-edit-btn">Edit</button>' +
+                : '<button class="btn btn-sm mapping-edit-btn">Edit</button>' +
                   '<button class="btn btn-danger btn-sm mapping-delete-btn">Delete</button>';
             html += `<div class="mapping-item${mapping.reversed ? ' mapping-item-reverse' : ''}" data-mapping-id="${escapeAttr(mapping.id)}">
                 <div class="mapping-item-info">

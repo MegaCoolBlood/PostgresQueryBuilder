@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
-import * as fs from 'fs';
 import * as dns from 'dns';
 import { promisify } from 'util';
 import { Pool, PoolConfig, QueryResult, QueryResultRow, types as pgTypes } from 'pg';
 import { createHash } from 'crypto';
 import { Logger, getErrorMessage } from './logger';
+import { buildHtmlDocument } from './webviewUtils';
+import { icon } from './webviewAssets';
 
 const dnsLookup = promisify(dns.lookup);
 
@@ -137,8 +137,7 @@ export class ConnectionManager {
             { enableScripts: true, retainContextWhenHidden: true }
         );
 
-        const htmlPath = path.join(this.context.extensionPath, 'src', 'webview', 'connectionForm.html');
-        panel.webview.html = fs.readFileSync(htmlPath, 'utf8');
+        panel.webview.html = this.getConnectionFormHtml(panel.webview);
 
         const prefill = existingConfig
             ? { ...existingConfig, port: String(existingConfig.port), schemas: (existingConfig.schemas || []).join(', '), title: `Edit: ${existingConfig.name}` }
@@ -185,6 +184,106 @@ export class ConnectionManager {
                 }
             });
         });
+    }
+
+    private getConnectionFormHtml(webview: vscode.Webview): string {
+        const styles = `
+        body { padding: var(--sp-5); }
+        h2 { margin-top: 0; font-size: var(--fs-lg); }
+        .form-group { margin-bottom: var(--sp-3); }
+        label { display: block; margin-bottom: var(--sp-1); font-weight: 500; }
+        input { width: 100%; max-width: 400px; }
+        .button-row { margin-top: var(--sp-5); display: flex; gap: var(--sp-2); }
+        .error {
+            color: var(--c-danger);
+            margin-top: var(--sp-3);
+            display: none;
+        }`;
+        const body = `
+    <h2 id="title">New Connection</h2>
+    <form id="connectionForm">
+        <div class="form-group">
+            <label for="name">Connection Name</label>
+            <input type="text" id="name" placeholder="My Database" autofocus />
+        </div>
+        <div class="form-group">
+            <label for="host">Host</label>
+            <input type="text" id="host" placeholder="localhost" />
+        </div>
+        <div class="form-group">
+            <label for="port">Port</label>
+            <input type="number" id="port" placeholder="5432" />
+        </div>
+        <div class="form-group">
+            <label for="database">Database</label>
+            <input type="text" id="database" placeholder="postgres" />
+        </div>
+        <div class="form-group">
+            <label for="user">Username</label>
+            <input type="text" id="user" placeholder="postgres" />
+        </div>
+        <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" placeholder="Password" />
+        </div>
+        <div class="form-group">
+            <label for="schemas">Schemas (optional, comma-separated)</label>
+            <input type="text" id="schemas" placeholder="public, myschema" />
+        </div>
+        <div class="error" id="error"></div>
+        <div class="button-row">
+            <button type="submit" class="btn btn-primary">${icon('plug')}Connect</button>
+            <button type="button" class="btn" id="cancelBtn">Cancel</button>
+        </div>
+    </form>`;
+        const script = `
+        const vscode = acquireVsCodeApi();
+
+        window.addEventListener('message', event => {
+            const msg = event.data;
+            if (msg.type === 'prefill') {
+                if (msg.name) document.getElementById('name').value = msg.name;
+                if (msg.host) document.getElementById('host').value = msg.host;
+                if (msg.port) document.getElementById('port').value = msg.port;
+                if (msg.database) document.getElementById('database').value = msg.database;
+                if (msg.user) document.getElementById('user').value = msg.user;
+                if (msg.schemas) document.getElementById('schemas').value = msg.schemas;
+                if (msg.title) document.getElementById('title').textContent = msg.title;
+            } else if (msg.type === 'error') {
+                const el = document.getElementById('error');
+                el.textContent = msg.message;
+                el.style.display = 'block';
+            }
+        });
+
+        document.getElementById('connectionForm').addEventListener('submit', e => {
+            e.preventDefault();
+            const name = document.getElementById('name').value.trim();
+            const host = document.getElementById('host').value.trim();
+            const port = document.getElementById('port').value.trim();
+            const database = document.getElementById('database').value.trim();
+            const user = document.getElementById('user').value.trim();
+            const password = document.getElementById('password').value;
+            const schemas = document.getElementById('schemas').value.trim();
+
+            if (!name || !host || !port || !database || !user) {
+                const el = document.getElementById('error');
+                el.textContent = 'All fields except password are required.';
+                el.style.display = 'block';
+                return;
+            }
+
+            document.getElementById('error').style.display = 'none';
+            vscode.postMessage({
+                type: 'connect',
+                name, host, port: parseInt(port, 10), database, user, password, schemas
+            });
+        });
+
+        document.getElementById('cancelBtn').addEventListener('click', () => {
+            vscode.postMessage({ type: 'cancel' });
+        });`;
+        return buildHtmlDocument({ webview, title: 'PostgreSQL Connection', styles, body, script });
     }
 
     async selectConnection(): Promise<void> {

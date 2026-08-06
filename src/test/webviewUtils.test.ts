@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getNonce, buildCsp, buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from '../webviewUtils';
+import { getIconSprite, getSharedStyles } from '../webviewAssets';
 
 test('getNonce returns an alphanumeric string', () => {
     const nonce = getNonce();
@@ -75,4 +76,35 @@ test('WEBVIEW_ESCAPE_HTML_JS escapes the five HTML-sensitive characters at runti
     assert.equal(escapeHtml(`&<>"'`), '&amp;&lt;&gt;&quot;&#39;');
     assert.equal(escapeHtml(null), '');
     assert.equal(escapeHtml(undefined), '');
+});
+
+test('buildHtmlDocument gives every surface the design tokens and the icon sprite', () => {
+    const html = buildHtmlDocument({ body: '<p>x</p>' });
+    assert.ok(html.includes(getSharedStyles()));
+    assert.ok(html.includes(getIconSprite()));
+});
+
+test('buildHtmlDocument places the shared styles before the surface styles so they can be overridden', () => {
+    const html = buildHtmlDocument({ body: '', styles: '.marker { top: 0; }' });
+    assert.ok(html.indexOf('--sp-1') < html.indexOf('.marker'));
+});
+
+test('buildHtmlDocument puts the sprite directly after <body> so it never shifts the layout', () => {
+    const html = buildHtmlDocument({ body: '<p>x</p>' });
+    assert.ok(html.indexOf('icon-sprite') < html.indexOf('<p>x</p>'));
+});
+
+test('buildHtmlDocument can suppress the shared assets', () => {
+    const html = buildHtmlDocument({ body: '<p>x</p>', includeSharedAssets: false });
+    assert.equal(html.includes('icon-sprite'), false);
+    assert.equal(html.includes('--sp-1'), false);
+});
+
+test('buildHtmlDocument keeps the CSP intact while injecting the shared assets', () => {
+    const fakeWebview = { cspSource: 'vscode-resource://abc' } as any;
+    const html = buildHtmlDocument({ webview: fakeWebview, nonce: 'NONCE123', body: '', script: 'x();' });
+    assert.ok(html.includes("script-src 'nonce-NONCE123'"));
+    assert.ok(html.includes('icon-sprite'));
+    // The sprite is inline markup, so it must not require any extra CSP source.
+    assert.equal(html.includes('img-src'), false);
 });

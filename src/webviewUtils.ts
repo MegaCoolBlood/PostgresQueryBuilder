@@ -1,5 +1,6 @@
 import { randomBytes } from 'crypto';
 import type * as vscode from 'vscode';
+import { getIconSprite, getSharedStyles } from './webviewAssets';
 
 /**
  * Generate a cryptographically strong nonce for use with a webview
@@ -57,6 +58,12 @@ export interface WebviewHtmlOptions {
     title?: string;
     /** `<html lang>` attribute. Defaults to `en`. */
     lang?: string;
+    /**
+     * Prepend the shared design tokens/base styles and inline the icon sprite.
+     * Defaults to `true`; only turn it off for a document that must stand on
+     * its own markup.
+     */
+    includeSharedAssets?: boolean;
 }
 
 /**
@@ -70,11 +77,14 @@ export interface WebviewHtmlOptions {
 export function buildHtmlDocument(options: WebviewHtmlOptions): string {
     const nonce = options.nonce ?? getNonce();
     const lang = options.lang ?? 'en';
+    const shared = options.includeSharedAssets !== false;
     const cspMeta = options.webview
         ? `\n<meta http-equiv="Content-Security-Policy" content="${buildCsp(options.webview, nonce)}">`
         : '';
     const titleTag = options.title ? `\n<title>${options.title}</title>` : '';
-    const styleTag = options.styles ? `\n<style>\n${options.styles}\n</style>` : '';
+    const css = [shared ? getSharedStyles() : '', options.styles ?? ''].filter(Boolean).join('\n');
+    const styleTag = css ? `\n<style>\n${css}\n</style>` : '';
+    const sprite = shared ? `${getIconSprite()}\n` : '';
     const scriptTag = options.script ? `\n<script nonce="${nonce}">\n${options.script}\n</script>` : '';
     return `<!DOCTYPE html>
 <html lang="${lang}">
@@ -83,7 +93,7 @@ export function buildHtmlDocument(options: WebviewHtmlOptions): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">${titleTag}${styleTag}
 </head>
 <body>
-${options.body}${scriptTag}
+${sprite}${options.body}${scriptTag}
 </body>
 </html>`;
 }

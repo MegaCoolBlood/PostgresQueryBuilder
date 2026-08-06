@@ -3,6 +3,7 @@ import { ConnectionManager } from './connectionManager';
 import { TableWebViewManager } from './tableWebView';
 import { extractSelect, extractTableNames, substituteVariables } from './selectStatementExtractor';
 import { buildHtmlDocument } from './webviewUtils';
+import { icon } from './webviewAssets';
 
 const VARIABLE_CACHE_KEY = 'viewDataVariableCache';
 
@@ -158,27 +159,16 @@ export class ViewDataFromSelect {
             </div>`).join('');
 
         const styles = `
-    body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size);
-           color: var(--vscode-foreground); background: var(--vscode-editor-background);
-           padding: 16px; margin: 0; }
-    h2 { font-size: 1.1em; margin: 0 0 4px; }
-    p.hint { color: var(--vscode-descriptionForeground); margin: 0 0 12px; }
-    pre.sql { background: var(--vscode-textCodeBlock-background); border: 1px solid var(--vscode-panel-border);
-              padding: 8px; border-radius: 4px; max-height: 140px; overflow: auto; white-space: pre-wrap;
-              font-family: var(--vscode-editor-font-family); font-size: 12px; }
-    .field { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-    .field label { flex: 0 0 180px; text-align: right; overflow: hidden; text-overflow: ellipsis;
-                   white-space: nowrap; font-family: var(--vscode-editor-font-family); }
-    .field input { flex: 1; background: var(--vscode-input-background); color: var(--vscode-input-foreground);
-                   border: 1px solid var(--vscode-input-border); padding: 4px 6px; box-sizing: border-box;
-                   font-family: var(--vscode-editor-font-family); }
-    .field input:focus { outline: 1px solid var(--vscode-focusBorder); }
-    .buttons { margin-top: 16px; display: flex; gap: 8px; justify-content: flex-end; }
-    button { border: none; padding: 6px 14px; cursor: pointer; font-size: 13px; }
-    .primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
-    .primary:hover { background: var(--vscode-button-hoverBackground); }
-    .secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
-    .secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }`;
+    body { padding: var(--sp-4); }
+    h2 { font-size: var(--fs-lg); margin: 0 0 var(--sp-1); }
+    p.hint { margin: 0 0 var(--sp-3); }
+    pre.sql { background: var(--c-code-bg); border: 1px solid var(--c-border);
+              padding: var(--sp-2); border-radius: var(--radius); max-height: 140px; overflow: auto;
+              white-space: pre-wrap; font-family: var(--font-mono); font-size: var(--fs-sm); }
+    .field label { text-align: right; overflow: hidden; text-overflow: ellipsis;
+                   white-space: nowrap; font-family: var(--font-mono); }
+    .field input { font-family: var(--font-mono); }
+    .buttons { margin-top: var(--sp-4); display: flex; gap: var(--sp-2); justify-content: flex-end; }`;
         const body = `
     <h2>Provide query variables</h2>
     <p class="hint">Values are inserted verbatim. Quote string literals (e.g. <code>'active'</code>).
@@ -187,8 +177,8 @@ export class ViewDataFromSelect {
     <form id="form">
         ${rows}
         <div class="buttons">
-            <button type="button" class="secondary" id="cancelBtn">Cancel</button>
-            <button type="submit" class="primary" id="runBtn">View Data</button>
+            <button type="button" class="btn" id="cancelBtn">Cancel</button>
+            <button type="submit" class="btn btn-primary" id="runBtn">${icon('run')}View Data</button>
         </div>
     </form>`;
         const script = `

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { buildHtmlDocument } from './webviewUtils';
+import { icon } from './webviewAssets';
 
 export class SearchViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'postgresTableSearch';
@@ -48,70 +49,31 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
     private _getHtml(webview: vscode.Webview): string {
         const styles = `
         body {
-            padding: 4px 8px;
-            margin: 0;
-        }
-        .search-container {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-        input {
-            width: 100%;
-            padding: 4px 8px;
-            border: 1px solid var(--vscode-input-border);
-            background: var(--vscode-input-background);
-            color: var(--vscode-input-foreground);
-            font-size: 13px;
-            border-radius: 2px;
-            outline: none;
-            box-sizing: border-box;
-        }
-        input:focus {
-            border-color: var(--vscode-focusBorder);
-        }
-        input::placeholder {
-            color: var(--vscode-input-placeholderForeground);
-        }
-        .hint {
-            font-size: 11px;
-            color: var(--vscode-descriptionForeground);
-            margin-top: 4px;
+            padding: var(--sp-2);
         }
         .button-row {
             display: flex;
-            gap: 4px;
-            margin-bottom: 6px;
+            gap: var(--sp-1);
+            margin-bottom: var(--sp-2);
             flex-wrap: wrap;
         }
-        button {
+        .button-row .btn {
             flex: 1 1 auto;
-            padding: 4px 8px;
-            border: 1px solid var(--vscode-button-border, transparent);
-            background: var(--vscode-button-background);
-            color: var(--vscode-button-foreground);
-            font-size: 12px;
-            border-radius: 2px;
-            cursor: pointer;
         }
-        button:hover {
-            background: var(--vscode-button-hoverBackground);
+        #searchInput {
+            width: 100%;
         }
-        button.secondary {
-            background: var(--vscode-button-secondaryBackground);
-            color: var(--vscode-button-secondaryForeground);
-        }
-        button.secondary:hover {
-            background: var(--vscode-button-secondaryHoverBackground);
+        .hint {
+            margin-top: var(--sp-1);
         }`;
         const body = `
     <div class="button-row">
-        <button id="selectConnBtn" title="Choose an existing saved connection">Select Connection</button>
-        <button id="newConnBtn" class="secondary" title="Create a new connection">New</button>
-        <button id="disconnectBtn" class="secondary" title="Disconnect">Disconnect</button>
+        <button class="btn btn-primary" id="selectConnBtn" title="Choose an existing saved connection">${icon('database')}Select Connection</button>
+        <button class="btn" id="newConnBtn" title="Create a new connection">${icon('add')}New</button>
+        <button class="btn" id="disconnectBtn" title="Disconnect">${icon('plug')}Disconnect</button>
     </div>
     <div class="button-row">
-        <button id="manageMappingsBtn" class="secondary" title="Open the manager for all custom column mappings (bulk share/move/delete)">Manage All Mappings...</button>
+        <button class="btn" id="manageMappingsBtn" title="Open the manager for all custom column mappings (bulk share/move/delete)">${icon('goto')}Manage All Mappings…</button>
     </div>
     <div class="search-container">
         <input type="text" id="searchInput" placeholder="Filter tables... (e.g. schema.table or multiple terms)" />

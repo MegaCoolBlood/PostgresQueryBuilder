@@ -1,0 +1,347 @@
+/*
+ * Design tokens and base styles shared by every webview of this extension.
+ * Injected ahead of each surface's own rules by `buildHtmlDocument()` and by
+ * the Data Viewer's `SHARED_CSS_PLACEHOLDER`.
+ *
+ * Rule: no literal colour ever appears here or in a surface stylesheet. Every
+ * colour is derived from a `--vscode-*` theme variable so all surfaces follow
+ * the active colour theme, including High Contrast.
+ */
+
+:root {
+    /* Spacing scale */
+    --sp-1: 4px;
+    --sp-2: 8px;
+    --sp-3: 12px;
+    --sp-4: 16px;
+    --sp-5: 20px;
+    --sp-6: 24px;
+
+    /* Type scale */
+    --fs-xs: 11px;
+    --fs-sm: 12px;
+    --fs-md: 13px;
+    --fs-lg: 15px;
+
+    --radius: 3px;
+    --radius-lg: 5px;
+
+    /* Layering. Every `z-index` in this extension uses one of these. */
+    --z-sticky: 10;
+    --z-dropdown: 100;
+    --z-dialog: 1000;
+    --z-menu: 2000;
+
+    /* Semantic colours */
+    --c-fg: var(--vscode-foreground);
+    --c-bg: var(--vscode-editor-background);
+    --c-surface: var(--vscode-editorWidget-background);
+    --c-border: var(--vscode-panel-border);
+    --c-muted: var(--vscode-descriptionForeground);
+    --c-accent: var(--vscode-focusBorder);
+    --c-hover: var(--vscode-list-hoverBackground);
+    --c-danger: var(--vscode-errorForeground);
+    --c-warning: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow));
+    --c-success: var(--vscode-charts-green, var(--vscode-gitDecoration-addedResourceForeground));
+    --c-info: var(--vscode-charts-blue, var(--vscode-textLink-foreground));
+    --c-code-bg: var(--vscode-textCodeBlock-background, var(--vscode-editorWidget-background));
+
+    --font-mono: var(--vscode-editor-font-family, monospace);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    padding: var(--sp-3);
+    font-family: var(--vscode-font-family);
+    font-size: var(--fs-md);
+    color: var(--c-fg);
+    background: var(--c-bg);
+}
+
+h1, h2, h3, h4 {
+    margin: 0 0 var(--sp-2) 0;
+    font-weight: 600;
+}
+
+h3 { font-size: var(--fs-lg); }
+h4 { font-size: var(--fs-sm); color: var(--c-muted); }
+
+.hint {
+    font-size: var(--fs-xs);
+    color: var(--c-muted);
+}
+
+.mono {
+    font-family: var(--font-mono);
+}
+
+/* Icons ------------------------------------------------------------------ */
+
+/* The sprite itself is inlined at the top of <body> and must not take space. */
+.icon-sprite {
+    display: none;
+}
+
+.ico {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+}
+
+.ico .f {
+    fill: currentColor;
+    stroke: none;
+}
+
+/* Buttons ---------------------------------------------------------------- */
+
+/*
+ * Only `.btn` is styled, never the bare `button` element: several surfaces use
+ * unstyled buttons as inline affordances (cell actions, close crosses) that
+ * must not inherit the toolbar metrics.
+ */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-1);
+    padding: 3px var(--sp-2);
+    font-family: inherit;
+    font-size: var(--fs-sm);
+    line-height: 16px;
+    white-space: nowrap;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    background: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+    cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+    background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.btn:focus-visible {
+    outline: 1px solid var(--c-accent);
+    outline-offset: 1px;
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-primary {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+}
+
+.btn-primary:hover:not(:disabled) {
+    background: var(--vscode-button-hoverBackground);
+}
+
+/* Destructive actions stay on the neutral surface and only carry the theme's
+   error colour, so they read as a warning without shouting. */
+.btn-danger {
+    color: var(--c-danger);
+}
+
+.btn-ghost {
+    background: transparent;
+    color: var(--c-fg);
+}
+
+.btn-ghost:hover:not(:disabled) {
+    background: var(--c-hover);
+}
+
+.btn-icon {
+    padding: 3px;
+}
+
+.btn-sm {
+    padding: 1px var(--sp-1);
+    font-size: var(--fs-xs);
+}
+
+/* Form controls ---------------------------------------------------------- */
+
+input[type="text"],
+input[type="number"],
+input[type="password"],
+input[type="search"],
+input[type="date"],
+input[type="datetime-local"],
+select,
+textarea {
+    padding: 3px var(--sp-2);
+    font-family: inherit;
+    font-size: var(--fs-sm);
+    color: var(--vscode-input-foreground);
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border, var(--c-border));
+    border-radius: var(--radius);
+    outline: none;
+}
+
+select {
+    color: var(--vscode-dropdown-foreground);
+    background: var(--vscode-dropdown-background);
+    border-color: var(--vscode-dropdown-border, var(--vscode-input-border, var(--c-border)));
+    cursor: pointer;
+}
+
+textarea {
+    font-family: var(--font-mono);
+    line-height: 1.4;
+    resize: vertical;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+    border-color: var(--c-accent);
+}
+
+input::placeholder {
+    color: var(--vscode-input-placeholderForeground, var(--c-muted));
+}
+
+label {
+    font-size: var(--fs-sm);
+}
+
+/* Layout building blocks ------------------------------------------------- */
+
+.toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
+}
+
+/* Related actions sit together; a hairline separates one group from the next. */
+.toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+}
+
+.toolbar-sep {
+    width: 1px;
+    align-self: stretch;
+    margin: 2px var(--sp-1);
+    background: var(--c-border);
+}
+
+.badge {
+    display: inline-block;
+    padding: 1px var(--sp-1);
+    font-size: var(--fs-xs);
+    border-radius: var(--radius);
+    color: var(--vscode-badge-foreground);
+    background: var(--vscode-badge-background);
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--fs-sm);
+}
+
+th, td {
+    padding: var(--sp-1) var(--sp-2);
+    text-align: left;
+    border-bottom: 1px solid var(--c-border);
+}
+
+th {
+    font-weight: 600;
+    color: var(--c-muted);
+    background: var(--c-surface);
+}
+
+/* Dialogs ---------------------------------------------------------------- */
+
+.dlg-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-dialog);
+    /* Hidden until the surface adds `open`, so a dialog never blocks the page. */
+    display: none;
+    align-items: center;
+    justify-content: center;
+    /* Dim through the theme's own scrim colour instead of a fixed black. */
+    background: var(--vscode-editor-inactiveSelectionBackground, var(--c-surface));
+    backdrop-filter: blur(1px);
+}
+
+.dlg-overlay.open {
+    display: flex;
+}
+
+.dlg {
+    display: flex;
+    flex-direction: column;
+    width: 80%;
+    max-width: 640px;
+    max-height: 80vh;
+    background: var(--c-bg);
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 4px 16px var(--vscode-widget-shadow, transparent);
+}
+
+.dlg-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    padding: var(--sp-3) var(--sp-4);
+    font-weight: 600;
+    border-bottom: 1px solid var(--c-border);
+}
+
+.dlg-body {
+    flex: 1;
+    padding: var(--sp-4);
+    overflow-y: auto;
+}
+
+.dlg-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--sp-2);
+    padding: var(--sp-3) var(--sp-4);
+    border-top: 1px solid var(--c-border);
+}
+
+/* A labelled row inside a dialog or form. */
+.field {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-2);
+}
+
+.field > label {
+    flex: 0 0 auto;
+    min-width: 180px;
+}
+
+.field > input,
+.field > select,
+.field > textarea {
+    flex: 1;
+    min-width: 0;
+}

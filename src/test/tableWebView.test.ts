@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
 import { buildCustomResultColumns, buildColumnProbeSql, TableWebViewManager } from '../tableWebView';
+import { getIconSprite, getSharedStyles } from '../webviewAssets';
 
 test('buildCustomResultColumns resolves type names and column comments', () => {
     const fields = [
@@ -352,6 +353,29 @@ test('query panel: the injected script is not mangled by $ replacement patterns'
     );
     assert.ok(panel.webview.html.includes(js), 'expected the script to be injected verbatim');
     assert.ok(panel.webview.html.trimEnd().endsWith('</html>'), 'expected intact HTML after the script');
+});
+
+test('data viewer: the shared design tokens and the icon sprite are injected', async () => {
+    const { panel } = await openCustomQueryPanel();
+    const html = panel.webview.html;
+    assert.ok(html.includes(getSharedStyles()), 'expected the shared stylesheet');
+    assert.ok(html.includes(getIconSprite()), 'expected the icon sprite');
+    const css = require('node:fs').readFileSync(
+        path.join(EXTENSION_PATH, 'src', 'webview', 'tableView.css'), 'utf8'
+    );
+    assert.ok(html.indexOf(getSharedStyles()) < html.indexOf(css), 'shared styles must come first');
+});
+
+test('data viewer: no placeholder survives in the rendered document', async () => {
+    const { panel } = await openCustomQueryPanel();
+    for (const placeholder of [
+        '/* SHARED_CSS_PLACEHOLDER */',
+        '/* CSS_PLACEHOLDER */',
+        '/* JS_PLACEHOLDER */',
+        '<!-- ICON_SPRITE_PLACEHOLDER -->'
+    ]) {
+        assert.equal(panel.webview.html.includes(placeholder), false, `${placeholder} was not replaced`);
+    }
 });
 
 // ===== Saved queries =====

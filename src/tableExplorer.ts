@@ -32,7 +32,7 @@ export type TreeNode = SchemaNode | CategoryNode | TableNode;
  * categories appear under a schema.
  */
 const RELATION_KIND_META: Record<RelationKind, { label: string; categoryIcon: string; itemIcon: string; order: number }> = {
-    table: { label: 'Tables', categoryIcon: 'folder', itemIcon: 'symbol-class', order: 0 },
+    table: { label: 'Tables', categoryIcon: 'folder', itemIcon: 'table', order: 0 },
     view: { label: 'Views', categoryIcon: 'folder', itemIcon: 'eye', order: 1 },
     matview: { label: 'Materialized Views', categoryIcon: 'folder', itemIcon: 'layers', order: 2 },
     foreign: { label: 'Foreign Tables', categoryIcon: 'folder', itemIcon: 'plug', order: 3 }
@@ -133,6 +133,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
             const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.Expanded);
             item.iconPath = new vscode.ThemeIcon('symbol-namespace');
             item.contextValue = 'schema';
+            item.tooltip = `Schema ${element.schema}`;
             return item;
         } else if (element.type === 'category') {
             const meta = RELATION_KIND_META[element.kind];
@@ -140,6 +141,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
             const item = new vscode.TreeItem(meta.label, vscode.TreeItemCollapsibleState.Expanded);
             item.iconPath = new vscode.ThemeIcon(meta.categoryIcon);
             item.contextValue = `category:${element.kind}`;
+            item.tooltip = `${meta.label} in ${element.schema}`;
             return item;
         } else {
             const meta = RELATION_KIND_META[element.kind];
