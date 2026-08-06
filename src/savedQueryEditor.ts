@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { SavedQueryStore, mergeParameters, placeholderNames } from './savedQueryStore';
+import { SavedQueryStore, SavedQueryScope, mergeParameters, placeholderNames } from './savedQueryStore';
+import { extractSelect, extractTableNames } from './selectStatementExtractor';
 
 /** Derive a readable, filesystem-safe `.sql` file name from a query name. */
 export function savedQueryFileName(name: string): string {
@@ -14,6 +15,16 @@ export function savedQueryFileName(name: string): string {
 
 function pathKey(uri: vscode.Uri): string {
     return (uri.fsPath || '').toLowerCase();
+}
+
+/** Name proposed when saving a statement from a file: its first table, else the file name. */
+export function defaultSavedQueryName(sql: string, fileName: string): string {
+    const table = extractTableNames(sql)[0];
+    if (table) {
+        return table;
+    }
+    const base = String(fileName || '').split(/[\\/]/).pop() || '';
+    return base.replace(/\.[^.]+$/, '') || 'Query';
 }
 
 /**
@@ -56,6 +67,63 @@ export class SavedQueryEditor {
             `Editing "${query.name}" — save to update the query. Placeholders are written as :name.`,
             8000
         );
+    }
+
+    /**
+     * Store the statement the user is looking at in a file: the selection if
+     * there is one, otherwise the statement around the cursor.
+     */
+    async saveFromEditor(editor: vscode.TextEditor | undefined): Promise<void> {
+        if (!editor) {
+            vscode.window.showWarningMessage('Open a SQL file and place the cursor inside the statement you want to save.');
+            return;
+        }
+        const doc = editor.document;
+        const selection = editor.selection.isEmpty
+            ? undefined
+            : { start: doc.offsetAt(editor.selection.start), end: doc.offsetAt(editor.selection.end) };
+        const sql = extractSelect(doc.getText(), doc.offsetAt(editor.selection.active), selection)?.sql?.trim();
+        if (!sql) {
+            vscode.window.showWarningMessage('No SELECT statement found at the cursor. Select the statement you want to save.');
+            return;
+        }
+
+        const name = await vscode.window.showInputBox({
+            prompt: 'Name of the saved query',
+            value: defaultSavedQueryName(sql, doc.fileName),
+            validateInput: v => v.trim() ? undefined : 'The name must not be empty.'
+        });
+        if (name === undefined) {
+            return;
+        }
+        const scope = await this.pickScope();
+        if (!scope) {
+            return;
+        }
+
+        const parameters = mergeParameters(sql, []);
+        await this.store.add({ name: name.trim(), sql, parameters }, scope);
+        const names = placeholderNames(sql);
+        vscode.window.showInformationMessage(
+            names.length
+                ? `Saved "${name.trim()}" with the placeholders ${names.map(n => ':' + n).join(', ')}.`
+                : `Saved "${name.trim()}". Write :name in the statement to turn a value into a placeholder.`
+        );
+    }
+
+    /** Ask where to store a new query; skipped when there is no workspace to share it with. */
+    private async pickScope(): Promise<SavedQueryScope | undefined> {
+        if (!vscode.workspace.workspaceFolders?.length) {
+            return 'global';
+        }
+        const picked = await vscode.window.showQuickPick(
+            [
+                { label: 'Personal', description: 'Only for me', scope: 'global' as const },
+                { label: 'Workspace', description: 'Shared via the workspace file', scope: 'workspace' as const }
+            ],
+            { placeHolder: 'Where should the query be stored?' }
+        );
+        return picked?.scope;
     }
 
     private async handleSave(doc: vscode.TextDocument): Promise<void> {

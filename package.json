@@ -139,8 +139,7 @@
         "title": "Refresh Saved Queries",
         "category": "PostgreSQL Query Builder",
         "icon": "$(refresh)"
-      },
-      {
+      },      {
         "command": "postgresQueryBuilder.renameSavedQuery",
         "title": "Rename Saved Query...",
         "category": "PostgreSQL Query Builder"
@@ -175,6 +174,12 @@
         "title": "Open Workspace Saved Queries File",
         "category": "PostgreSQL Query Builder",
         "icon": "$(go-to-file)"
+      },
+      {
+        "command": "postgresQueryBuilder.saveQueryFromEditor",
+        "title": "Save Query...",
+        "category": "PostgreSQL Query Builder",
+        "icon": "$(add)"
       }
     ],
     "menus": {
@@ -192,6 +197,11 @@
         {
           "command": "postgresQueryBuilder.selectConnection",
           "when": "view == postgresTableExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "postgresQueryBuilder.saveQueryFromEditor",
+          "when": "view == postgresSavedQueries",
           "group": "navigation"
         },
         {
@@ -247,6 +257,11 @@
           "command": "postgresQueryBuilder.viewDataFromSelect",
           "when": "editorTextFocus && resourceLangId == sql",
           "group": "navigation@9"
+        },
+        {
+          "command": "postgresQueryBuilder.saveQueryFromEditor",
+          "when": "editorTextFocus && (resourceLangId == sql || resourceLangId == postgres || resourceLangId == pgsql)",
+          "group": "navigation@10"
         },
         {
           "command": "postgresQueryBuilder.formatSql",

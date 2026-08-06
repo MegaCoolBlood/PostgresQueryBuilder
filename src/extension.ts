@@ -494,6 +494,10 @@ function registerSavedQueryCommands(context: vscode.ExtensionContext): void {
             );
         }),
 
+        vscode.commands.registerCommand('postgresQueryBuilder.saveQueryFromEditor', async () => {
+            await savedQueryEditor.saveFromEditor(vscode.window.activeTextEditor);
+        }),
+
         vscode.commands.registerCommand('postgresQueryBuilder.refreshSavedQueries', () => {
             savedQueryExplorer.refresh();
         }),
