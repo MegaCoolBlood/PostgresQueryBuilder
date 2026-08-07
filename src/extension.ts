@@ -20,6 +20,7 @@ import { Logger, getErrorMessage, getErrorStack } from './logger';
 import { formatSqlChecked, FormatOptions } from './plpgsqlFormatter';
 import { formatOptionsToRepoConfig } from './repoFormatConfig';
 import { resolveFormatOptions } from './formatConfig';
+import { DoubleClickGate } from './doubleClick';
 let connectionManager: ConnectionManager;
 let tableExplorer: TableExplorerProvider;
 let tableWebViewManager: TableWebViewManager;
@@ -34,10 +35,10 @@ let viewDataFromSelect: ViewDataFromSelect;
 let statusBarItem: vscode.StatusBarItem;
 let outputChannel: vscode.OutputChannel;
 
-/** Max delay (ms) between two clicks on the same table to count as a double click. */
-const DOUBLE_CLICK_MS = 500;
-/** Tracks the last table click to detect double clicks in the explorer. */
-let lastTableClick: { key: string; time: number } = { key: '', time: 0 };
+/** Detects the double click that opens a table in the Data Viewer. */
+const tableClicks = new DoubleClickGate();
+/** Detects the double click that opens a bookmarked query in the Data Viewer. */
+const savedQueryClicks = new DoubleClickGate();
 
 /** Language IDs the PL/pgSQL formatter applies to. */
 const FORMATTER_LANGUAGES = ['sql', 'postgres', 'pgsql'];
@@ -114,15 +115,9 @@ export function activate(context: vscode.ExtensionContext) {
             }),
             vscode.commands.registerCommand('postgresQueryBuilder.openTable', (schema: string, table: string) => {
                 // VS Code fires a tree item's command on a single click, but the
-                // data view should only open on a double click. Detect a second
-                // click on the same table within a short window.
-                const now = Date.now();
-                const key = `${schema}.${table}`;
-                if (lastTableClick.key === key && now - lastTableClick.time < DOUBLE_CLICK_MS) {
-                    lastTableClick = { key: '', time: 0 };
+                // data view should only open on a double click.
+                if (tableClicks.accept(`${schema}.${table}`)) {
                     tableWebViewManager.openTableView(schema, table);
-                } else {
-                    lastTableClick = { key, time: now };
                 }
             }),
             vscode.commands.registerCommand('postgresQueryBuilder.selectConnection', async () => {
@@ -492,6 +487,13 @@ function registerSavedQueryCommands(context: vscode.ExtensionContext): void {
                     values: savedQueryStore.getParameterValues(query.id)
                 }
             );
+        }),
+
+        // A bookmark opens on a double click, exactly like a table.
+        vscode.commands.registerCommand('postgresQueryBuilder.openSavedQuery', async (id?: unknown) => {
+            if (typeof id === 'string' && id && savedQueryClicks.accept(id)) {
+                await vscode.commands.executeCommand('postgresQueryBuilder.runSavedQuery', id);
+            }
         }),
 
         vscode.commands.registerCommand('postgresQueryBuilder.saveQueryFromEditor', async () => {

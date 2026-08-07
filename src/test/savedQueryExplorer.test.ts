@@ -120,14 +120,14 @@ test('getChildren returns nothing when no query is stored', () => {
 
 // ===== getTreeItem =====
 
-test('getTreeItem wires a query to the run command', () => {
+test('getTreeItem wires a query to the double-click open command', () => {
     const { store } = createFakeStore([]);
     const query = makeQuery({ id: 'x1', name: 'Orders', parameters: [{ name: 'from', kind: 'text' }] });
     const item = new SavedQueryExplorerProvider(store).getTreeItem({ type: 'query', query });
     assert.equal(item.label, 'Orders');
     assert.equal(item.contextValue, 'savedQuery.global');
     assert.equal(item.description, ':from');
-    assert.equal(item.command?.command, 'postgresQueryBuilder.runSavedQuery');
+    assert.equal(item.command?.command, 'postgresQueryBuilder.openSavedQuery');
     assert.deepEqual(item.command?.arguments, ['x1']);
 });
 

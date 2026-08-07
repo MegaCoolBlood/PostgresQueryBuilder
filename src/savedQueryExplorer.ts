@@ -69,9 +69,10 @@ export class SavedQueryExplorerProvider implements vscode.TreeDataProvider<Saved
         item.contextValue = savedQueryContextValue(query);
         item.description = describeParameters(query);
         item.tooltip = `${GROUP_LABEL[query.scope === 'workspace' ? 'workspace' : 'global']}\n${describeSavedQuery(query)}`;
+        // Single click only selects; the command gates on a second click.
         item.command = {
-            command: 'postgresQueryBuilder.runSavedQuery',
-            title: 'Run Bookmarked Query',
+            command: 'postgresQueryBuilder.openSavedQuery',
+            title: 'Open Bookmarked Query',
             arguments: [query.id]
         };
         return item;
