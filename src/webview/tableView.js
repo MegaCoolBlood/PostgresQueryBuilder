@@ -971,7 +971,7 @@ function buildConnectionBadge(lastUsedConnection, currentConnection) {
     const hint = ' (click to switch connection)';
     if (!lastUsedConnection && !currentConnection) {
         return {
-            text: 'Select connection…',
+            text: 'Select Connection',
             warn: false,
             title: 'Click to choose a database connection'
         };

@@ -508,7 +508,7 @@ test('recordFieldReadonlyAttr marks fields readonly for rows pending deletion', 
 
 test('buildConnectionBadge prompts to select when no connection is known', () => {
     const badge = buildConnectionBadge('', '');
-    assert.equal(badge.text, 'Select connection\u2026');
+    assert.equal(badge.text, 'Select Connection');
     assert.equal(badge.warn, false);
     assert.match(badge.title, /choose a database connection/i);
 });

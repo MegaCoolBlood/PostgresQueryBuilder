@@ -273,7 +273,7 @@
     "viewsWelcome": [
       {
         "view": "postgresTableExplorer",
-        "contents": "Keine aktive PostgreSQL-Verbindung.\n[Verbindung auswählen](command:postgresQueryBuilder.selectConnection)\n[Neue Verbindung](command:postgresQueryBuilder.connect)"
+        "contents": "No active PostgreSQL connection.\n[$(database) Select Connection](command:postgresQueryBuilder.selectConnection)\n[$(add) New Connection](command:postgresQueryBuilder.connect)"
       },
       {
         "view": "postgresSavedQueries",
@@ -482,111 +482,111 @@
             "createFunction": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "CREATE FUNCTION-Parameterliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Parametern einzeilig, ab multilineMin Parametern mehrzeilig, dazwischen wie im Quelltext. Mit \"0, 1\" wird schon ein einzelner Parameter umbrochen. Standard: 0, 1."
+              "description": "CREATE FUNCTION parameter list – \"inlineMax, multilineMin\": single line with at most inlineMax parameters, multi-line from multilineMin parameters on, in between as written in the source. With \"0, 1\" even a single parameter is wrapped. Default: 0, 1."
             },
             "createProcedure": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "CREATE PROCEDURE-Parameterliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Parametern einzeilig, ab multilineMin Parametern mehrzeilig, dazwischen wie im Quelltext. Mit \"0, 1\" wird schon ein einzelner Parameter umbrochen. Standard: 0, 1."
+              "description": "CREATE PROCEDURE parameter list – \"inlineMax, multilineMin\": single line with at most inlineMax parameters, multi-line from multilineMin parameters on, in between as written in the source. With \"0, 1\" even a single parameter is wrapped. Default: 0, 1."
             },
             "createType": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "CREATE TYPE-Attributliste (zusammengesetzte Typen sowie ENUM/RANGE) – \"inlineMax, multilineMin\": bei höchstens inlineMax Attributen einzeilig, ab multilineMin Attributen mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+              "description": "CREATE TYPE attribute list (composite types as well as ENUM/RANGE) – \"inlineMax, multilineMin\": single line with at most inlineMax attributes, multi-line from multilineMin attributes on, in between as written in the source. Default: 1, 4."
             },
             "createTable": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "CREATE TABLE-Spaltenliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Spalten einzeilig, ab multilineMin Spalten mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+              "description": "CREATE TABLE column list – \"inlineMax, multilineMin\": single line with at most inlineMax columns, multi-line from multilineMin columns on, in between as written in the source. Default: 1, 4."
             },
             "returnsTable": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "RETURNS TABLE(...)-Spaltenliste einer CREATE FUNCTION – \"inlineMax, multilineMin\": bei höchstens inlineMax Spalten einzeilig, ab multilineMin Spalten mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+              "description": "RETURNS TABLE(...) column list of a CREATE FUNCTION – \"inlineMax, multilineMin\": single line with at most inlineMax columns, multi-line from multilineMin columns on, in between as written in the source. Default: 1, 4."
             },
             "functionCall": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "Funktions-/Prozeduraufruf-Argumentliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Argumenten einzeilig, ab multilineMin Argumenten mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+              "description": "Function/procedure call argument list – \"inlineMax, multilineMin\": single line with at most inlineMax arguments, multi-line from multilineMin arguments on, in between as written in the source. Default: 1, 4."
             },
             "selectColumns": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "SELECT-Spalten- und INTO-Zielliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Spalten einzeilig, ab multilineMin Spalten mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 2."
+              "description": "SELECT column list and INTO target list – \"inlineMax, multilineMin\": single line with at most inlineMax columns, multi-line from multilineMin columns on, in between as written in the source. Default: 1, 2."
             },
             "fromTables": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "FROM-Tabellenliste im Komma-Stil (FROM a, b, c) – \"inlineMax, multilineMin\": bei höchstens inlineMax Tabellen einzeilig, ab multilineMin Tabellen mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+              "description": "FROM table list in comma style (FROM a, b, c) – \"inlineMax, multilineMin\": single line with at most inlineMax tables, multi-line from multilineMin tables on, in between as written in the source. Default: 1, 4."
             },
             "groupByColumns": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "GROUP BY-Spaltenliste – \"inlineMax, multilineMin\": bei höchstens inlineMax Spalten einzeilig, ab multilineMin Spalten mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+              "description": "GROUP BY column list – \"inlineMax, multilineMin\": single line with at most inlineMax columns, multi-line from multilineMin columns on, in between as written in the source. Default: 1, 4."
             },
             "orderByColumns": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "ORDER BY-Spaltenliste (inkl. ASC/DESC/NULLS FIRST/LAST) – \"inlineMax, multilineMin\": bei höchstens inlineMax Spalten einzeilig, ab multilineMin Spalten mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 4."
+              "description": "ORDER BY column list (incl. ASC/DESC/NULLS FIRST/LAST) – \"inlineMax, multilineMin\": single line with at most inlineMax columns, multi-line from multilineMin columns on, in between as written in the source. Default: 1, 4."
             },
             "insertColumns": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "INSERT-Spalten- und VALUES-Liste – \"inlineMax, multilineMin\": bei höchstens inlineMax Spalten einzeilig, ab multilineMin Spalten mehrzeilig, dazwischen wie im Quelltext. Spalten- und VALUES-Liste verwenden stets dasselbe Layout. Standard: 2, 6."
+              "description": "INSERT column list and VALUES list – \"inlineMax, multilineMin\": single line with at most inlineMax columns, multi-line from multilineMin columns on, in between as written in the source. The column list and the VALUES list always use the same layout. Default: 2, 6."
             },
             "arrayLiterals": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "ARRAY-Literale (ARRAY[...] inkl. verschachtelter Element-Arrays; Index-Zugriffe arr[i] bleiben einzeilig) – \"inlineMax, multilineMin\": bei höchstens inlineMax Elementen einzeilig, ab multilineMin Elementen mehrzeilig, dazwischen wie im Quelltext. Standard: 4, 12."
+              "description": "ARRAY literals (ARRAY[...] incl. nested element arrays; index accesses arr[i] stay on one line) – \"inlineMax, multilineMin\": single line with at most inlineMax elements, multi-line from multilineMin elements on, in between as written in the source. Default: 4, 12."
             },
             "inLists": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "IN-Wertelisten (IN (...)) – \"inlineMax, multilineMin\": bei höchstens inlineMax Werten einzeilig, ab multilineMin Werten mehrzeilig, dazwischen wie im Quelltext. Standard: 4, 12."
+              "description": "IN value lists (IN (...)) – \"inlineMax, multilineMin\": single line with at most inlineMax values, multi-line from multilineMin values on, in between as written in the source. Default: 4, 12."
             },
             "booleanGroups": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "Boolesche Gruppen in Klammern ((a AND b OR c)) – \"inlineMax, multilineMin\": bei höchstens inlineMax Operanden einzeilig, ab multilineMin Operanden mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 2."
+              "description": "Boolean groups in parentheses ((a AND b OR c)) – \"inlineMax, multilineMin\": single line with at most inlineMax operands, multi-line from multilineMin operands on, in between as written in the source. Default: 1, 2."
             },
             "joinConditions": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "JOIN ... ON ... AND ...-Bedingungen – \"inlineMax, multilineMin\": bei höchstens inlineMax Teilbedingungen einzeilig, ab multilineMin Teilbedingungen mehrzeilig (jedes AND/OR auf eigener Zeile), dazwischen wie im Quelltext. Standard: 1, 2."
+              "description": "JOIN ... ON ... AND ... conditions – \"inlineMax, multilineMin\": single line with at most inlineMax sub-conditions, multi-line from multilineMin sub-conditions on (every AND/OR on its own line), in between as written in the source. Default: 1, 2."
             },
             "ifConditions": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "IF-/ELSIF-Bedingungen – \"inlineMax, multilineMin\": bei höchstens inlineMax Teilbedingungen einzeilig, ab multilineMin Teilbedingungen mehrzeilig (jedes AND/OR auf eigener Zeile), dazwischen wie im Quelltext. Standard: 1, 2."
+              "description": "IF/ELSIF conditions – \"inlineMax, multilineMin\": single line with at most inlineMax sub-conditions, multi-line from multilineMin sub-conditions on (every AND/OR on its own line), in between as written in the source. Default: 1, 2."
             },
             "caseConditions": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "CASE ... WHEN-Bedingungen (AND/OR innerhalb einer WHEN-Bedingung) – \"inlineMax, multilineMin\": bei höchstens inlineMax Teilbedingungen einzeilig, ab multilineMin Teilbedingungen mehrzeilig, dazwischen wie im Quelltext. Standard: 1, 2."
+              "description": "CASE ... WHEN conditions (AND/OR inside a WHEN condition) – \"inlineMax, multilineMin\": single line with at most inlineMax sub-conditions, multi-line from multilineMin sub-conditions on, in between as written in the source. Default: 1, 2."
             },
             "operatorChains": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "Operator-Ketten (+, -, *, /, ||) in einem Ausdruck – \"inlineMax, multilineMin\": bei höchstens inlineMax Operanden einzeilig, ab multilineMin Operanden mehrzeilig (jeder Operator am Zeilenanfang), dazwischen wie im Quelltext. Standard: 1, 8."
+              "description": "Operator chains (+, -, *, /, ||) in an expression – \"inlineMax, multilineMin\": single line with at most inlineMax operands, multi-line from multilineMin operands on (every operator starts a line), in between as written in the source. Default: 1, 8."
             },
             "caseWhenThen": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "Zusammenklappen eines CASE ... WHEN ... THEN ... END CASE-Blocks – \"inlineMax, multilineMin\". Nur inlineMax ist wirksam: der Block wird einzeilig dargestellt, wenn die Anzahl seiner Anweisungen (;) <= inlineMax ist und der Rumpf keine Kommentare oder verschachtelten Blöcke enthält. inlineMax 0 = nie zusammenklappen."
+              "description": "Collapsing a CASE ... WHEN ... THEN ... END CASE block – \"inlineMax, multilineMin\". Only inlineMax takes effect: the block is rendered on one line when its number of statements (;) is <= inlineMax and the body contains no comments or nested blocks. inlineMax 0 = never collapse."
             },
             "exceptionWhenThen": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "Zusammenklappen eines EXCEPTION WHEN ... THEN-Abschnitts – \"inlineMax, multilineMin\". Nur inlineMax ist wirksam: der Abschnitt wird einzeilig dargestellt, wenn die Anzahl seiner Anweisungen (;) <= inlineMax ist und keine Kommentare oder verschachtelten Blöcke enthält (das END des BEGIN bleibt in eigener Zeile). inlineMax 0 = nie zusammenklappen."
+              "description": "Collapsing an EXCEPTION WHEN ... THEN section – \"inlineMax, multilineMin\". Only inlineMax takes effect: the section is rendered on one line when its number of statements (;) is <= inlineMax and it contains no comments or nested blocks (the END of the BEGIN stays on its own line). inlineMax 0 = never collapse."
             },
             "ifElse": {
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
-              "description": "Zusammenklappen eines IF ... [ELSE ...] END IF-Blocks – \"inlineMax, multilineMin\". Nur inlineMax ist wirksam: der Block wird einzeilig dargestellt, wenn die Anzahl seiner Anweisungen (;) <= inlineMax ist und der Rumpf keine Kommentare oder verschachtelten Blöcke enthält. inlineMax 0 = nie zusammenklappen."
+              "description": "Collapsing an IF ... [ELSE ...] END IF block – \"inlineMax, multilineMin\". Only inlineMax takes effect: the block is rendered on one line when its number of statements (;) is <= inlineMax and the body contains no comments or nested blocks. inlineMax 0 = never collapse."
             }
           },
           "additionalProperties": false,
-          "markdownDescription": "Mehrzeilig-Schwellwerte pro Konstrukt als Tabelle. Jeder Wert ist das Paar `\"inlineMax, multilineMin\"`: eine Liste mit **höchstens** `inlineMax` Elementen bleibt immer einzeilig, eine Liste mit **mindestens** `multilineMin` Elementen wird immer mehrzeilig umbrochen, und dazwischen entscheidet das Layout im Quelltext (einzeilig bleibt einzeilig, mehrzeilig bleibt mehrzeilig). Bei den drei Strukturblöcken `caseWhenThen`, `exceptionWhenThen` und `ifElse` ist nur `inlineMax` wirksam: ein kleiner Block wird auf eine Zeile zusammengeklappt, wenn seine Anzahl an Anweisungen (`;`) `<= inlineMax` ist und der Rumpf keine Kommentare oder verschachtelten Blöcke enthält (`inlineMax = 0` = nie zusammenklappen)."
+          "markdownDescription": "Multi-line thresholds per construct, as a table. Each value is the pair `\"inlineMax, multilineMin\"`: a list with **at most** `inlineMax` elements always stays on one line, a list with **at least** `multilineMin` elements is always wrapped across lines, and in between the layout in the source decides (one line stays one line, multi-line stays multi-line). For the three structural blocks `caseWhenThen`, `exceptionWhenThen` and `ifElse` only `inlineMax` takes effect: a small block is collapsed onto one line when its number of statements (`;`) is `<= inlineMax` and the body contains no comments or nested blocks (`inlineMax = 0` = never collapse)."
         }
       }
     }

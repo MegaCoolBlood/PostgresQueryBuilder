@@ -149,7 +149,7 @@ export class ManageMappingsPanel {
         .mt-2 { margin-top: var(--sp-2); }`;
         const body = `
     <h2>Custom Column Mappings</h2>
-    <div class="hint">Verwalte alle Mappings an einer Stelle. Wähle Einträge aus und ändere ihren Scope, um sie z. B. mit dem Team zu teilen (Workspace) oder wieder privat zu halten (Personal).</div>
+    <div class="hint">Manage all mappings in one place. Select entries and change their scope to share them with the team (Workspace) or keep them private (Personal).</div>
     <div class="file-info" id="fileInfo"></div>
 
     <div class="toolbar">

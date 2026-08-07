@@ -23,6 +23,12 @@ that breaks it fails `npm test`.
    contains only what is genuinely specific to that surface.
 5. **Every visible action stays visible.** Make a rarely used button *smaller*,
    never hide it behind an overflow menu.
+6. **Every user-visible string is English.** Manifest titles and descriptions,
+   welcome content, button labels, tooltips, placeholders and messages. The only
+   German left in the repository is the historical part of `CHANGELOG.md`, which
+   is a record and is not translated.
+7. **The same action carries the same label and the same icon everywhere.** If
+   two surfaces offer the same command, they say the same word. See section 4.
 
 ---
 
@@ -134,7 +140,22 @@ These combine: a close cross is `btn btn-ghost btn-icon`, a row delete is
 **Labels.** Icon plus a *short* label — `Insert`, `Save`, `Discard`,
 `Constraints`, `Export`, `More`, `All`. The full sentence goes in `title`. Never
 put a leading `+`, `▶` or `☆` in a label; that is the icon's job. Prefer `…`
-over `...`.
+over `...`, but a **button label never ends in an ellipsis** — reserve `…` for
+status text such as `Counting rows…`.
+
+**Shared labels.** A command offered on more than one surface uses one label and
+one icon everywhere, including the tree-view welcome content in `package.json`
+and the quick picks in [src/connectionManager.ts](src/connectionManager.ts):
+
+| Command | Label | Icon |
+| --- | --- | --- |
+| `postgresQueryBuilder.selectConnection` | `Select Connection` | `database` / `$(database)` |
+| `postgresQueryBuilder.connect` | `New Connection` | `add` / `$(add)` |
+| `postgresQueryBuilder.disconnect` | `Disconnect` | `plug` |
+
+A tree-view welcome button is rendered by VS Code from a markdown command link
+and cannot carry the SVG sprite, but it does render codicons: write the icon
+into the link label as `[$(database) Select Connection](command:…)`.
 
 The classes `btn-default`, `btn-success`, `btn-warning`, `btn-duplicate`,
 `button.primary` and `button.secondary` were removed and MUST NOT come back.

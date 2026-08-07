@@ -291,7 +291,7 @@ export class ConnectionManager {
 
         if (savedConnections.length === 0) {
             const choice = await vscode.window.showQuickPick(
-                ['Create new connection'],
+                ['$(add) New Connection'],
                 { placeHolder: 'No saved connections. Create one?' }
             );
             if (choice) {

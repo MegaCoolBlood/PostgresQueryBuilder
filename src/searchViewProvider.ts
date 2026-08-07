@@ -69,16 +69,16 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
         const body = `
     <div class="button-row">
         <button class="btn btn-primary" id="selectConnBtn" title="Choose an existing saved connection">${icon('database')}Select Connection</button>
-        <button class="btn" id="newConnBtn" title="Create a new connection">${icon('add')}New</button>
+        <button class="btn" id="newConnBtn" title="Create a new connection">${icon('add')}New Connection</button>
         <button class="btn" id="disconnectBtn" title="Disconnect">${icon('plug')}Disconnect</button>
     </div>
     <div class="button-row">
-        <button class="btn" id="manageMappingsBtn" title="Open the manager for all custom column mappings (bulk share/move/delete)">${icon('goto')}Manage All Mappings…</button>
+        <button class="btn" id="manageMappingsBtn" title="Open the manager for all custom column mappings (bulk share/move/delete)">${icon('goto')}Manage All Mappings</button>
     </div>
     <div class="search-container">
         <input type="text" id="searchInput" placeholder="Filter tables... (e.g. schema.table or multiple terms)" />
     </div>
-    <div class="hint">Mehrere mit Leerzeichen getrennte Begriffe: Treffer mit den meisten Übereinstimmungen oben</div>`;
+    <div class="hint">Several terms separated by spaces: the matches with the most hits come first</div>`;
         const script = `
         const vscode = acquireVsCodeApi();
         const input = document.getElementById('searchInput');
