@@ -9,7 +9,7 @@ import { SavedQueryTreeNode } from './savedQueryExplorer';
  */
 export const SAVED_QUERY_DRAG_MIME = 'application/vnd.postgresquerybuilder.savedquery';
 
-/** Drag controller for the "Saved Queries" tree view. */
+/** Drag controller for the "Bookmarked Queries" tree view. */
 export class SavedQueryDragController implements vscode.TreeDragAndDropController<SavedQueryTreeNode> {
     readonly dropMimeTypes: string[] = [];
     readonly dragMimeTypes: string[] = [SAVED_QUERY_DRAG_MIME];

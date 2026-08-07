@@ -756,7 +756,7 @@ export class TableWebViewManager {
         });
     }
 
-    /** Create or update a saved query from the panel's "Save Query" dialog. */
+    /** Create or update a bookmarked query from the panel's "Bookmark Query" dialog. */
     private async handleSaveSavedQuery(ctx: MessageContext): Promise<void> {
         const { session, message } = ctx;
         if (!this.savedQueryStore) {
@@ -765,7 +765,7 @@ export class TableWebViewManager {
         const name = typeof message.name === 'string' ? message.name.trim() : '';
         const sql = typeof message.sql === 'string' ? message.sql.trim() : '';
         if (!name || !sql) {
-            vscode.window.showErrorMessage('A saved query needs a name and a SELECT statement.');
+            vscode.window.showErrorMessage('A bookmarked query needs a name and a SELECT statement.');
             return;
         }
         // Reconcile against the placeholders actually present, so a parameter
@@ -776,14 +776,14 @@ export class TableWebViewManager {
         if (typeof message.id === 'string' && message.id && this.savedQueryStore.get(message.id)) {
             await this.savedQueryStore.update(message.id, { name, sql, parameters });
             this.post(session, { command: 'savedQuerySaved', id: message.id });
-            vscode.window.showInformationMessage(`Updated saved query "${name}".`);
+            vscode.window.showInformationMessage(`Updated bookmarked query "${name}".`);
             return;
         }
         const created = await this.savedQueryStore.add(
             { name, sql, parameters, schema: session.schema, table: session.table }, scope
         );
         this.post(session, { command: 'savedQuerySaved', id: created.id });
-        vscode.window.showInformationMessage(`Saved query "${name}".`);
+        vscode.window.showInformationMessage(`Bookmarked query "${name}".`);
     }
 
     private async handleDeleteSavedQuery(ctx: MessageContext): Promise<void> {

@@ -467,7 +467,7 @@ export class SavedQueryStore {
             );
         } catch (err: unknown) {
             vscode.window.showWarningMessage(
-                `PostgreSQL Query Builder: could not read saved queries file: ${getErrorMessage(err)}`
+                `PostgreSQL Query Builder: could not read bookmarked queries file: ${getErrorMessage(err)}`
             );
         }
     }

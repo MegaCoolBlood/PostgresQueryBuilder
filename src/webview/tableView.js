@@ -3853,7 +3853,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         { value: 'raw', label: 'Raw SQL (unchecked!)' }
     ];
 
-    // Working copy of the parameter list edited in the Save Query dialog.
+    // Working copy of the parameter list edited in the Bookmark Query dialog.
     let saveQueryDraft = [];
     // Id of the saved query being overwritten, or '' when saving a new one.
     let saveQueryEditId = '';
@@ -3898,7 +3898,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function updateSaveQueryTitle() {
-        saveQueryDialogTitle.textContent = saveQueryEditId ? 'Update Saved Query' : 'Save Query';
+        saveQueryDialogTitle.textContent = saveQueryEditId ? 'Update Bookmarked Query' : 'Bookmark Query';
         saveQuerySave.textContent = saveQueryEditId ? 'Update' : 'Save';
         saveQueryScope.disabled = Boolean(saveQueryEditId);
     }
@@ -3962,7 +3962,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const name = (saveQueryName.value || '').trim();
         const sql = (saveQuerySql.value || '').trim();
         if (!name || !sql) {
-            showError('A saved query needs a name and a SELECT statement.');
+            showError('A bookmarked query needs a name and a SELECT statement.');
             return;
         }
         const parameters = mergeQueryParameters(sql, saveQueryDraft);
@@ -4074,7 +4074,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
     }
 
-    // Reflect the identity of a freshly stored query so a second "Save Query"
+    // Reflect the identity of a freshly stored query so a second "Bookmark Query"
     // updates it instead of creating another copy.
     function handleSavedQuerySaved(msg) {
         if (typeof msg.id !== 'string' || !msg.id) return;

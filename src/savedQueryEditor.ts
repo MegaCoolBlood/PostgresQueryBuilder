@@ -75,7 +75,7 @@ export class SavedQueryEditor {
      */
     async saveFromEditor(editor: vscode.TextEditor | undefined): Promise<void> {
         if (!editor) {
-            vscode.window.showWarningMessage('Open a SQL file and place the cursor inside the statement you want to save.');
+            vscode.window.showWarningMessage('Open a SQL file and place the cursor inside the statement you want to bookmark.');
             return;
         }
         const doc = editor.document;
@@ -84,12 +84,12 @@ export class SavedQueryEditor {
             : { start: doc.offsetAt(editor.selection.start), end: doc.offsetAt(editor.selection.end) };
         const sql = extractSelect(doc.getText(), doc.offsetAt(editor.selection.active), selection)?.sql?.trim();
         if (!sql) {
-            vscode.window.showWarningMessage('No SELECT statement found at the cursor. Select the statement you want to save.');
+            vscode.window.showWarningMessage('No SELECT statement found at the cursor. Select the statement you want to bookmark.');
             return;
         }
 
         const name = await vscode.window.showInputBox({
-            prompt: 'Name of the saved query',
+            prompt: 'Name of the bookmarked query',
             value: defaultSavedQueryName(sql, doc.fileName),
             validateInput: v => v.trim() ? undefined : 'The name must not be empty.'
         });
@@ -106,8 +106,8 @@ export class SavedQueryEditor {
         const names = placeholderNames(sql);
         vscode.window.showInformationMessage(
             names.length
-                ? `Saved "${name.trim()}" with the placeholders ${names.map(n => ':' + n).join(', ')}.`
-                : `Saved "${name.trim()}". Write :name in the statement to turn a value into a placeholder.`
+                ? `Bookmarked "${name.trim()}" with the placeholders ${names.map(n => ':' + n).join(', ')}.`
+                : `Bookmarked "${name.trim()}". Write :name in the statement to turn a value into a placeholder.`
         );
     }
 
@@ -134,7 +134,7 @@ export class SavedQueryEditor {
         const query = this.store.get(id);
         if (!query) {
             this.openFiles.delete(pathKey(doc.uri));
-            vscode.window.showWarningMessage('This saved query no longer exists; the file was not applied.');
+            vscode.window.showWarningMessage('This bookmarked query no longer exists; the file was not applied.');
             return;
         }
         const sql = doc.getText().trim();

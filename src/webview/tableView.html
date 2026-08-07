@@ -46,8 +46,8 @@
                 </div>
             </div>
             <textarea id="queryInput" class="query-input" rows="1" spellcheck="false" wrap="off"></textarea>
-            <button class="btn btn-icon" id="queryParamsBtn" title="Change the placeholder values of this saved query" style="display:none;"><svg class="ico" aria-hidden="true"><use href="#icon-params"/></svg></button>
-            <button class="btn btn-icon" id="querySaveBtn" title="Save this query for reuse"><svg class="ico" aria-hidden="true"><use href="#icon-star"/></svg></button>
+            <button class="btn btn-icon" id="queryParamsBtn" title="Change the placeholder values of this bookmarked query" style="display:none;"><svg class="ico" aria-hidden="true"><use href="#icon-params"/></svg></button>
+            <button class="btn btn-icon" id="querySaveBtn" title="Bookmark this query for reuse"><svg class="ico" aria-hidden="true"><use href="#icon-star"/></svg></button>
             <button class="btn btn-icon" id="queryFormatBtn" title="Format SQL"><svg class="ico" aria-hidden="true"><use href="#icon-format"/></svg></button>
             <button class="btn btn-primary" id="queryRunBtn" title="Run query (Ctrl+Enter)"><svg class="ico" aria-hidden="true"><use href="#icon-run"/></svg>Run</button>
         </div>
@@ -352,11 +352,11 @@
             </div>
         </div>
     </div>
-    <!-- Save Query Dialog -->
+    <!-- Bookmark Query Dialog -->
     <div class="sql-dialog-overlay" id="saveQueryDialogOverlay" style="display:none;">
         <div class="sql-dialog constraints-dialog">
             <div class="sql-dialog-header">
-                <span id="saveQueryDialogTitle">Save Query</span>
+                <span id="saveQueryDialogTitle">Bookmark Query</span>
                 <button class="btn btn-ghost btn-icon sql-dialog-close" id="saveQueryDialogClose" title="Close"><svg class="ico" aria-hidden="true"><use href="#icon-close"/></svg></button>
             </div>
             <div class="constraints-dialog-content">
@@ -377,7 +377,7 @@
                 <p class="mapping-hint">Placeholders</p>
                 <div id="saveQueryParamsList"></div>
                 <div class="constraints-preview-wrap">
-                    <label>Existing saved queries:</label>
+                    <label>Existing bookmarked queries:</label>
                     <div id="saveQueryExisting"></div>
                 </div>
             </div>

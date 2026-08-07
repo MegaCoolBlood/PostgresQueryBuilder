@@ -152,6 +152,15 @@ and the quick picks in [src/connectionManager.ts](src/connectionManager.ts):
 | `postgresQueryBuilder.selectConnection` | `Select Connection` | `database` / `$(database)` |
 | `postgresQueryBuilder.connect` | `New Connection` | `add` / `$(add)` |
 | `postgresQueryBuilder.disconnect` | `Disconnect` | `plug` |
+| `postgresQueryBuilder.saveQueryFromEditor` | `Bookmark Query` | `star` / `$(add)` |
+
+**Bookmarked queries.** The feature is named *Bookmarked Queries* in every
+user-visible string: the noun is `Bookmarked Query` / `Bookmarked Queries`, the
+action is `Bookmark Query`. The identifiers behind it keep the historic
+`savedQuery` spelling — command ids, the `postgresSavedQueries` view id, the
+`postgresQueryBuilder.savedQueriesFile` setting, the DOM ids in the Data Viewer
+and the `postgres-query-builder.saved-queries/v1` file format MUST NOT be
+renamed, because they are part of the user's stored state.
 
 A tree-view welcome button is rendered by VS Code from a markdown command link
 and cannot carry the SVG sprite, but it does render codicons: write the icon

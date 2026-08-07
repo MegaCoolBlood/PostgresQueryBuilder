@@ -135,6 +135,103 @@ test('the select connection action carries one single label on every surface', (
     }
 });
 
+/**
+ * The feature is called "Bookmarked Queries" everywhere the user can read it:
+ * it is stored with a star, behaves like a bookmark, and must not fall back to
+ * the older "Saved Queries" wording in a single corner of the UI.
+ */
+const OLD_QUERY_WORDING = /saved quer|save query|saved-quer/i;
+
+/** Every quoted literal of a source file, so comments are left out of the check. */
+function stringLiterals(content: string): string[] {
+    return content.match(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g) || [];
+}
+
+const BOOKMARK_COMMANDS = [
+    'postgresQueryBuilder.runSavedQuery',
+    'postgresQueryBuilder.refreshSavedQueries',
+    'postgresQueryBuilder.renameSavedQuery',
+    'postgresQueryBuilder.editSavedQuerySql',
+    'postgresQueryBuilder.duplicateSavedQuery',
+    'postgresQueryBuilder.deleteSavedQuery',
+    'postgresQueryBuilder.moveSavedQueryToWorkspace',
+    'postgresQueryBuilder.moveSavedQueryToGlobal',
+    'postgresQueryBuilder.openSavedQueriesFile',
+    'postgresQueryBuilder.saveQueryFromEditor'
+];
+
+test('the manifest calls the feature "Bookmarked Queries" and never "Saved Queries"', () => {
+    const strings: Array<[string, string]> = [];
+    collectUserVisibleStrings(manifest.contributes, ['contributes'], strings);
+    for (const [where, value] of strings) {
+        assert.ok(
+            !OLD_QUERY_WORDING.test(value),
+            `${where} still uses the old wording: ${value}`
+        );
+    }
+    const view = manifest.contributes.views.postgresQueryBuilderExplorer.find(
+        (v: { id: string }) => v.id === 'postgresSavedQueries'
+    );
+    assert.equal(view.name, 'Bookmarked Queries');
+});
+
+test('every bookmark command title speaks of bookmarks while its id stays stable', () => {
+    for (const command of BOOKMARK_COMMANDS) {
+        const entry = manifest.contributes.commands.find(
+            (c: { command: string }) => c.command === command
+        );
+        assert.ok(entry, `${command} is no longer contributed`);
+        assert.ok(
+            /Bookmark/.test(entry.title),
+            `${command} is titled "${entry.title}" instead of naming a bookmark`
+        );
+    }
+});
+
+test('the bookmark view welcome content points at the renamed button', () => {
+    const welcome = manifest.contributes.viewsWelcome.find(
+        (w: { view: string }) => w.view === 'postgresSavedQueries'
+    );
+    assert.ok(welcome, 'the bookmark view has no welcome content');
+    assert.ok(welcome.contents.startsWith('No bookmarked queries yet.'));
+    assert.ok(welcome.contents.includes('"Bookmark Query"'));
+});
+
+test('no user visible string of the bookmark surfaces uses the old wording', () => {
+    const files = [
+        path.join(SRC, 'extension.ts'),
+        path.join(SRC, 'savedQueryEditor.ts'),
+        path.join(SRC, 'savedQueryExplorer.ts'),
+        path.join(SRC, 'savedQueryStore.ts'),
+        path.join(SRC, 'savedQueryDrop.ts'),
+        path.join(SRC, 'tableWebView.ts'),
+        path.join(SRC, 'webview', 'tableView.js')
+    ];
+    for (const file of files) {
+        for (const literal of stringLiterals(fs.readFileSync(file, 'utf8'))) {
+            // The persisted file format keeps its identifier; only labels change.
+            if (literal.includes('saved-queries/v1')) { continue; }
+            assert.ok(
+                !OLD_QUERY_WORDING.test(literal),
+                `${path.basename(file)} still shows ${literal}`
+            );
+        }
+    }
+});
+
+test('the data viewer dialog is titled Bookmark Query', () => {
+    const html = fs.readFileSync(path.join(SRC, 'webview', 'tableView.html'), 'utf8');
+    assert.ok(html.includes('<span id="saveQueryDialogTitle">Bookmark Query</span>'));
+    assert.ok(html.includes('title="Bookmark this query for reuse"'));
+    assert.ok(!OLD_QUERY_WORDING.test(html), 'the data viewer markup still uses the old wording');
+
+    const script = fs.readFileSync(path.join(SRC, 'webview', 'tableView.js'), 'utf8');
+    assert.ok(
+        script.includes("saveQueryEditId ? 'Update Bookmarked Query' : 'Bookmark Query'"),
+        'the dialog title is no longer switched between the bookmark labels'
+    );
+});
+
 test('no button label ends in an ellipsis; the tree view welcome cannot render one', () => {
     const files = [
         path.join(SRC, 'searchViewProvider.ts'),

@@ -50,7 +50,7 @@
         },
         {
           "id": "postgresSavedQueries",
-          "name": "Saved Queries"
+          "name": "Bookmarked Queries"
         }
       ]
     },
@@ -130,54 +130,54 @@
       },
       {
         "command": "postgresQueryBuilder.runSavedQuery",
-        "title": "Run Saved Query...",
+        "title": "Run Bookmarked Query...",
         "category": "PostgreSQL Query Builder",
         "icon": "$(play)"
       },
       {
         "command": "postgresQueryBuilder.refreshSavedQueries",
-        "title": "Refresh Saved Queries",
+        "title": "Refresh Bookmarked Queries",
         "category": "PostgreSQL Query Builder",
         "icon": "$(refresh)"
       },      {
         "command": "postgresQueryBuilder.renameSavedQuery",
-        "title": "Rename Saved Query...",
+        "title": "Rename Bookmarked Query...",
         "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.editSavedQuerySql",
-        "title": "Edit Saved Query SQL...",
+        "title": "Edit Bookmarked Query SQL...",
         "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.duplicateSavedQuery",
-        "title": "Duplicate Saved Query",
+        "title": "Duplicate Bookmarked Query",
         "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.deleteSavedQuery",
-        "title": "Delete Saved Query",
+        "title": "Delete Bookmarked Query",
         "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.moveSavedQueryToWorkspace",
-        "title": "Move Saved Query to Workspace",
+        "title": "Move Bookmarked Query to Workspace",
         "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.moveSavedQueryToGlobal",
-        "title": "Move Saved Query to Personal",
+        "title": "Move Bookmarked Query to Personal",
         "category": "PostgreSQL Query Builder"
       },
       {
         "command": "postgresQueryBuilder.openSavedQueriesFile",
-        "title": "Open Workspace Saved Queries File",
+        "title": "Open Workspace Bookmarked Queries File",
         "category": "PostgreSQL Query Builder",
         "icon": "$(go-to-file)"
       },
       {
         "command": "postgresQueryBuilder.saveQueryFromEditor",
-        "title": "Save Query...",
+        "title": "Bookmark Query...",
         "category": "PostgreSQL Query Builder",
         "icon": "$(add)"
       }
@@ -277,7 +277,7 @@
       },
       {
         "view": "postgresSavedQueries",
-        "contents": "No saved queries yet.\nRun a query in the Data Viewer and use \"Save Query\" to store it here. Placeholders written as :name are filled in every time the query runs."
+        "contents": "No bookmarked queries yet.\nRun a query in the Data Viewer and use \"Bookmark Query\" to store it here. Placeholders written as :name are filled in every time the query runs."
       }
     ],
     "configuration": {
@@ -326,7 +326,7 @@
         "postgresQueryBuilder.savedQueriesFile": {
           "type": "string",
           "default": ".vscode/postgres-query-builder.queries.json",
-          "description": "Workspace-relative path to the JSON file used to share saved queries via git. Queries stored here are visible to everyone who opens the workspace; personal queries remain in VS Code global state."
+          "description": "Workspace-relative path to the JSON file used to share bookmarked queries via git. Queries stored here are visible to everyone who opens the workspace; personal queries remain in VS Code global state."
         },
         "postgresQueryBuilder.format.enable": {
           "type": "boolean",

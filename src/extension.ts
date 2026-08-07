@@ -446,7 +446,7 @@ async function pickSavedQuery(): Promise<SavedQuery | undefined> {
     const queries = savedQueryStore.getAll();
     if (queries.length === 0) {
         vscode.window.showInformationMessage(
-            'No saved queries yet. Use "Save Query" in the Data Viewer to store one.'
+            'No bookmarked queries yet. Use "Bookmark Query" in the Data Viewer to store one.'
         );
         return undefined;
     }
@@ -457,7 +457,7 @@ async function pickSavedQuery(): Promise<SavedQuery | undefined> {
             detail: q.sql.replace(/\s+/g, ' ').trim(),
             query: q
         })),
-        { placeHolder: 'Select a saved query to run' }
+        { placeHolder: 'Select a bookmarked query to run' }
     );
     return picked?.query;
 }
@@ -508,7 +508,7 @@ function registerSavedQueryCommands(context: vscode.ExtensionContext): void {
                 return;
             }
             const name = await vscode.window.showInputBox({
-                prompt: 'New name for the saved query',
+                prompt: 'New name for the bookmarked query',
                 value: query.name,
                 validateInput: v => v.trim() ? undefined : 'The name must not be empty.'
             });
@@ -549,7 +549,7 @@ function registerSavedQueryCommands(context: vscode.ExtensionContext): void {
                 return;
             }
             const answer = await vscode.window.showWarningMessage(
-                `Delete the saved query "${query.name}"?`, { modal: true }, 'Delete'
+                `Delete the bookmarked query "${query.name}"?`, { modal: true }, 'Delete'
             );
             if (answer === 'Delete') {
                 await savedQueryStore.delete(query.id);
@@ -582,7 +582,7 @@ function registerSavedQueryCommands(context: vscode.ExtensionContext): void {
             const uri = savedQueryStore.getWorkspaceFileUri();
             if (!uri || !savedQueryStore.hasWorkspaceFile()) {
                 vscode.window.showInformationMessage(
-                    'No workspace saved-queries file yet. Move a query to the workspace scope to create it.'
+                    'No workspace bookmarked-queries file yet. Move a query to the workspace scope to create it.'
                 );
                 return;
             }
