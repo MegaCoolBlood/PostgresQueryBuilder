@@ -6,6 +6,8 @@
 :root {
     /* Height of the pinned header row; the filter row sticks right below it. */
     --header-row-height: 26px;
+    /* Width of the frozen row-number column; the action column pins next to it. */
+    --row-num-width: 40px;
     /* Visible height of a cell's content. Dragging a row's resize handle raises
        it on that row so a multi-line value can be read. */
     --row-content-max-h: 20px;
@@ -509,10 +511,38 @@ td[contenteditable="true"]:focus {
     -webkit-user-select: none;
 }
 
-/* Actions column */
+/*
+ * Frozen columns. Neither the row number nor the row actions can be edited, so
+ * they are set apart by a dimmed background instead of the editable cells'
+ * plain one, and they stay pinned to the left while the grid scrolls sideways.
+ * Sticky cells must be opaque, or the scrolled-under values shine through.
+ */
+.row-num-cell,
+.actions-cell,
+thead th.row-num-cell,
+thead th.actions-cell,
+#tableBody td.row-num-cell,
+#tableBody td.actions-cell {
+    background: var(--c-surface);
+    background: color-mix(in srgb, var(--c-fg) 10%, var(--c-bg));
+}
+
+.row-num-cell,
 .actions-cell {
+    position: sticky;
     white-space: nowrap;
     width: 1%;
+}
+
+/* Actions column */
+.actions-cell {
+    left: var(--row-num-width);
+    /* Marks the end of the frozen block; the collapsed border scrolls away. */
+    box-shadow: inset -1px 0 0 var(--c-border);
+}
+
+thead th.actions-cell {
+    box-shadow: inset -1px 0 0 var(--c-border), inset 0 -1px 0 var(--c-border);
 }
 
 .actions-cell button {
@@ -521,15 +551,23 @@ td[contenteditable="true"]:focus {
 
 /* Row number column */
 .row-num-cell {
-    white-space: nowrap;
-    width: 1%;
+    left: 0;
     text-align: right;
     color: var(--c-muted);
-    background: var(--c-surface);
     user-select: none;
     font-variant-numeric: tabular-nums;
     padding: var(--sp-1) var(--sp-2);
-    position: relative;
+}
+
+/* Above the data cells they scroll past, below the pinned header rows. */
+#tableBody td.row-num-cell,
+#tableBody td.actions-cell {
+    z-index: calc(var(--z-sticky) - 2);
+}
+
+thead th.row-num-cell,
+thead th.actions-cell {
+    z-index: calc(var(--z-sticky) + 1);
 }
 
 /* Keep multi-line / resized rows reading from the top edge. */

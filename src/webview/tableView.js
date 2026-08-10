@@ -1542,6 +1542,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let filterModes = {}; // 'contains' | 'between' per column
 
     const tableHead = document.getElementById('tableHead');
+    const dataTable = document.getElementById('dataTable');
     const tableBody = document.getElementById('tableBody');
     const tableName = document.getElementById('tableName');
     const rowCount = document.getElementById('rowCount');
@@ -2510,7 +2511,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         html += '<tr class="filter-row">';
         html += '<th class="row-num-cell"></th>';
-        html += '<th></th>';
+        html += '<th class="actions-cell"></th>';
         columns.forEach(col => {
             const filterType = getColumnFilterType(col.dataType);
             const inputType = getInputTypeForColumn(col);
@@ -2660,6 +2661,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const height = headerRow.getBoundingClientRect().height;
         if (height > 0) {
             tableHead.style.setProperty('--header-row-height', `${Math.round(height)}px`);
+        }
+        // The action column pins right behind the row numbers, whose width grows
+        // with the highest row number on screen.
+        const numCell = headerRow.querySelector('th.row-num-cell');
+        const numWidth = numCell ? numCell.getBoundingClientRect().width : 0;
+        if (numWidth > 0) {
+            dataTable.style.setProperty('--row-num-width', `${Math.round(numWidth)}px`);
         }
         // The header can appear or rewrap while a load is still running.
         if (dataLoadingOverlay && dataLoadingOverlay.classList.contains('visible')) {
@@ -3037,6 +3045,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         tableBody.innerHTML = buildTableHtml();
         wireTableListeners();
         updateChangeIndicator();
+        // The row-number column widens with the digits of the last row.
+        updateStickyFilterOffset();
         // The tbody was rebuilt, so any cell-range selection now points at stale
         // DOM; drop it to avoid copying the wrong cells.
         clearCellRangeSelection();

@@ -177,6 +177,45 @@ test('every load path goes through the shared loading switch', () => {
     assert.ok((VIEW_JS.match(/setDataLoading\(false\)/g) || []).length >= 3);
 });
 
+// ===== The read-only columns are set apart and stay in view =====
+
+test('the row number and action columns are pinned to the left edge', () => {
+    const shared = VIEW_CSS.match(/\.row-num-cell,\s*\n\.actions-cell\s*\{([^}]*)\}/);
+    assert.ok(shared, 'the frozen columns lost their shared rule');
+    assert.match(shared[1], /position:\s*sticky/);
+    assert.match(VIEW_CSS, /\.row-num-cell\s*\{[^}]*left:\s*0/);
+    assert.match(VIEW_CSS, /\.actions-cell\s*\{[^}]*left:\s*var\(--row-num-width\)/);
+    assert.match(VIEW_CSS, /:root\s*\{[\s\S]*?--row-num-width:/);
+    assert.ok(
+        VIEW_JS.includes("dataTable.style.setProperty('--row-num-width'"),
+        'the width of the row-number column is no longer measured'
+    );
+});
+
+test('the frozen cells keep an opaque background of their own', () => {
+    const rule = VIEW_CSS.match(/#tableBody td\.row-num-cell,\s*\n#tableBody td\.actions-cell\s*\{([^}]*)\}/);
+    assert.ok(rule, 'the frozen body cells have no background of their own');
+    assert.match(rule[1], /background:\s*color-mix\(/, 'a see-through background would leak the scrolled rows');
+    // The row-state wash must not win over it, or the cells turn translucent.
+    const washIndex = VIEW_CSS.indexOf('tr.row-modified td {');
+    assert.ok(washIndex >= 0 && VIEW_CSS.indexOf('#tableBody td.row-num-cell,') > washIndex);
+});
+
+test('the frozen columns are marked in the header, the filter row and every body row', () => {
+    for (const marker of [
+        '<th class="row-num-cell">#</th>',
+        '<th class="actions-cell">Actions</th>',
+        '<th class="row-num-cell"></th>',
+        '<th class="actions-cell"></th>'
+    ]) {
+        assert.ok(VIEW_JS.includes(marker), `the header no longer emits ${marker}`);
+    }
+    assert.ok((VIEW_JS.match(/<td class="row-num-cell"/g) || []).length >= 3);
+    assert.ok((VIEW_JS.match(/<td class="actions-cell"/g) || []).length >= 3);
+    assert.match(VIEW_CSS, /#tableBody td\.row-num-cell,\s*\n#tableBody td\.actions-cell\s*\{[^}]*z-index:\s*calc\(var\(--z-sticky\)/);
+    assert.match(VIEW_CSS, /thead th\.row-num-cell,\s*\nthead th\.actions-cell\s*\{[^}]*z-index:\s*calc\(var\(--z-sticky\)/);
+});
+
 // ===== A long foreign-key menu has to stay searchable =====
 
 test('the context menu carries a search box and an empty state, both hidden by default', () => {
