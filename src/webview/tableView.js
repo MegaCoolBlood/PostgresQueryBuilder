@@ -861,6 +861,26 @@ function buildColumnHeaderTitle(col) {
     return String(col.comment).trim();
 }
 
+// Next sort state for a click on `column`. A column cycles ascending →
+// descending → off, and switching it off restores the sort that was active
+// before it was first clicked, so looking at one column does not throw away the
+// order the user had set up before.
+function nextSortState(current, column) {
+    const now = current || {};
+    if (now.column !== column) {
+        return {
+            column,
+            direction: 'asc',
+            previous: { column: now.column || null, direction: now.direction || 'asc' }
+        };
+    }
+    if (now.direction !== 'desc') {
+        return { column, direction: 'desc', previous: now.previous || null };
+    }
+    const restored = now.previous || {};
+    return { column: restored.column || null, direction: restored.direction || 'asc', previous: null };
+}
+
 // Compute the new per-row content height while dragging the row-resize handle.
 // `startHeight` is the height (px) when the drag began, `deltaY` the vertical
 // mouse movement (px, positive = downward = taller). The result is clamped to
@@ -1531,8 +1551,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // null means no row is selected -> new rows appear at the very top.
     let selectedRowIdx = null;
 
-    let sortColumn = null;
-    let sortDirection = 'asc';
+    // Active sort plus the one it replaced, so a third click can go back to it.
+    let sortState = { column: null, direction: 'asc', previous: null };
 
     // Name of the column currently being dragged in the header (drag-and-drop
     // reordering), or null when no drag is in progress.
@@ -2583,8 +2603,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         html += '<th class="actions-cell">Actions</th>';
         columns.forEach(col => {
             let cls = '';
-            if (sortColumn === col.name) {
-                cls = sortDirection === 'asc' ? 'sorted-asc' : 'sorted-desc';
+            if (sortState.column === col.name) {
+                cls = sortState.direction === 'asc' ? 'sorted-asc' : 'sorted-desc';
             }
             cls += ` col-${columnWriteMode(caps, col.name)}`;
             const commentTitle = buildColumnHeaderTitle(col);
@@ -2647,13 +2667,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         tableHead.querySelectorAll('tr:first-child th[data-col]').forEach(th => {
             th.addEventListener('click', () => {
                 if (Date.now() - colResizeEndedAt < 200) return;
-                const col = th.getAttribute('data-col');
-                if (sortColumn === col) {
-                    sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
-                } else {
-                    sortColumn = col;
-                    sortDirection = 'asc';
-                }
+                sortState = nextSortState(sortState, th.getAttribute('data-col'));
                 renderTable();
             });
             th.addEventListener('contextmenu', (e) => {
@@ -3123,8 +3137,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             );
         }
 
-        if (sortColumn) {
-            rows.sort((a, b) => compareCellValues(a[sortColumn], b[sortColumn], sortDirection));
+        if (sortState.column) {
+            rows.sort((a, b) => compareCellValues(a[sortState.column], b[sortState.column], sortState.direction));
         }
 
         return rows;
@@ -5341,6 +5355,7 @@ if (typeof module !== 'undefined' && module.exports) {
         buildConstraintOrderBy,
         buildSelectColumnList,
         buildColumnHeaderTitle,
+        nextSortState,
         computeResizedRowHeight,
         computeResizedColumnWidth,
         cssStringLiteral,

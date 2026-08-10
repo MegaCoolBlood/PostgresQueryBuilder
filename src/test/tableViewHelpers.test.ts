@@ -13,6 +13,7 @@ const {
     reorderColumns,
     reorderSelectColumns,
     buildColumnHeaderTitle,
+    nextSortState,
     computeResizedRowHeight,
     computeResizedColumnWidth,
     cssStringLiteral,
@@ -378,8 +379,67 @@ test('buildColumnHeaderTitle preserves multi-line comments', () => {
     assert.equal(buildColumnHeaderTitle({ name: 'id', comment: 'line 1\nline 2' }), 'line 1\nline 2');
 });
 
-// ===== computeResizedRowHeight =====
+// ===== nextSortState =====
 
+test('nextSortState sorts a freshly clicked column ascending', () => {
+    const state = nextSortState({ column: null, direction: 'asc', previous: null }, 'name');
+    assert.equal(state.column, 'name');
+    assert.equal(state.direction, 'asc');
+});
+
+test('nextSortState flips the same column to descending on the second click', () => {
+    const first = nextSortState(null, 'name');
+    const second = nextSortState(first, 'name');
+    assert.equal(second.column, 'name');
+    assert.equal(second.direction, 'desc');
+});
+
+test('nextSortState drops the sort on the third click when nothing was sorted before', () => {
+    let state = nextSortState(null, 'name');
+    state = nextSortState(state, 'name');
+    state = nextSortState(state, 'name');
+    assert.equal(state.column, null);
+});
+
+test('nextSortState restores the sort that was active before the column was clicked', () => {
+    let state = { column: 'created_at', direction: 'desc', previous: null };
+    state = nextSortState(state, 'name');
+    state = nextSortState(state, 'name');
+    state = nextSortState(state, 'name');
+    assert.equal(state.column, 'created_at');
+    assert.equal(state.direction, 'desc');
+});
+
+test('nextSortState remembers the replaced sort across the whole cycle', () => {
+    let state = nextSortState({ column: 'id', direction: 'asc', previous: null }, 'name');
+    state = nextSortState(state, 'name');
+    assert.deepEqual(state.previous, { column: 'id', direction: 'asc' });
+});
+
+test('nextSortState only remembers the sort it replaced, not the one before that', () => {
+    let state = nextSortState({ column: 'id', direction: 'asc', previous: null }, 'name');
+    state = nextSortState(state, 'email');
+    state = nextSortState(state, 'email');
+    state = nextSortState(state, 'email');
+    assert.equal(state.column, 'name');
+    assert.equal(state.direction, 'asc');
+    assert.equal(state.previous, null);
+});
+
+test('nextSortState starts a new cycle when a different column is clicked mid-cycle', () => {
+    let state = nextSortState(null, 'name');
+    state = nextSortState(state, 'email');
+    assert.equal(state.column, 'email');
+    assert.equal(state.direction, 'asc');
+});
+
+test('nextSortState copes with a missing state', () => {
+    const state = nextSortState(undefined, 'name');
+    assert.equal(state.column, 'name');
+    assert.equal(state.direction, 'asc');
+});
+
+// ===== computeResizedRowHeight =====
 test('computeResizedRowHeight grows the row when dragging downward', () => {
     assert.equal(computeResizedRowHeight(20, 40, 20, 600), 60);
 });
