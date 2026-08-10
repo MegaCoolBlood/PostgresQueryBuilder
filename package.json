@@ -4,6 +4,13 @@
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
   "version": "3.0.0",
   "publisher": "postgres-query-builder",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MegaCoolBlood/PostgresQueryBuilder.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MegaCoolBlood/PostgresQueryBuilder/issues"
+  },
   "engines": {
     "vscode": "^1.85.0",
     "node": ">=18"
@@ -625,7 +632,7 @@
     "major": "npm run bump:major",
     "build-cli-exe": "node esbuild.js --minify && pkg dist/cli.js --targets node18-win-x64 --output dist/pgformat.exe",
     "build-cli-exe:all": "node esbuild.js --minify && pkg dist/cli.js --targets node18-win-x64,node18-linux-x64,node18-macos-x64 --out-path dist/binaries",
-    "deploy": "npx vsce package --allow-missing-repository  && npm run build-cli-exe",
+    "deploy": "npx vsce package && npm run build-cli-exe",
     "deploy:patch": "npm run patch && npm run deploy",
     "deploy:minor": "npm run minor && npm run deploy",
     "deploy:major": "npm run major && npm run deploy",

@@ -66,6 +66,19 @@ function listSourceFiles(dir: string, out: string[] = []): string[] {
 
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 
+// vsce rewrites the relative links of README.md against the repository URL and
+// refuses to package while it cannot find one.
+test('the manifest names the repository the README links are resolved against', () => {
+    assert.ok(manifest.repository, 'package.json has no repository');
+    assert.match(manifest.repository.url, /^https:\/\/.+\.git$/, 'the repository URL must be an https clone URL');
+    const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+    const relativeLinks = readme.match(/\]\((?!https?:|#)[^)]+\)/g) || [];
+    for (const link of relativeLinks) {
+        const target = link.slice(2, -1).split('#')[0];
+        assert.ok(fs.existsSync(path.join(ROOT, target)), `README.md links to the missing file ${target}`);
+    }
+});
+
 test('every user visible string in the manifest is English', () => {
     const strings: Array<[string, string]> = [];
     collectUserVisibleStrings(manifest.contributes, ['contributes'], strings);
