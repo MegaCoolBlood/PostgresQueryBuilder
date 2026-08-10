@@ -48,7 +48,7 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
         .button-row {
             display: flex;
             gap: var(--sp-1);
-            margin-bottom: var(--sp-2);
+            margin-top: var(--sp-2);
             flex-wrap: wrap;
         }
         .button-row .btn {
@@ -61,13 +61,13 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
             margin-top: var(--sp-1);
         }`;
         const body = `
-    <div class="button-row">
-        <button class="btn" id="manageMappingsBtn" title="Open the manager for all custom column mappings (bulk share/move/delete)">${icon('goto')}Manage All Mappings</button>
-    </div>
     <div class="search-container">
         <input type="text" id="searchInput" placeholder="Filter tables... (e.g. schema.table or multiple terms)" />
     </div>
-    <div class="hint">Several terms separated by spaces: the matches with the most hits come first</div>`;
+    <div class="hint">Several terms separated by spaces: the matches with the most hits come first</div>
+    <div class="button-row">
+        <button class="btn" id="manageMappingsBtn" title="Open the manager for all custom column mappings (bulk share/move/delete)">${icon('goto')}Manage All Mappings</button>
+    </div>`;
         const script = `
         const vscode = acquireVsCodeApi();
         const input = document.getElementById('searchInput');

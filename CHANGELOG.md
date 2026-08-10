@@ -29,7 +29,7 @@
 
 - **A third click on a column header brings the previous order back:** Clicking a header sorted ascending, clicking again descending, and a third click simply started over — there was no way to get rid of a sort. The header now cycles ascending, descending, off: the third click restores the order that was in place before that column was clicked, so having a quick look at one column no longer throws away the sorting you had set up.
 
-- **Connections are managed in one place:** The Search sidebar carried buttons for selecting, opening and closing a connection, which had nothing to do with searching, and in the Tables view those actions disappeared as soon as a connection was active. The connection buttons are gone from Search; the Tables view now shows *Select Connection*, *New Connection* and *Disconnect* as icons in its title bar, permanently and regardless of whether a connection is currently open.
+- **Connections are managed in one place:** The Search sidebar carried buttons for selecting, opening and closing a connection, which had nothing to do with searching, and in the Tables view those actions disappeared as soon as a connection was active. The connection buttons are gone from Search; the Tables view now shows *Select Connection*, *New Connection* and *Disconnect* as icons in its title bar, permanently and regardless of whether a connection is currently open. The search field is now the first thing in the Search sidebar, so it is where you look for it.
 
 ## 2.2.3
 

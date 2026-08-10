@@ -135,6 +135,15 @@ test('the search sidebar says nothing about connections', () => {
     }
 });
 
+test('the search sidebar starts with the search field', () => {
+    const source = fs.readFileSync(path.join(SRC, 'searchViewProvider.ts'), 'utf8');
+    const body = source.slice(source.indexOf('const body ='));
+    assert.ok(
+        body.indexOf('id="searchInput"') < body.indexOf('class="button-row"'),
+        'the search field is not the first element of the search sidebar'
+    );
+});
+
 test('the select connection action carries one single label on every surface', () => {
     const content = fs.readFileSync(path.join(SRC, 'webview', 'tableView.js'), 'utf8');
     assert.ok(content.includes('Select Connection'), 'the Data Viewer lost the shared label');
