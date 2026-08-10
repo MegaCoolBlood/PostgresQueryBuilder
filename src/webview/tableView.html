@@ -67,7 +67,9 @@
         </div>
         <!-- Context Menu -->
         <div class="context-menu" id="contextMenu" style="display:none;">
+            <input type="text" class="context-menu-search hidden" id="contextMenuSearch" placeholder="Search entries..." spellcheck="false" aria-label="Search menu entries" />
             <ul id="contextMenuItems"></ul>
+            <div class="context-menu-empty hidden" id="contextMenuEmpty">No matching entry</div>
         </div>
         <!-- SQL Preview Dialog -->
         <div class="sql-dialog-overlay" id="sqlDialogOverlay" style="display:none;">

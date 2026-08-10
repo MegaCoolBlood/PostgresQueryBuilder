@@ -1570,6 +1570,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let queryHistoryActiveIdx = -1;
     const contextMenu = document.getElementById('contextMenu');
     const contextMenuItems = document.getElementById('contextMenuItems');
+    const contextMenuSearch = document.getElementById('contextMenuSearch');
+    const contextMenuEmpty = document.getElementById('contextMenuEmpty');
     const dataLoading = document.getElementById('dataLoading');
     const dataLoadingOverlay = document.getElementById('dataLoadingOverlay');
     const metaLoading = document.getElementById('metaLoading');
@@ -1696,8 +1698,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     });
 
     document.addEventListener('click', () => {
-        contextMenu.style.display = 'none';
+        hideContextMenu();
         closeQueryHistoryPanel();
+    });
+
+    // Typing in the menu's search box must not count as a click beside it.
+    contextMenu.addEventListener('click', (e) => {
+        e.stopPropagation();
+    });
+
+    contextMenuSearch.addEventListener('input', filterContextMenu);
+    contextMenuSearch.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            hideContextMenu();
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            const first = contextMenuItems.querySelector('li[data-action-idx]:not(.hidden)');
+            if (first) { first.click(); }
+        }
     });
 
     // Strip thousand separators from numeric cells when copying from the grid,
@@ -2907,6 +2926,30 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         runQuery();
     }
 
+    // A table with many foreign keys produces a menu nobody can scan, so from
+    // this many entries on it gets a filter box.
+    const CONTEXT_MENU_SEARCH_FROM = 10;
+
+    function hideContextMenu() {
+        contextMenu.style.display = 'none';
+    }
+
+    function filterContextMenu() {
+        const needle = contextMenuSearch.value.trim().toLowerCase();
+        let visible = 0;
+        contextMenuItems.querySelectorAll('li').forEach(li => {
+            // While filtering, a separator no longer separates anything.
+            if (li.classList.contains('separator')) {
+                li.classList.toggle('hidden', !!needle);
+                return;
+            }
+            const match = !needle || li.textContent.toLowerCase().includes(needle);
+            li.classList.toggle('hidden', !match);
+            if (match) visible++;
+        });
+        contextMenuEmpty.classList.toggle('hidden', visible > 0);
+    }
+
     function showContextMenu(e, items) {
         if (!items || items.length === 0) return;
 
@@ -2920,12 +2963,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
         contextMenuItems.innerHTML = html;
 
+        const searchable = items.filter(item => !item.separator).length >= CONTEXT_MENU_SEARCH_FROM;
+        contextMenuSearch.value = '';
+        contextMenuSearch.classList.toggle('hidden', !searchable);
+        contextMenuEmpty.classList.add('hidden');
+
         // Show first (offscreen) to measure size, then clamp into viewport
         contextMenu.style.visibility = 'hidden';
         contextMenu.style.left = '0px';
         contextMenu.style.top = '0px';
         contextMenu.style.maxHeight = '';
-        contextMenu.style.display = 'block';
+        contextMenu.style.display = 'flex';
 
         const margin = 8;
         const vw = window.innerWidth;
@@ -2950,12 +2998,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         contextMenu.style.left = left + 'px';
         contextMenu.style.top = top + 'px';
         contextMenu.style.visibility = '';
+        if (searchable) { contextMenuSearch.focus(); }
 
         contextMenuItems.querySelectorAll('li[data-action-idx]').forEach(li => {
             li.addEventListener('click', (ev) => {
                 ev.stopPropagation();
                 const idx = parseInt(li.getAttribute('data-action-idx'));
-                contextMenu.style.display = 'none';
+                hideContextMenu();
                 if (items[idx] && items[idx].action) {
                     items[idx].action();
                 }

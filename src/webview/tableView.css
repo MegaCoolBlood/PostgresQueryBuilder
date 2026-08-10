@@ -651,15 +651,37 @@ td.has-fk-btn > .fk-btn {
     min-width: 200px;
     padding: var(--sp-1) 0;
     max-height: calc(100vh - var(--sp-4));
-    overflow-y: auto;
-    overflow-x: hidden;
-    overscroll-behavior: contain;
+    flex-direction: column;
+    overflow: hidden;
 }
 
 .context-menu ul {
     list-style: none;
     margin: 0;
     padding: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+}
+
+/* Only shown once the menu grows past a handful of entries. */
+.context-menu-search {
+    flex-shrink: 0;
+    margin: 0 var(--sp-2) var(--sp-1);
+    font-size: var(--fs-sm);
+}
+
+.context-menu-empty {
+    padding: var(--sp-1) var(--sp-3);
+    font-size: var(--fs-sm);
+    color: var(--c-muted);
+    white-space: nowrap;
+}
+
+.context-menu-search.hidden,
+.context-menu-empty.hidden,
+.context-menu li.hidden {
+    display: none;
 }
 
 .context-menu li {

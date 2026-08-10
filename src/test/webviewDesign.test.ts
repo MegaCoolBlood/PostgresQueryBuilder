@@ -177,6 +177,47 @@ test('every load path goes through the shared loading switch', () => {
     assert.ok((VIEW_JS.match(/setDataLoading\(false\)/g) || []).length >= 3);
 });
 
+// ===== A long foreign-key menu has to stay searchable =====
+
+test('the context menu carries a search box and an empty state, both hidden by default', () => {
+    const menu = VIEW_HTML.match(/<div class="context-menu"[\s\S]*?<\/div>/);
+    assert.ok(menu, 'tableView.html has no context menu');
+    for (const id of ['contextMenuSearch', 'contextMenuEmpty']) {
+        const tag = menu[0].match(new RegExp(`<[^>]*id="${id}"[^>]*>`));
+        assert.ok(tag, `the menu has no ${id}`);
+        assert.match(tag[0], /class="[^"]*\bhidden\b/, `${id} is visible before it is needed`);
+    }
+    assert.match(VIEW_CSS, /\.context-menu li\.hidden\s*\{[\s\S]*?display:\s*none/);
+});
+
+test('only the entry list scrolls, so the search box stays reachable', () => {
+    const menuRule = VIEW_CSS.match(/\.context-menu\s*\{([^}]*)\}/);
+    const listRule = VIEW_CSS.match(/\.context-menu ul\s*\{([^}]*)\}/);
+    assert.ok(menuRule && listRule, 'tableView.css lost one of the context menu rules');
+    assert.match(menuRule[1], /flex-direction:\s*column/);
+    assert.match(menuRule[1], /overflow:\s*hidden/);
+    assert.match(listRule[1], /overflow-y:\s*auto/);
+    assert.ok(
+        VIEW_JS.includes("contextMenu.style.display = 'flex'"),
+        'the menu no longer opens as the flex column its layout needs'
+    );
+});
+
+test('the search box appears only once the menu grows and filters its entries', () => {
+    assert.match(VIEW_JS, /const CONTEXT_MENU_SEARCH_FROM = \d+;/);
+    assert.ok(
+        VIEW_JS.includes("contextMenuSearch.classList.toggle('hidden', !searchable)"),
+        'a short menu would now show a filter box'
+    );
+    assert.ok(VIEW_JS.includes("contextMenuSearch.addEventListener('input', filterContextMenu)"));
+    assert.ok(
+        VIEW_JS.includes("contextMenuItems.querySelector('li[data-action-idx]:not(.hidden)')"),
+        'Enter no longer picks the first matching entry'
+    );
+    // Clicking into the box must not count as a click beside the menu.
+    assert.match(VIEW_JS, /contextMenu\.addEventListener\('click', \(e\) => \{\s*e\.stopPropagation\(\);/);
+});
+
 // ===== The style guide must keep describing the code it documents =====
 
 const STYLEGUIDE = fs.readFileSync(path.join(ROOT, 'STYLEGUIDE.md'), 'utf8');
