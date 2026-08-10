@@ -14,6 +14,9 @@ const {
     reorderSelectColumns,
     buildColumnHeaderTitle,
     computeResizedRowHeight,
+    computeResizedColumnWidth,
+    cssStringLiteral,
+    buildColumnWidthCss,
     remainingRowCount,
     formatExecutionTime,
     emptyCapabilities,
@@ -401,6 +404,71 @@ test('computeResizedRowHeight ignores the maximum when it is null', () => {
 test('computeResizedRowHeight treats non-numeric inputs as zero', () => {
     assert.equal(computeResizedRowHeight(NaN as any, 40, 20, 600), 40);
     assert.equal(computeResizedRowHeight(50, undefined as any, 20, 600), 50);
+});
+
+// ===== computeResizedColumnWidth =====
+
+test('computeResizedColumnWidth widens the column when dragging right', () => {
+    assert.equal(computeResizedColumnWidth(120, 60, 40, 1200), 180);
+});
+
+test('computeResizedColumnWidth narrows the column when dragging left', () => {
+    assert.equal(computeResizedColumnWidth(200, -80, 40, 1200), 120);
+});
+
+test('computeResizedColumnWidth keeps the column grabbable at the minimum', () => {
+    assert.equal(computeResizedColumnWidth(100, -500, 40, 1200), 40);
+});
+
+test('computeResizedColumnWidth never grows beyond the maximum', () => {
+    assert.equal(computeResizedColumnWidth(1000, 900, 40, 1200), 1200);
+});
+
+test('computeResizedColumnWidth rounds to whole pixels', () => {
+    assert.equal(computeResizedColumnWidth(100.4, 20.2, 40, 1200), 121);
+});
+
+test('computeResizedColumnWidth treats non-numeric inputs as zero', () => {
+    assert.equal(computeResizedColumnWidth(NaN as any, 100, 40, 1200), 100);
+    assert.equal(computeResizedColumnWidth(150, undefined as any, 40, 1200), 150);
+});
+
+// ===== cssStringLiteral =====
+
+test('cssStringLiteral quotes a plain column name', () => {
+    assert.equal(cssStringLiteral('first_name'), '"first_name"');
+});
+
+test('cssStringLiteral escapes quotes and backslashes so the selector stays intact', () => {
+    assert.equal(cssStringLiteral('we"ird'), '"we\\"ird"');
+    assert.equal(cssStringLiteral('back\\slash'), '"back\\\\slash"');
+});
+
+// ===== buildColumnWidthCss =====
+
+test('buildColumnWidthCss returns nothing while no column has been resized', () => {
+    assert.equal(buildColumnWidthCss({}), '');
+    assert.equal(buildColumnWidthCss(undefined), '');
+});
+
+test('buildColumnWidthCss pins header and body cells to the same width', () => {
+    const css = buildColumnWidthCss({ email: 260 });
+    assert.match(css, /#dataTable th\[data-col="email"\], #dataTable td\[data-col="email"\]/);
+    assert.match(css, /width: 260px; min-width: 260px; max-width: 260px;/);
+});
+
+test('buildColumnWidthCss lets the filter input shrink with its column', () => {
+    const css = buildColumnWidthCss({ email: 60 });
+    assert.match(css, /\.filter-input[^{]*\{[^}]*min-width: 0/);
+});
+
+test('buildColumnWidthCss skips columns without a usable width', () => {
+    assert.equal(buildColumnWidthCss({ a: 0, b: null, c: 'nope' }), '');
+});
+
+test('buildColumnWidthCss emits one rule pair per resized column', () => {
+    const css = buildColumnWidthCss({ a: 100, b: 200 });
+    assert.equal(css.split('\n').length, 4);
 });
 
 // ===== remainingRowCount =====

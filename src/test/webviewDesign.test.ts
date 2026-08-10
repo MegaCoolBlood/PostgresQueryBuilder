@@ -216,6 +216,32 @@ test('the frozen columns are marked in the header, the filter row and every body
     assert.match(VIEW_CSS, /thead th\.row-num-cell,\s*\nthead th\.actions-cell\s*\{[^}]*z-index:\s*calc\(var\(--z-sticky\)/);
 });
 
+// ===== Columns can be resized by dragging =====
+
+test('every data column header carries a drag handle for its width', () => {
+    assert.ok(VIEW_JS.includes('<div class="col-resize-handle" title="Drag to change column width"></div>'));
+    assert.ok(VIEW_JS.includes("resizeHandle.addEventListener('mousedown', startColumnResize)"));
+    // The filter cell belongs to the column, so it has to be sized along with it.
+    assert.ok(VIEW_JS.includes('<th data-col="${escapeAttr(col.name)}"><div class="filter-cell">'));
+});
+
+test('the resize handle does not sort or reorder the column it sits on', () => {
+    const start = VIEW_JS.match(/function startColumnResize\(e\) \{([\s\S]*?)\n {4}\}/);
+    assert.ok(start, 'startColumnResize is gone');
+    assert.match(start[1], /th\.draggable = false/, 'the drag-to-reorder would hijack the resize');
+    assert.match(start[1], /e\.preventDefault\(\)/);
+    assert.match(VIEW_JS, /colResizeEndedAt/, 'the click after the drag would sort the column');
+});
+
+test('the resize handle is styled from theme colours and sits above the header text', () => {
+    const rule = VIEW_CSS.match(/\.col-resize-handle\s*\{([^}]*)\}/);
+    assert.ok(rule, 'the column resize handle lost its style');
+    assert.match(rule[1], /cursor:\s*col-resize/);
+    assert.match(rule[1], /position:\s*absolute/);
+    assert.match(rule[1], /z-index:\s*calc\(var\(--z-sticky\)/);
+    assert.match(VIEW_CSS, /body\.col-resizing[\s\S]*?cursor:\s*col-resize/);
+});
+
 // ===== A long foreign-key menu has to stay searchable =====
 
 test('the context menu carries a search box and an empty state, both hidden by default', () => {

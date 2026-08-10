@@ -877,6 +877,41 @@ function computeResizedRowHeight(startHeight, deltaY, minHeight, maxHeight) {
     return h;
 }
 
+// Compute the new column width while dragging the handle on a header's right
+// edge. `deltaX` is positive when the mouse moves right (= wider); the result is
+// clamped so a column stays grabbable and cannot swallow the whole viewport.
+function computeResizedColumnWidth(startWidth, deltaX, minWidth, maxWidth) {
+    let w = (Number(startWidth) || 0) + (Number(deltaX) || 0);
+    if (w < minWidth) {
+        w = minWidth;
+    }
+    if (maxWidth != null && w > maxWidth) {
+        w = maxWidth;
+    }
+    return Math.round(w);
+}
+
+// Quote a column name for use inside a CSS attribute selector.
+function cssStringLiteral(value) {
+    return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+// Build the stylesheet that pins the columns the user has resized. The auto
+// table layout only honours a width when every cell of the column carries it,
+// so header, filter and body cells are all addressed; the filter input has to
+// be allowed to shrink as well, or its own min-width would hold the column open.
+function buildColumnWidthCss(widths) {
+    const rules = [];
+    Object.keys(widths || {}).forEach(name => {
+        const w = Math.round(Number(widths[name]) || 0);
+        if (!(w > 0)) return;
+        const sel = `[data-col=${cssStringLiteral(name)}]`;
+        rules.push(`#dataTable th${sel}, #dataTable td${sel} { width: ${w}px; min-width: ${w}px; max-width: ${w}px; }`);
+        rules.push(`#dataTable th${sel} .filter-input, #dataTable th${sel} .filter-input-range { width: 100%; min-width: 0; }`);
+    });
+    return rules.join('\n');
+}
+
 // Number of rows still to load given how many are already loaded and the total.
 // Never negative; used by the "Load All" button and the pagination indicator.
 function remainingRowCount(loaded, total) {
@@ -1535,6 +1570,56 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         document.removeEventListener('mousemove', onRowResizeMove);
         document.removeEventListener('mouseup', endRowResize);
         document.body.classList.remove('row-resizing');
+    }
+
+    // Column-width resize: widths the user dragged, keyed by column name so they
+    // survive re-renders and column reordering. They are applied through one
+    // generated stylesheet instead of inline styles, because every cell of a
+    // column must carry the width for the table layout to honour it.
+    const MIN_COL_W = 40;
+    const MAX_COL_W = 1200;
+    let columnWidths = {};
+    let colResizeState = null;
+    // A finished drag is followed by a click on the header, which would sort it.
+    // Timestamp instead of a flag, so a release outside the header expires too.
+    let colResizeEndedAt = 0;
+    const columnWidthStyle = document.createElement('style');
+    document.head.appendChild(columnWidthStyle);
+
+    function applyColumnWidths() {
+        columnWidthStyle.textContent = buildColumnWidthCss(columnWidths);
+    }
+
+    function startColumnResize(e) {
+        const th = e.target.closest('th');
+        if (!th) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const col = th.getAttribute('data-col');
+        // The header is draggable for reordering; that must not start here.
+        th.draggable = false;
+        colResizeState = { col, th, startX: e.clientX, startWidth: th.getBoundingClientRect().width };
+        document.addEventListener('mousemove', onColumnResizeMove);
+        document.addEventListener('mouseup', endColumnResize);
+        document.body.classList.add('col-resizing');
+    }
+
+    function onColumnResizeMove(e) {
+        if (!colResizeState) return;
+        const delta = e.clientX - colResizeState.startX;
+        columnWidths[colResizeState.col] = computeResizedColumnWidth(colResizeState.startWidth, delta, MIN_COL_W, MAX_COL_W);
+        applyColumnWidths();
+    }
+
+    function endColumnResize() {
+        if (colResizeState) {
+            colResizeState.th.draggable = true;
+            colResizeEndedAt = Date.now();
+        }
+        colResizeState = null;
+        document.removeEventListener('mousemove', onColumnResizeMove);
+        document.removeEventListener('mouseup', endColumnResize);
+        document.body.classList.remove('col-resizing');
     }
 
     let filters = {};
@@ -2505,7 +2590,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const commentTitle = buildColumnHeaderTitle(col);
             const titleAttr = commentTitle ? ` title="${escapeAttr(commentTitle)}"` : '';
             const commentMark = commentTitle ? ' <span class="col-comment-indicator" aria-hidden="true">🛈</span>' : '';
-            html += `<th class="${cls}" draggable="true" data-col="${escapeAttr(col.name)}"${titleAttr}>${escapeHtml(col.name)}${commentMark}<br><small class="col-type">${escapeHtml(col.dataType)}</small></th>`;
+            html += `<th class="${cls}" draggable="true" data-col="${escapeAttr(col.name)}"${titleAttr}>${escapeHtml(col.name)}${commentMark}<br><small class="col-type">${escapeHtml(col.dataType)}</small><div class="col-resize-handle" title="Drag to change column width"></div></th>`;
         });
         html += '</tr>';
 
@@ -2518,7 +2603,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const mode = filterModes[col.name] || (filterType === 'text' ? 'contains' : 'equals');
             const val = filters[col.name] || '';
 
-            html += '<th><div class="filter-cell">';
+            html += `<th data-col="${escapeAttr(col.name)}"><div class="filter-cell">`;
 
             if (filterType === 'date' || filterType === 'numeric') {
                 html += `<select class="filter-mode-select" data-col="${escapeAttr(col.name)}">`;
@@ -2561,6 +2646,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         tableHead.querySelectorAll('tr:first-child th[data-col]').forEach(th => {
             th.addEventListener('click', () => {
+                if (Date.now() - colResizeEndedAt < 200) return;
                 const col = th.getAttribute('data-col');
                 if (sortColumn === col) {
                     sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
@@ -2575,6 +2661,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 e.stopPropagation();
                 showHeaderContextMenu(e, th.getAttribute('data-col'));
             });
+            const resizeHandle = th.querySelector('.col-resize-handle');
+            if (resizeHandle) {
+                resizeHandle.addEventListener('mousedown', startColumnResize);
+            }
             attachColumnDragHandlers(th);
         });
 
@@ -5252,6 +5342,9 @@ if (typeof module !== 'undefined' && module.exports) {
         buildSelectColumnList,
         buildColumnHeaderTitle,
         computeResizedRowHeight,
+        computeResizedColumnWidth,
+        cssStringLiteral,
+        buildColumnWidthCss,
         remainingRowCount,
         formatExecutionTime,
         reorderColumns,

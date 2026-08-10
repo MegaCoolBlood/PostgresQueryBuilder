@@ -600,6 +600,31 @@ body.row-resizing * {
     -webkit-user-select: none;
 }
 
+/* Draggable handle on the right edge of a header cell to change the column
+   width. The header clips its overflow, so the handle has to stay inside it. */
+.col-resize-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    width: 6px;
+    cursor: col-resize;
+    /* Above the header text and the comment marker it overlaps. */
+    z-index: calc(var(--z-sticky) + 1);
+}
+
+.col-resize-handle:hover {
+    background: var(--c-accent);
+    opacity: 0.6;
+}
+
+body.col-resizing,
+body.col-resizing * {
+    cursor: col-resize !important;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
 /* Status bar */
 .status-bar {
     padding: var(--sp-1) var(--sp-3);
