@@ -29,6 +29,8 @@
 
 - **A third click on a column header brings the previous order back:** Clicking a header sorted ascending, clicking again descending, and a third click simply started over — there was no way to get rid of a sort. The header now cycles ascending, descending, off: the third click restores the order that was in place before that column was clicked, so having a quick look at one column no longer throws away the sorting you had set up.
 
+- **Connections are managed in one place:** The Search sidebar carried buttons for selecting, opening and closing a connection, which had nothing to do with searching, and in the Tables view those actions disappeared as soon as a connection was active. The connection buttons are gone from Search; the Tables view now shows *Select Connection*, *New Connection* and *Disconnect* as icons in its title bar, permanently and regardless of whether a connection is currently open.
+
 ## 2.2.3
 
 - **Queries can be saved with placeholders and run from anywhere:** A query that took effort to write was gone as soon as the panel closed — the history helped only within the same panel, and a recurring query had to be re-typed with different values every time. The Data Viewer now has a *"☆ Save Query"* button that stores the statement under a name, and any `:name` written in the SQL becomes a placeholder that is asked for before the query runs. Saved queries live in a *"Saved Queries"* view in the activity bar and are reachable independently of any table: no panel needs to be open, and *"Run Saved Query"* in the command palette offers the same list. Running one opens a normal Data Viewer panel, so filtering, editing, export and everything else works as usual, and the values entered last are remembered as the defaults for the next run.

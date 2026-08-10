@@ -87,13 +87,18 @@ test('no source file outside the tests contains German text', () => {
 });
 
 /**
- * The same action has to carry the same label everywhere it is offered, so that
- * the tree view welcome content and the search sidebar do not look like two
- * different extensions.
+ * The same action has to carry the same label everywhere it is offered, and
+ * connecting is offered in the Tables view only: its title bar and its welcome
+ * content. Any other sidebar repeating it would blur what that sidebar is for.
  */
 const CONNECTION_ACTIONS = [
     { command: 'postgresQueryBuilder.selectConnection', label: 'Select Connection', codicon: 'database' },
     { command: 'postgresQueryBuilder.connect', label: 'New Connection', codicon: 'add' }
+];
+
+const TITLE_BAR_ACTIONS = [
+    ...CONNECTION_ACTIONS,
+    { command: 'postgresQueryBuilder.disconnect', label: 'Disconnect', codicon: 'plug' }
 ];
 
 test('the table explorer welcome content offers the connection actions with the shared labels and icons', () => {
@@ -109,30 +114,34 @@ test('the table explorer welcome content offers the connection actions with the 
     }
 });
 
-test('the search sidebar offers the connection actions with the same labels and icons', () => {
-    const source = fs.readFileSync(path.join(SRC, 'searchViewProvider.ts'), 'utf8');
-    for (const action of CONNECTION_ACTIONS) {
-        assert.ok(
-            source.includes(`${'${'}icon('${action.codicon}')}${action.label}<`),
-            `the sidebar button for "${action.label}" changed`
-        );
+test('the table explorer title bar offers every connection action as an icon', () => {
+    const commands: Array<{ command: string; title: string; icon?: string }> = manifest.contributes.commands;
+    const titleMenu: Array<{ command: string; when: string; group: string }> = manifest.contributes.menus['view/title'];
+    for (const action of TITLE_BAR_ACTIONS) {
+        const entry = titleMenu.find(m => m.command === action.command && m.when === 'view == postgresTableExplorer');
+        assert.ok(entry, `"${action.label}" is missing from the Tables title bar`);
+        assert.match(entry.group, /^navigation/, `"${action.label}" would hide in the overflow menu`);
+        const contributed = commands.find(c => c.command === action.command);
+        assert.ok(contributed, `${action.command} is not contributed`);
+        assert.equal(contributed.icon, `$(${action.codicon})`, `"${action.label}" has no icon, so the title bar shows nothing`);
+        assert.equal(contributed.title, action.label, `"${action.command}" uses a second wording`);
     }
-    assert.ok(source.includes(`${'${'}icon('plug')}Disconnect<`), 'the disconnect button changed');
+});
+
+test('the search sidebar says nothing about connections', () => {
+    const source = fs.readFileSync(path.join(SRC, 'searchViewProvider.ts'), 'utf8');
+    for (const marker of ['selectConnection', 'newConnection', 'Select Connection', 'New Connection', 'Disconnect', 'postgresQueryBuilder.connect']) {
+        assert.ok(!source.includes(marker), `the search sidebar still mentions ${marker}`);
+    }
 });
 
 test('the select connection action carries one single label on every surface', () => {
-    const surfaces = [
-        path.join(SRC, 'searchViewProvider.ts'),
-        path.join(SRC, 'webview', 'tableView.js')
-    ];
-    for (const file of surfaces) {
-        const content = fs.readFileSync(file, 'utf8');
-        assert.ok(content.includes('Select Connection'), `${path.basename(file)} lost the shared label`);
-        assert.ok(
-            !/Select connection/.test(content),
-            `${path.basename(file)} still uses a differently written label`
-        );
-    }
+    const content = fs.readFileSync(path.join(SRC, 'webview', 'tableView.js'), 'utf8');
+    assert.ok(content.includes('Select Connection'), 'the Data Viewer lost the shared label');
+    assert.ok(
+        !/Select connection/.test(content),
+        'the Data Viewer still uses a differently written label'
+    );
 });
 
 /**

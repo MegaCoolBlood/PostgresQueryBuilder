@@ -34,12 +34,6 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
             if (message.type === 'filter') {
                 this._filterText = message.value;
                 this._onDidChangeFilter.fire(this._filterText);
-            } else if (message.type === 'selectConnection') {
-                vscode.commands.executeCommand('postgresQueryBuilder.selectConnection');
-            } else if (message.type === 'newConnection') {
-                vscode.commands.executeCommand('postgresQueryBuilder.connect');
-            } else if (message.type === 'disconnect') {
-                vscode.commands.executeCommand('postgresQueryBuilder.disconnect');
             } else if (message.type === 'manageMappings') {
                 this._onDidRequestManageMappings.fire();
             }
@@ -68,11 +62,6 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
         }`;
         const body = `
     <div class="button-row">
-        <button class="btn btn-primary" id="selectConnBtn" title="Choose an existing saved connection">${icon('database')}Select Connection</button>
-        <button class="btn" id="newConnBtn" title="Create a new connection">${icon('add')}New Connection</button>
-        <button class="btn" id="disconnectBtn" title="Disconnect">${icon('plug')}Disconnect</button>
-    </div>
-    <div class="button-row">
         <button class="btn" id="manageMappingsBtn" title="Open the manager for all custom column mappings (bulk share/move/delete)">${icon('goto')}Manage All Mappings</button>
     </div>
     <div class="search-container">
@@ -88,15 +77,6 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
             debounceTimer = setTimeout(() => {
                 vscode.postMessage({ type: 'filter', value: input.value });
             }, 200);
-        });
-        document.getElementById('selectConnBtn').addEventListener('click', () => {
-            vscode.postMessage({ type: 'selectConnection' });
-        });
-        document.getElementById('newConnBtn').addEventListener('click', () => {
-            vscode.postMessage({ type: 'newConnection' });
-        });
-        document.getElementById('disconnectBtn').addEventListener('click', () => {
-            vscode.postMessage({ type: 'disconnect' });
         });
         document.getElementById('manageMappingsBtn').addEventListener('click', () => {
             vscode.postMessage({ type: 'manageMappings' });

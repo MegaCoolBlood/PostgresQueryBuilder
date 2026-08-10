@@ -149,10 +149,15 @@ and the quick picks in [src/connectionManager.ts](src/connectionManager.ts):
 
 | Command | Label | Icon |
 | --- | --- | --- |
-| `postgresQueryBuilder.selectConnection` | `Select Connection` | `database` / `$(database)` |
-| `postgresQueryBuilder.connect` | `New Connection` | `add` / `$(add)` |
-| `postgresQueryBuilder.disconnect` | `Disconnect` | `plug` |
+| `postgresQueryBuilder.selectConnection` | `Select Connection` | `$(database)` |
+| `postgresQueryBuilder.connect` | `New Connection` | `$(add)` |
+| `postgresQueryBuilder.disconnect` | `Disconnect` | `plug` / `$(plug)` |
 | `postgresQueryBuilder.saveQueryFromEditor` | `Bookmark Query` | `star` / `$(add)` |
+
+**Connections belong to the Tables view.** Selecting, opening and closing a
+connection is offered in exactly two places: the title bar of the *Tables* view
+and its welcome content. No other view repeats these actions — a sidebar that is
+about something else must not carry connection buttons.
 
 **Bookmarked queries.** The feature is named *Bookmarked Queries* in every
 user-visible string: the noun is `Bookmarked Query` / `Bookmarked Queries`, the

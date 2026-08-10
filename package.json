@@ -57,13 +57,15 @@
     "commands": [
       {
         "command": "postgresQueryBuilder.connect",
-        "title": "Connect to PostgreSQL Database",
-        "category": "PostgreSQL Query Builder"
+        "title": "New Connection",
+        "category": "PostgreSQL Query Builder",
+        "icon": "$(add)"
       },
       {
         "command": "postgresQueryBuilder.disconnect",
-        "title": "Disconnect from PostgreSQL Database",
-        "category": "PostgreSQL Query Builder"
+        "title": "Disconnect",
+        "category": "PostgreSQL Query Builder",
+        "icon": "$(plug)"
       },
       {
         "command": "postgresQueryBuilder.refreshExplorer",
@@ -85,7 +87,8 @@
       {
         "command": "postgresQueryBuilder.selectConnection",
         "title": "Select Connection",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Builder",
+        "icon": "$(database)"
       },
       {
         "command": "postgresQueryBuilder.openSqlEditor",
@@ -185,19 +188,29 @@
     "menus": {
       "view/title": [
         {
-          "command": "postgresQueryBuilder.refreshExplorer",
+          "command": "postgresQueryBuilder.selectConnection",
           "when": "view == postgresTableExplorer",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "postgresQueryBuilder.connect",
+          "when": "view == postgresTableExplorer",
+          "group": "navigation@2"
+        },
+        {
+          "command": "postgresQueryBuilder.disconnect",
+          "when": "view == postgresTableExplorer",
+          "group": "navigation@3"
         },
         {
           "command": "postgresQueryBuilder.editSearchPath",
           "when": "view == postgresTableExplorer",
-          "group": "navigation"
+          "group": "navigation@4"
         },
         {
-          "command": "postgresQueryBuilder.selectConnection",
+          "command": "postgresQueryBuilder.refreshExplorer",
           "when": "view == postgresTableExplorer",
-          "group": "navigation"
+          "group": "navigation@5"
         },
         {
           "command": "postgresQueryBuilder.saveQueryFromEditor",

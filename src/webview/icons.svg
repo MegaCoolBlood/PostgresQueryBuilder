@@ -24,7 +24,6 @@
     <symbol id="icon-goto" viewBox="0 0 16 16"><path d="M8 3.5H3.5v9h9V8"/><path d="M9.5 3.5h3v3"/><path d="M12.5 3.5L7.5 8.5"/></symbol>
     <symbol id="icon-arrow-down" viewBox="0 0 16 16"><path d="M8 3v8"/><path d="M4.5 7.5L8 11l3.5-3.5"/></symbol>
     <symbol id="icon-arrow-down-line" viewBox="0 0 16 16"><path d="M8 2.5v6.5"/><path d="M5 6L8 9l3-3"/><path d="M3.5 12.5h9"/></symbol>
-    <symbol id="icon-database" viewBox="0 0 16 16"><path d="M3 4c0-1 2.2-1.7 5-1.7S13 3 13 4v8c0 1-2.2 1.7-5 1.7S3 13 3 12z"/><path d="M3 4c0 1 2.2 1.7 5 1.7S13 5 13 4"/></symbol>
     <symbol id="icon-copy" viewBox="0 0 16 16"><path d="M5.5 5.5h7v8h-7z"/><path d="M10.5 5.5V2.5h-7v8h2"/></symbol>
     <symbol id="icon-plug" viewBox="0 0 16 16"><path d="M6 2v3M10 2v3"/><path d="M4.5 5h7v2.5a3.5 3.5 0 01-7 0z"/><path d="M8 11v3"/></symbol>
     <symbol id="icon-params" viewBox="0 0 16 16"><path d="M2.5 5h6M11.5 5h2M2.5 11h2M7.5 11h6"/><circle cx="10" cy="5" r="1.5"/><circle cx="6" cy="11" r="1.5"/></symbol>
