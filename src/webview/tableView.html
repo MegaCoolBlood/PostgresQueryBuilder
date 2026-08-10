@@ -51,11 +51,16 @@
             <button class="btn btn-icon" id="queryFormatBtn" title="Format SQL"><svg class="ico" aria-hidden="true"><use href="#icon-format"/></svg></button>
             <button class="btn btn-primary" id="queryRunBtn" title="Run query (Ctrl+Enter)"><svg class="ico" aria-hidden="true"><use href="#icon-run"/></svg>Run</button>
         </div>
-        <div class="table-wrapper" id="tableWrapper">
-            <table id="dataTable">
-                <thead id="tableHead"></thead>
-                <tbody id="tableBody"></tbody>
-            </table>
+        <div class="table-area">
+            <div class="table-wrapper" id="tableWrapper">
+                <table id="dataTable">
+                    <thead id="tableHead"></thead>
+                    <tbody id="tableBody"></tbody>
+                </table>
+            </div>
+            <div class="data-loading-overlay" id="dataLoadingOverlay" role="status" aria-label="Loading data">
+                <span class="spinner spinner-lg"></span>
+            </div>
         </div>
         <div class="status-bar" id="statusBar">
             <span id="changeCount">No pending changes</span>

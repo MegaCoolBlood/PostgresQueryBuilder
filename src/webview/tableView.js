@@ -1571,15 +1571,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const contextMenu = document.getElementById('contextMenu');
     const contextMenuItems = document.getElementById('contextMenuItems');
     const dataLoading = document.getElementById('dataLoading');
+    const dataLoadingOverlay = document.getElementById('dataLoadingOverlay');
     const metaLoading = document.getElementById('metaLoading');
     const connectionInfo = document.getElementById('connectionInfo');
     const sqlDialogConnection = document.getElementById('sqlDialogConnection');
     const sqlDialogWarning = document.getElementById('sqlDialogWarning');
 
+    // The overlay only veils the rows: it starts below the pinned header and
+    // filter rows so a filter can still be typed while the data is on its way.
+    function setDataLoading(active) {
+        dataLoading.classList.toggle('hidden', !active);
+        if (!dataLoadingOverlay) return;
+        if (active) {
+            const head = Math.round(tableHead.getBoundingClientRect().height);
+            dataLoadingOverlay.style.setProperty('--data-overlay-top', head + 'px');
+        }
+        dataLoadingOverlay.classList.toggle('visible', active);
+    }
+
     // Show data loading spinner. The actual initial load is kicked off from
     // handleInit() once the extension tells us whether this is a normal table
     // view or a read-only custom query.
-    dataLoading.classList.remove('hidden');
+    setDataLoading(true);
 
     // Set the query bar text, pretty-printed as a formatted multi-line SELECT,
     // and resize the textarea to fit.
@@ -1929,7 +1942,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 updateRowCount();
                 break;
             case 'loadingFinished':
-                dataLoading.classList.add('hidden');
+                setDataLoading(false);
                 break;
             case 'primaryKeysLoaded':
                 handlePrimaryKeysLoaded(msg);
@@ -2121,7 +2134,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // A full last batch means there may be more rows to page through.
         moreAvailable = !userPaged && !allLoaded && incoming.length >= PAGE_SIZE;
         lastQueryDurationMs = (typeof msg.durationMs === 'number') ? msg.durationMs : null;
-        dataLoading.classList.add('hidden');
+        setDataLoading(false);
         updateRowCount();
         renderTable();
     }
@@ -2270,7 +2283,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         allLoaded = false;
         moreAvailable = false;
         const sql = userPaged ? raw : (currentSql + ' LIMIT ' + PAGE_SIZE + ' OFFSET 0');
-        dataLoading.classList.remove('hidden');
+        setDataLoading(true);
         // An exact row count is cheap and expected for the plain table view, but
         // can be very expensive for an arbitrary query — there it is only
         // counted when the user asks for it.
@@ -2628,6 +2641,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const height = headerRow.getBoundingClientRect().height;
         if (height > 0) {
             tableHead.style.setProperty('--header-row-height', `${Math.round(height)}px`);
+        }
+        // The header can appear or rewrap while a load is still running.
+        if (dataLoadingOverlay && dataLoadingOverlay.classList.contains('visible')) {
+            setDataLoading(true);
         }
     }
 
@@ -3448,7 +3465,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function postLoadRows(sql, append) {
-        dataLoading.classList.remove('hidden');
+        setDataLoading(true);
         vscode.postMessage({ command: 'loadRows', sql, baseSql: currentSql, append: !!append });
     }
 
@@ -3570,7 +3587,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function showError(text) {
         // A failed query leaves the grid in its loading state; release it so the
         // view does not keep spinning forever.
-        dataLoading.classList.add('hidden');
+        setDataLoading(false);
         changeCount.textContent = `Error: ${text}`;
         changeCount.classList.add('status-error');
         setTimeout(() => {

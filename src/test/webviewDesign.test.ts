@@ -130,6 +130,53 @@ test('the sprite contains no unused symbol', () => {
     assert.deepEqual(unused, [], `unused sprite symbols: ${unused.join(', ')}`);
 });
 
+// ===== The loading overlay must never swallow the filter row =====
+
+const VIEW_HTML = fs.readFileSync(path.join(WEBVIEW, 'tableView.html'), 'utf8');
+const VIEW_CSS = fs.readFileSync(path.join(WEBVIEW, 'tableView.css'), 'utf8');
+const VIEW_JS = fs.readFileSync(path.join(WEBVIEW, 'tableView.js'), 'utf8');
+
+test('the loading overlay sits next to the scrolling table inside one positioned area', () => {
+    const area = VIEW_HTML.match(/<div class="table-area">([\s\S]*?)<\/div>\s*<div class="status-bar"/);
+    assert.ok(area, 'the table is no longer wrapped in a positioned .table-area');
+    assert.ok(area[1].includes('id="tableWrapper"'), 'the scrolling table left the .table-area');
+    assert.ok(area[1].includes('id="dataLoadingOverlay"'), 'the overlay left the .table-area');
+    assert.match(VIEW_CSS, /\.table-area\s*\{[^}]*position:\s*relative/);
+});
+
+test('the overlay starts below the pinned header so the filters stay reachable', () => {
+    const rule = VIEW_CSS.match(/\.data-loading-overlay\s*\{([^}]*)\}/);
+    assert.ok(rule, 'tableView.css has no .data-loading-overlay rule');
+    assert.match(rule[1], /position:\s*absolute/);
+    assert.match(rule[1], /top:\s*var\(--data-overlay-top/);
+    assert.match(rule[1], /display:\s*none/);
+    assert.match(VIEW_CSS, /\.data-loading-overlay\.visible\s*\{\s*display:\s*flex/);
+    assert.ok(
+        VIEW_JS.includes("dataLoadingOverlay.style.setProperty('--data-overlay-top'"),
+        'the offset is no longer measured from the header'
+    );
+});
+
+test('the overlay spinner is bigger than the inline one', () => {
+    const small = VIEW_CSS.match(/\.spinner\s*\{([^}]*)\}/);
+    const large = VIEW_CSS.match(/\.spinner-lg\s*\{([^}]*)\}/);
+    assert.ok(small && large, 'tableView.css lost one of the spinner rules');
+    const px = (block: string, prop: string) => Number((block.match(new RegExp(prop + ':\\s*(\\d+)px')) || [])[1]);
+    assert.ok(px(large[1], 'width') > px(small[1], 'width'), 'the overlay spinner is not larger');
+    assert.ok(px(large[1], 'border-width') > 2, 'the overlay spinner is not thicker');
+    assert.ok(VIEW_HTML.includes('<span class="spinner spinner-lg"></span>'));
+});
+
+test('every load path goes through the shared loading switch', () => {
+    assert.equal(
+        /dataLoading\.classList\.(add|remove)\(/.test(VIEW_JS),
+        false,
+        'a load path still toggles the small indicator on its own, so the overlay would stay behind'
+    );
+    assert.ok((VIEW_JS.match(/setDataLoading\(true\)/g) || []).length >= 3);
+    assert.ok((VIEW_JS.match(/setDataLoading\(false\)/g) || []).length >= 3);
+});
+
 // ===== The style guide must keep describing the code it documents =====
 
 const STYLEGUIDE = fs.readFileSync(path.join(ROOT, 'STYLEGUIDE.md'), 'utf8');

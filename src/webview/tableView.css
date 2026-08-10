@@ -57,6 +57,14 @@ body {
     animation: spin 0.8s linear infinite;
 }
 
+.spinner-lg {
+    width: 44px;
+    height: 44px;
+    border-width: 4px;
+    border-color: var(--c-accent);
+    border-top-color: transparent;
+}
+
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
@@ -231,9 +239,36 @@ body {
 /* Buttons: the `.btn` family lives in shared.css. */
 
 /* Table */
+.table-area {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-height: 0;
+}
+
 .table-wrapper {
     flex: 1;
     overflow: auto;
+}
+
+/* Veils the rows while a query runs. It starts below the pinned header and
+   filter rows, so a filter can still be typed while the data is on its way. */
+.data-loading-overlay {
+    display: none;
+    position: absolute;
+    top: var(--data-overlay-top, 0px);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    align-items: center;
+    justify-content: center;
+    z-index: var(--z-dropdown);
+    background: var(--c-bg);
+    background: color-mix(in srgb, var(--c-bg) 65%, transparent);
+}
+
+.data-loading-overlay.visible {
+    display: flex;
 }
 
 table {
