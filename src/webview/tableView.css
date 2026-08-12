@@ -1154,6 +1154,12 @@ textarea.sql-dialog-content {
     white-space: nowrap;
 }
 
+/* An icon-only action keeps its square shape instead of stretching to the
+   width of the labelled buttons next to it. */
+.record-row-actions .btn-icon {
+    align-self: flex-end;
+}
+
 .btn-view-record {
     background: none;
     border: none;

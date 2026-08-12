@@ -1,9 +1,11 @@
 import './helpers/vscodeMock';
-import { vscodeStub } from './helpers/vscodeMock';
+import { vscodeStub, fireDidSaveTextDocument, fireDidCloseTextDocument } from './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
-import { buildCustomResultColumns, buildColumnProbeSql, TableWebViewManager } from '../tableWebView';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import { buildCustomResultColumns, buildColumnProbeSql, buildCellEditorFileName, cellEditorFileExtension, TableWebViewManager } from '../tableWebView';
 import { getIconSprite, getSharedStyles } from '../webviewAssets';
 
 test('buildCustomResultColumns resolves type names and column comments', () => {
@@ -153,9 +155,11 @@ function createFakePanel() {
 function createManager() {
     const globalStateStore: Record<string, any> = {};
     const executed: string[] = [];
+    const storagePath = fs.mkdtempSync(path.join(os.tmpdir(), 'pqb-storage-'));
     const context: any = {
         subscriptions: [],
         extensionPath: EXTENSION_PATH,
+        globalStorageUri: { fsPath: storagePath, path: storagePath },
         globalState: {
             get: (key: string, def?: any) => (key in globalStateStore ? globalStateStore[key] : def),
             update: (key: string, value: any) => { globalStateStore[key] = value; return Promise.resolve(); }
@@ -205,12 +209,12 @@ function createManager() {
     const manager = new TableWebViewManager(
         context, connectionManager, columnMappingManager, permanentConstraintManager, undefined, savedQueryStore
     );
-    return { manager, globalStateStore, executed, savedQueryStore };
+    return { manager, globalStateStore, executed, savedQueryStore, storagePath };
 }
 
 /** Open a query panel and return it together with its message callback. */
 async function openCustomQueryPanel(savedQuery?: any) {
-    const { manager, globalStateStore, executed, savedQueryStore } = createManager();
+    const { manager, globalStateStore, executed, savedQueryStore, storagePath } = createManager();
     const panel = createFakePanel();
     const originalCreate = vscodeStub.window.createWebviewPanel;
     vscodeStub.window.createWebviewPanel = () => panel;
@@ -219,7 +223,7 @@ async function openCustomQueryPanel(savedQuery?: any) {
     } finally {
         vscodeStub.window.createWebviewPanel = originalCreate;
     }
-    return { panel, send: (m: any) => panel.state.onMessage(m), globalStateStore, executed, savedQueryStore };
+    return { panel, send: (m: any) => panel.state.onMessage(m), globalStateStore, executed, savedQueryStore, storagePath };
 }
 
 test('query panel: Browse opens the folder dialog and reports the choice', async () => {
@@ -474,4 +478,100 @@ test('query panel: parameter values are cached and mark the query as used', asyn
     await send({ command: 'saveSavedQueryValues', id: 'a', values: { from: '1' } });
     assert.deepEqual(savedQueryStore.values['a'], { from: '1' });
     assert.deepEqual(savedQueryStore.touched, ['a']);
+});
+
+// ===== A cell value opened in an editor tab =====
+
+test('cellEditorFileExtension picks the language of the column type', () => {
+    assert.equal(cellEditorFileExtension('json'), 'json');
+    assert.equal(cellEditorFileExtension('jsonb'), 'json');
+    assert.equal(cellEditorFileExtension('xml'), 'xml');
+    assert.equal(cellEditorFileExtension('text'), 'txt');
+    assert.equal(cellEditorFileExtension(''), 'txt');
+    assert.equal(cellEditorFileExtension(undefined as any), 'txt');
+});
+
+test('buildCellEditorFileName names the file after table and column', () => {
+    assert.equal(buildCellEditorFileName('orders', 'note', 'text'), 'orders.note.txt');
+    assert.equal(buildCellEditorFileName('orders', 'payload', 'jsonb'), 'orders.payload.json');
+});
+
+test('buildCellEditorFileName cannot be steered out of its folder', () => {
+    const name = buildCellEditorFileName('..', '../../etc/passwd', 'text');
+    assert.equal(name.includes('/'), false);
+    assert.equal(name.includes('\\'), false);
+    assert.equal(name.includes('..'), false);
+    assert.equal(name, 'result.etc_passwd.txt');
+});
+
+test('buildCellEditorFileName falls back when table or column has no usable name', () => {
+    assert.equal(buildCellEditorFileName('', '', 'text'), 'result.value.txt');
+});
+
+/** Open a cell in an editor tab and return the document the stub handed out. */
+async function openCellEditor(message: any = {}) {
+    const session = await openCustomQueryPanel();
+    const opened: any[] = [];
+    const originalOpen = vscodeStub.workspace.openTextDocument;
+    vscodeStub.workspace.openTextDocument = (uri: any) => {
+        const doc = { uri, getText: () => fs.readFileSync(uri.fsPath, 'utf8') };
+        opened.push(doc);
+        return Promise.resolve(doc);
+    };
+    try {
+        await session.send({
+            command: 'openCellInEditor',
+            rowIdx: 2,
+            column: 'note',
+            dataType: 'text',
+            value: 'line 1\nline 2',
+            ...message
+        });
+    } finally {
+        vscodeStub.workspace.openTextDocument = originalOpen;
+    }
+    return { ...session, doc: opened[0] };
+}
+
+test('query panel: opening a cell writes its value to a file and shows it', async () => {
+    const { doc, storagePath } = await openCellEditor();
+    assert.ok(doc, 'expected a document to be opened');
+    assert.equal(fs.readFileSync(doc.uri.fsPath, 'utf8'), 'line 1\nline 2');
+    assert.equal(path.basename(doc.uri.fsPath), 'result.note.txt');
+    assert.ok(doc.uri.fsPath.startsWith(storagePath), 'the scratch file must live in the extension storage');
+});
+
+test('query panel: saving the opened file writes the value back into the cell', async () => {
+    const { panel, doc } = await openCellEditor();
+    fs.writeFileSync(doc.uri.fsPath, 'edited in the editor', 'utf8');
+    fireDidSaveTextDocument(doc);
+
+    const msg = panel.posted.filter((m: any) => m.command === 'cellEditorValue').pop();
+    assert.ok(msg, 'expected cellEditorValue to be posted back');
+    assert.equal(msg.rowIdx, 2);
+    assert.equal(msg.column, 'note');
+    assert.equal(msg.value, 'edited in the editor');
+});
+
+test('query panel: a read-only cell is opened but never written back', async () => {
+    const { panel, doc } = await openCellEditor({ readOnly: true });
+    fs.writeFileSync(doc.uri.fsPath, 'edited anyway', 'utf8');
+    fireDidSaveTextDocument(doc);
+    assert.equal(panel.posted.some((m: any) => m.command === 'cellEditorValue'), false);
+});
+
+test('query panel: closing the tab removes the file and stops the write-back', async () => {
+    const { panel, doc } = await openCellEditor();
+    fireDidCloseTextDocument(doc);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(fs.existsSync(doc.uri.fsPath), false, 'the scratch file must be gone');
+
+    fireDidSaveTextDocument({ uri: doc.uri, getText: () => 'late' });
+    assert.equal(panel.posted.some((m: any) => m.command === 'cellEditorValue'), false);
+});
+
+test('query panel: saving a file that belongs to no cell posts nothing', async () => {
+    const { panel } = await openCellEditor();
+    fireDidSaveTextDocument({ uri: { fsPath: path.join(os.tmpdir(), 'unrelated.txt') }, getText: () => 'x' });
+    assert.equal(panel.posted.some((m: any) => m.command === 'cellEditorValue'), false);
 });

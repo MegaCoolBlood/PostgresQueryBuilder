@@ -55,6 +55,37 @@ class DocumentDropEdit {
     constructor(public insertText: any) {}
 }
 
+/** Listeners registered for the document events the stub can replay. */
+const documentListeners = {
+    save: [] as Array<(doc: any) => void>,
+    close: [] as Array<(doc: any) => void>
+};
+
+function registerDocumentListener(bucket: Array<(doc: any) => void>, listener: (doc: any) => void) {
+    bucket.push(listener);
+    return {
+        dispose() {
+            const i = bucket.indexOf(listener);
+            if (i >= 0) {
+                bucket.splice(i, 1);
+            }
+        }
+    };
+}
+
+/** Let a test replay a document save/close to everything that subscribed. */
+export function fireDidSaveTextDocument(doc: any): void {
+    for (const l of [...documentListeners.save]) {
+        l(doc);
+    }
+}
+
+export function fireDidCloseTextDocument(doc: any): void {
+    for (const l of [...documentListeners.close]) {
+        l(doc);
+    }
+}
+
 const vscodeStub = {
     EventEmitter,
     ThemeIcon,
@@ -67,7 +98,8 @@ const vscodeStub = {
         textDocuments: [] as any[],
         onDidChangeConfiguration: (_listener: any) => ({ dispose() {} }),
         onDidChangeWorkspaceFolders: (_listener: any) => ({ dispose() {} }),
-        onDidSaveTextDocument: (_listener: any) => ({ dispose() {} }),
+        onDidSaveTextDocument: (listener: any) => registerDocumentListener(documentListeners.save, listener),
+        onDidCloseTextDocument: (listener: any) => registerDocumentListener(documentListeners.close, listener),
         openTextDocument: (uri: any): Promise<any> => Promise.resolve({ uri, getText: () => '' }),
         getConfiguration: (_section?: string) => ({
             get<T>(_key: string, defaultValue?: T): T {

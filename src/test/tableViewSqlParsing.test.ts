@@ -22,6 +22,7 @@ const {
     buildConstraintOrderBy,
     isFreshRowLoad,
     recordFieldReadonlyAttr,
+    cellEditorTargetState,
     buildConnectionBadge,
     canApplyQueryFilters,
     canManageTableMetadata,
@@ -572,6 +573,22 @@ test('defaultInsertTableName keeps a known table reference', () => {
 test('defaultInsertTableName falls back when there is no source table', () => {
     assert.equal(defaultInsertTableName(''), 'exported_data');
     assert.equal(defaultInsertTableName(undefined), 'exported_data');
+});
+
+// ===== a cell value edited in an editor tab =====
+
+test('cellEditorTargetState applies a saved value to an editable cell', () => {
+    assert.equal(cellEditorTargetState(true, true, true), 'apply');
+});
+
+test('cellEditorTargetState reports a cell that is gone as stale', () => {
+    assert.equal(cellEditorTargetState(false, true, true), 'stale');
+    assert.equal(cellEditorTargetState(true, false, true), 'stale');
+    assert.equal(cellEditorTargetState(false, false, false), 'stale');
+});
+
+test('cellEditorTargetState refuses to write back into a read-only cell', () => {
+    assert.equal(cellEditorTargetState(true, true, false), 'readonly');
 });
 
 

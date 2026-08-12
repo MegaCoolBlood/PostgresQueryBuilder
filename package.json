@@ -2,7 +2,7 @@
   "name": "postgres-query-builder",
   "displayName": "PostgreSQL Query Builder",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "publisher": "postgres-query-builder",
   "repository": {
     "type": "git",

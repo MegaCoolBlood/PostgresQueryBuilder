@@ -118,6 +118,45 @@ export function buildColumnProbeSql(singleStatement: string): string | null {
     return `SELECT * FROM (${trimmed}) AS _pqb_cols LIMIT 0`;
 }
 
+/**
+ * File extension for the scratch file a single cell value is opened in, so the
+ * editor picks the matching language for JSON and XML columns and falls back to
+ * plain text for everything else.
+ */
+export function cellEditorFileExtension(dataType: string): string {
+    const type = String(dataType ?? '').toLowerCase();
+    if (type.includes('json')) {
+        return 'json';
+    }
+    if (type.includes('xml')) {
+        return 'xml';
+    }
+    return 'txt';
+}
+
+/**
+ * Name of the scratch file a single cell value is opened in. Table and column
+ * come from the database, so every character that could steer the path
+ * elsewhere is replaced — the result is always a plain file name.
+ */
+export function buildCellEditorFileName(table: string, column: string, dataType: string): string {
+    const safe = (part: string, fallback: string): string => {
+        const cleaned = String(part ?? '')
+            .replace(/[^A-Za-z0-9_-]+/g, '_')
+            .replace(/^_+|_+$/g, '')
+            .slice(0, 40);
+        return cleaned || fallback;
+    };
+    return `${safe(table, 'result')}.${safe(column, 'value')}.${cellEditorFileExtension(dataType)}`;
+}
+
+/** One cell value currently open in an editor tab. */
+interface CellEditorLink {
+    sessionId: string;
+    rowIdx: number;
+    column: string;
+}
+
 export class TableWebViewManager {
     private sessions: Map<string, PanelSession> = new Map();
     private pendingFilters: Map<string, { column: string; value: string; conditions?: any[] }> = new Map();
@@ -129,6 +168,9 @@ export class TableWebViewManager {
     private savedQueryStore?: SavedQueryStore;
     private modifyHistoryStore?: ModifyHistoryStore;
     private querySessionCounter = 0;
+    /** Cell values currently open in an editor tab, keyed by scratch file path. */
+    private cellEditors: Map<string, CellEditorLink> = new Map();
+    private cellEditorCounter = 0;
 
     constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager, columnMappingManager: ColumnMappingManager, permanentConstraintManager: PermanentConstraintManager, modifyHistoryStore?: ModifyHistoryStore, savedQueryStore?: SavedQueryStore) {
         this.context = context;
@@ -149,6 +191,13 @@ export class TableWebViewManager {
                 this.savedQueryStore.onDidChange(() => this.broadcastSavedQueries())
             );
         }
+
+        // A cell opened in an editor tab is written back to its panel on save,
+        // and its scratch file is removed once the tab is closed.
+        context.subscriptions.push(
+            vscode.workspace.onDidSaveTextDocument((doc) => this.pushCellEditorValue(doc)),
+            vscode.workspace.onDidCloseTextDocument((doc) => this.releaseCellEditor(doc))
+        );
     }
 
     private broadcastSavedQueries(): void {
@@ -362,7 +411,8 @@ export class TableWebViewManager {
         saveExportDefaults: this.handleSaveExportDefaults,
         exportData: this.handleExportData,
         selectConnection: this.handleSelectConnection,
-        validateValue: this.handleValidateValue
+        validateValue: this.handleValidateValue,
+        openCellInEditor: this.handleOpenCellInEditor
     };
 
     /**
@@ -603,6 +653,70 @@ export class TableWebViewManager {
             valid: result.valid,
             reason: (result as { reason?: string }).reason
         });
+    }
+
+    /**
+     * Open a single cell value in an editor tab, so a long text, a JSON
+     * document or an XML fragment can be read and edited with the full editor
+     * instead of a grid cell. The value is written to a scratch file inside the
+     * extension's storage; saving that file writes the value back into the cell
+     * as a pending change, closing the tab removes the file.
+     */
+    private async handleOpenCellInEditor(ctx: MessageContext): Promise<void> {
+        const { session, message } = ctx;
+        const column = String(message.column ?? '');
+        const rowIdx = Number(message.rowIdx);
+        const text = typeof message.value === 'string' ? message.value : '';
+
+        const dir = path.join(this.context.globalStorageUri.fsPath, 'cell-edits', String(++this.cellEditorCounter));
+        await fs.promises.mkdir(dir, { recursive: true });
+        const filePath = path.join(dir, buildCellEditorFileName(session.table, column, String(message.dataType ?? '')));
+        await fs.promises.writeFile(filePath, text, 'utf8');
+
+        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+        await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+
+        if (message.readOnly || !Number.isInteger(rowIdx) || rowIdx < 0) {
+            vscode.window.setStatusBarMessage(`${column} cannot be edited here — changes are not written back.`, 6000);
+            return;
+        }
+        this.cellEditors.set(this.cellEditorKey(filePath), { sessionId: session.id, rowIdx, column });
+        vscode.window.setStatusBarMessage(`Save this file to write the value back into "${column}".`, 6000);
+    }
+
+    /** Windows paths differ only in case, so the lookup key is normalised. */
+    private cellEditorKey(fsPath: string): string {
+        const normalised = path.normalize(fsPath);
+        return process.platform === 'win32' ? normalised.toLowerCase() : normalised;
+    }
+
+    /** Send the saved content of a cell scratch file back to its panel. */
+    private pushCellEditorValue(doc: vscode.TextDocument): void {
+        const link = this.cellEditors.get(this.cellEditorKey(doc.uri.fsPath));
+        if (!link) {
+            return;
+        }
+        const session = this.sessions.get(link.sessionId);
+        if (!session) {
+            this.cellEditors.delete(this.cellEditorKey(doc.uri.fsPath));
+            return;
+        }
+        this.post(session, {
+            command: 'cellEditorValue',
+            rowIdx: link.rowIdx,
+            column: link.column,
+            value: doc.getText()
+        });
+    }
+
+    /** Drop a closed cell editor and delete the scratch file it worked on. */
+    private releaseCellEditor(doc: vscode.TextDocument): void {
+        const key = this.cellEditorKey(doc.uri.fsPath);
+        if (!this.cellEditors.delete(key)) {
+            return;
+        }
+        // Only ever the private per-cell folder this manager created.
+        fs.promises.rm(path.dirname(doc.uri.fsPath), { recursive: true, force: true }).catch(() => {});
     }
 
     /**

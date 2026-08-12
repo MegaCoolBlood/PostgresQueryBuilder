@@ -278,3 +278,23 @@ test('no button label ends in an ellipsis; the tree view welcome cannot render o
         assert.deepEqual(labels, [], `${path.basename(file)} has a button label ending in an ellipsis`);
     }
 });
+
+test('a cell can be opened in an editor from the grid and from the Single Record View', () => {
+    const script = fs.readFileSync(path.join(SRC, 'webview', 'tableView.js'), 'utf8');
+    const host = fs.readFileSync(path.join(SRC, 'tableWebView.ts'), 'utf8');
+
+    assert.ok(script.includes("label: 'Open Value in Editor'"), 'the cell context menu no longer offers the editor');
+    assert.ok(script.includes('record-editor-btn'), 'the Single Record View no longer offers the editor');
+    assert.ok(
+        script.includes('btn btn-sm btn-icon record-editor-btn'),
+        'the Single Record View editor button must stay an icon-only button'
+    );
+    assert.ok(
+        /icon\('edit'\) \+ '<\/button>'/.test(script),
+        'the Single Record View editor button must carry no text label'
+    );
+    assert.ok(script.includes("command: 'openCellInEditor'"), 'the webview no longer asks the host to open a cell');
+    assert.ok(host.includes('openCellInEditor: this.handleOpenCellInEditor'), 'the host no longer handles openCellInEditor');
+    assert.ok(script.includes("case 'cellEditorValue'"), 'the webview no longer consumes the saved value');
+    assert.ok(host.includes("command: 'cellEditorValue'"), 'the host no longer posts the saved value back');
+});

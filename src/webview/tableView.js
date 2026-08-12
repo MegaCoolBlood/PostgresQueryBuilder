@@ -998,6 +998,16 @@ function recordFieldReadonlyAttr(isDeleted, readOnly) {
     return (isDeleted || readOnly) ? 'readonly' : '';
 }
 
+// What to do with a value that comes back from an editor tab a cell was opened
+// in. The result may arrive long after the tab was opened, so the target cell
+// can have disappeared (data reloaded, column removed) or have become
+// non-editable in the meantime.
+function cellEditorTargetState(hasRow, hasColumn, isEditable) {
+    if (!hasRow || !hasColumn) return 'stale';
+    if (!isEditable) return 'readonly';
+    return 'apply';
+}
+
 // True when WHERE clauses can be merged into the current view's query and the
 // query re-run. The query bar always holds the SQL that produced the current
 // result, so this only requires a non-empty query.
@@ -2081,6 +2091,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'customMappingsLoaded':
                 handleCustomMappingsLoaded(msg);
                 break;
+            case 'cellEditorValue':
+                handleCellEditorValue(msg);
+                break;
             case 'savedQueriesLoaded':
                 handleSavedQueriesLoaded(msg);
                 break;
@@ -2820,6 +2833,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 label: 'View Full Record...',
                 action: () => {
                     openRecordDialog(parseInt(rowIdx));
+                }
+            });
+            items.push({
+                label: 'Open Value in Editor',
+                action: () => {
+                    openCellInEditor(parseInt(rowIdx), colName);
                 }
             });
             items.push({ separator: true });
@@ -4803,6 +4822,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const rowClass = 'record-row' + (isModified ? ' record-row-modified' : '');
 
             let actions = '';
+            actions += '<button class="btn btn-sm btn-icon record-editor-btn"' +
+                ' title="Open this value in an editor tab; saving there writes it back">' +
+                icon('edit') + '</button>';
             if (defaultMapping && !isNull) {
                 actions += '<button class="btn btn-sm record-fk-btn"' +
                     ' data-ref-schema="' + escapeAttr(defaultMapping.targetSchema) + '"' +
@@ -4920,7 +4942,59 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     });
                 });
             }
+
+            const editorBtn = rowEl.querySelector('.record-editor-btn');
+            if (editorBtn) {
+                editorBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    openCellInEditor(idx, colName);
+                });
+            }
         });
+    }
+
+    // Hand one cell value to the extension host, which opens it in an editor
+    // tab. Saving that tab posts the value back as `cellEditorValue`.
+    function openCellInEditor(rowIdx, colName) {
+        if (rowIdx == null || rowIdx < 0 || !allRows[rowIdx]) return;
+        const modKey = rowIdx + ':' + colName;
+        const value = modifiedCells.has(modKey) ? modifiedCells.get(modKey) : allRows[rowIdx][colName];
+        const colMeta = columns.find(c => c.name === colName);
+        vscode.postMessage({
+            command: 'openCellInEditor',
+            rowIdx: rowIdx,
+            column: colName,
+            dataType: colMeta ? (colMeta.dataType || '') : '',
+            value: cellToString(value),
+            readOnly: !isColumnEditable(colName) || deletedRows.has(rowIdx)
+        });
+    }
+
+    // A cell opened in an editor tab was saved: apply the text as a pending
+    // change, exactly as if it had been typed into the cell.
+    function handleCellEditorValue(msg) {
+        const idx = Number(msg.rowIdx);
+        const state = cellEditorTargetState(
+            !!allRows[idx],
+            columns.some(c => c.name === msg.column),
+            isColumnEditable(msg.column) && !deletedRows.has(idx)
+        );
+        if (state === 'stale') {
+            vscode.postMessage({
+                command: 'showError',
+                text: 'The edited cell is no longer part of the loaded result. Reload the data and open it again.'
+            });
+            return;
+        }
+        if (state === 'readonly') {
+            vscode.postMessage({ command: 'showError', text: `Column "${msg.column}" cannot be edited here.` });
+            return;
+        }
+        applyRecordEdit(idx, msg.column, msg.value);
+        renderBody();
+        if (recordDialogRowIdx === idx) {
+            renderRecordDialog({ preserveScroll: true });
+        }
     }
 
     // Mirrors handleCellEdit: writes to modifiedCells / clears it if equal to original
@@ -5366,6 +5440,7 @@ if (typeof module !== 'undefined' && module.exports) {
         reorderSelectColumns,
         isFreshRowLoad,
         recordFieldReadonlyAttr,
+        cellEditorTargetState,
         buildConnectionBadge,
         canApplyQueryFilters,
         canManageTableMetadata,

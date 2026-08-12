@@ -137,11 +137,25 @@ carry `.btn`.
 These combine: a close cross is `btn btn-ghost btn-icon`, a row delete is
 `btn btn-danger btn-sm btn-icon`.
 
-**Labels.** Icon plus a *short* label — `Insert`, `Save`, `Discard`,
-`Constraints`, `Export`, `More`, `All`. The full sentence goes in `title`. Never
-put a leading `+`, `▶` or `☆` in a label; that is the icon's job. Prefer `…`
-over `...`, but a **button label never ends in an ellipsis** — reserve `…` for
-status text such as `Counting rows…`.
+**Icon first, label only where it is needed.** A button carries its icon alone
+(`btn-icon`) and states its meaning in `title`; a text label is the exception
+that has to be justified, not the default. Add one only when the icon cannot
+carry the action on its own:
+
+- the primary action of a surface or dialog footer (*Run*, *Connect*, *Save*),
+- an action whose icon is ambiguous next to its neighbours (*Insert* vs.
+  *Duplicate*),
+- a surface where the buttons stand alone with nothing to compare them to, such
+  as the welcome content of a view.
+
+Every icon-only button MUST have a `title` that names the action in full — that
+tooltip is the only thing standing between the user and a guess.
+
+**Labels.** Where a label is justified it is an icon plus a *short* one —
+`Insert`, `Save`, `Discard`, `Constraints`, `Export`, `More`, `All`. The full
+sentence goes in `title`. Never put a leading `+`, `▶` or `☆` in a label; that
+is the icon's job. Prefer `…` over `...`, but a **button label never ends in an
+ellipsis** — reserve `…` for status text such as `Counting rows…`.
 
 **Shared labels.** A command offered on more than one surface uses one label and
 one icon everywhere, including the tree-view welcome content in `package.json`
@@ -267,7 +281,8 @@ discipline:
 - [ ] Built via `buildHtmlDocument()` with `webview` passed
 - [ ] `styles` contains only surface-specific rules
 - [ ] No literal colour, no raw `z-index`, no inline colour/padding/font-size
-- [ ] Buttons use `.btn` + modifiers, icon + short label, full text in `title`
+- [ ] Buttons use `.btn` + modifiers, icon only, full text in `title`; a label
+      only where the icon cannot carry the action
 - [ ] Exactly one `.btn-primary` per action group
 - [ ] Checked in Dark+, Light+ and High Contrast
 
