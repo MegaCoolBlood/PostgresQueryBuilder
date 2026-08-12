@@ -622,7 +622,7 @@
     "package": "node esbuild.js --minify",
     "start-server": "node dist/server.js",
     "format-cli": "node dist/cli.js",
-    "lint": "eslint src --ext ts",
+    "lint": "eslint src server cli",
     "test": "npm run compile:test && node --test out/src/test/**/*.test.js",
     "bump:patch": "npm version patch --no-git-tag-version",
     "bump:minor": "npm version minor --no-git-tag-version",

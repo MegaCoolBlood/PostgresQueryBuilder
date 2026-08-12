@@ -902,7 +902,7 @@ export class TableWebViewManager {
             let exportRows: any[];
             if (message.sql) {
                 // Strip any existing LIMIT/OFFSET from the query for full export
-                let sql = message.sql.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$/i, '');
+                const sql = message.sql.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$/i, '');
                 const result = await queryRunner.executeSQL(sql);
                 exportRows = result.rows;
             } else {
