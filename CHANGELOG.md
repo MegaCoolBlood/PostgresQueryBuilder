@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.2
+
+- **Character limits are visible in Data Viewer headers:** A `varchar` column used to show only its base type, so the maximum length was hidden until an edit failed or the schema was checked elsewhere. Headers now show the declared length, such as `varchar(10)`, while other types keep their complete PostgreSQL type information.
+
 ## 3.0.1
 
 - **A long text no longer has to be read through a grid cell:** A `text` column holding a whole letter, a log excerpt or a formatted JSON document was only visible through a one-line cell or, at best, a small box in the Single Record View — you could scroll it, but not read it comfortably, and editing meant typing into a field that showed three of its forty lines. Every cell can now be opened in a normal editor tab: the entry *Open Value in Editor* in the cell's context menu and the pencil button next to each field of the Single Record View hand the value to a tab with syntax highlighting, search, folding, multi-cursor and everything else the editor offers. Saving that tab writes the value straight back into the cell as a pending change — it appears in the grid like a typed edit, so *Preview SQL* and *Commit* treat it exactly the same, and nothing reaches the database until you commit. Closing the tab discards its scratch file; emptying it sets the cell to `NULL`.

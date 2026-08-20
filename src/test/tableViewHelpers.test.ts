@@ -29,8 +29,16 @@ const {
     isSqlEdited,
     parsePgType,
     validateCellValue,
+    formatColumnTypeLabel,
     describePendingChanges
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
+
+test('formatColumnTypeLabel includes declared character lengths', () => {
+    assert.equal(formatColumnTypeLabel({ dataType: 'varchar', fullType: 'character varying(10)' }), 'varchar(10)');
+    assert.equal(formatColumnTypeLabel({ dataType: 'char', fullType: 'character(3)' }), 'char(3)');
+    assert.equal(formatColumnTypeLabel({ dataType: 'varchar', fullType: 'character varying' }), 'varchar');
+    assert.equal(formatColumnTypeLabel({ dataType: 'numeric', fullType: 'numeric(10,2)' }), 'numeric(10,2)');
+});
 
 // ===== cellToString =====
 

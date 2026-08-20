@@ -861,6 +861,20 @@ function buildColumnHeaderTitle(col) {
     return String(col.comment).trim();
 }
 
+function formatColumnTypeLabel(col) {
+    if (!col) return '';
+    const dataType = String(col.dataType || '').trim();
+    const fullType = String(col.fullType || '').trim();
+    if (!dataType) return fullType;
+    const normalized = dataType.toLowerCase();
+    if (['char', 'character', 'bpchar', 'varchar', 'character varying'].includes(normalized)) {
+        const modifier = fullType.match(/\((\d+)\)/);
+        if (modifier) return `${dataType}(${modifier[1]})`;
+        return dataType;
+    }
+    return fullType || dataType;
+}
+
 // Next sort state for a click on `column`. A column cycles ascending →
 // descending → off, and switching it off restores the sort that was active
 // before it was first clicked, so looking at one column does not throw away the
@@ -2623,7 +2637,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const commentTitle = buildColumnHeaderTitle(col);
             const titleAttr = commentTitle ? ` title="${escapeAttr(commentTitle)}"` : '';
             const commentMark = commentTitle ? ' <span class="col-comment-indicator" aria-hidden="true">🛈</span>' : '';
-            html += `<th class="${cls}" draggable="true" data-col="${escapeAttr(col.name)}"${titleAttr}>${escapeHtml(col.name)}${commentMark}<br><small class="col-type">${escapeHtml(col.dataType)}</small><div class="col-resize-handle" title="Drag to change column width"></div></th>`;
+            html += `<th class="${cls}" draggable="true" data-col="${escapeAttr(col.name)}"${titleAttr}>${escapeHtml(col.name)}${commentMark}<br><small class="col-type">${escapeHtml(formatColumnTypeLabel(col))}</small><div class="col-resize-handle" title="Drag to change column width"></div></th>`;
         });
         html += '</tr>';
 
@@ -5429,6 +5443,7 @@ if (typeof module !== 'undefined' && module.exports) {
         buildConstraintOrderBy,
         buildSelectColumnList,
         buildColumnHeaderTitle,
+        formatColumnTypeLabel,
         nextSortState,
         computeResizedRowHeight,
         computeResizedColumnWidth,
