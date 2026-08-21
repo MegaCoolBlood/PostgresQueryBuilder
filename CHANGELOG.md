@@ -2,6 +2,8 @@
 
 ## 3.0.2
 
+- **Editing a length-limited column shows how much room is left:** A `varchar(10)` accepted typing far beyond its limit and only complained once the value was left — you had to count characters yourself to know how close you were. While a cell is edited, a small counter now appears at its lower right corner and updates on every keystroke, and the same counter sits underneath the field in the Single Record View. It reads `42 / 100 · 58 left`, turns into a warning colour from four fifths of the length on and reports `105 / 100 · 5 over` once the value is too long, so the limit is visible before saving is blocked. Characters are counted the way the column counts them, so `ä`, `ß` and `€` each use one of them. Columns without a limit, such as `text` or a `varchar` without a length, show no counter at all.
+
 - **Character limits are visible in Data Viewer headers:** A `varchar` column used to show only its base type, so the maximum length was hidden until an edit failed or the schema was checked elsewhere. Headers now show the declared length, such as `varchar(10)`, while other types keep their complete PostgreSQL type information.
 
 ## 3.0.1

@@ -1142,6 +1142,36 @@ textarea.sql-dialog-content {
     flex: 1;
 }
 
+/* Remaining characters of a length-limited column while it is edited. */
+.record-value-budget {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.record-value-budget.is-warning,
+.char-budget-badge.is-warning {
+    color: var(--c-warning);
+}
+
+.record-value-budget.is-exceeded,
+.char-budget-badge.is-exceeded {
+    color: var(--c-danger);
+}
+
+.char-budget-badge {
+    position: fixed;
+    z-index: var(--z-dropdown);
+    padding: 0 var(--sp-1);
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius);
+    background: var(--c-surface);
+    color: var(--c-muted);
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
 .record-row-actions {
     display: flex;
     flex-direction: column;

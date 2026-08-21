@@ -30,8 +30,63 @@ const {
     parsePgType,
     validateCellValue,
     formatColumnTypeLabel,
+    describeCharacterBudget,
+    charBudgetStateClass,
     describePendingChanges
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
+
+test('describeCharacterBudget reports usage and remaining characters', () => {
+    const budget = describeCharacterBudget('abcd', 'character varying(10)');
+    assert.equal(budget.used, 4);
+    assert.equal(budget.limit, 10);
+    assert.equal(budget.remaining, 6);
+    assert.equal(budget.state, 'normal');
+    assert.equal(budget.text, '4 / 10 \u00b7 6 left');
+});
+
+test('describeCharacterBudget warns from 80 percent of the length on', () => {
+    assert.equal(describeCharacterBudget('a'.repeat(79), 'varchar(100)').state, 'normal');
+    assert.equal(describeCharacterBudget('a'.repeat(80), 'varchar(100)').state, 'warning');
+    const full = describeCharacterBudget('a'.repeat(100), 'varchar(100)');
+    assert.equal(full.state, 'warning');
+    assert.equal(full.text, '100 / 100 \u00b7 0 left');
+});
+
+test('describeCharacterBudget reports how far a value exceeds the length', () => {
+    const over = describeCharacterBudget('a'.repeat(105), 'varchar(100)');
+    assert.equal(over.state, 'exceeded');
+    assert.equal(over.remaining, -5);
+    assert.equal(over.text, '105 / 100 \u00b7 5 over');
+});
+
+test('describeCharacterBudget counts characters, not bytes', () => {
+    assert.equal(describeCharacterBudget('\u00e4\u00f6\u00fc\u00df\u20ac', 'varchar(10)').used, 5);
+});
+
+test('describeCharacterBudget treats NULL and an empty value as unused', () => {
+    assert.equal(describeCharacterBudget(null, 'varchar(5)').used, 0);
+    assert.equal(describeCharacterBudget(undefined, 'varchar(5)').remaining, 5);
+    assert.equal(describeCharacterBudget('', 'varchar(5)').used, 0);
+});
+
+test('describeCharacterBudget stays silent for types without a character limit', () => {
+    for (const type of ['text', 'character varying', 'varchar', 'integer', 'numeric(10,2)', 'jsonb', '']) {
+        assert.equal(describeCharacterBudget('abc', type), null, type);
+    }
+    assert.equal(describeCharacterBudget('abc', 'character varying(5)[]'), null);
+});
+
+test('describeCharacterBudget also covers the fixed-length char types', () => {
+    assert.equal(describeCharacterBudget('ab', 'character(3)').remaining, 1);
+    assert.equal(describeCharacterBudget('ab', 'bpchar(3)').limit, 3);
+});
+
+test('charBudgetStateClass marks only a tight or exceeded budget', () => {
+    assert.equal(charBudgetStateClass(describeCharacterBudget('a', 'varchar(100)')), '');
+    assert.equal(charBudgetStateClass(describeCharacterBudget('a'.repeat(90), 'varchar(100)')), ' is-warning');
+    assert.equal(charBudgetStateClass(describeCharacterBudget('a'.repeat(101), 'varchar(100)')), ' is-exceeded');
+    assert.equal(charBudgetStateClass(null), '');
+});
 
 test('formatColumnTypeLabel includes declared character lengths', () => {
     assert.equal(formatColumnTypeLabel({ dataType: 'varchar', fullType: 'character varying(10)' }), 'varchar(10)');

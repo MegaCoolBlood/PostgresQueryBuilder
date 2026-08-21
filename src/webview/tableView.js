@@ -1265,6 +1265,37 @@ function validateCellValue(value, fullType) {
     return { state: 'unknown' };
 }
 
+// Share of the length a value may reach before the counter warns.
+const CHAR_BUDGET_WARNING_RATIO = 0.8;
+
+// How much of a length-limited column a value uses, for the counter shown
+// while editing. Returns null for every type without a character limit
+// (`text`, `varchar` without length, numbers, arrays), so the caller can omit
+// the counter entirely. Characters are counted the way Postgres counts them
+// for the length limit, not bytes.
+function describeCharacterBudget(value, fullType) {
+    const type = parsePgType(fullType);
+    const limited = ['character varying', 'varchar', 'character', 'char', 'bpchar'];
+    if (type.isArray || type.length === undefined || limited.indexOf(type.base) === -1) {
+        return null;
+    }
+    const used = (value === null || value === undefined) ? 0 : Array.from(String(value)).length;
+    const limit = type.length;
+    const remaining = limit - used;
+    if (remaining < 0) {
+        return { used, limit, remaining, state: 'exceeded', text: `${used} / ${limit} · ${-remaining} over` };
+    }
+    const state = used >= limit * CHAR_BUDGET_WARNING_RATIO ? 'warning' : 'normal';
+    return { used, limit, remaining, state, text: `${used} / ${limit} · ${remaining} left` };
+}
+
+// CSS class suffix for the character counter, so a value close to or beyond
+// the column length stands out.
+function charBudgetStateClass(budget) {
+    if (!budget || budget.state === 'normal') return '';
+    return budget.state === 'exceeded' ? ' is-exceeded' : ' is-warning';
+}
+
 // Text and button state of the pending-changes indicator. Saving is blocked
 // while a cell holds a value the column cannot store.
 function describePendingChanges(counts, invalidCount) {
@@ -1702,6 +1733,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const contextMenuItems = document.getElementById('contextMenuItems');
     const contextMenuSearch = document.getElementById('contextMenuSearch');
     const contextMenuEmpty = document.getElementById('contextMenuEmpty');
+    const charBudgetBadge = document.getElementById('charBudgetBadge');
     const dataLoading = document.getElementById('dataLoading');
     const dataLoadingOverlay = document.getElementById('dataLoadingOverlay');
     const metaLoading = document.getElementById('metaLoading');
@@ -3310,6 +3342,51 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return html;
     }
 
+    // Fill a counter element from a budget, or blank it out when the column has
+    // no character limit.
+    function applyCharBudget(el, budget) {
+        if (!el) return;
+        el.textContent = budget ? budget.text : '';
+        el.classList.toggle('is-warning', !!budget && budget.state === 'warning');
+        el.classList.toggle('is-exceeded', !!budget && budget.state === 'exceeded');
+    }
+
+    // The cell the floating counter currently belongs to, so scrolling can move
+    // it along instead of leaving it behind.
+    let charBudgetTarget = null;
+
+    function hideCharBudgetBadge() {
+        charBudgetTarget = null;
+        if (charBudgetBadge) charBudgetBadge.style.display = 'none';
+    }
+
+    // Show the remaining characters underneath the cell being edited.
+    function showCharBudgetBadge(editable) {
+        const td = editable ? editable.closest('td') : null;
+        if (!charBudgetBadge || !td) return;
+        const colMeta = columns.find(c => c.name === td.getAttribute('data-col'));
+        const budget = colMeta
+            ? describeCharacterBudget(editable.textContent, colMeta.fullType || colMeta.dataType)
+            : null;
+        if (!budget) {
+            hideCharBudgetBadge();
+            return;
+        }
+        charBudgetTarget = editable;
+        applyCharBudget(charBudgetBadge, budget);
+        charBudgetBadge.style.display = 'block';
+        const cell = td.getBoundingClientRect();
+        const badge = charBudgetBadge.getBoundingClientRect();
+        const below = cell.bottom + 2;
+        const top = below + badge.height > window.innerHeight ? cell.top - badge.height - 2 : below;
+        charBudgetBadge.style.top = Math.max(0, top) + 'px';
+        charBudgetBadge.style.left = Math.max(0, cell.right - badge.width) + 'px';
+    }
+
+    document.addEventListener('scroll', () => {
+        if (charBudgetTarget) showCharBudgetBadge(charBudgetTarget);
+    }, true);
+
     // Attach all event listeners for the freshly-rendered <tbody>.
     function wireTableListeners() {
         // Live formatting for numeric cells during editing.
@@ -3359,21 +3436,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         // Attach focus/blur/input listeners for editable cell-content spans (existing rows)
         tableBody.querySelectorAll('td[data-row] .cell-content[contenteditable="true"]').forEach(span => {
-            span.addEventListener('focus', () => handleNullCellFocus(span));
-            span.addEventListener('blur', handleCellEdit);
-            span.addEventListener('input', () => handleNumericCellInput(span));
+            span.addEventListener('focus', () => { handleNullCellFocus(span); showCharBudgetBadge(span); });
+            span.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleCellEdit(e); });
+            span.addEventListener('input', () => { handleNumericCellInput(span); showCharBudgetBadge(span); });
         });
 
         // Attach blur listeners for inserted rows
         tableBody.querySelectorAll('td[data-insert][contenteditable="true"]').forEach(td => {
-            td.addEventListener('blur', handleInsertCellEdit);
-            td.addEventListener('input', () => handleNumericCellInput(td));
+            td.addEventListener('focus', () => showCharBudgetBadge(td));
+            td.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleInsertCellEdit(e); });
+            td.addEventListener('input', () => { handleNumericCellInput(td); showCharBudgetBadge(td); });
         });
 
         // Attach blur listeners for duplicated rows
         tableBody.querySelectorAll('td[data-dup][contenteditable="true"]').forEach(td => {
-            td.addEventListener('blur', handleDupCellEdit);
-            td.addEventListener('input', () => handleNumericCellInput(td));
+            td.addEventListener('focus', () => showCharBudgetBadge(td));
+            td.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleDupCellEdit(e); });
+            td.addEventListener('input', () => { handleNumericCellInput(td); showCharBudgetBadge(td); });
         });
 
         // Row-height resize handles (drag the bottom of the row-number cell).
@@ -4830,6 +4909,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
             const lineCount = isNull ? 1 : Math.min(15, Math.max(1, displayVal.split('\n').length));
             const charInfo = isNull ? '(NULL)' : (displayVal.length + ' chars');
+            const budget = describeCharacterBudget(isNull ? '' : displayVal, col.fullType || col.dataType);
+            const budgetHtml = budget
+                ? '<span class="record-value-budget' + charBudgetStateClass(budget) + '">' + escapeHtml(budget.text) + '</span>'
+                : '';
 
             const editableAttr = recordFieldReadonlyAttr(isDeleted, !isColumnEditable(col.name));
             const valueClass = 'record-value' + (isNull ? ' is-null' : '');
@@ -4869,6 +4952,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                         ' placeholder="NULL">' + escapeHtml(displayVal) + '</textarea>' +
                     '<div class="record-value-meta">' +
                         '<span class="record-value-info">' + charInfo + (isModified ? ' &middot; modified' : '') + '</span>' +
+                        budgetHtml +
                     '</div>' +
                 '</div>' +
                 '<div class="record-row-actions">' + actions + '</div>' +
@@ -4918,6 +5002,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 textarea.style.height = 'auto';
                 textarea.style.height = Math.min(400, textarea.scrollHeight) + 'px';
                 recordTextareaHeights[colName] = textarea.style.height;
+                const colMeta = columns.find(c => c.name === colName);
+                applyCharBudget(
+                    rowEl.querySelector('.record-value-budget'),
+                    colMeta ? describeCharacterBudget(textarea.value, colMeta.fullType || colMeta.dataType) : null
+                );
             });
 
             // Persist a manual drag-resize so it survives the next re-render.
@@ -5473,6 +5562,8 @@ if (typeof module !== 'undefined' && module.exports) {
         isSqlEdited,
         parsePgType,
         validateCellValue,
+        describeCharacterBudget,
+        charBudgetStateClass,
         describePendingChanges
     };
 }
