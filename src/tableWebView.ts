@@ -332,6 +332,7 @@ export class TableWebViewManager {
             tableReference,
             alwaysQuote: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false),
             thousandSeparator: vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('thousandSeparator', ' '),
+            duplicateRowResetDefaults: vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('duplicateRowResetDefaults', 'volatile'),
             connectionName: this.getConnectionName(),
             permanentConstraints: this.permanentConstraintManager.getConstraints(schema, table),
             permanentSorts: this.permanentConstraintManager.getSorts(schema, table)
@@ -375,6 +376,7 @@ export class TableWebViewManager {
             tableReference: '',
             alwaysQuote: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false),
             thousandSeparator: vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('thousandSeparator', ' '),
+            duplicateRowResetDefaults: vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('duplicateRowResetDefaults', 'volatile'),
             connectionName: this.getConnectionName(),
             permanentConstraints: [],
             permanentSorts: [],
@@ -532,6 +534,10 @@ export class TableWebViewManager {
         queryRunner.getForeignKeys(schema, table)
             .then(foreignKeys => this.post(session, { command: 'foreignKeysLoaded', foreignKeys }))
             .catch(err => console.warn(`Failed to load FKs: ${getErrorMessage(err)}`));
+
+        queryRunner.getColumnDefaults(schema, table)
+            .then(columnDefaults => this.post(session, { command: 'columnDefaultsLoaded', columnDefaults }))
+            .catch(err => console.warn(`Failed to load column defaults: ${getErrorMessage(err)}`));
 
         queryRunner.getReferencingTables(schema, table)
             .then(referencingTables => this.post(session, { command: 'referencingTablesLoaded', referencingTables }))

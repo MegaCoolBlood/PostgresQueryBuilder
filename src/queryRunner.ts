@@ -125,6 +125,14 @@ export interface ForeignKeyInfo {
     refColumn: string;
 }
 
+/** What fills a column when an INSERT leaves it out. */
+export interface ColumnDefaultInfo {
+    column: string;
+    defaultExpression: string | null;
+    isIdentity: boolean;
+    isGenerated: boolean;
+}
+
 export interface ReferencingTableInfo {
     fkSchema: string;
     fkTable: string;
@@ -323,6 +331,29 @@ export class QueryRunner {
              AND i.indisprimary`,
         );
         return rows.map((row) => row.attname);
+    }
+
+    /**
+     * The default expression of every column that has one, plus whether the
+     * column is an identity or a generated column. The Data Viewer uses this to
+     * decide which values must not be carried over into a duplicated row.
+     */
+    async getColumnDefaults(schema: string, table: string): Promise<ColumnDefaultInfo[]> {
+        const rows = await this.connectionManager.queryMetadata(
+            `SELECT column_name, column_default, is_identity, is_generated
+             FROM information_schema.columns
+             WHERE table_schema = $1 AND table_name = $2
+             ORDER BY ordinal_position`,
+            [schema, table]
+        );
+        return rows
+            .map((row) => ({
+                column: row.column_name as string,
+                defaultExpression: (row.column_default ?? null) as string | null,
+                isIdentity: row.is_identity === 'YES',
+                isGenerated: typeof row.is_generated === 'string' && row.is_generated !== 'NEVER'
+            }))
+            .filter((info) => info.defaultExpression !== null || info.isIdentity || info.isGenerated);
     }
 
     /**

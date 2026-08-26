@@ -646,6 +646,14 @@ body.col-resizing * {
     font-style: italic;
 }
 
+/* Cell of a duplicated row that is left to the database default */
+.default-value {
+    color: var(--c-muted);
+    font-style: italic;
+    font-size: var(--fs-xs);
+    letter-spacing: 0.5px;
+}
+
 /* Cells that contain a foreign-key button: pad on the right to leave room for the
    absolutely positioned button, so the editable text never overlaps the button and
    the button cannot be deleted while editing. */

@@ -338,6 +338,21 @@
           "default": " ",
           "description": "Thousand separator for displaying numbers (e.g. ' ' for 9 999 999,99)"
         },
+        "postgresQueryBuilder.duplicateRowResetDefaults": {
+          "type": "string",
+          "enum": [
+            "volatile",
+            "all",
+            "none"
+          ],
+          "enumDescriptions": [
+            "Reset identity and generated columns, defaults that call a function such as now() or nextval(), and the context keywords CURRENT_DATE and CURRENT_USER",
+            "Reset every column that has a default, including constant ones",
+            "Copy all values, including generated ones"
+          ],
+          "default": "volatile",
+          "description": "Which columns are left to their database default when a row is duplicated"
+        },
         "postgresQueryBuilder.customMappingsFile": {
           "type": "string",
           "default": ".vscode/postgres-query-builder.mappings.json",
