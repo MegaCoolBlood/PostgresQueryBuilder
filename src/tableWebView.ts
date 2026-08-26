@@ -2,10 +2,11 @@ import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
 import { QueryRunner, buildRelationListQuery, type CommitTarget } from './queryRunner';
 import { ExportService } from './exportService';
-import { ColumnMappingManager } from './columnMappingManager';
+import { ColumnMappingManager, MAPPING_CONDITION_OPERATORS } from './columnMappingManager';
 import { PermanentConstraintManager } from './permanentConstraintManager';
 import { SavedQueryStore, SavedQueryParameter, mergeParameters } from './savedQueryStore';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
+import { buildRelatedTableJoin, deriveQualifier, type RelatedJoinCondition } from './statementBuilder';
 import { getErrorMessage } from './logger';
 import { getIconSprite, getSharedStyles } from './webviewAssets';
 import type { ViewCapabilities } from './resultSource';
@@ -398,6 +399,7 @@ export class TableWebViewManager {
         saveQueryHistory: this.handleSaveQueryHistory,
         getQueryHistory: this.handleGetQueryHistory,
         openForeignKey: this.handleOpenForeignKey,
+        openRelatedJoin: this.handleOpenRelatedJoin,
         addCustomMapping: this.handleAddCustomMapping,
         updateCustomMapping: this.handleUpdateCustomMapping,
         deleteCustomMapping: this.handleDeleteCustomMapping,
@@ -838,6 +840,91 @@ export class TableWebViewManager {
         const fkValue = message.value;
         const conditions = Array.isArray(message.conditions) ? message.conditions : [];
         await this.openTableViewWithFilter(fkSchema, fkTable, fkColumn, fkValue, conditions);
+    }
+
+    /**
+     * Open a related table from a column header: the related table becomes the
+     * FROM table and the table on screen is joined to it, carrying its WHERE
+     * clause into the ON clause. No single row is involved, so the whole
+     * filtered result set is followed along the relation at once.
+     */
+    private async handleOpenRelatedJoin(ctx: MessageContext): Promise<void> {
+        const { message } = ctx;
+        const sourceSchema = String(message.sourceSchema || '');
+        const sourceTable = String(message.sourceTable || '');
+        const targetSchema = String(message.targetSchema || '');
+        const targetTable = String(message.targetTable || '');
+        const pairs = Array.isArray(message.columnPairs) ? message.columnPairs : [];
+        if (!sourceTable || !targetTable || pairs.length === 0) {
+            return;
+        }
+
+        try {
+            const queryRunner = new QueryRunner(this.connectionManager);
+            const data = await queryRunner.getMultiTableJoinData([
+                { schema: targetSchema, table: targetTable },
+                { schema: sourceSchema, table: sourceTable }
+            ]);
+            const [target, source] = data.tables;
+            if (!target || !source) {
+                return;
+            }
+
+            // Every identifier must be a column of the table it belongs to;
+            // that keeps a crafted message from reaching the SQL text.
+            const quoterFor = (t: { columns: string[]; rawColumns: string[] }) => (name: string): string => {
+                const idx = t.rawColumns.indexOf(name);
+                if (idx === -1) {
+                    throw new Error(`Unknown column: ${name}`);
+                }
+                return t.columns[idx];
+            };
+            const quoteTarget = quoterFor(target);
+            const quoteSource = quoterFor(source);
+
+            const columnPairs = pairs.map((p: { sourceColumn: string; targetColumn: string }) => ({
+                sourceColumn: quoteSource(String(p.sourceColumn)),
+                targetColumn: quoteTarget(String(p.targetColumn))
+            }));
+            const toConditions = (raw: unknown, quote: (name: string) => string): RelatedJoinCondition[] =>
+                (Array.isArray(raw) ? raw : [])
+                    .filter((c) => c && typeof c.column === 'string' && MAPPING_CONDITION_OPERATORS.has(String(c.operator)))
+                    .map((c) => ({ column: quote(String(c.column)), operator: String(c.operator), value: String(c.value ?? '') }));
+
+            // A query that is not a plain single-table SELECT cannot hand over
+            // its WHERE clause, so it is joined in whole as a derived table.
+            const derivedSql = typeof message.sourceSql === 'string' ? message.sourceSql.trim().replace(/;\s*$/, '') : '';
+            const sharesColumnName = target.rawColumns.some(c => source.rawColumns.includes(c));
+            let targetAlias = '';
+            let sourceAlias = '';
+            if (derivedSql || sharesColumnName) {
+                targetAlias = deriveQualifier(target.firstColumnRaw, target.table);
+                sourceAlias = deriveQualifier(source.firstColumnRaw, source.table);
+                if (sourceAlias.toLowerCase() === targetAlias.toLowerCase()) {
+                    sourceAlias = `${sourceAlias}2`;
+                }
+            }
+
+            const sql = buildRelatedTableJoin({
+                target: { tableReference: target.tableReference, columns: target.columns, alias: targetAlias },
+                source: {
+                    tableReference: derivedSql ? `(${derivedSql})` : source.tableReference,
+                    columns: source.columns,
+                    alias: sourceAlias
+                },
+                columnPairs,
+                sourceConditions: toConditions(message.sourceConditions, quoteSource),
+                targetConditions: toConditions(message.targetConditions, quoteTarget),
+                sourceWhere: typeof message.where === 'string' ? message.where.trim() : '',
+                sourceOrderBy: typeof message.orderBy === 'string' ? message.orderBy.trim() : ''
+            });
+            if (!sql) {
+                return;
+            }
+            await this.openQueryView(sql, `${targetSchema}.${targetTable} × ${sourceTable}`);
+        } catch (err: unknown) {
+            vscode.window.showErrorMessage(`Failed to open the related table: ${getErrorMessage(err)}`);
+        }
     }
 
     private async handleAddCustomMapping(ctx: MessageContext): Promise<void> {

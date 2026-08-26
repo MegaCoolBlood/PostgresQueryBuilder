@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildStatement, deriveQualifier, buildJoinSelect, autoJoinClauses } from '../statementBuilder';
+import { buildStatement, deriveQualifier, buildJoinSelect, buildRelatedTableJoin, qualifyColumnReferences, autoJoinClauses } from '../statementBuilder';
 
 const opts = (qualifier = 'lei') => ({
     tableReference: 'leistungen',
@@ -211,6 +211,188 @@ test('buildJoinSelect renders numeric literal conditions without quotes', () => 
         buildJoinSelect(tables, joins),
         'SELECT\n  a.id,\n  b.a_id\nFROM a a\nLEFT JOIN b b ON b.a_id = a.id AND a.priority > 5;'
     );
+});
+
+test('buildJoinSelect leaves columns unqualified when a table has no alias', () => {
+    const tables = [
+        { alias: '', tableReference: 'a', columns: ['id'] },
+        { alias: '', tableReference: 'b', columns: ['a_id'] }
+    ];
+    const joins = [{
+        type: 'INNER JOIN' as const,
+        conditions: [{ leftAlias: '', leftColumn: 'id', rightColumn: 'a_id' }],
+        literalConditions: [{ literalAlias: '', literalColumn: 'status', operator: '=', value: 'active' }]
+    }];
+    assert.equal(
+        buildJoinSelect(tables, joins),
+        "SELECT\n  id,\n  a_id\nFROM a\nINNER JOIN b ON a_id = id AND status = 'active';"
+    );
+});
+
+test('buildJoinSelect omits a table that only takes part in the join', () => {
+    const tables = [
+        { alias: 'a', tableReference: 'a', columns: ['id'] },
+        { alias: 'b', tableReference: 'b', columns: ['a_id'], omitFromSelect: true }
+    ];
+    const joins = [{
+        type: 'INNER JOIN' as const,
+        conditions: [{ leftAlias: 'a', leftColumn: 'id', rightColumn: 'a_id' }]
+    }];
+    assert.equal(
+        buildJoinSelect(tables, joins),
+        'SELECT\n  a.id\nFROM a a\nINNER JOIN b b ON b.a_id = a.id;'
+    );
+});
+
+test('buildJoinSelect appends an ORDER BY clause', () => {
+    const joins = [{
+        type: 'INNER JOIN' as const,
+        conditions: [{ leftAlias: 'o', leftColumn: 'cust_id', rightColumn: 'id' }]
+    }];
+    assert.equal(
+        buildJoinSelect(joinTables(), joins, ' c.name DESC '),
+        'SELECT\n  o.id,\n  o.cust_id,\n  c.id,\n  c.name\nFROM orders o\n'
+        + 'INNER JOIN customers c ON c.id = o.cust_id\nORDER BY c.name DESC;'
+    );
+    assert.equal(
+        buildJoinSelect(joinTables(), joins, '   '),
+        'SELECT\n  o.id,\n  o.cust_id,\n  c.id,\n  c.name\nFROM orders o\nINNER JOIN customers c ON c.id = o.cust_id;'
+    );
+});
+
+// ===== buildRelatedTableJoin =====
+
+test('buildRelatedTableJoin moves the current WHERE clause into the ON clause', () => {
+    const sql = buildRelatedTableJoin({
+        target: { tableReference: 'sap_rk_zuordnungen', columns: ['srz_rk_id', 'srz_sap_id', 'srz_g_von', 'srz_g_bis'] },
+        source: { tableReference: 'regionen' },
+        columnPairs: [{ sourceColumn: 'rk_id', targetColumn: 'srz_rk_id' }],
+        sourceWhere: "rk_rk = 'DEB'"
+    });
+    assert.equal(
+        sql,
+        'SELECT\n  srz_rk_id,\n  srz_sap_id,\n  srz_g_von,\n  srz_g_bis\n'
+        + "FROM sap_rk_zuordnungen\nINNER JOIN regionen ON rk_id = srz_rk_id AND rk_rk = 'DEB';"
+    );
+});
+
+test('buildRelatedTableJoin works without a WHERE clause', () => {
+    const sql = buildRelatedTableJoin({
+        target: { tableReference: 'b', columns: ['a_id'] },
+        source: { tableReference: 'a' },
+        columnPairs: [{ sourceColumn: 'id', targetColumn: 'a_id' }]
+    });
+    assert.equal(sql, 'SELECT\n  a_id\nFROM b\nINNER JOIN a ON id = a_id;');
+});
+
+test('buildRelatedTableJoin joins on every column pair of a composite mapping', () => {
+    const sql = buildRelatedTableJoin({
+        target: { tableReference: 'b', columns: ['x', 'y'] },
+        source: { tableReference: 'a' },
+        columnPairs: [
+            { sourceColumn: 'k1', targetColumn: 'x' },
+            { sourceColumn: 'k2', targetColumn: 'y' }
+        ]
+    });
+    assert.equal(sql, 'SELECT\n  x,\n  y\nFROM b\nINNER JOIN a ON k1 = x AND k2 = y;');
+});
+
+test('buildRelatedTableJoin adds the extra conditions of a custom mapping', () => {
+    const sql = buildRelatedTableJoin({
+        target: { tableReference: 'b', columns: ['a_id'] },
+        source: { tableReference: 'a' },
+        columnPairs: [{ sourceColumn: 'id', targetColumn: 'a_id' }],
+        sourceConditions: [{ column: 'status', operator: '=', value: 'active' }],
+        targetConditions: [{ column: 'kind', operator: '=', value: 'TGB' }],
+        sourceWhere: 'id > 10'
+    });
+    assert.equal(
+        sql,
+        "SELECT\n  a_id\nFROM b\nINNER JOIN a ON id = a_id AND kind = 'TGB' AND status = 'active' AND id > 10;"
+    );
+});
+
+test('buildRelatedTableJoin returns nothing without a column pair', () => {
+    assert.equal(
+        buildRelatedTableJoin({
+            target: { tableReference: 'b', columns: ['x'] },
+            source: { tableReference: 'a' },
+            columnPairs: []
+        }),
+        ''
+    );
+});
+
+test('buildRelatedTableJoin keeps the ORDER BY of the current query', () => {
+    const sql = buildRelatedTableJoin({
+        target: { tableReference: 'b', columns: ['a_id'] },
+        source: { tableReference: 'a' },
+        columnPairs: [{ sourceColumn: 'id', targetColumn: 'a_id' }],
+        sourceOrderBy: 'name DESC'
+    });
+    assert.equal(sql, 'SELECT\n  a_id\nFROM b\nINNER JOIN a ON id = a_id\nORDER BY name DESC;');
+});
+
+test('buildRelatedTableJoin qualifies the carried clauses when aliases are used', () => {
+    const sql = buildRelatedTableJoin({
+        target: { tableReference: 'orders', columns: ['id', 'name'], alias: 'o' },
+        source: { tableReference: 'customers', columns: ['id', 'name', 'status'], alias: 'c' },
+        columnPairs: [{ sourceColumn: 'id', targetColumn: 'id' }],
+        sourceConditions: [{ column: 'status', operator: '=', value: 'active' }],
+        sourceWhere: "name LIKE 'A%' AND id > 10",
+        sourceOrderBy: 'name ASC'
+    });
+    assert.equal(
+        sql,
+        'SELECT\n  o.id,\n  o.name\nFROM orders o\n'
+        + "INNER JOIN customers c ON c.id = o.id AND c.status = 'active' AND c.name LIKE 'A%' AND c.id > 10\n"
+        + 'ORDER BY c.name ASC;'
+    );
+});
+
+test('buildRelatedTableJoin joins a sub-select as the source', () => {
+    const sql = buildRelatedTableJoin({
+        target: { tableReference: 'b', columns: ['a_id'], alias: 'b' },
+        source: { tableReference: '(SELECT id FROM a WHERE x = 1)', columns: ['id'], alias: 'src' },
+        columnPairs: [{ sourceColumn: 'id', targetColumn: 'a_id' }]
+    });
+    assert.equal(
+        sql,
+        'SELECT\n  b.a_id\nFROM b b\nINNER JOIN (SELECT id FROM a WHERE x = 1) src ON src.id = b.a_id;'
+    );
+});
+
+// ===== qualifyColumnReferences =====
+
+test('qualifyColumnReferences prefixes only known bare column names', () => {
+    assert.equal(
+        qualifyColumnReferences('status = 1 AND other = 2', ['status'], 'c'),
+        'c.status = 1 AND other = 2'
+    );
+});
+
+test('qualifyColumnReferences leaves literals, casts and qualified names alone', () => {
+    assert.equal(
+        qualifyColumnReferences("name = 'name' AND t.name = 1 AND name::text = ''", ['name'], 'c'),
+        "c.name = 'name' AND t.name = 1 AND c.name::text = ''"
+    );
+});
+
+test('qualifyColumnReferences does not touch a function name or a cast type', () => {
+    assert.equal(
+        qualifyColumnReferences('upper(name) = x::name', ['name', 'x'], 'c'),
+        'upper(c.name) = c.x::name'
+    );
+});
+
+test('qualifyColumnReferences matches a quoted column case-sensitively', () => {
+    assert.equal(qualifyColumnReferences('"RkId" = 1', ['"RkId"'], 'r'), 'r."RkId" = 1');
+    assert.equal(qualifyColumnReferences('RkId = 1', ['"RkId"'], 'r'), 'RkId = 1');
+});
+
+test('qualifyColumnReferences returns the fragment unchanged without an alias', () => {
+    assert.equal(qualifyColumnReferences('a = 1', ['a'], ''), 'a = 1');
+    assert.equal(qualifyColumnReferences('', ['a'], 'c'), '');
 });
 
 test('buildJoinSelect escapes single quotes inside string literal conditions', () => {

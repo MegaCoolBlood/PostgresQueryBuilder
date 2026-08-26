@@ -1509,6 +1509,90 @@ function buildCommitTargets(caps, rows, edits) {
     );
 }
 
+// Relations a column header can follow. Unlike the cell menu this does not
+// need a value: the whole filtered result is carried into the target query as
+// a JOIN, so every relation of the column applies.
+function headerRelationTargets(colName, foreignKeys, referencingTables, customMappings) {
+    const targets = [];
+    (foreignKeys || []).forEach(fk => {
+        if (fk.column !== colName) return;
+        targets.push({
+            label: `${fk.refSchema}.${fk.refTable}.${fk.refColumn}`,
+            targetSchema: fk.refSchema,
+            targetTable: fk.refTable,
+            columnPairs: [{ sourceColumn: colName, targetColumn: fk.refColumn }],
+            sourceConditions: [],
+            targetConditions: []
+        });
+    });
+    (referencingTables || []).forEach(ref => {
+        if (ref.localColumn !== colName) return;
+        targets.push({
+            label: `${ref.fkSchema}.${ref.fkTable}.${ref.fkColumn}`,
+            targetSchema: ref.fkSchema,
+            targetTable: ref.fkTable,
+            columnPairs: [{ sourceColumn: colName, targetColumn: ref.fkColumn }],
+            sourceConditions: [],
+            targetConditions: []
+        });
+    });
+    (customMappings || []).forEach(m => {
+        if (m.sourceColumn !== colName) return;
+        const pairs = [{ sourceColumn: m.sourceColumn, targetColumn: m.targetColumn }];
+        (m.additionalColumnPairs || []).forEach(p => {
+            if (p && p.sourceColumn && p.targetColumn) {
+                pairs.push({ sourceColumn: p.sourceColumn, targetColumn: p.targetColumn });
+            }
+        });
+        const base = m.label || `${m.targetSchema}.${m.targetTable}.${m.targetColumn}`;
+        targets.push({
+            label: m.reversed ? `${base} (reverse)` : base,
+            targetSchema: m.targetSchema,
+            targetTable: m.targetTable,
+            columnPairs: pairs,
+            sourceConditions: m.conditions || [],
+            targetConditions: m.targetConditions || []
+        });
+    });
+    return targets;
+}
+
+// True when the current query is a plain `SELECT ... FROM <table> [WHERE ...]`.
+// Only then can its WHERE clause be lifted into a JOIN's ON clause without
+// changing what the query means; anything else is carried over whole instead.
+function isLiftableSelect(sql) {
+    const s = String(sql || '').trim();
+    if (!s || !/^SELECT\s/i.test(s)) return false;
+    const parsed = parseSqlForWhere(s);
+    const fromIdx = findTopLevelKeywordIndex(parsed.base, 'FROM');
+    if (fromIdx === -1) return false;
+    if (/\bDISTINCT\b/i.test(parsed.base.substring(0, fromIdx))) return false;
+    const fromPart = parsed.base.substring(fromIdx).replace(/^\s*FROM\s+/i, '').trim();
+    const ident = '(?:"[^"]+"|[A-Za-z_][\\w$]*)';
+    if (!new RegExp(`^${ident}(?:\\s*\\.\\s*${ident})?$`).test(fromPart)) return false;
+    return !['GROUP', 'HAVING', 'UNION', 'INTERSECT', 'EXCEPT', 'WINDOW', 'FETCH']
+        .some(kw => findTopLevelKeywordIndex(parsed.where, kw) !== -1);
+}
+
+// Message payload for opening a related table as a JOIN.
+function relatedJoinPayload(rel, schema, table, sql) {
+    const base = String(sql || '').trim();
+    const liftable = isLiftableSelect(base);
+    const parsed = liftable ? parseSqlForWhere(base) : { where: '', orderBy: '' };
+    return {
+        sourceSchema: schema,
+        sourceTable: table,
+        targetSchema: rel.targetSchema,
+        targetTable: rel.targetTable,
+        columnPairs: rel.columnPairs,
+        sourceConditions: rel.sourceConditions || [],
+        targetConditions: rel.targetConditions || [],
+        where: parsed.where,
+        orderBy: parsed.orderBy,
+        sourceSql: liftable ? '' : base
+    };
+}
+
 // Text for the row-count indicator. An exact total is only known when it was
 // counted (always for the default table view, on demand for other queries);
 // until then the loaded row count is shown instead.
@@ -3136,7 +3220,30 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         items.push({ label: `Add ${colName} IS NULL to WHERE`, action: () => applyNullConstraint(colName, true) });
         items.push({ label: `Add ${colName} IS NOT NULL to WHERE`, action: () => applyNullConstraint(colName, false) });
 
+        addHeaderRelationItems(items, colName);
+
         showContextMenu(e, items);
+    }
+
+    // Follow a relation for the whole result: open the related table and join
+    // the current one to it, carrying the current WHERE clause into the ON.
+    function addHeaderRelationItems(items, colName) {
+        if (!schema || !table) return;
+        const relations = headerRelationTargets(colName, foreignKeys, referencingTables, customMappings);
+        if (relations.length === 0) return;
+        items.push({ separator: true });
+        relations.forEach(rel => {
+            items.push({
+                label: `Open ${rel.label} joined with ${table}`,
+                action: () => {
+                    const baseSql = (queryInput.value || '').trim() || `SELECT * FROM ${getDefaultTableReference()}`;
+                    vscode.postMessage(Object.assign(
+                        { command: 'openRelatedJoin' },
+                        relatedJoinPayload(rel, schema, table, baseSql)
+                    ));
+                }
+            });
+        });
     }
 
     function orderByMatchesColumn(part, colName) {
@@ -5728,6 +5835,9 @@ if (typeof module !== 'undefined' && module.exports) {
         classifyColumnDefault,
         defaultResetColumns,
         defaultCellTitle,
+        headerRelationTargets,
+        isLiftableSelect,
+        relatedJoinPayload,
         describePendingChanges
     };
 }

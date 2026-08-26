@@ -55,6 +55,10 @@ interface WorkspaceMappingsFile {
     mappings: CustomColumnMapping[];
 }
 
+/** The comparison operators a mapping condition may use. */
+export const MAPPING_CONDITION_OPERATORS: ReadonlySet<string> =
+    new Set(['=', '!=', '<>', '>', '<', '>=', '<=', 'LIKE', 'ILIKE']);
+
 const DEFAULT_WORKSPACE_FILE = '.vscode/postgres-query-builder.mappings.json';
 const FILE_VERSION = 1;
 
