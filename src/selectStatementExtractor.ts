@@ -237,6 +237,15 @@ function tokenize(masked: string): Token[] {
             i = j;
             continue;
         }
+        // :name placeholder. A `::` cast starts with a second colon and a `:=`
+        // assignment with a non-word character, so neither is caught here.
+        if (c === ':' && /[A-Za-z_]/.test(masked[i + 1] || '')) {
+            let j = i + 1;
+            while (j < n && /[A-Za-z0-9_]/.test(masked[j])) j++;
+            tokens.push({ text: masked.slice(i, j), type: 'param', start: i, end: j, depth });
+            i = j;
+            continue;
+        }
         // Identifier / keyword
         if (/[A-Za-z_]/.test(c)) {
             let j = i + 1;
@@ -256,7 +265,12 @@ function tokenize(masked: string): Token[] {
         // Operator run
         if (opChars.has(c)) {
             let j = i + 1;
-            while (j < n && opChars.has(masked[j])) j++;
+            while (j < n && opChars.has(masked[j])) {
+                // End the run before a `:name` placeholder (`a=:from`) so it is
+                // not swallowed; a `::` cast keeps its two colons together.
+                if (masked[j] === ':' && masked[j - 1] !== ':' && /[A-Za-z_]/.test(masked[j + 1] || '')) break;
+                j++;
+            }
             tokens.push({ text: masked.slice(i, j), type: 'op', start: i, end: j, depth });
             i = j;
             continue;
@@ -470,7 +484,9 @@ function convertUpdateToSelect(sql: string): string | null {
  * — i.e. on the value side of a comparison/arithmetic operator, inside an
  * `IN (...)` / `VALUES (...)` list, after `LIKE` / `ILIKE` / `BETWEEN`, or as
  * the value of `LIMIT` / `OFFSET`. The session value keywords (`current_user`,
- * `user`, ...) and positional parameters (`$1`) are always included. Keywords,
+ * `user`, ...) and parameters (`$1`, `:name`) are always included — a `:name`
+ * placeholder is the way to mark a variable that sits somewhere no heuristic
+ * can tell apart from a column, such as a select-list entry. Keywords,
  * table/alias-qualified columns (`a.col`) and function names are excluded.
  *
  * A dotted identifier `head.tail` is, by default, treated as a qualified column
@@ -842,15 +858,19 @@ export function extractDefinedNames(sql: string): Set<string> {
     for (let i = 0; i < tokens.length; i++) {
         const t = tokens[i];
         if (t.type !== 'word' || t.text.toLowerCase() !== 'as') continue;
-        const next = tokens[i + 1];
         const prev = tokens[i - 1];
-        if (next && next.type === 'word' && !SQL_KEYWORDS.has(next.text.toLowerCase())) {
+        // `name AS [NOT] MATERIALIZED (...)` — a CTE definition; the name precedes `AS`.
+        let k = i + 1;
+        if (tokens[k] && tokens[k].type === 'word' && tokens[k].text.toLowerCase() === 'not') k++;
+        if (tokens[k] && tokens[k].type === 'word' && tokens[k].text.toLowerCase() === 'materialized') k++;
+        const body = tokens[k];
+        const next = tokens[i + 1];
+        if (body && body.type === 'punct' && body.text === '(' &&
+            prev && prev.type === 'word' && !SQL_KEYWORDS.has(prev.text.toLowerCase())) {
+            defined.add(prev.text.toLowerCase());
+        } else if (next && next.type === 'word' && !SQL_KEYWORDS.has(next.text.toLowerCase())) {
             // `expr AS alias` (column or table alias) / `CAST(x AS type)`.
             defined.add(next.text.toLowerCase());
-        } else if (next && next.type === 'punct' && next.text === '(' &&
-            prev && prev.type === 'word' && !SQL_KEYWORDS.has(prev.text.toLowerCase())) {
-            // `name AS (...)` — a CTE definition; the name precedes `AS`.
-            defined.add(prev.text.toLowerCase());
         }
     }
     return defined;

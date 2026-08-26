@@ -95,6 +95,42 @@ test('findVariableTokens does not treat select-list function arguments as values
     assert.deepEqual(names, ['v_x']);
 });
 
+test('findVariableTokens reports a :name placeholder wherever it stands', () => {
+    const sql = [
+        'WITH bounds AS (',
+        '  SELECT :v_von AS from_day, LEAST(:v_bis, now()) AS to_day',
+        ')',
+        'SELECT * FROM bounds'
+    ].join('\n');
+    const names = findVariableTokens(sql).map((o) => o.name);
+    assert.deepEqual(names, [':v_von', ':v_bis']);
+});
+
+test('findVariableTokens keeps a :name placeholder that follows an operator', () => {
+    const names = findVariableTokens('SELECT * FROM t WHERE a=:from AND b >= :to').map((o) => o.name);
+    assert.deepEqual(names, [':from', ':to']);
+});
+
+test('findVariableTokens does not mistake a cast or an assignment for a placeholder', () => {
+    const cast = findVariableTokens('SELECT * FROM t WHERE a = b::text').map((o) => o.name);
+    assert.ok(!cast.some((n) => n.startsWith(':')), `no placeholder in a cast, got: ${cast.join(', ')}`);
+    assert.deepEqual(findVariableTokens('SELECT * FROM t WHERE a = v_x::integer').map((o) => o.name), ['v_x']);
+    assert.deepEqual(findVariableTokens('SELECT * FROM t WHERE ts = now()::date').map((o) => o.name), []);
+});
+
+test('substituteVariables replaces a :name placeholder including its colon', () => {
+    const sql = 'SELECT :v_von AS from_day FROM t WHERE d <= :v_bis';
+    const out = substituteVariables(sql, { ':v_von': "'2026-01-01'", ':v_bis': "'2026-12-31'" });
+    assert.equal(out, "SELECT '2026-01-01' AS from_day FROM t WHERE d <= '2026-12-31'");
+});
+
+test('extractDefinedNames covers a CTE declared as MATERIALIZED', () => {
+    const sql = 'WITH a AS MATERIALIZED (SELECT 1), b AS NOT MATERIALIZED (SELECT 2) SELECT * FROM a JOIN b ON true';
+    const defined = extractDefinedNames(sql);
+    assert.ok(defined.has('a'), 'MATERIALIZED CTE name is defined');
+    assert.ok(defined.has('b'), 'NOT MATERIALIZED CTE name is defined');
+});
+
 test('findVariableTokens detects a variable after LIMIT', () => {
     const sql = 'SELECT * FROM t WHERE a = v_a ORDER BY id LIMIT pi_max_history';
     const names = findVariableTokens(sql).map((o) => o.name);
