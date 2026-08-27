@@ -987,6 +987,11 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
             int8: 'bigint',
             'character varying': 'varchar',
             'bit varying': 'varbit'
+        },
+        argumentGroups: {
+            json_build_object: '2',
+            jsonb_build_object: '2',
+            decode: '1+2'
         }
     });
 });
@@ -1980,6 +1985,145 @@ test('never pads a division that ends a line inside a string literal', () => {
 
 test('padding a line comment keeps the file semantically identical', () => {
     const src = '-- see table*\nselect a, b from t where c = 1;';
+    const res = formatSqlChecked(src);
+    assert.ok(res.ok, res.reason);
+    assert.ok(sqlSemanticallyEqual(src, res.text));
+});
+
+// ===== 3.0.3: per-function argument grouping =====
+
+test('puts the key/value pairs of jsonb_build_object on one line each', () => {
+    const out = formatSql(
+        "select jsonb_build_object('p_mandt', co_mandt, 'p_counter', co_counter, 'p_extsystem', co_extsystem) from t;"
+    );
+    assert.equal(out, [
+        'SELECT jsonb_build_object(',
+        "  'p_mandt', co_mandt,",
+        "  'p_counter', co_counter,",
+        "  'p_extsystem', co_extsystem",
+        ')',
+        'FROM t;'
+    ].join('\n'));
+    assert.equal(formatSql(out), out);
+});
+
+test('keeps the subject of DECODE alone and pairs the branches', () => {
+    const out = formatSql('select decode(casevalue, when1, then1, when2, then2, elsevalue) from t;');
+    assert.equal(out, [
+        'SELECT decode(',
+        '  casevalue,',
+        '  when1, then1,',
+        '  when2, then2,',
+        '  elsevalue',
+        ')',
+        'FROM t;'
+    ].join('\n'));
+});
+
+test('reads the last group size of a spec as the repeating one', () => {
+    const out = formatSql('select f1(v1, v2, v3, v4, v5, v6) from t;', { argumentGroups: { f1: '1+1+2' } });
+    assert.equal(out, [
+        'SELECT f1(',
+        '  v1,',
+        '  v2,',
+        '  v3, v4,',
+        '  v5, v6',
+        ')',
+        'FROM t;'
+    ].join('\n'));
+});
+
+test('a schema-qualified call is matched by the bare function name', () => {
+    const out = formatSql('select oracle.decode(a, b, c, d, e, f) from t;');
+    assert.ok(out.includes('  b, c,\n'), out);
+    assert.ok(out.includes('  a,\n'), out);
+});
+
+test('a qualified key wins over the bare function name', () => {
+    const out = formatSql('select oracle.decode(a, b, c, d, e, f) from t;', {
+        argumentGroups: { decode: '1+2', 'oracle.decode': '3' }
+    });
+    assert.equal(out, [
+        'SELECT oracle.decode(',
+        '  a, b, c,',
+        '  d, e, f',
+        ')',
+        'FROM t;'
+    ].join('\n'));
+});
+
+test('leaves every other function at one argument per line', () => {
+    const out = formatSql('select other_fn(v1, v2, v3, v4, v5, v6) from t;');
+    assert.equal(out, [
+        'SELECT other_fn(',
+        '  v1,',
+        '  v2,',
+        '  v3,',
+        '  v4,',
+        '  v5,',
+        '  v6',
+        ')',
+        'FROM t;'
+    ].join('\n'));
+});
+
+test('falls back to one argument per line when a value is itself broken', () => {
+    const out = formatSql(
+        "select jsonb_build_object('a', jsonb_build_object('x', 1, 'y', 2, 'z', 3), 'b', 2, 'c', 3) from t;"
+    );
+    // The outer call cannot pair its arguments around a nested multi-line call.
+    assert.ok(out.includes("  'a',\n  jsonb_build_object(\n"), out);
+    assert.ok(out.includes("  'b',\n  2,\n"), out);
+    // The nested call keeps its pairs.
+    assert.ok(out.includes("    'x', 1,\n"), out);
+    assert.equal(formatSql(out), out);
+});
+
+test('gives a leftover argument its own line', () => {
+    const out = formatSql("select jsonb_build_object('a', 1, 'b', 2, 'c') from t;");
+    assert.equal(out, [
+        'SELECT jsonb_build_object(',
+        "  'a', 1,",
+        "  'b', 2,",
+        "  'c'",
+        ')',
+        'FROM t;'
+    ].join('\n'));
+});
+
+test('groups arguments with leading commas as well', () => {
+    const out = formatSql("select jsonb_build_object('a', 1, 'b', 2, 'c', 3) from t;", { commaStyle: 'leading' });
+    assert.equal(out, [
+        'SELECT jsonb_build_object(',
+        "  'a', 1",
+        "  , 'b', 2",
+        "  , 'c', 3",
+        ')',
+        'FROM t;'
+    ].join('\n'));
+});
+
+test('a group size of 0 switches a built-in entry off', () => {
+    const out = formatSql("select jsonb_build_object('a', 1, 'b', 2, 'c', 3) from t;", {
+        argumentGroups: { jsonb_build_object: '0' }
+    });
+    assert.ok(out.includes("  'a',\n  1,\n"), out);
+});
+
+test('coerceFormatOptions validates the argument group table', () => {
+    const opt = coerceFormatOptions({
+        argumentGroups: { decode: '0', MyFn: ' 1 + 3 ', broken: 'x', empty: '', nested: '2+2' }
+    });
+    assert.deepEqual(opt.argumentGroups, {
+        json_build_object: '2',
+        jsonb_build_object: '2',
+        myfn: '1+3',
+        nested: '2+2'
+    });
+});
+
+test('grouping keeps the statement semantically identical', () => {
+    const src = "select jsonb_build_object('a', 1, 'b', 2, 'c', 3, 'd', 4) from t;";
     const res = formatSqlChecked(src);
     assert.ok(res.ok, res.reason);
     assert.ok(sqlSemanticallyEqual(src, res.text));

@@ -114,6 +114,12 @@ export interface FormatOptions {
     normalizeDataTypes: boolean;
     /** Phrase-to-type map used by normalizeDataTypes (e.g. "character varying" -> "varchar"). */
     dataTypeAliases: Record<string, string>;
+    /**
+     * How many arguments a broken call puts on one line, per function name.
+     * The value is a `+`-separated list of group sizes whose last entry repeats,
+     * e.g. `"2"` (key/value pairs) or `"1+2"` (`DECODE`: subject, then pairs).
+     */
+    argumentGroups: Record<string, string>;
 }
 
 export const DEFAULT_DATA_TYPE_ALIASES: Record<string, string> = {
@@ -154,6 +160,46 @@ function normalizeDataTypeAliasTable(raw: Record<string, unknown> | undefined): 
     return aliases;
 }
 
+/**
+ * Functions whose arguments are tuples rather than a flat list. The value is a
+ * `+`-separated list of group sizes; the last entry repeats until the arguments
+ * run out, and a remainder shorter than that entry gets a line of its own.
+ */
+export const DEFAULT_ARGUMENT_GROUPS: Record<string, string> = {
+    json_build_object: '2',
+    jsonb_build_object: '2',
+    decode: '1+2'
+};
+
+const ARGUMENT_GROUP_PATTERN = /^[1-9]\d*(?:\+[1-9]\d*)*$/;
+
+function normalizeArgumentGroupTable(raw: Record<string, unknown> | undefined): Record<string, string> {
+    const groups: Record<string, string> = { ...DEFAULT_ARGUMENT_GROUPS };
+    Object.entries(raw ?? {}).forEach(([fn, spec]) => {
+        const key = fn.trim().toLowerCase().replace(/\s+/g, '');
+        if (!key || typeof spec !== 'string') return;
+        const value = spec.trim().replace(/\s+/g, '');
+        // A group size of zero switches a built-in entry off.
+        if (/^0+$/.test(value)) { delete groups[key]; return; }
+        if (!ARGUMENT_GROUP_PATTERN.test(value)) return;
+        groups[key] = value;
+    });
+    return groups;
+}
+
+/** Parse the configured group specs into their number lists, keyed by function name. */
+function parseArgumentGroups(raw: Record<string, string> | undefined): Map<string, number[]> {
+    const parsed = new Map<string, number[]>();
+    Object.entries(raw ?? {}).forEach(([fn, spec]) => {
+        const key = fn.trim().toLowerCase().replace(/\s+/g, '');
+        if (!key || typeof spec !== 'string') return;
+        const value = spec.trim().replace(/\s+/g, '');
+        if (!ARGUMENT_GROUP_PATTERN.test(value)) return;
+        parsed.set(key, value.split('+').map(Number));
+    });
+    return parsed;
+}
+
 export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     keywordCase: 'upper',
     identifierCase: 'preserve',
@@ -167,7 +213,8 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     preserveSingleLineIfBlocks: true,
     thresholds: DEFAULT_THRESHOLDS,
     normalizeDataTypes: true,
-    dataTypeAliases: DEFAULT_DATA_TYPE_ALIASES
+    dataTypeAliases: DEFAULT_DATA_TYPE_ALIASES,
+    argumentGroups: DEFAULT_ARGUMENT_GROUPS
 };
 
 /**
@@ -197,6 +244,7 @@ export function coerceFormatOptions(raw: {
     listThresholds?: unknown;
     normalizeDataTypes?: unknown;
     dataTypeAliases?: unknown;
+    argumentGroups?: unknown;
 }): FormatOptions {
     const pick = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
         typeof value === 'string' && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
@@ -208,6 +256,9 @@ export function coerceFormatOptions(raw: {
         : {};
     const dataTypeAliasTable = (raw.dataTypeAliases && typeof raw.dataTypeAliases === 'object')
         ? raw.dataTypeAliases as Record<string, unknown>
+        : {};
+    const argumentGroupTable = (raw.argumentGroups && typeof raw.argumentGroups === 'object')
+        ? raw.argumentGroups as Record<string, unknown>
         : {};
     // Accept either a "inlineMax, multilineMin" string (settings table) or a
     // { inlineMax, multilineMin } object (programmatic callers); clamp & order.
@@ -256,7 +307,8 @@ export function coerceFormatOptions(raw: {
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
             : DEFAULT_FORMAT_OPTIONS.normalizeDataTypes,
-        dataTypeAliases: aliases
+        dataTypeAliases: aliases,
+        argumentGroups: normalizeArgumentGroupTable(argumentGroupTable)
     };
 }
 
@@ -747,7 +799,7 @@ function applyCase(text: string, style: CaseStyle): string {
 }
 
 type ParenKind = 'subquery' | 'paramlist' | 'call' | 'group' | 'typemod' | 'boolgroup';
-interface ParenInfo { match: number; kind: ParenKind; argCount: number; multiline: boolean; srcMulti: boolean; }
+interface ParenInfo { match: number; kind: ParenKind; argCount: number; multiline: boolean; srcMulti: boolean; groups?: number[]; }
 interface BlockFrame { type: 'declare' | 'begin' | 'if' | 'loop' | 'case'; head: number; exception?: boolean; }
 
 /**
@@ -984,6 +1036,37 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         let j = idx + dir;
         while (j >= 0 && j < toks.length && (toks[j].type === 'lineComment' || toks[j].type === 'blockComment')) j += dir;
         return j >= 0 && j < toks.length ? toks[j] : null;
+    };
+
+    // --- Per-function argument grouping --------------------------------------
+    const argumentGroupTable = parseArgumentGroups(opt.argumentGroups);
+    /**
+     * The group spec configured for the call that `open` belongs to. A key that
+     * carries a schema (`oracle.decode`) only matches the qualified call and wins
+     * over the bare name.
+     */
+    const argumentGroupsFor = (open: number): number[] | undefined => {
+        if (argumentGroupTable.size === 0) return undefined;
+        const nameAt = (idx: number): { text: string; prev: number } | null => {
+            let j = idx;
+            while (j >= 0 && (toks[j].type === 'lineComment' || toks[j].type === 'blockComment')) j--;
+            if (j < 0) return null;
+            const tk = toks[j];
+            if (tk.type !== 'word' && tk.type !== 'quotedIdent') return null;
+            return { text: tk.text.replace(/^"(.*)"$/s, '$1').toLowerCase(), prev: j - 1 };
+        };
+        const fn = nameAt(open - 1);
+        if (!fn) return undefined;
+        let dot = fn.prev;
+        while (dot >= 0 && (toks[dot].type === 'lineComment' || toks[dot].type === 'blockComment')) dot--;
+        if (dot >= 0 && toks[dot].text === '.') {
+            const schema = nameAt(dot - 1);
+            if (schema) {
+                const qualified = argumentGroupTable.get(schema.text + '.' + fn.text);
+                if (qualified) return qualified;
+            }
+        }
+        return argumentGroupTable.get(fn.text);
     };
 
     // Parens that open a CREATE FUNCTION/PROCEDURE parameter list, plus the
@@ -1253,7 +1336,23 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 // functionCall threshold above.
                 if (!multiline && kind === 'call' && srcMulti && topOp && argCount <= 1) multiline = true;
             }
-            parenInfo.set(open, { match: close, kind, argCount, multiline, srcMulti });
+            const groups = multiline && kind === 'call' && !isInList && argCount >= 2
+                ? argumentGroupsFor(open)
+                : undefined;
+            parenInfo.set(open, { match: close, kind, argCount, multiline, srcMulti, groups });
+        }
+        // A grouped call whose arguments are themselves broken across lines would
+        // hide the tuples rather than show them, so it falls back to one argument
+        // per line. Nested parentheses are only classified once the loop is done.
+        for (const [open, info] of parenInfo) {
+            if (!info.groups) continue;
+            for (let k = open + 1; k < info.match; k++) {
+                const nested = parenInfo.get(k);
+                if ((nested && nested.multiline) || bracketInfo.get(k)?.multiline) {
+                    parenInfo.set(open, { ...info, groups: undefined });
+                    break;
+                }
+            }
         }
     }
 
@@ -1342,7 +1441,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     let mergeWhenStart = -1;
     let joinRiver = false;
     const blocks: BlockFrame[] = [];
-    const lists: { depth: number; indent: number; bdepth?: number }[] = [];
+    const lists: { depth: number; indent: number; bdepth?: number; groups?: number[]; groupIdx?: number; remaining?: number }[] = [];
     const parenStack: { kind: ParenKind; multiline: boolean; openIndent: number; savedBlockIndent?: number }[] = [];
     const bracketStack: { multiline: boolean; openIndent: number }[] = [];
 
@@ -2460,6 +2559,19 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         if (t.text === ',') {
             const top = lists[lists.length - 1];
             if (top && top.depth === pd && (top.bdepth ?? 0) === bracketDepth) {
+                if (top.groups) {
+                    // Grouped call: the line only breaks at a group boundary, so the
+                    // arguments that belong together stay next to each other.
+                    const remaining = (top.remaining ?? 1) - 1;
+                    if (remaining > 0) {
+                        top.remaining = remaining;
+                        emit(',', { text: ',', isKeyword: false, type: 'punct' });
+                        continue;
+                    }
+                    const next = Math.min((top.groupIdx ?? 0) + 1, top.groups.length - 1);
+                    top.groupIdx = next;
+                    top.remaining = top.groups[next];
+                }
                 if (opt.commaStyle === 'leading') {
                     flush();
                     lineIndent = top.indent;
@@ -2562,7 +2674,9 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 } else {
                     flush();
                     pendingIndent = openIndent + 1;
-                    lists.push({ depth: depths[i] + 1, indent: openIndent + 1 });
+                    lists.push(info?.groups
+                        ? { depth: depths[i] + 1, indent: openIndent + 1, groups: info.groups, groupIdx: 0, remaining: info.groups[0] }
+                        : { depth: depths[i] + 1, indent: openIndent + 1 });
                 }
             }
             continue;

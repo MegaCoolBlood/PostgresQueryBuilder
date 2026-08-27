@@ -22,7 +22,8 @@ const FORMAT_SETTING_BINDINGS: readonly FormatSettingBinding[] = [
     { shortKey: 'preserveSingleLineSpecialCases', configKey: 'format.preserveSingleLineSpecialCases' },
     { shortKey: 'listThresholds', configKey: 'format.listThresholds' },
     { shortKey: 'normalizeDataTypes', configKey: 'format.normalizeDataTypes' },
-    { shortKey: 'dataTypeAliases', configKey: 'format.dataTypeAliases' }
+    { shortKey: 'dataTypeAliases', configKey: 'format.dataTypeAliases' },
+    { shortKey: 'argumentGroups', configKey: 'format.argumentGroups' }
 ];
 
 export function resolveFormatOptions(settingGetter: SettingGetter, workspaceFolderPath?: string, configPath?: string): FormatOptions {

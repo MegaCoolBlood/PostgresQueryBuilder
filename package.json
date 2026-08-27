@@ -488,6 +488,18 @@
           },
           "description": "Table of phrase replacements used when normalizeDataTypes is enabled: key = verbose type phrase, value = canonical replacement (e.g. 'character varying' -> 'varchar')."
         },
+        "postgresQueryBuilder.format.argumentGroups": {
+          "type": "object",
+          "default": {
+            "json_build_object": "2",
+            "jsonb_build_object": "2",
+            "decode": "1+2"
+          },
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Functions whose arguments belong together in tuples: key = function name (optionally schema-qualified, e.g. 'oracle.decode'), value = '+'-separated group sizes whose last entry repeats. '2' puts key/value pairs on one line, '1+2' keeps the first argument alone and pairs the rest (DECODE), '1+1+2' gives the first two arguments a line each. A value of '0' switches a built-in entry off."
+        },
         "postgresQueryBuilder.format.listThresholds": {
           "type": "object",
           "default": {
