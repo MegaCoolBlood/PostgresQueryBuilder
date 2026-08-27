@@ -1926,3 +1926,61 @@ test('does not apply backslash escapes to B/X/U& literals', () => {
     assert.equal(formatSql("select x'ff' as a;"), "SELECT x'ff' AS a;");
     assert.equal(formatSql("select b'1010' as a;"), "SELECT b'1010' AS a;");
 });
+
+// ===== 3.0.3: a line comment never ends on `*` or `/` =====
+
+test('closes a line comment that ends on * with a space', () => {
+    assert.equal(formatSql('-- see table*\nselect a from t;'), '-- see table* \nSELECT a FROM t;');
+});
+
+test('closes a line comment that ends on / with a space', () => {
+    assert.equal(formatSql('-- a/b/\nselect a from t;'), '-- a/b/ \nSELECT a FROM t;');
+});
+
+test('closes a line comment that ends on */ with a space', () => {
+    assert.equal(formatSql('select a from t; -- done */'), 'SELECT a FROM t;  -- done */ ');
+});
+
+test('leaves a line comment that ends on any other character alone', () => {
+    assert.equal(formatSql('-- plain comment\nselect a from t;'), '-- plain comment\nSELECT a FROM t;');
+    assert.equal(formatSql('-- ends on a star * here\nselect a from t;'), '-- ends on a star * here\nSELECT a FROM t;');
+});
+
+test('adds exactly one space no matter how often the file is formatted', () => {
+    const once = formatSql('-- see table*\nselect a from t;');
+    assert.equal(formatSql(once), once);
+    assert.equal(formatSql(formatSql(once)), once);
+});
+
+test('pads a line comment that ends on / inside a PL/pgSQL body', () => {
+    const out = formatSql([
+        'create function f() returns void as $$',
+        'begin',
+        '-- rate = a/b/',
+        'perform do_it();',
+        'end;',
+        '$$ language plpgsql;',
+    ].join('\n'));
+    assert.ok(out.includes('-- rate = a/b/ \n'), out);
+    assert.ok(!out.includes('-- rate = a/b/  \n'), 'exactly one space is appended\n' + out);
+    assert.equal(formatSql(out), out);
+});
+
+test('does not pad code lines or block comments that end on * or /', () => {
+    assert.equal(formatSql('select a / b as c from t;'), 'SELECT a / b AS c FROM t;');
+    const block = formatSql('/* a\n   b */\nselect a from t;');
+    assert.ok(!/\*\/ \n/.test(block), 'a block comment terminator keeps its line ending\n' + block);
+});
+
+test('never pads a division that ends a line inside a string literal', () => {
+    const res = formatSqlChecked("select 'a/' as p, 1 as q;");
+    assert.ok(res.ok, res.reason);
+    assert.equal(res.text, "SELECT 'a/' AS p, 1 AS q;");
+});
+
+test('padding a line comment keeps the file semantically identical', () => {
+    const src = '-- see table*\nselect a, b from t where c = 1;';
+    const res = formatSqlChecked(src);
+    assert.ok(res.ok, res.reason);
+    assert.ok(sqlSemanticallyEqual(src, res.text));
+});

@@ -810,8 +810,10 @@ export function formatSqlChecked(input: string, options?: Partial<FormatOptions>
  * changes the code's meaning. Comments are deliberately *not* marked — their
  * whitespace is normalised away before the semantic comparison, so re-indenting
  * or trimming them is harmless.
+ *
+ * `lineCommentOut`, when given, receives the positions covered by `--` comments.
  */
-function literalMask(text: string): Uint8Array {
+function literalMask(text: string, lineCommentOut?: Uint8Array): Uint8Array {
     const n = text.length;
     const isProtected = new Uint8Array(n);
     let i = 0;
@@ -822,6 +824,7 @@ function literalMask(text: string): Uint8Array {
         if (c === '-' && c2 === '-') {
             let j = i + 2;
             while (j < n && text[j] !== '\n') j++;
+            if (lineCommentOut) for (let k = i; k < j; k++) lineCommentOut[k] = 1;
             i = j;
             continue;
         }
@@ -933,6 +936,29 @@ function stripTrailingWhitespacePreservingLiterals(text: string): string {
         }
     }
     return result;
+}
+
+/**
+ * Close a `--` comment that ends on `*` or `/` with a single space. Such a line
+ * would otherwise form `*/` or `/*` with whatever ends up next to it — most
+ * visibly when the code is wrapped in a block comment — so the last character of
+ * a line comment is never one of them.
+ */
+function padLineCommentEnds(text: string): string {
+    if (!/[*/](\n|$)/.test(text)) return text;
+    const lineComment = new Uint8Array(text.length);
+    literalMask(text, lineComment);
+    const lines = text.split('\n');
+    let pos = 0;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const last = pos + line.length - 1;
+        if (line !== '' && lineComment[last] === 1 && (text[last] === '*' || text[last] === '/')) {
+            lines[i] = line + ' ';
+        }
+        pos += line.length + 1;
+    }
+    return lines.join('\n');
 }
 
 function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string {
@@ -2611,5 +2637,6 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     let result = stripTrailingWhitespacePreservingLiterals(out.join('\n'));
     if (opt.blankLines === 'collapse') result = result.replace(/\n{3,}/g, '\n\n');
     result = result.replace(/^\n+/, '').replace(/\n+$/, '');
+    result = padLineCommentEnds(result);
     return trailingNewline ? result + '\n' : result;
 }

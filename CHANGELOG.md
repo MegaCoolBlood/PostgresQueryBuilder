@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.3
+
+- **A line comment no longer ends on `*` or `/`:** A comment such as `-- rate = a/b/` or `-- see table*` looks harmless on its own, but its last character is one half of a block comment marker. As soon as that line sits next to another one — code commented out with `/* … */`, a statement pasted into a generated block, a comment reflowed onto the line above — the `/` and the `*` next to it form `*/` or `/*`, and the enclosing comment ends or begins in a place nobody wrote. The formatter now closes such a comment with a single space, so `-- see table*` becomes `-- see table* ` and the character next to it can never complete a marker.
+
+    - **Only the affected comments change.** A comment that ends on any other character is left exactly as it is, so formatting a file does not fill it with trailing blanks. A `*` or `/` in the middle of a comment, a division in code and the `*/` that closes a block comment are untouched, and the space is added once no matter how often the file is formatted.
+
 ## 3.0.2
 
 - **A relation can now be followed from the column header, taking the whole result along:** Right-clicking a cell opens the related table filtered to that one row's value, which answers a question about a single record but says nothing about the rest of the result. The context menu of a column header now offers the same relations — foreign keys, tables pointing back at this one, and custom mappings — as *Open ... joined with ...*. Instead of a filter it opens the related table with the current one joined in, so `SELECT rk_id, rk_rk FROM regionen WHERE rk_rk = 'DEB'` becomes a query on `sap_rk_zuordnungen` whose `ON` clause carries `rk_rk = 'DEB'` over. A mapping's extra conditions and every one of its additional column pairs join in as well, the sort order of the current query is kept, and only column names the two tables actually have are accepted.
