@@ -6,6 +6,7 @@
 
     - **The changelog is now English throughout.** The entries for version 2.0.4 and older were written in German and are now translated, so that the release notes shown on the Marketplace read in one language from the first version to the last. Only the wording changed; no entry was added, removed or reordered.
     - **The extension carries an icon.** Until now it was listed with the grey placeholder square every extension without one gets, which made it hard to pick out in the extension list and in the activity bar. It now ships a 128×128 icon of its own.
+    - **The README describes what the extension has become.** It still explained the state of version 0.2, named commands that have not been called that for a year and was silent about the join builder, the exports, the bookmarked queries, the modify history, the column mappings and the formatter. It now covers all of them, in the order in which you meet them.
 
 - **A call whose arguments are tuples is now broken into tuples:** A `jsonb_build_object('p_mandt', co_mandt, 'p_counter', co_counter, …)` that grew past the wrapping threshold put every single argument on a line of its own, which tore each key away from its value and turned a compact object into a column of eighteen lines in which nothing showed what belonged together. Such a call now keeps its pairs side by side, so `'p_mandt', co_mandt,` reads as one entry. Which functions this applies to is a setting, `postgresQueryBuilder.format.argumentGroups`, so it never touches a function whose arguments are a plain list.
 

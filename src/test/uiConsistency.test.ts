@@ -360,6 +360,26 @@ test('no label outside the historical changelog entries still says the old produ
     }
 });
 
+test('the readme the Marketplace shows names the product and only commands that exist', () => {
+    const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+    assert.ok(readme.startsWith(`# ${PRODUCT_NAME}`), 'the Marketplace page does not open with the product name');
+    assert.ok(!readme.includes(OLD_PRODUCT_NAME), `README.md still says ${OLD_PRODUCT_NAME}`);
+    assert.deepEqual(germanMarkers(readme), [], 'README.md is not English');
+
+    const titles = new Set(
+        (manifest.contributes.commands as Array<{ title: string }>).map(c => c.title)
+    );
+    const commandSection = readme.slice(readme.indexOf('\n## Commands')).split('\n---')[0];
+    // One command per table row: | Title | Description |
+    const listed = [...commandSection.matchAll(/^\| ([^|]+?) \| [^|]+ \|$/gm)]
+        .map(m => m[1])
+        .filter(title => title !== 'Command' && !title.startsWith('Import /'));
+    assert.ok(listed.length > 5, 'the readme no longer lists the commands');
+    for (const title of listed) {
+        assert.ok(titles.has(title), `README.md advertises the command "${title}", which is not contributed`);
+    }
+});
+
 test('the identifiers the renaming had to leave alone are still there', () => {
     const ids = manifest.contributes.commands.map((c: { command: string }) => c.command);
     assert.ok(ids.every((id: string) => id.startsWith('postgresQueryBuilder.')), 'a command id was renamed');
