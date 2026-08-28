@@ -314,6 +314,22 @@ test('the manifest carries the product name and an icon file that exists', () =>
     assert.ok(fs.existsSync(path.join(ROOT, manifest.icon)), `the icon ${manifest.icon} is missing`);
 });
 
+test('the shipped icon is the 128x128 PNG the Marketplace asks for', () => {
+    const png = fs.readFileSync(path.join(ROOT, manifest.icon));
+    assert.equal(png.subarray(1, 4).toString('ascii'), 'PNG', 'the icon is not a PNG');
+    // The IHDR chunk starts at byte 8 and carries width and height as big-endian
+    // 32-bit integers right after its four-byte type.
+    assert.equal(png.readUInt32BE(16), 128, 'the icon is not 128 pixels wide');
+    assert.equal(png.readUInt32BE(20), 128, 'the icon is not 128 pixels high');
+    assert.ok(png.length < 200 * 1024, `the icon inflates the package: ${png.length} bytes`);
+
+    const ignore = fs.readFileSync(path.join(ROOT, '.vscodeignore'), 'utf8');
+    assert.ok(
+        ignore.includes('images/icon-source.png'),
+        'the full-resolution icon master would be packaged'
+    );
+});
+
 test('every surface that shows the product name shows the new one', () => {
     const container = manifest.contributes.viewsContainers.activitybar.find(
         (c: { id: string }) => c.id === 'postgresQueryBuilderExplorer'

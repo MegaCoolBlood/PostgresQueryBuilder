@@ -671,7 +671,7 @@
     "major": "npm run bump:major",
     "build-cli-exe": "node esbuild.js --minify && pkg dist/cli.js --targets node18-win-x64 --output dist/pgformat.exe",
     "build-cli-exe:all": "node esbuild.js --minify && pkg dist/cli.js --targets node18-win-x64,node18-linux-x64,node18-macos-x64 --out-path dist/binaries",
-    "deploy": "npx vsce package && npm run build-cli-exe",
+    "deploy": "npx --yes @vscode/vsce package && npm run build-cli-exe",
     "deploy:patch": "npm run patch && npm run deploy",
     "deploy:minor": "npm run minor && npm run deploy",
     "deploy:major": "npm run major && npm run deploy",

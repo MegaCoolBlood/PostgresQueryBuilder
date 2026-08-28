@@ -36,3 +36,7 @@ dist/pgformat.exe
 dist/pgformat.zip
 dist/binaries/**
 
+# The Marketplace uses the 128x128 images/icon.png; the full-resolution master
+# it was scaled from stays in the repository but must not be shipped.
+images/icon-source.png
+
