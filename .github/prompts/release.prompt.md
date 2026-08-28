@@ -1,5 +1,5 @@
 ---
-description: "Cut a release of the PostgreSQL Query Builder extension: run the tests, write the CHANGELOG entry in house style, refresh the README, bump the version and package the VSIX."
+description: "Cut a release of the PostgreSQL Query Booster extension: run the tests, write the CHANGELOG entry in house style, refresh the README, bump the version and package the VSIX."
 argument-hint: "patch | minor | major"
 agent: "agent"
 ---

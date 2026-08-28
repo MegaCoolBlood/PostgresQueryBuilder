@@ -1,5 +1,5 @@
 ---
-description: "Use when adding or editing an entry in CHANGELOG.md for the PostgreSQL Query Builder extension — release notes, version headings, wording and language rules."
+description: "Use when adding or editing an entry in CHANGELOG.md for the PostgreSQL Query Booster extension — release notes, version headings, wording and language rules."
 applyTo: "CHANGELOG.md"
 ---
 
@@ -49,8 +49,9 @@ no commit hashes, no issue or PR references, no contributor names.
 
 ## Language
 
-Entries are **English**. The German entries from `## 1.3.0` and older are a
-historical record: never translate, rewrite or reformat them.
+Entries are **English** — all of them, including the historical ones. The German
+entries of version 2.0.4 and older were translated in 3.0.3; never write a new
+entry in German.
 
 ## Scope
 

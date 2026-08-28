@@ -1,4 +1,4 @@
-# PostgreSQL Query Builder — agent guide
+# PostgreSQL Query Booster — agent guide
 
 VS Code extension (TypeScript, CommonJS, `strict`, VS Code ≥ 1.85, Node ≥ 18)
 for browsing, editing and querying PostgreSQL: tree views, an Excel-like Data
@@ -20,8 +20,8 @@ as a CLI and a language server.
 
 ## Non-negotiables
 
-- Every user-visible string is **English**. The German text in `CHANGELOG.md`
-  (version 1.3.0 and older) is a historical record — never translate it.
+- Every user-visible string is **English** — including `CHANGELOG.md`, whose
+  historical German entries were translated in 3.0.3.
 - No literal colours or raw `z-index` in any webview; [STYLEGUIDE.md](STYLEGUIDE.md)
   is binding and enforced by tests.
 - Command ids, view ids, setting keys and stored file formats are the user's

@@ -9,6 +9,12 @@ eslint.config.*
 tsconfig.json
 esbuild.js
 STYLEGUIDE.md
+AGENTS.md
+
+# The language server and the CLI ship as the bundles dist/server.js and
+# dist/cli.js; their sources are not read at runtime.
+server/**
+cli/**
 
 # TypeScript sources and the tsc/test output are not needed at runtime: the
 # extension entry point is the bundled dist/extension.js. The webview assets are

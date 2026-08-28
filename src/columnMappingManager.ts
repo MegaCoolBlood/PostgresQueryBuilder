@@ -458,7 +458,7 @@ export class ColumnMappingManager {
                 : Array.isArray(parsed?.mappings) ? parsed.mappings : [];
             this.workspaceMappings = arr.map(m => this.normalizeIncoming(m));
         } catch (err: unknown) {
-            vscode.window.showWarningMessage(`PostgreSQL Query Builder: could not read custom mappings file: ${getErrorMessage(err)}`);
+            vscode.window.showWarningMessage(`PostgreSQL Query Booster: could not read custom mappings file: ${getErrorMessage(err)}`);
         }
     }
 

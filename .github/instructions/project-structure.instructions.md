@@ -1,5 +1,5 @@
 ---
-description: "Use when adding, moving or renaming files in the PostgreSQL Query Builder extension, wiring a new command, view or webview surface, or running the build, test, package and deploy scripts."
+description: "Use when adding, moving or renaming files in the PostgreSQL Query Booster extension, wiring a new command, view or webview surface, or running the build, test, package and deploy scripts."
 applyTo: "src/**, server/**, cli/**, package.json, esbuild.js"
 ---
 
@@ -48,7 +48,7 @@ Run `npm test` after every source change.
 
 A command is only complete when all of these agree:
 
-1. `contributes.commands` in `package.json` — `command`, `title`, `category: "PostgreSQL Query Builder"`, `icon`.
+1. `contributes.commands` in `package.json` — `command`, `title`, `category: "PostgreSQL Query Booster"`, `icon`.
 2. `contributes.menus` / view title placement, if it is reachable from the UI.
 3. `vscode.commands.registerCommand` in `src/extension.ts`, pushed into `context.subscriptions`.
 4. The same label and icon as every other surface offering it — see [STYLEGUIDE.md](STYLEGUIDE.md) §4.

@@ -1,6 +1,6 @@
 ---
 name: data-viewer
-description: "Add or change a feature of the Data Viewer webview (the Excel-like grid) of the PostgreSQL Query Builder — toolbar buttons, dialogs, context menu, filters, cell editing, export, or any new message between src/webview/tableView.js and src/tableWebView.ts."
+description: "Add or change a feature of the Data Viewer webview (the Excel-like grid) of the PostgreSQL Query Booster — toolbar buttons, dialogs, context menu, filters, cell editing, export, or any new message between src/webview/tableView.js and src/tableWebView.ts."
 argument-hint: "What the Data Viewer should do"
 ---
 

@@ -61,7 +61,7 @@ function isFormatterEnabled(): boolean {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-    outputChannel = vscode.window.createOutputChannel('PostgreSQL Query Builder');
+    outputChannel = vscode.window.createOutputChannel('PostgreSQL Query Booster');
     context.subscriptions.push(outputChannel);
     Logger.init(outputChannel);
     outputChannel.appendLine(`[activate] starting (version ${context.extension?.packageJSON?.version ?? '?'})`);
@@ -409,7 +409,7 @@ export function activate(context: vscode.ExtensionContext) {
         outputChannel.appendLine('[activate] done');
     } catch (err: unknown) {
         outputChannel.appendLine(`[activate] FAILED: ${getErrorStack(err)}`);
-        vscode.window.showErrorMessage(`PostgreSQL Query Builder failed to activate: ${getErrorMessage(err)}`);
+        vscode.window.showErrorMessage(`PostgreSQL Query Booster failed to activate: ${getErrorMessage(err)}`);
         throw err;
     }
 

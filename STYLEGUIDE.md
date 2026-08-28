@@ -24,9 +24,9 @@ that breaks it fails `npm test`.
 5. **Every visible action stays visible.** Make a rarely used button *smaller*,
    never hide it behind an overflow menu.
 6. **Every user-visible string is English.** Manifest titles and descriptions,
-   welcome content, button labels, tooltips, placeholders and messages. The only
-   German left in the repository is the historical part of `CHANGELOG.md`, which
-   is a record and is not translated.
+   welcome content, button labels, tooltips, placeholders and messages. This
+   includes `CHANGELOG.md`, whose historical German entries were translated in
+   3.0.3 — no German is left in the repository.
 7. **The same action carries the same label and the same icon everywhere.** If
    two surfaces offer the same command, they say the same word. See section 4.
 

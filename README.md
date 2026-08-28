@@ -1,4 +1,4 @@
-# PostgreSQL Query Builder
+# PostgreSQL Query Booster
 
 A VS Code extension for browsing, editing, and managing PostgreSQL databases directly from the editor.
 

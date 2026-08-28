@@ -298,3 +298,73 @@ test('a cell can be opened in an editor from the grid and from the Single Record
     assert.ok(script.includes("case 'cellEditorValue'"), 'the webview no longer consumes the saved value');
     assert.ok(host.includes("command: 'cellEditorValue'"), 'the host no longer posts the saved value back');
 });
+
+/**
+ * 3.0.3 renamed the product to "PostgreSQL Query Booster". The name is a label
+ * and may only appear as one; every identifier the user's settings, keybindings
+ * and stored files point at keeps its old spelling.
+ */
+const PRODUCT_NAME = 'PostgreSQL Query Booster';
+const OLD_PRODUCT_NAME = 'PostgreSQL Query Builder';
+
+test('the manifest carries the product name and an icon file that exists', () => {
+    assert.equal(manifest.name, 'postgres-query-booster');
+    assert.equal(manifest.displayName, PRODUCT_NAME);
+    assert.ok(manifest.icon, 'the Marketplace listing needs an icon');
+    assert.ok(fs.existsSync(path.join(ROOT, manifest.icon)), `the icon ${manifest.icon} is missing`);
+});
+
+test('every surface that shows the product name shows the new one', () => {
+    const container = manifest.contributes.viewsContainers.activitybar.find(
+        (c: { id: string }) => c.id === 'postgresQueryBuilderExplorer'
+    );
+    assert.ok(container, 'the activity bar container is gone');
+    assert.equal(container.title, PRODUCT_NAME);
+    assert.equal(manifest.contributes.configuration.title, PRODUCT_NAME);
+    for (const command of manifest.contributes.commands as Array<{ command: string; category?: string }>) {
+        assert.equal(
+            command.category,
+            PRODUCT_NAME,
+            `${command.command} appears under a different category in the Command Palette`
+        );
+    }
+});
+
+test('no label outside the historical changelog entries still says the old product name', () => {
+    const strings: Array<[string, string]> = [];
+    collectUserVisibleStrings(manifest.contributes, ['contributes'], strings);
+    for (const [where, value] of strings) {
+        assert.ok(!value.includes(OLD_PRODUCT_NAME), `${where} still says ${OLD_PRODUCT_NAME}`);
+    }
+    for (const file of listSourceFiles(SRC)) {
+        assert.ok(
+            !fs.readFileSync(file, 'utf8').includes(OLD_PRODUCT_NAME),
+            `${path.relative(ROOT, file)} still says ${OLD_PRODUCT_NAME}`
+        );
+    }
+});
+
+test('the identifiers the renaming had to leave alone are still there', () => {
+    const ids = manifest.contributes.commands.map((c: { command: string }) => c.command);
+    assert.ok(ids.every((id: string) => id.startsWith('postgresQueryBuilder.')), 'a command id was renamed');
+    assert.ok(manifest.contributes.views.postgresQueryBuilderExplorer, 'the view container id was renamed');
+    const settings = Object.keys(manifest.contributes.configuration.properties);
+    assert.ok(settings.every(key => key.startsWith('postgresQueryBuilder.')), 'a setting key was renamed');
+    assert.equal(
+        manifest.contributes.configuration.properties['postgresQueryBuilder.savedQueriesFile'].default,
+        '.vscode/postgres-query-builder.queries.json'
+    );
+    assert.equal(
+        manifest.contributes.configuration.properties['postgresQueryBuilder.customMappingsFile'].default,
+        '.vscode/postgres-query-builder.mappings.json'
+    );
+});
+
+test('the changelog is English from the first entry to the last', () => {
+    const changelog = fs.readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8');
+    assert.deepEqual(
+        changelog.match(GERMAN_WORD) || [],
+        [],
+        'the changelog still contains German text'
+    );
+});

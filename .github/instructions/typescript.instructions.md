@@ -1,5 +1,5 @@
 ---
-description: "Use when writing or changing TypeScript in the PostgreSQL Query Builder extension host, language server or CLI — error handling, logging, typing, SQL construction and database access."
+description: "Use when writing or changing TypeScript in the PostgreSQL Query Booster extension host, language server or CLI — error handling, logging, typing, SQL construction and database access."
 applyTo: "src/*.ts, server/**/*.ts, cli/**/*.ts"
 ---
 

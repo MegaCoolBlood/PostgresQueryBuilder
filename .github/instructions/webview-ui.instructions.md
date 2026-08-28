@@ -1,5 +1,5 @@
 ---
-description: "Use when building or changing any webview UI of the PostgreSQL Query Builder extension — HTML, CSS, icons, buttons, labels or the panels in src/webview and the TypeScript modules that generate webview HTML."
+description: "Use when building or changing any webview UI of the PostgreSQL Query Booster extension — HTML, CSS, icons, buttons, labels or the panels in src/webview and the TypeScript modules that generate webview HTML."
 applyTo: "src/webview/**, src/webviewUtils.ts, src/webviewAssets.ts, src/tableWebView.ts, src/joinDialog.ts, src/sqlEditor.ts, src/searchViewProvider.ts, src/modifyHistoryViewProvider.ts, src/manageMappingsPanel.ts, src/viewDataFromSelect.ts"
 ---
 

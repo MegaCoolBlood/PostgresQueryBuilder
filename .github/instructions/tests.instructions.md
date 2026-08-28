@@ -1,5 +1,5 @@
 ---
-description: "Use when writing or fixing tests for the PostgreSQL Query Builder extension — node:test conventions, the vscode stub, testing browser assets in src/webview, and running npm test."
+description: "Use when writing or fixing tests for the PostgreSQL Query Booster extension — node:test conventions, the vscode stub, testing browser assets in src/webview, and running npm test."
 applyTo: "src/test/**/*.ts"
 ---
 

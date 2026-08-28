@@ -1,9 +1,11 @@
 {
-  "name": "postgres-query-builder",
-  "displayName": "PostgreSQL Query Builder",
+  "name": "postgres-query-booster",
+  "displayName": "PostgreSQL Query Booster",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
   "version": "3.0.3",
-  "publisher": "postgres-query-builder",
+  "publisher": "sirlychee",
+  "license": "MIT",
+  "icon": "images/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/MegaCoolBlood/PostgresQueryBuilder.git"
@@ -19,7 +21,17 @@
     "pgformat": "./dist/cli.js"
   },
   "categories": [
+    "Formatters",
+    "Programming Languages",
+    "Data Science",
     "Other"
+  ],
+  "keywords": [
+    "postgres",
+    "postgresql",
+    "sql",
+    "plpgsql",
+    "database"
   ],
   "activationEvents": [
     "onView:postgresTableExplorer",
@@ -34,7 +46,7 @@
       "activitybar": [
         {
           "id": "postgresQueryBuilderExplorer",
-          "title": "PostgreSQL Query Builder",
+          "title": "PostgreSQL Query Booster",
           "icon": "$(database)"
         }
       ]
@@ -65,130 +77,130 @@
       {
         "command": "postgresQueryBuilder.connect",
         "title": "New Connection",
-        "category": "PostgreSQL Query Builder",
+        "category": "PostgreSQL Query Booster",
         "icon": "$(add)"
       },
       {
         "command": "postgresQueryBuilder.disconnect",
         "title": "Disconnect",
-        "category": "PostgreSQL Query Builder",
+        "category": "PostgreSQL Query Booster",
         "icon": "$(plug)"
       },
       {
         "command": "postgresQueryBuilder.refreshExplorer",
         "title": "Refresh Table Explorer",
-        "category": "PostgreSQL Query Builder",
+        "category": "PostgreSQL Query Booster",
         "icon": "$(refresh)"
       },
       {
         "command": "postgresQueryBuilder.editSearchPath",
         "title": "Show / Edit search_path",
-        "category": "PostgreSQL Query Builder",
+        "category": "PostgreSQL Query Booster",
         "icon": "$(list-tree)"
       },
       {
         "command": "postgresQueryBuilder.openTable",
         "title": "Open Table",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Booster"
       },
       {
         "command": "postgresQueryBuilder.selectConnection",
         "title": "Select Connection",
-        "category": "PostgreSQL Query Builder",
+        "category": "PostgreSQL Query Booster",
         "icon": "$(database)"
       },
       {
         "command": "postgresQueryBuilder.openSqlEditor",
         "title": "Open SQL Editor",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Booster"
       },
       {
         "command": "postgresQueryBuilder.exportCustomMappings",
         "title": "Export Custom Column Mappings...",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Booster"
       },
       {
         "command": "postgresQueryBuilder.importCustomMappings",
         "title": "Import Custom Column Mappings...",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Booster"
       },
       {
         "command": "postgresQueryBuilder.openCustomMappingsFile",
         "title": "Open Workspace Custom Mappings File",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Booster"
       },
       {
         "command": "postgresQueryBuilder.manageCustomMappings",
         "title": "Manage Custom Column Mappings...",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Booster"
       },
       {
         "command": "postgresQueryBuilder.viewDataFromSelect",
         "title": "View Data",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Booster"
       },
       {
         "command": "postgresQueryBuilder.formatSql",
         "title": "Format PL/pgSQL",
-        "category": "PostgreSQL Query Builder",
+        "category": "PostgreSQL Query Booster",
         "icon": "$(symbol-namespace)"
       },
       {
         "command": "postgresQueryBuilder.exportFormatConfig",
         "title": "Export Formatter Settings to .pgformat.json",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Booster"
       },
       {
         "command": "postgresQueryBuilder.runSavedQuery",
         "title": "Run Bookmarked Query...",
-        "category": "PostgreSQL Query Builder",
+        "category": "PostgreSQL Query Booster",
         "icon": "$(play)"
       },
       {
         "command": "postgresQueryBuilder.refreshSavedQueries",
         "title": "Refresh Bookmarked Queries",
-        "category": "PostgreSQL Query Builder",
+        "category": "PostgreSQL Query Booster",
         "icon": "$(refresh)"
       },      {
         "command": "postgresQueryBuilder.renameSavedQuery",
         "title": "Rename Bookmarked Query...",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Booster"
       },
       {
         "command": "postgresQueryBuilder.editSavedQuerySql",
         "title": "Edit Bookmarked Query SQL...",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Booster"
       },
       {
         "command": "postgresQueryBuilder.duplicateSavedQuery",
         "title": "Duplicate Bookmarked Query",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Booster"
       },
       {
         "command": "postgresQueryBuilder.deleteSavedQuery",
         "title": "Delete Bookmarked Query",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Booster"
       },
       {
         "command": "postgresQueryBuilder.moveSavedQueryToWorkspace",
         "title": "Move Bookmarked Query to Workspace",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Booster"
       },
       {
         "command": "postgresQueryBuilder.moveSavedQueryToGlobal",
         "title": "Move Bookmarked Query to Personal",
-        "category": "PostgreSQL Query Builder"
+        "category": "PostgreSQL Query Booster"
       },
       {
         "command": "postgresQueryBuilder.openSavedQueriesFile",
         "title": "Open Workspace Bookmarked Queries File",
-        "category": "PostgreSQL Query Builder",
+        "category": "PostgreSQL Query Booster",
         "icon": "$(go-to-file)"
       },
       {
         "command": "postgresQueryBuilder.saveQueryFromEditor",
         "title": "Bookmark Query...",
-        "category": "PostgreSQL Query Builder",
+        "category": "PostgreSQL Query Booster",
         "icon": "$(add)"
       }
     ],
@@ -301,7 +313,7 @@
       }
     ],
     "configuration": {
-      "title": "PostgreSQL Query Builder",
+      "title": "PostgreSQL Query Booster",
       "properties": {
         "postgresQueryBuilder.defaultHost": {
           "type": "string",
