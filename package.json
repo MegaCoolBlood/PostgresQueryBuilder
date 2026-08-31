@@ -2,7 +2,7 @@
   "name": "postgres-query-booster",
   "displayName": "PostgreSQL Query Booster",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "publisher": "sirlychee",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -47,7 +47,7 @@
         {
           "id": "postgresQueryBuilderExplorer",
           "title": "PostgreSQL Query Booster",
-          "icon": "$(database)"
+          "icon": "images/postgres_underworld_crown_mono.svg"
         }
       ]
     },
@@ -161,7 +161,8 @@
         "title": "Refresh Bookmarked Queries",
         "category": "PostgreSQL Query Booster",
         "icon": "$(refresh)"
-      },      {
+      },
+      {
         "command": "postgresQueryBuilder.renameSavedQuery",
         "title": "Rename Bookmarked Query...",
         "category": "PostgreSQL Query Booster"
