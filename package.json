@@ -2,7 +2,7 @@
   "name": "postgres-query-booster",
   "displayName": "PostgreSQL Query Booster",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "3.0.4",
+  "version": "3.0.5",
   "publisher": "sirlychee",
   "license": "MIT",
   "icon": "images/icon.png",

@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.5
+
+- **Exported formatter settings now carry the tuple functions with them:** *Export Formatter Settings to .pgformat.json* writes your current settings into a file the whole team formats by, but it left `argumentGroups` out — the table that decides which calls keep their arguments in tuples. A colleague who formatted through the exported file therefore got `jsonb_build_object('p_mandt', co_mandt, …)` torn into one argument per line again, and a `"1+2"` you had configured for your own `DECODE`-style function was silently dropped. The exported file now contains `argumentGroups` like every other setting, so the same source produces the same output for everyone.
+
+    - **A built-in you switched off stays off.** `json_build_object`, `jsonb_build_object` and `decode` are grouped out of the box, so simply omitting them from the file would hand them back on the next read. Each of the three is written explicitly — with its group spec, or with `"0"` when you had disabled it — and the file therefore reproduces your settings exactly rather than approximately.
+
 ## 3.0.3
 
 - **The extension is now called PostgreSQL Query Booster:** The name change is a pure renaming for the Marketplace listing. The display name, the title of the activity bar container, the settings page and the category every command appears under in the Command Palette now read *PostgreSQL Query Booster* instead of *PostgreSQL Query Builder*, and the output channel of the same name was renamed with them. Nothing that is stored keeps the old label: command ids, view ids, every `postgresQueryBuilder.*` setting key and the workspace files `.vscode/postgres-query-builder.queries.json` and `.vscode/postgres-query-builder.mappings.json` are unchanged, so existing settings, keybindings, bookmarked queries and shared column mappings keep working without being touched.

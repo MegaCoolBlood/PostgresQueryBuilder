@@ -176,6 +176,36 @@ test('formatOptionsToRepoConfig includes dataTypeAliases as a plain object', () 
     assert.equal(aliases['character varying'], 'varchar');
 });
 
+test('formatOptionsToRepoConfig includes argumentGroups, defaults and configured entries alike', () => {
+    const opts = coerceFormatOptions({ argumentGroups: { my_pairs: '2', decode: '0' } });
+    const record = formatOptionsToRepoConfig(opts);
+    const groups = record['argumentGroups'] as Record<string, string>;
+    assert.equal(typeof groups, 'object');
+    assert.equal(groups['my_pairs'], '2');
+    assert.equal(groups['jsonb_build_object'], '2');
+    // A disabled built-in is written as "0", so reading the file back keeps it off.
+    assert.equal(groups['decode'], '0');
+});
+
+test('formatOptionsToRepoConfig round-trips argumentGroups through readRepoFormatConfig', () => {
+    const original = coerceFormatOptions({ argumentGroups: { 'oracle.decode': '1+2', decode: '0' } });
+    withTempDir(dir => {
+        const record = formatOptionsToRepoConfig(original);
+        fs.writeFileSync(path.join(dir, REPO_FORMAT_CONFIG_FILENAME), JSON.stringify(record, null, 2));
+        const restored = coerceFormatOptions(readRepoFormatConfig(dir));
+        assert.deepEqual(restored.argumentGroups, original.argumentGroups);
+    });
+});
+
+test('formatOptionsToRepoConfig writes every FormatOptions field', () => {
+    const record = formatOptionsToRepoConfig(DEFAULT_FORMAT_OPTIONS);
+    // `thresholds` is the only field whose config key differs from its option name.
+    const configKeyOf = (field: string): string => (field === 'thresholds' ? 'listThresholds' : field);
+    for (const field of Object.keys(DEFAULT_FORMAT_OPTIONS)) {
+        assert.ok(configKeyOf(field) in record, `missing from .pgformat.json export: ${field}`);
+    }
+});
+
 // ---------------------------------------------------------------------------
 // End-to-end: a .pgformat.json actually changes CREATE FUNCTION formatting
 // (this mirrors the exact code path the CLI uses:

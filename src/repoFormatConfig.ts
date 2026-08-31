@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Logger, getErrorMessage } from './logger';
-import { FormatOptions } from './plpgsqlFormatter';
+import { DEFAULT_ARGUMENT_GROUPS, FormatOptions } from './plpgsqlFormatter';
 
 /** File name that is searched for in the workspace root. */
 export const REPO_FORMAT_CONFIG_FILENAME = '.pgformat.json';
@@ -91,6 +91,12 @@ export function formatOptionsToRepoConfig(opts: FormatOptions): Record<string, u
     for (const [key, threshold] of Object.entries(opts.thresholds)) {
         listThresholds[key] = `${threshold.inlineMax}, ${threshold.multilineMin}`;
     }
+    const argumentGroups: Record<string, string> = { ...opts.argumentGroups };
+    for (const fn of Object.keys(DEFAULT_ARGUMENT_GROUPS)) {
+        // A built-in the user switched off has to be written as "0", or reading
+        // the file back would restore it from the defaults.
+        if (!(fn in argumentGroups)) { argumentGroups[fn] = '0'; }
+    }
     return {
         keywordCase: opts.keywordCase,
         identifierCase: opts.identifierCase,
@@ -104,6 +110,7 @@ export function formatOptionsToRepoConfig(opts: FormatOptions): Record<string, u
         preserveSingleLineIfBlocks: opts.preserveSingleLineIfBlocks,
         normalizeDataTypes: opts.normalizeDataTypes,
         dataTypeAliases: { ...opts.dataTypeAliases },
+        argumentGroups,
         listThresholds
     };
 }
