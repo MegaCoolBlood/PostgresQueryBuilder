@@ -13,6 +13,7 @@ import { SavedQueryExplorerProvider } from './savedQueryExplorer';
 import { SavedQueryEditor } from './savedQueryEditor';
 import { SavedQueryDragController, SavedQueryDropProvider } from './savedQueryDrop';
 import { ManageMappingsPanel } from './manageMappingsPanel';
+import { ManageBookmarksPanel } from './manageBookmarksPanel';
 import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore } from './tableStatementDrop';
 import { ViewDataFromSelect } from './viewDataFromSelect';
@@ -590,6 +591,10 @@ function registerSavedQueryCommands(context: vscode.ExtensionContext): void {
                 return;
             }
             await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+        }),
+
+        vscode.commands.registerCommand('postgresQueryBuilder.manageSavedQueries', () => {
+            ManageBookmarksPanel.show(savedQueryStore);
         })
     );
 }

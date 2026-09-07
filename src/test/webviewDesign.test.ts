@@ -12,6 +12,7 @@ const WEBVIEW = path.join(SRC, 'webview');
 const STYLE_OWNERS = [
     'joinDialog.ts',
     'manageMappingsPanel.ts',
+    'manageBookmarksPanel.ts',
     'sqlEditor.ts',
     'modifyHistoryViewProvider.ts',
     'searchViewProvider.ts',

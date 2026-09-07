@@ -388,7 +388,7 @@ test('the identifiers the renaming had to leave alone are still there', () => {
     assert.ok(settings.every(key => key.startsWith('postgresQueryBuilder.')), 'a setting key was renamed');
     assert.equal(
         manifest.contributes.configuration.properties['postgresQueryBuilder.savedQueriesFile'].default,
-        '.vscode/postgres-query-builder.queries.json'
+        'postgres-query-builder.queries.json'
     );
     assert.equal(
         manifest.contributes.configuration.properties['postgresQueryBuilder.customMappingsFile'].default,

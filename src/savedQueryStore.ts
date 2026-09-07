@@ -35,7 +35,7 @@ interface WorkspaceQueriesFile {
     queries: SavedQuery[];
 }
 
-const DEFAULT_WORKSPACE_FILE = '.vscode/postgres-query-builder.queries.json';
+const DEFAULT_WORKSPACE_FILE = 'postgres-query-builder.queries.json';
 const FILE_VERSION = 1;
 const PARAMETER_KINDS: SavedQueryParameterKind[] = ['text', 'number', 'identifier', 'raw'];
 

@@ -153,7 +153,7 @@ kept as the default.
 ## Bookmarked queries
 
 A query you will need again goes into the **Bookmarked Queries** view, either
-for yourself or into `.vscode/postgres-query-builder.queries.json`, which you
+for yourself or into `postgres-query-builder.queries.json`, which you
 can commit so that everyone on the team has it.
 
 Placeholders written as `:name` are asked for when the query runs, and the
@@ -161,6 +161,11 @@ values are remembered for the session. Every placeholder has a kind — text,
 number, identifier or raw — so its value ends up in the SQL properly quoted
 instead of merely concatenated. A bookmarked query can be dragged into an
 editor to insert its SQL.
+
+**Manage Bookmarked Queries** (the gear icon of the view) lists every bookmark
+in one table: move a selection between the personal and the workspace scope,
+and give each placeholder a description and a default value that the prompt
+then shows.
 
 ---
 
@@ -234,6 +239,7 @@ Every command lives in the Command Palette (`Ctrl+Shift+P`) under the category
 | Export Formatter Settings to .pgformat.json | Write the current formatter settings into a file |
 | Bookmark Query... | Store the statement under the cursor |
 | Run Bookmarked Query... | Pick a bookmarked query and run it |
+| Manage Bookmarked Queries... | Open the panel for scope and placeholder metadata |
 | Manage Custom Column Mappings... | Open the mappings panel |
 | Import / Export Custom Column Mappings... | Exchange mappings as a file |
 
@@ -265,7 +271,7 @@ duplicating, deleting and moving between the personal and the workspace scope.
 | `postgresQueryBuilder.alwaysQualifySchema` | `false` | Always write the schema into generated `SELECT`s |
 | `postgresQueryBuilder.alwaysQuote` | `false` | Always quote identifiers in generated `SELECT`s |
 | `postgresQueryBuilder.duplicateRowResetDefaults` | `volatile` | Which columns a duplicated row leaves to their database default |
-| `postgresQueryBuilder.savedQueriesFile` | `.vscode/postgres-query-builder.queries.json` | Where shared bookmarked queries are kept |
+| `postgresQueryBuilder.savedQueriesFile` | `postgres-query-builder.queries.json` | Where shared bookmarked queries are kept |
 | `postgresQueryBuilder.customMappingsFile` | `postgres-query-builder.mappings.json` | Where shared column mappings are kept |
 | `postgresQueryBuilder.format.enable` | `true` | Whether the formatter is offered at all |
 | `postgresQueryBuilder.format.formatOnSave` | `false` | Format SQL files when they are saved |
