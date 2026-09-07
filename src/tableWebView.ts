@@ -921,7 +921,18 @@ export class TableWebViewManager {
                 return t.columns[idx];
             };
             const quoteTarget = quoterFor(target);
-            const quoteSource = quoterFor(source);
+
+            // A query that is not a plain single-table SELECT cannot hand over
+            // its WHERE clause, so it is joined in whole as a derived table.
+            const derivedSql = typeof message.sourceSql === 'string' ? message.sourceSql.trim().replace(/;\s*$/, '') : '';
+            // Inside a derived table the columns carry the names the query gave
+            // them, which is what the webview then reports as source columns.
+            const derivedColumns: string[] = derivedSql && Array.isArray(message.sourceColumns)
+                ? message.sourceColumns.map((c: unknown) => String(c))
+                : [];
+            const quoteSource = derivedColumns.length > 0
+                ? quoterFor({ rawColumns: derivedColumns, columns: derivedColumns.map(c => `"${c.replace(/"/g, '""')}"`) })
+                : quoterFor(source);
 
             const columnPairs = pairs.map((p: { sourceColumn: string; targetColumn: string }) => ({
                 sourceColumn: quoteSource(String(p.sourceColumn)),
@@ -932,9 +943,6 @@ export class TableWebViewManager {
                     .filter((c) => c && typeof c.column === 'string' && MAPPING_CONDITION_OPERATORS.has(String(c.operator)))
                     .map((c) => ({ column: quote(String(c.column)), operator: String(c.operator), value: String(c.value ?? '') }));
 
-            // A query that is not a plain single-table SELECT cannot hand over
-            // its WHERE clause, so it is joined in whole as a derived table.
-            const derivedSql = typeof message.sourceSql === 'string' ? message.sourceSql.trim().replace(/;\s*$/, '') : '';
             const sharesColumnName = target.rawColumns.some(c => source.rawColumns.includes(c));
             let targetAlias = '';
             let sourceAlias = '';

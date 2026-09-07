@@ -1560,22 +1560,33 @@ function isLiftableSelect(sql) {
         .some(kw => findTopLevelKeywordIndex(parsed.where, kw) !== -1);
 }
 
-// Message payload for opening a related table as a JOIN.
-function relatedJoinPayload(rel, schema, table, sql) {
+// Message payload for opening a related table as a JOIN. `sources` describes
+// the result the relation was found in: `columnOf(name)` gives the name the
+// source table itself uses for a result column, `columns` lists the names the
+// result shows.
+function relatedJoinPayload(rel, schema, table, sql, sources) {
     const base = String(sql || '').trim();
     const liftable = isLiftableSelect(base);
     const parsed = liftable ? parseSqlForWhere(base) : { where: '', orderBy: '' };
+    const columnOf = (sources && sources.columnOf) || (name => name);
+    // Joined directly, the source columns are the table's own; carried over as
+    // a derived table they are the ones the query put in its result.
+    const rename = liftable ? columnOf : (name => name);
     return {
         sourceSchema: schema,
         sourceTable: table,
         targetSchema: rel.targetSchema,
         targetTable: rel.targetTable,
-        columnPairs: rel.columnPairs,
-        sourceConditions: rel.sourceConditions || [],
+        columnPairs: (rel.columnPairs || []).map(p => ({
+            sourceColumn: rename(p.sourceColumn),
+            targetColumn: p.targetColumn
+        })),
+        sourceConditions: (rel.sourceConditions || []).map(c => Object.assign({}, c, { column: rename(c.column) })),
         targetConditions: rel.targetConditions || [],
         where: parsed.where,
         orderBy: parsed.orderBy,
-        sourceSql: liftable ? '' : base
+        sourceSql: liftable ? '' : base,
+        sourceColumns: liftable ? [] : ((sources && sources.columns) || [])
     };
 }
 
@@ -3206,22 +3217,35 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // Follow a relation for the whole result: open the related table and join
     // the current one to it, carrying the current WHERE clause into the ON.
     function addHeaderRelationItems(items, colName) {
-        if (!schema || !table) return;
+        const source = headerJoinSource(colName);
+        if (!source) return;
         const relations = headerRelationTargets(colName, foreignKeys, referencingTables, customMappings);
         if (relations.length === 0) return;
         items.push({ separator: true });
         relations.forEach(rel => {
             items.push({
-                label: `Open ${rel.label} joined with ${table}`,
+                label: `Open ${rel.label} joined with ${source.table}`,
                 action: () => {
-                    const baseSql = (queryInput.value || '').trim() || `SELECT * FROM ${getDefaultTableReference()}`;
+                    const baseSql = (queryInput.value || '').trim()
+                        || (table ? `SELECT * FROM ${getDefaultTableReference()}` : '');
                     vscode.postMessage(Object.assign(
                         { command: 'openRelatedJoin' },
-                        relatedJoinPayload(rel, schema, table, baseSql)
+                        relatedJoinPayload(rel, source.schema, source.table, baseSql, {
+                            columnOf: name => (caps.columnSources[name] || {}).sourceColumn || name,
+                            columns: columns.map(c => c.name)
+                        })
                     ));
                 }
             });
         });
+    }
+
+    // The table whose relations a column header follows: the table of the
+    // panel, or the table a column of an ad-hoc query was traced back to.
+    function headerJoinSource(colName) {
+        if (schema && table) return { schema, table };
+        const source = caps.columnSources[colName];
+        return source && source.schema && source.table ? { schema: source.schema, table: source.table } : null;
     }
 
     function orderByMatchesColumn(part, colName) {

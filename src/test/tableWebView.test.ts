@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { buildCustomResultColumns, buildColumnProbeSql, buildCellEditorFileName, cellEditorFileExtension, TableWebViewManager } from '../tableWebView';
+import { QueryRunner } from '../queryRunner';
 import { ManageBookmarksPanel } from '../manageBookmarksPanel';
 import { getIconSprite, getSharedStyles } from '../webviewAssets';
 
@@ -698,4 +699,75 @@ test('query panel: a result of several tables loads no key or default metadata',
     const { panel } = await runJoinedQuery();
     assert.equal(panel.posted.some((m: any) => m.command === 'primaryKeysLoaded'), false);
     assert.equal(panel.posted.some((m: any) => m.command === 'columnDefaultsLoaded'), false);
+});
+
+/** Column data of the tables involved in the related-join tests. */
+const JOIN_TABLES: Record<string, any> = {
+    customers: { schema: 'public', table: 'customers', tableReference: 'customers', columns: ['id', 'name'], rawColumns: ['id', 'name'], firstColumnRaw: 'id' },
+    orders: { schema: 'public', table: 'orders', tableReference: 'orders', columns: ['id', 'customer_id'], rawColumns: ['id', 'customer_id'], firstColumnRaw: 'id' }
+};
+
+/** Send an openRelatedJoin message and return the query panel it opened. */
+async function openRelatedJoin(message: any) {
+    const { send } = await openCustomQueryPanel();
+    const opened = createFakePanel();
+    const originalCreate = vscodeStub.window.createWebviewPanel;
+    vscodeStub.window.createWebviewPanel = () => opened;
+    const runner: any = QueryRunner.prototype;
+    const originalJoinData = runner.getMultiTableJoinData;
+    runner.getMultiTableJoinData = async (tables: any[]) => ({ tables: tables.map(t => JOIN_TABLES[t.table]) });
+    try {
+        await send(Object.assign({ command: 'openRelatedJoin' }, message));
+    } finally {
+        vscodeStub.window.createWebviewPanel = originalCreate;
+        runner.getMultiTableJoinData = originalJoinData;
+    }
+    return opened.posted.find((m: any) => m.command === 'init');
+}
+
+test('query panel: a query joined in as a derived table is matched on its own column names', async () => {
+    const sourceSql = 'SELECT o.customer_id AS kunden_nr FROM orders o JOIN parts p ON p.id = o.part_id';
+    const init = await openRelatedJoin({
+        sourceSchema: 'public', sourceTable: 'orders',
+        targetSchema: 'public', targetTable: 'customers',
+        columnPairs: [{ sourceColumn: 'kunden_nr', targetColumn: 'id' }],
+        sourceSql,
+        sourceColumns: ['kunden_nr']
+    });
+    assert.ok(init, 'expected the joined query to be opened');
+    assert.ok(init.sql.includes(`(${sourceSql})`), `derived table missing in ${init.sql}`);
+    assert.ok(init.sql.includes('"kunden_nr"'), `the result column must be joined on: ${init.sql}`);
+});
+
+test('query panel: a column the derived query does not show is rejected', async () => {
+    const original = vscodeStub.window.showErrorMessage;
+    const errors: string[] = [];
+    vscodeStub.window.showErrorMessage = (msg: string) => { errors.push(msg); return Promise.resolve(undefined); };
+    try {
+        const init = await openRelatedJoin({
+            sourceSchema: 'public', sourceTable: 'orders',
+            targetSchema: 'public', targetTable: 'customers',
+            columnPairs: [{ sourceColumn: 'customer_id', targetColumn: 'id' }],
+            sourceSql: 'SELECT o.customer_id AS kunden_nr FROM orders o JOIN parts p ON p.id = o.part_id',
+            sourceColumns: ['kunden_nr']
+        });
+        assert.equal(init, undefined, 'no query may be opened for an unknown column');
+    } finally {
+        vscodeStub.window.showErrorMessage = original;
+    }
+    assert.match(errors.join('\n'), /Unknown column: customer_id/);
+});
+
+test('query panel: a plain single-table query is still joined to the table itself', async () => {
+    const init = await openRelatedJoin({
+        sourceSchema: 'public', sourceTable: 'orders',
+        targetSchema: 'public', targetTable: 'customers',
+        columnPairs: [{ sourceColumn: 'customer_id', targetColumn: 'id' }],
+        where: "state = 'open'",
+        sourceSql: '',
+        sourceColumns: []
+    });
+    assert.ok(init, 'expected the joined query to be opened');
+    assert.ok(!init.sql.includes('SELECT o.customer_id'), 'no derived table expected');
+    assert.ok(init.sql.includes('orders'), `the source table must be joined in: ${init.sql}`);
 });

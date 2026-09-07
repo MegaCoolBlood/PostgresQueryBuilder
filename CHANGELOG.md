@@ -25,6 +25,7 @@
 - **A column of a custom query now navigates like a column of a table:** The Data Viewer offered *Open Primary Key*, *Open Foreign Key* and the *Jump to* entries of your custom mappings only when the whole result came from exactly one table. The moment a query joined a second table — the usual case for a hand-written SELECT — the cell context menu lost every one of them, even for a column that plainly was `customers.id`, and following the data meant going back to the tree and opening that table by hand. Every table a result draws its columns from now contributes its foreign keys, the tables referencing it and its custom mappings, so the same jumps are offered on the same columns no matter how the result was assembled. The arrow button of a default mapping appears in such a result too.
 
     - **A renamed column keeps its relations.** `SELECT o.customer_id AS kunden_nr` used to lose the foreign key of `customer_id`, because the relations were looked up under the name the table gives a column while the grid knows it under the name the query gives it. Relations are now delivered under the result's names, including the columns a mapping's conditions and composite pairs refer to.
+    - **The column header follows a relation for the whole result too.** *Open … joined with …* was likewise reserved for a result from a single table. A hand-written query now offers it on every column it takes from a real table: the related table is opened and the current query is joined to it as a whole, matched on the column as the result names it.
 
 ## 3.0.5
 

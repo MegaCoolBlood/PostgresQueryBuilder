@@ -225,6 +225,34 @@ test('relatedJoinPayload carries a query it cannot take apart over whole', () =>
     assert.equal(payload.orderBy, '');
 });
 
+test('relatedJoinPayload names the source columns as the joined table knows them', () => {
+    const rel = {
+        targetSchema: 'public', targetTable: 'customers',
+        columnPairs: [{ sourceColumn: 'kunden_nr', targetColumn: 'id' }],
+        sourceConditions: [{ column: 'kunden_nr', operator: '=', value: '7' }]
+    };
+    const payload = relatedJoinPayload(rel, 'public', 'orders', 'SELECT customer_id AS kunden_nr FROM orders', {
+        columnOf: (name: string) => (name === 'kunden_nr' ? 'customer_id' : name),
+        columns: ['kunden_nr']
+    });
+    assert.deepEqual(payload.columnPairs, [{ sourceColumn: 'customer_id', targetColumn: 'id' }]);
+    assert.deepEqual(payload.sourceConditions, [{ column: 'customer_id', operator: '=', value: '7' }]);
+    assert.deepEqual(payload.sourceColumns, []);
+});
+
+test('relatedJoinPayload keeps the result names when the query is joined in as a derived table', () => {
+    const rel = {
+        targetSchema: 'public', targetTable: 'customers',
+        columnPairs: [{ sourceColumn: 'kunden_nr', targetColumn: 'id' }]
+    };
+    const payload = relatedJoinPayload(rel, 'public', 'orders', 'SELECT o.customer_id AS kunden_nr FROM orders o JOIN parts p ON p.id = o.part_id', {
+        columnOf: (name: string) => (name === 'kunden_nr' ? 'customer_id' : name),
+        columns: ['kunden_nr', 'teil']
+    });
+    assert.deepEqual(payload.columnPairs, [{ sourceColumn: 'kunden_nr', targetColumn: 'id' }]);
+    assert.deepEqual(payload.sourceColumns, ['kunden_nr', 'teil']);
+});
+
 test('describeCharacterBudget reports usage and remaining characters', () => {
     const budget = describeCharacterBudget('abcd', 'character varying(10)');
     assert.equal(budget.used, 4);
