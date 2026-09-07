@@ -153,7 +153,7 @@ function createFakePanel() {
     return panel;
 }
 
-function createManager() {
+function createManager(overrides: { connection?: any; mappings?: any[] } = {}) {
     const globalStateStore: Record<string, any> = {};
     const executed: string[] = [];
     const storagePath = fs.mkdtempSync(path.join(os.tmpdir(), 'pqb-storage-'));
@@ -177,11 +177,13 @@ function createManager() {
                 query: async (sql: string) => { executed.push(sql); return { rowCount: 1 }; },
                 release() {}
             })
-        })
+        }),
+        ...(overrides.connection || {})
     };
     const columnMappingManager: any = {
         onDidChange: () => ({ dispose() {} }),
-        getMappingsForTable: () => []
+        getMappingsForTable: (schema: string, table: string) =>
+            (overrides.mappings || []).filter((m: any) => m.sourceSchema === schema && m.sourceTable === table)
     };
     const permanentConstraintManager: any = { getConstraints: () => [] };
     // Stand-in for SavedQueryStore: records what the panel asks it to persist.
@@ -214,8 +216,8 @@ function createManager() {
 }
 
 /** Open a query panel and return it together with its message callback. */
-async function openCustomQueryPanel(savedQuery?: any) {
-    const { manager, globalStateStore, executed, savedQueryStore, storagePath } = createManager();
+async function openCustomQueryPanel(savedQuery?: any, overrides: { connection?: any; mappings?: any[] } = {}) {
+    const { manager, globalStateStore, executed, savedQueryStore, storagePath } = createManager(overrides);
     const panel = createFakePanel();
     const originalCreate = vscodeStub.window.createWebviewPanel;
     vscodeStub.window.createWebviewPanel = () => panel;
@@ -584,4 +586,116 @@ test('query panel: saving a file that belongs to no cell posts nothing', async (
     const { panel } = await openCellEditor();
     fireDidSaveTextDocument({ uri: { fsPath: path.join(os.tmpdir(), 'unrelated.txt') }, getText: () => 'x' });
     assert.equal(panel.posted.some((m: any) => m.command === 'cellEditorValue'), false);
+});
+
+// ===== Relation metadata of a joined, aliased ad-hoc query =====
+
+/**
+ * A result built from two real tables whose columns are all renamed: orders
+ * (oid 1) with id/customer_id and customers (oid 2) with id/name.
+ */
+const JOIN_FIELDS = [
+    { name: 'bestellung', dataTypeID: 23, tableID: 1, columnID: 1 },
+    { name: 'kunden_nr', dataTypeID: 23, tableID: 1, columnID: 2 },
+    { name: 'kunden_id', dataTypeID: 23, tableID: 2, columnID: 1 },
+    { name: 'kunde', dataTypeID: 25, tableID: 2, columnID: 2 }
+];
+
+/** Connection stub answering the catalog queries for {@link JOIN_FIELDS}. */
+function joinConnection() {
+    return {
+        query: async () => ({ rows: [{ bestellung: 1, kunden_nr: 7, kunden_id: 7, kunde: 'ACME' }], fields: JOIN_FIELDS }),
+        queryMetadata: async (sql: string, params?: any[]) => {
+            if (sql.includes('FROM pg_class')) {
+                return [
+                    { oid: 1, nspname: 'public', relname: 'orders', relkind: 'r' },
+                    { oid: 2, nspname: 'public', relname: 'customers', relkind: 'r' }
+                ];
+            }
+            if (sql.includes('FROM pg_attribute')) {
+                return [
+                    { attrelid: 1, attnum: 1, attname: 'id' },
+                    { attrelid: 1, attnum: 2, attname: 'customer_id' },
+                    { attrelid: 2, attnum: 1, attname: 'id' },
+                    { attrelid: 2, attnum: 2, attname: 'name' }
+                ];
+            }
+            if (sql.includes('indisprimary')) {
+                return [{ attname: 'id' }];
+            }
+            if (sql.includes('AS ref_schema')) {
+                return params?.[1] === 'orders'
+                    ? [{ fk_column: 'customer_id', ref_schema: 'public', ref_table: 'customers', ref_column: 'id' }]
+                    : [];
+            }
+            if (sql.includes('AS local_column')) {
+                return params?.[1] === 'customers'
+                    ? [{ fk_schema: 'public', fk_table: 'orders', fk_column: 'customer_id', local_column: 'id' }]
+                    : [];
+            }
+            return [];
+        }
+    };
+}
+
+/** Mapping on customers.name, conditional on customers.id. */
+const CUSTOMER_MAPPING = {
+    id: 'm1',
+    sourceSchema: 'public',
+    sourceTable: 'customers',
+    sourceColumn: 'name',
+    targetSchema: 'public',
+    targetTable: 'notes',
+    targetColumn: 'subject',
+    conditions: [{ column: 'id', operator: '=', value: '7' }],
+    additionalColumnPairs: [{ sourceColumn: 'id', targetColumn: 'customer_id' }],
+    isDefault: false
+};
+
+/** Run a joined query in a panel and return everything it posted back. */
+async function runJoinedQuery(mappings: any[] = []) {
+    const opened = await openCustomQueryPanel(undefined, { connection: joinConnection(), mappings });
+    await opened.send({ command: 'loadRows', sql: 'SELECT * FROM orders o JOIN customers c ON c.id = o.customer_id' });
+    // The relation metadata is loaded without blocking the rows.
+    await new Promise(resolve => setImmediate(resolve));
+    return opened;
+}
+
+test('query panel: foreign keys of every joined table arrive under the result column names', async () => {
+    const { panel } = await runJoinedQuery();
+    const msg = panel.posted.find((m: any) => m.command === 'foreignKeysLoaded');
+    assert.ok(msg, 'expected foreignKeysLoaded to be posted for an ad-hoc query');
+    assert.deepEqual(msg.foreignKeys, [
+        { column: 'kunden_nr', refSchema: 'public', refTable: 'customers', refColumn: 'id' }
+    ]);
+});
+
+test('query panel: referencing tables of every joined table arrive under the result column names', async () => {
+    const { panel } = await runJoinedQuery();
+    const msg = panel.posted.find((m: any) => m.command === 'referencingTablesLoaded');
+    assert.ok(msg, 'expected referencingTablesLoaded to be posted for an ad-hoc query');
+    assert.deepEqual(msg.referencingTables, [
+        { fkSchema: 'public', fkTable: 'orders', fkColumn: 'customer_id', localColumn: 'kunden_id' }
+    ]);
+});
+
+test('query panel: custom mappings of a joined table follow the renamed columns', async () => {
+    const { panel } = await runJoinedQuery([CUSTOMER_MAPPING]);
+    const msg = panel.posted.filter((m: any) => m.command === 'customMappingsLoaded').pop();
+    assert.ok(msg, 'expected customMappingsLoaded to be posted for an ad-hoc query');
+    assert.equal(msg.mappings.length, 1);
+    assert.equal(msg.mappings[0].sourceColumn, 'kunde');
+    assert.equal(msg.mappings[0].targetTable, 'notes');
+    // Conditions and composite pairs name source columns as well.
+    assert.deepEqual(msg.mappings[0].conditions, [{ column: 'kunden_id', operator: '=', value: '7' }]);
+    assert.deepEqual(msg.mappings[0].additionalColumnPairs, [{ sourceColumn: 'kunden_id', targetColumn: 'customer_id' }]);
+    // The stored mapping itself keeps the real column names.
+    assert.equal(CUSTOMER_MAPPING.sourceColumn, 'name');
+    assert.equal(CUSTOMER_MAPPING.conditions[0].column, 'id');
+});
+
+test('query panel: a result of several tables loads no key or default metadata', async () => {
+    const { panel } = await runJoinedQuery();
+    assert.equal(panel.posted.some((m: any) => m.command === 'primaryKeysLoaded'), false);
+    assert.equal(panel.posted.some((m: any) => m.command === 'columnDefaultsLoaded'), false);
 });

@@ -183,6 +183,24 @@ export function identityWarning(tables: ReadonlyArray<TableEditPlan>): string | 
 }
 
 /**
+ * Source column -> the result columns that expose it. Relation metadata is
+ * keyed by the real column names, the grid by the names of the result, which
+ * differ as soon as a query aliases a column.
+ */
+export function resultColumnAliases(plan: TableEditPlan): Map<string, string[]> {
+    const aliases = new Map<string, string[]>();
+    for (const column of plan.columns) {
+        const names = aliases.get(column.sourceColumn);
+        if (names) {
+            names.push(column.name);
+        } else {
+            aliases.set(column.sourceColumn, [column.name]);
+        }
+    }
+    return aliases;
+}
+
+/**
  * Derive the per-table write plan and the resulting view capabilities from the
  * resolved column sources.
  */

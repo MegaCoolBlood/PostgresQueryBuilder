@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
-import { QueryRunner, buildRelationListQuery, type CommitTarget } from './queryRunner';
+import { QueryRunner, buildRelationListQuery, type CommitTarget, type ForeignKeyInfo, type ReferencingTableInfo } from './queryRunner';
 import { ExportService } from './exportService';
-import { ColumnMappingManager, MAPPING_CONDITION_OPERATORS } from './columnMappingManager';
+import { ColumnMappingManager, MAPPING_CONDITION_OPERATORS, type CustomColumnMapping } from './columnMappingManager';
 import { PermanentConstraintManager } from './permanentConstraintManager';
 import { SavedQueryStore, SavedQueryParameter } from './savedQueryStore';
 import { ManageBookmarksPanel } from './manageBookmarksPanel';
@@ -10,7 +10,8 @@ import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modify
 import { buildRelatedTableJoin, deriveQualifier, type RelatedJoinCondition } from './statementBuilder';
 import { getErrorMessage } from './logger';
 import { getIconSprite, getSharedStyles } from './webviewAssets';
-import type { ViewCapabilities } from './resultSource';
+import type { ViewCapabilities, TableEditPlan } from './resultSource';
+import { resultColumnAliases } from './resultSource';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -33,6 +34,8 @@ interface PanelSession {
     historyKey: string;
     /** Columns of the result currently shown, used to check entered values. */
     columns: ResultColumn[];
+    /** Every table the current result draws columns from, once known. */
+    sourceTables: TableEditPlan[];
     disposed: boolean;
 }
 
@@ -199,11 +202,13 @@ export class TableWebViewManager {
 
     private broadcastMappings(): void {
         for (const session of this.sessions.values()) {
-            if (session.disposed || !session.schema || !session.table) {
+            if (session.disposed || session.sourceTables.length === 0) {
                 continue;
             }
-            const mappings = this.columnMappingManager.getMappingsForTable(session.schema, session.table);
-            this.post(session, { command: 'customMappingsLoaded', mappings });
+            this.post(session, {
+                command: 'customMappingsLoaded',
+                mappings: this.collectMappings(session.sourceTables)
+            });
         }
     }
 
@@ -246,7 +251,7 @@ export class TableWebViewManager {
             }
         );
 
-        const session: PanelSession = { id, panel, origin, schema, table, historyKey, columns: [], disposed: false };
+        const session: PanelSession = { id, panel, origin, schema, table, historyKey, columns: [], sourceTables: [], disposed: false };
         this.sessions.set(id, session);
 
         panel.onDidDispose(() => {
@@ -470,11 +475,11 @@ export class TableWebViewManager {
             this.post(session, { command: 'totalCountLoaded', totalCount });
         }
 
-        // Deliver relation metadata for the single source table (if any) as it
-        // resolves, so foreign-key navigation and mappings work for ad-hoc
-        // queries too.
-        if (capabilities && capabilities.schema && capabilities.table) {
-            this.loadRelationMetadata(session, capabilities.schema, capabilities.table, queryRunner);
+        // Deliver the relation metadata of every source table as it resolves,
+        // so foreign-key navigation and mappings work for ad-hoc queries too.
+        if (capabilities) {
+            session.sourceTables = capabilities.tables;
+            this.loadRelationMetadata(session, capabilities, queryRunner);
         }
 
         const pendingFilter = this.pendingFilters.get(session.id);
@@ -516,27 +521,75 @@ export class TableWebViewManager {
     }
 
     /** Load primary keys, foreign keys, referencing tables and mappings. */
-    private loadRelationMetadata(session: PanelSession, schema: string, table: string, queryRunner: QueryRunner): void {
-        queryRunner.getPrimaryKeys(schema, table)
-            .then(primaryKeys => this.post(session, { command: 'primaryKeysLoaded', primaryKeys }))
-            .catch(err => console.warn(`Failed to load PKs: ${getErrorMessage(err)}`));
+    private loadRelationMetadata(session: PanelSession, capabilities: ViewCapabilities, queryRunner: QueryRunner): void {
+        const { schema, table } = capabilities;
+        // Editing needs the key and the defaults of the one table written to.
+        if (schema && table) {
+            queryRunner.getPrimaryKeys(schema, table)
+                .then(primaryKeys => this.post(session, { command: 'primaryKeysLoaded', primaryKeys }))
+                .catch(err => console.warn(`Failed to load PKs: ${getErrorMessage(err)}`));
 
-        queryRunner.getForeignKeys(schema, table)
-            .then(foreignKeys => this.post(session, { command: 'foreignKeysLoaded', foreignKeys }))
-            .catch(err => console.warn(`Failed to load FKs: ${getErrorMessage(err)}`));
+            queryRunner.getColumnDefaults(schema, table)
+                .then(columnDefaults => this.post(session, { command: 'columnDefaultsLoaded', columnDefaults }))
+                .catch(err => console.warn(`Failed to load column defaults: ${getErrorMessage(err)}`));
+        }
 
-        queryRunner.getColumnDefaults(schema, table)
-            .then(columnDefaults => this.post(session, { command: 'columnDefaultsLoaded', columnDefaults }))
-            .catch(err => console.warn(`Failed to load column defaults: ${getErrorMessage(err)}`));
-
-        queryRunner.getReferencingTables(schema, table)
-            .then(referencingTables => this.post(session, { command: 'referencingTablesLoaded', referencingTables }))
-            .catch(err => console.warn(`Failed to load referencing tables: ${getErrorMessage(err)}`));
-
+        this.loadRelations(session, capabilities.tables, queryRunner)
+            .catch(err => console.warn(`Failed to load relations: ${getErrorMessage(err)}`));
         this.post(session, {
             command: 'customMappingsLoaded',
-            mappings: this.columnMappingManager.getMappingsForTable(schema, table)
+            mappings: this.collectMappings(capabilities.tables)
         });
+    }
+
+    /**
+     * Foreign keys and referencing tables of every source table, keyed by the
+     * result columns that expose them. A joined or aliased query therefore
+     * navigates exactly like a table opened from the tree.
+     */
+    private async loadRelations(session: PanelSession, tables: TableEditPlan[], queryRunner: QueryRunner): Promise<void> {
+        const foreignKeys: ForeignKeyInfo[] = [];
+        const referencingTables: ReferencingTableInfo[] = [];
+        for (const plan of tables) {
+            const aliases = resultColumnAliases(plan);
+            for (const fk of await queryRunner.getForeignKeys(plan.schema, plan.table)) {
+                for (const name of aliases.get(fk.column) ?? []) {
+                    foreignKeys.push({ ...fk, column: name });
+                }
+            }
+            for (const ref of await queryRunner.getReferencingTables(plan.schema, plan.table)) {
+                for (const name of aliases.get(ref.localColumn) ?? []) {
+                    referencingTables.push({ ...ref, localColumn: name });
+                }
+            }
+        }
+        this.post(session, { command: 'foreignKeysLoaded', foreignKeys });
+        this.post(session, { command: 'referencingTablesLoaded', referencingTables });
+    }
+
+    /** The mappings of every source table, keyed by the result columns. */
+    private collectMappings(tables: TableEditPlan[]): CustomColumnMapping[] {
+        const mappings: CustomColumnMapping[] = [];
+        for (const plan of tables) {
+            const aliases = resultColumnAliases(plan);
+            // A source column keeps its name unless the query renamed it.
+            const rename = (column: string): string => aliases.get(column)?.[0] ?? column;
+            for (const mapping of this.columnMappingManager.getMappingsForTable(plan.schema, plan.table)) {
+                for (const name of aliases.get(mapping.sourceColumn) ?? []) {
+                    const renamed: CustomColumnMapping = {
+                        ...mapping,
+                        sourceColumn: name,
+                        conditions: (mapping.conditions ?? []).map(c => ({ ...c, column: rename(c.column) }))
+                    };
+                    if (mapping.additionalColumnPairs) {
+                        renamed.additionalColumnPairs = mapping.additionalColumnPairs
+                            .map(p => ({ ...p, sourceColumn: rename(p.sourceColumn) }));
+                    }
+                    mappings.push(renamed);
+                }
+            }
+        }
+        return mappings;
     }
 
     /**

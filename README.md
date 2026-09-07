@@ -125,7 +125,9 @@ column as a tooltip.
 ### Getting somewhere else
 
 - A foreign key cell offers the jump to the row it points at; the context menu
-  offers the way back to every table pointing at this row.
+  offers the way back to every table pointing at this row. A hand-written or
+  joined query offers the same jumps on every column it takes from a real
+  table, even when the query renames it.
 - **Custom column mappings** add that jump where the database has no foreign
   key — including composite keys and mappings that only apply to rows meeting a
   condition. They are kept personally or shared with the workspace.

@@ -8,6 +8,7 @@ import {
     identityWarning,
     isWritableRelkind,
     resolveFieldSources,
+    resultColumnAliases,
     ColumnSource,
     RelationInfo,
     ResultFieldInfo,
@@ -197,4 +198,29 @@ test('identityWarning reports a fully unidentifiable result', () => {
         { tableOid: 100, schema: 'public', table: 'users', identityStrategy: 'none', identityColumns: [], columns: [] }
     ];
     assert.match(String(identityWarning(plan)), /cannot be identified/);
+});
+
+// ===== 3.1.0: result columns of a source column =====
+
+/** A plan whose columns are renamed by the query. */
+function aliasPlan(columns: ColumnSource[]): TableEditPlan {
+    return { tableOid: 100, schema: 'public', table: 'users', identityStrategy: 'pk', identityColumns: [], columns };
+}
+
+test('resultColumnAliases maps a source column to the name the result gives it', () => {
+    const aliases = resultColumnAliases(aliasPlan([src('user_id', 100, 'users', 'id')]));
+    assert.deepEqual(aliases.get('id'), ['user_id']);
+});
+
+test('resultColumnAliases collects every result column of the same source column', () => {
+    const aliases = resultColumnAliases(aliasPlan([
+        src('id', 100, 'users'),
+        src('id_again', 100, 'users', 'id')
+    ]));
+    assert.deepEqual(aliases.get('id'), ['id', 'id_again']);
+});
+
+test('resultColumnAliases knows nothing about a column the result does not show', () => {
+    const aliases = resultColumnAliases(aliasPlan([src('id', 100, 'users')]));
+    assert.equal(aliases.get('email'), undefined);
 });
