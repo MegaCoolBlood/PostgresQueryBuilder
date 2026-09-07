@@ -360,41 +360,6 @@
             </div>
         </div>
     </div>
-    <!-- Bookmark Query Dialog -->
-    <div class="sql-dialog-overlay" id="saveQueryDialogOverlay" style="display:none;">
-        <div class="sql-dialog constraints-dialog">
-            <div class="sql-dialog-header">
-                <span id="saveQueryDialogTitle">Bookmark Query</span>
-                <button class="btn btn-ghost btn-icon sql-dialog-close" id="saveQueryDialogClose" title="Close"><svg class="ico" aria-hidden="true"><use href="#icon-close"/></svg></button>
-            </div>
-            <div class="constraints-dialog-content">
-                <p class="mapping-hint">Write <code>:name</code> anywhere in the statement to turn it into a placeholder you are asked for every time the query runs.</p>
-                <div class="cond-row">
-                    <label for="saveQueryName">Name</label>
-                    <input type="text" id="saveQueryName" class="cond-input" placeholder="e.g. Orders in period">
-                </div>
-                <div class="cond-row">
-                    <label for="saveQueryScope">Store in</label>
-                    <select id="saveQueryScope" class="cond-select">
-                        <option value="global">Personal (only for me)</option>
-                        <option value="workspace">Workspace (shared via git)</option>
-                    </select>
-                </div>
-                <label for="saveQuerySql">SQL</label>
-                <textarea id="saveQuerySql" class="cond-input" rows="8" spellcheck="false"></textarea>
-                <p class="mapping-hint">Placeholders</p>
-                <div id="saveQueryParamsList"></div>
-                <div class="constraints-preview-wrap">
-                    <label>Existing bookmarked queries:</label>
-                    <div id="saveQueryExisting"></div>
-                </div>
-            </div>
-            <div class="sql-dialog-footer">
-                <button class="btn btn-primary" id="saveQuerySave">Save</button>
-                <button class="btn" id="saveQueryCancel">Cancel</button>
-            </div>
-        </div>
-    </div>
     <!-- Query Parameters Dialog -->
     <div class="sql-dialog-overlay" id="queryParamsDialogOverlay" style="display:none;">
         <div class="sql-dialog constraints-dialog">

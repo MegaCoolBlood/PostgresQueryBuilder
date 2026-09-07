@@ -3,6 +3,7 @@ import { vscodeStub } from './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SavedQueryEditor, savedQueryFileName, defaultSavedQueryName } from '../savedQueryEditor';
+import { ManageBookmarksPanel } from '../manageBookmarksPanel';
 import { SavedQuery, SavedQueryStore } from '../savedQueryStore';
 
 function makeQuery(over: Partial<SavedQuery> = {}): SavedQuery {
@@ -22,6 +23,7 @@ function createEditor(queries: SavedQuery[]) {
     const written: Array<{ path: string; content: string }> = [];
     const updated: Array<{ id: string; patch: any }> = [];
     const added: Array<{ query: any; scope: string }> = [];
+    const dialogs: any[] = [];
     const shown: string[] = [];
     const warnings: string[] = [];
     const infos: string[] = [];
@@ -48,8 +50,11 @@ function createEditor(queries: SavedQuery[]) {
         showInputBox: vscodeStub.window.showInputBox,
         showQuickPick: vscodeStub.window.showQuickPick,
         textDocuments: vscodeStub.workspace.textDocuments,
-        workspaceFolders: vscodeStub.workspace.workspaceFolders
+        workspaceFolders: vscodeStub.workspace.workspaceFolders,
+        showDialog: ManageBookmarksPanel.show
     };
+    // The dialog itself is covered by its own suite; here only the handover matters.
+    ManageBookmarksPanel.show = (_store: any, request?: any) => { dialogs.push(request); };
     vscodeStub.workspace.onDidSaveTextDocument = (listener: any) => {
         saveListener = listener;
         return { dispose() {} };
@@ -62,13 +67,12 @@ function createEditor(queries: SavedQuery[]) {
     vscodeStub.window.showWarningMessage = (msg: any) => { warnings.push(String(msg)); return Promise.resolve(undefined); };
     vscodeStub.window.showInformationMessage = (msg: any) => { infos.push(String(msg)); return Promise.resolve(undefined); };
 
-    const inputOptions: any[] = [];
-
     return {
         editor: new SavedQueryEditor(context, store),
         written,
         updated,
         added,
+        dialogs,
         shown,
         warnings,
         infos,
@@ -76,17 +80,6 @@ function createEditor(queries: SavedQuery[]) {
         setOpenDocuments: (paths: string[]) => {
             vscodeStub.workspace.textDocuments = paths.map(p => ({ uri: { fsPath: p } }));
         },
-        /** Answers for the name prompt and the scope prompt. */
-        answer: (name: any, scopeLabel?: string) => {
-            vscodeStub.window.showInputBox = (options: any) => {
-                inputOptions.push(options);
-                return Promise.resolve(name === '@default' ? options.value : name);
-            };
-            vscodeStub.window.showQuickPick = (items: any[]) =>
-                Promise.resolve(items.find(i => i.label === scopeLabel));
-        },
-        inputOptions,
-        withWorkspace: () => { vscodeStub.workspace.workspaceFolders = [{ uri: { fsPath: 'C:/repo' } }] as any; },
         restore: () => {
             vscodeStub.workspace.onDidSaveTextDocument = originals.onDidSave;
             (vscodeStub.workspace.fs as any).writeFile = originals.writeFile;
@@ -98,6 +91,7 @@ function createEditor(queries: SavedQuery[]) {
             vscodeStub.window.showQuickPick = originals.showQuickPick;
             vscodeStub.workspace.textDocuments = originals.textDocuments;
             vscodeStub.workspace.workspaceFolders = originals.workspaceFolders;
+            ManageBookmarksPanel.show = originals.showDialog;
         }
     };
 }
@@ -249,102 +243,37 @@ test('defaultSavedQueryName falls back once more for an unnamed document', () =>
 
 // ===== saveFromEditor =====
 
-test('saveFromEditor stores the statement at the cursor', async () => {
+test('saveFromEditor hands the statement at the cursor to the bookmark dialog', async () => {
     const ctx = createEditor([]);
     try {
-        ctx.answer('Open orders');
         await ctx.editor.saveFromEditor(fakeEditor('SELECT * FROM orders;\n', 10));
     } finally {
         ctx.restore();
     }
-    assert.equal(ctx.added.length, 1);
-    assert.equal(ctx.added[0].query.name, 'Open orders');
-    assert.match(ctx.added[0].query.sql, /^SELECT \* FROM orders/);
-    assert.equal(ctx.added[0].scope, 'global', 'without a workspace nothing can be shared');
+    assert.equal(ctx.dialogs.length, 1);
+    assert.match(ctx.dialogs[0].draft.sql, /^SELECT \* FROM orders/);
+    assert.equal(ctx.added.length, 0, 'the dialog stores the query, not the editor');
 });
 
-test('saveFromEditor stores an explicit selection verbatim', async () => {
+test('saveFromEditor hands an explicit selection over verbatim', async () => {
     const text = 'SELECT a FROM t1;\nSELECT b FROM t2;';
     const ctx = createEditor([]);
     try {
-        ctx.answer('Second');
         await ctx.editor.saveFromEditor(fakeEditor(text, 20, { start: 18, end: 35 }));
     } finally {
         ctx.restore();
     }
-    assert.equal(ctx.added[0].query.sql, 'SELECT b FROM t2');
+    assert.equal(ctx.dialogs[0].draft.sql, 'SELECT b FROM t2');
 });
 
 test('saveFromEditor proposes the first table as the name', async () => {
     const ctx = createEditor([]);
     try {
-        ctx.answer('@default');
         await ctx.editor.saveFromEditor(fakeEditor('SELECT * FROM shop.orders', 5));
     } finally {
         ctx.restore();
     }
-    assert.equal(ctx.inputOptions[0].value, 'orders');
-    assert.equal(ctx.added[0].query.name, 'orders');
-});
-
-test('saveFromEditor picks up the placeholders of the statement', async () => {
-    const ctx = createEditor([]);
-    try {
-        ctx.answer('By customer');
-        await ctx.editor.saveFromEditor(fakeEditor('SELECT * FROM orders WHERE id = :id AND name = :name', 5));
-    } finally {
-        ctx.restore();
-    }
-    assert.deepEqual(ctx.added[0].query.parameters.map((p: any) => p.name), ['id', 'name']);
-    assert.match(ctx.infos[0], /:id, :name/);
-});
-
-test('saveFromEditor asks for the scope when a workspace is open', async () => {
-    const ctx = createEditor([]);
-    try {
-        ctx.withWorkspace();
-        ctx.answer('Shared', 'Workspace');
-        await ctx.editor.saveFromEditor(fakeEditor('SELECT 1', 0));
-    } finally {
-        ctx.restore();
-    }
-    assert.equal(ctx.added[0].scope, 'workspace');
-});
-
-test('saveFromEditor aborts when the scope prompt is cancelled', async () => {
-    const ctx = createEditor([]);
-    try {
-        ctx.withWorkspace();
-        ctx.answer('Shared', undefined);
-        await ctx.editor.saveFromEditor(fakeEditor('SELECT 1', 0));
-    } finally {
-        ctx.restore();
-    }
-    assert.equal(ctx.added.length, 0);
-});
-
-test('saveFromEditor aborts when the name prompt is cancelled', async () => {
-    const ctx = createEditor([]);
-    try {
-        ctx.answer(undefined);
-        await ctx.editor.saveFromEditor(fakeEditor('SELECT 1', 0));
-    } finally {
-        ctx.restore();
-    }
-    assert.equal(ctx.added.length, 0);
-});
-
-test('saveFromEditor rejects an empty name', async () => {
-    const ctx = createEditor([]);
-    try {
-        ctx.answer('Any');
-        await ctx.editor.saveFromEditor(fakeEditor('SELECT 1', 0));
-    } finally {
-        ctx.restore();
-    }
-    const validate = ctx.inputOptions[0].validateInput;
-    assert.ok(validate('  '));
-    assert.equal(validate('Orders'), undefined);
+    assert.equal(ctx.dialogs[0].draft.name, 'orders');
 });
 
 test('saveFromEditor warns without an editor', async () => {
@@ -354,18 +283,17 @@ test('saveFromEditor warns without an editor', async () => {
     } finally {
         ctx.restore();
     }
-    assert.equal(ctx.added.length, 0);
+    assert.equal(ctx.dialogs.length, 0);
     assert.equal(ctx.warnings.length, 1);
 });
 
 test('saveFromEditor warns when there is no statement at the cursor', async () => {
     const ctx = createEditor([]);
     try {
-        ctx.answer('Any');
         await ctx.editor.saveFromEditor(fakeEditor('   \n\n', 1));
     } finally {
         ctx.restore();
     }
-    assert.equal(ctx.added.length, 0);
+    assert.equal(ctx.dialogs.length, 0);
     assert.equal(ctx.warnings.length, 1);
 });

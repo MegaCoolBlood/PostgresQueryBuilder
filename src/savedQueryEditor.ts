@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { SavedQueryStore, SavedQueryScope, mergeParameters, placeholderNames } from './savedQueryStore';
+import { SavedQueryStore, mergeParameters, placeholderNames } from './savedQueryStore';
+import { ManageBookmarksPanel } from './manageBookmarksPanel';
 import { extractSelect, extractTableNames } from './selectStatementExtractor';
 
 /** Derive a readable, filesystem-safe `.sql` file name from a query name. */
@@ -88,42 +89,12 @@ export class SavedQueryEditor {
             return;
         }
 
-        const name = await vscode.window.showInputBox({
-            prompt: 'Name of the bookmarked query',
-            value: defaultSavedQueryName(sql, doc.fileName),
-            validateInput: v => v.trim() ? undefined : 'The name must not be empty.'
+        // The dialog of the Bookmarked Queries panel is the single place where a
+        // bookmark is described, so name, scope and placeholders look the same
+        // no matter which surface the statement came from.
+        ManageBookmarksPanel.show(this.store, {
+            draft: { name: defaultSavedQueryName(sql, doc.fileName), sql }
         });
-        if (name === undefined) {
-            return;
-        }
-        const scope = await this.pickScope();
-        if (!scope) {
-            return;
-        }
-
-        const parameters = mergeParameters(sql, []);
-        await this.store.add({ name: name.trim(), sql, parameters }, scope);
-        const names = placeholderNames(sql);
-        vscode.window.showInformationMessage(
-            names.length
-                ? `Bookmarked "${name.trim()}" with the placeholders ${names.map(n => ':' + n).join(', ')}.`
-                : `Bookmarked "${name.trim()}". Write :name in the statement to turn a value into a placeholder.`
-        );
-    }
-
-    /** Ask where to store a new query; skipped when there is no workspace to share it with. */
-    private async pickScope(): Promise<SavedQueryScope | undefined> {
-        if (!vscode.workspace.workspaceFolders?.length) {
-            return 'global';
-        }
-        const picked = await vscode.window.showQuickPick(
-            [
-                { label: 'Personal', description: 'Only for me', scope: 'global' as const },
-                { label: 'Workspace', description: 'Shared via the workspace file', scope: 'workspace' as const }
-            ],
-            { placeHolder: 'Where should the query be stored?' }
-        );
-        return picked?.scope;
     }
 
     private async handleSave(doc: vscode.TextDocument): Promise<void> {

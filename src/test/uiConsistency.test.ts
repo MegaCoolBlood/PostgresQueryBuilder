@@ -250,16 +250,22 @@ test('no user visible string of the bookmark surfaces uses the old wording', () 
     }
 });
 
-test('the data viewer dialog is titled Bookmark Query', () => {
+test('the data viewer bookmarks a query through the shared dialog', () => {
     const html = fs.readFileSync(path.join(SRC, 'webview', 'tableView.html'), 'utf8');
-    assert.ok(html.includes('<span id="saveQueryDialogTitle">Bookmark Query</span>'));
     assert.ok(html.includes('title="Bookmark this query for reuse"'));
     assert.ok(!OLD_QUERY_WORDING.test(html), 'the data viewer markup still uses the old wording');
+    assert.ok(
+        !html.includes('saveQueryDialogOverlay'),
+        'the data viewer must not carry a second bookmark dialog of its own'
+    );
 
     const script = fs.readFileSync(path.join(SRC, 'webview', 'tableView.js'), 'utf8');
+    const host = fs.readFileSync(path.join(SRC, 'tableWebView.ts'), 'utf8');
+    assert.ok(script.includes("command: 'bookmarkQuery'"), 'the grid no longer asks the host for the dialog');
+    assert.ok(host.includes('bookmarkQuery: this.handleBookmarkQuery'), 'the host no longer handles bookmarkQuery');
     assert.ok(
-        script.includes("saveQueryEditId ? 'Update Bookmarked Query' : 'Bookmark Query'"),
-        'the dialog title is no longer switched between the bookmark labels'
+        host.includes('ManageBookmarksPanel.show(store'),
+        'the host must open the one dialog every bookmark is described in'
     );
 });
 

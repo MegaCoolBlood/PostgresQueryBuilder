@@ -37,6 +37,8 @@ interface Recorded {
     updates: Array<{ id: string; patch: Partial<Omit<SavedQuery, 'id'>> }>;
     moves: Array<{ id: string; scope: SavedQueryScope }>;
     deletes: string[];
+    adds: Array<{ query: Omit<SavedQuery, 'id'>; scope: SavedQueryScope }>;
+    saved: string[];
 }
 
 interface Harness {
@@ -67,6 +69,12 @@ function fakeStore(queries: SavedQuery[], recorded: Recorded, blockMove: boolean
         },
         async delete(id: string) {
             recorded.deletes.push(id);
+        },
+        async add(newQuery: Omit<SavedQuery, 'id'>, scope: SavedQueryScope) {
+            recorded.adds.push({ query: newQuery, scope });
+            const created = { ...newQuery, id: 'new-id', scope } as SavedQuery;
+            queries.push(created);
+            return created;
         }
     };
     return store as unknown as SavedQueryStore;
@@ -83,9 +91,14 @@ after(() => {
 let releasePrevious: (() => void) | undefined;
 
 /** Open the panel against a stubbed webview and capture everything it emits. */
-function openPanel(t: { after(fn: () => void): void }, queries: SavedQuery[], blockMove = false): Harness {
+function openPanel(
+    t: { after(fn: () => void): void },
+    queries: SavedQuery[],
+    blockMove = false,
+    request?: { id?: string; draft?: { name: string; sql: string } }
+): Harness {
     releasePrevious?.();
-    const recorded: Recorded = { updates: [], moves: [], deletes: [] };
+    const recorded: Recorded = { updates: [], moves: [], deletes: [], adds: [], saved: [] };
     const posted: Array<Record<string, unknown>> = [];
     let onMessage: ((msg: Record<string, unknown>) => void | Promise<void>) | undefined;
     let onDispose: (() => void) | undefined;
@@ -107,7 +120,10 @@ function openPanel(t: { after(fn: () => void): void }, queries: SavedQuery[], bl
     releasePrevious = () => onDispose?.();
     t.after(() => onDispose?.());
 
-    ManageBookmarksPanel.show(fakeStore(queries, recorded, blockMove));
+    ManageBookmarksPanel.show(
+        fakeStore(queries, recorded, blockMove),
+        request ? { ...request, onSaved: (id: string) => recorded.saved.push(id) } : undefined
+    );
     assert.ok(onMessage, 'the panel of a previous test was still open');
 
     return {
@@ -268,4 +284,64 @@ test('the panel reports a query that could not be shared instead of failing sile
 
     assert.equal(warnings.length, 1, 'the blocked move was not reported');
     assert.match(warnings[0], /no workspace folder is open/);
+});
+
+// ===== The same dialog creates a bookmark =====
+
+test('a draft opens the dialog with the placeholders of its statement', async (t) => {
+    const panel = openPanel(t, [], false, { draft: { name: 'Orders', sql: 'SELECT * FROM o WHERE d = :day' } });
+    await panel.send({ command: 'ready' });
+
+    const commands = panel.posted.map(m => m.command);
+    assert.deepEqual(commands, ['queriesLoaded', 'openDialog'], 'the dialog needs the list before it opens');
+    const dialog = panel.posted[1] as { mode: string; draft: { name: string; sql: string; parameters: unknown[] } };
+    assert.equal(dialog.mode, 'create');
+    assert.equal(dialog.draft.name, 'Orders');
+    assert.equal(dialog.draft.sql, 'SELECT * FROM o WHERE d = :day');
+    assert.deepEqual(dialog.draft.parameters, [{ name: 'day', kind: 'text' }]);
+});
+
+test('an existing query opens the same dialog in edit mode', async (t) => {
+    const panel = openPanel(t, [query('a', 'global')], false, { id: 'a' });
+    await panel.send({ command: 'ready' });
+
+    assert.deepEqual(panel.posted[1], { command: 'openDialog', mode: 'edit', id: 'a' });
+});
+
+test('the dialog stores a new query with the scope and the placeholders it was given', async (t) => {
+    const panel = openPanel(t, [], false, { draft: { name: 'Orders', sql: 'SELECT :day' } });
+    await panel.send({ command: 'ready' });
+    await panel.send({
+        command: 'createQuery',
+        updates: {
+            name: '  Orders  ',
+            sql: '  SELECT :day  ',
+            scope: 'workspace',
+            parameters: [{ name: 'day', kind: 'number', label: 'Day' }]
+        }
+    });
+
+    assert.equal(panel.recorded.adds.length, 1);
+    assert.equal(panel.recorded.adds[0].scope, 'workspace');
+    assert.equal(panel.recorded.adds[0].query.name, 'Orders');
+    assert.equal(panel.recorded.adds[0].query.sql, 'SELECT :day');
+    assert.deepEqual(panel.recorded.adds[0].query.parameters, [{ name: 'day', kind: 'number', label: 'Day' }]);
+    assert.deepEqual(panel.recorded.saved, ['new-id'], 'the caller was not told which query was stored');
+});
+
+test('a new query without a name or a statement is not stored', async (t) => {
+    const panel = openPanel(t, [], false, { draft: { name: '', sql: 'SELECT 1' } });
+    await panel.send({ command: 'createQuery', updates: { name: '   ', sql: 'SELECT 1' } });
+    await panel.send({ command: 'createQuery', updates: { name: 'Orders', sql: '   ' } });
+
+    assert.deepEqual(panel.recorded.adds, []);
+    assert.deepEqual(panel.recorded.saved, []);
+});
+
+test('editing a query reports its id back to the caller once', async (t) => {
+    const panel = openPanel(t, [query('a', 'global')], false, { id: 'a' });
+    await panel.send({ command: 'updateQuery', id: 'a', updates: { name: 'A', sql: 'SELECT 1', scope: 'global' } });
+    await panel.send({ command: 'updateQuery', id: 'a', updates: { name: 'B', sql: 'SELECT 1', scope: 'global' } });
+
+    assert.deepEqual(panel.recorded.saved, ['a'], 'the callback must not fire for later, unrelated edits');
 });

@@ -4,7 +4,8 @@ import { QueryRunner, buildRelationListQuery, type CommitTarget } from './queryR
 import { ExportService } from './exportService';
 import { ColumnMappingManager, MAPPING_CONDITION_OPERATORS } from './columnMappingManager';
 import { PermanentConstraintManager } from './permanentConstraintManager';
-import { SavedQueryStore, SavedQueryParameter, mergeParameters } from './savedQueryStore';
+import { SavedQueryStore, SavedQueryParameter } from './savedQueryStore';
+import { ManageBookmarksPanel } from './manageBookmarksPanel';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
 import { buildRelatedTableJoin, deriveQualifier, type RelatedJoinCondition } from './statementBuilder';
 import { getErrorMessage } from './logger';
@@ -187,11 +188,6 @@ export class TableWebViewManager {
         context.subscriptions.push(
             this.columnMappingManager.onDidChange(() => this.broadcastMappings())
         );
-        if (this.savedQueryStore) {
-            context.subscriptions.push(
-                this.savedQueryStore.onDidChange(() => this.broadcastSavedQueries())
-            );
-        }
 
         // A cell opened in an editor tab is written back to its panel on save,
         // and its scratch file is removed once the tab is closed.
@@ -199,13 +195,6 @@ export class TableWebViewManager {
             vscode.workspace.onDidSaveTextDocument((doc) => this.pushCellEditorValue(doc)),
             vscode.workspace.onDidCloseTextDocument((doc) => this.releaseCellEditor(doc))
         );
-    }
-
-    private broadcastSavedQueries(): void {
-        const queries = this.savedQueryStore?.getAll() ?? [];
-        for (const session of this.sessions.values()) {
-            this.post(session, { command: 'savedQueriesLoaded', queries });
-        }
     }
 
     private broadcastMappings(): void {
@@ -404,8 +393,7 @@ export class TableWebViewManager {
         updateCustomMapping: this.handleUpdateCustomMapping,
         deleteCustomMapping: this.handleDeleteCustomMapping,
         savePermanentConstraints: this.handleSavePermanentConstraints,
-        getSavedQueries: this.handleGetSavedQueries,
-        saveSavedQuery: this.handleSaveSavedQuery,
+        bookmarkQuery: this.handleBookmarkQuery,
         deleteSavedQuery: this.handleDeleteSavedQuery,
         saveSavedQueryValues: this.handleSaveSavedQueryValues,
         getTablesForTypeahead: this.handleGetTablesForTypeahead,
@@ -956,41 +944,46 @@ export class TableWebViewManager {
         );
     }
 
-    private handleGetSavedQueries(ctx: MessageContext): void {
-        this.post(ctx.session, {
-            command: 'savedQueriesLoaded',
-            queries: this.savedQueryStore?.getAll() ?? []
-        });
-    }
-
-    /** Create or update a bookmarked query from the panel's "Bookmark Query" dialog. */
-    private async handleSaveSavedQuery(ctx: MessageContext): Promise<void> {
+    /**
+     * Describe the query of this panel in the dialog of the Bookmarked Queries
+     * panel, so a bookmark is created and edited in exactly one place.
+     */
+    private handleBookmarkQuery(ctx: MessageContext): void {
         const { session, message } = ctx;
-        if (!this.savedQueryStore) {
+        const store = this.savedQueryStore;
+        if (!store) {
             return;
         }
-        const name = typeof message.name === 'string' ? message.name.trim() : '';
         const sql = typeof message.sql === 'string' ? message.sql.trim() : '';
-        if (!name || !sql) {
-            vscode.window.showErrorMessage('A bookmarked query needs a name and a SELECT statement.');
+        if (!sql) {
+            vscode.window.showWarningMessage('There is no statement to bookmark.');
             return;
         }
-        // Reconcile against the placeholders actually present, so a parameter
-        // list edited in the dialog can never drift away from the SQL.
-        const parameters = mergeParameters(sql, message.parameters);
-        const scope = message.scope === 'workspace' ? 'workspace' : 'global';
-
-        if (typeof message.id === 'string' && message.id && this.savedQueryStore.get(message.id)) {
-            await this.savedQueryStore.update(message.id, { name, sql, parameters });
-            this.post(session, { command: 'savedQuerySaved', id: message.id });
-            vscode.window.showInformationMessage(`Updated bookmarked query "${name}".`);
-            return;
-        }
-        const created = await this.savedQueryStore.add(
-            { name, sql, parameters, schema: session.schema, table: session.table }, scope
-        );
-        this.post(session, { command: 'savedQuerySaved', id: created.id });
-        vscode.window.showInformationMessage(`Bookmarked query "${name}".`);
+        // The grid adopts the stored query, so bookmarking it a second time
+        // updates it instead of piling up near-identical copies.
+        const onSaved = (id: string) => {
+            const stored = store.get(id);
+            this.post(session, {
+                command: 'savedQuerySaved',
+                id,
+                sql: stored?.sql ?? sql,
+                parameters: stored?.parameters ?? []
+            });
+        };
+        const id = typeof message.id === 'string' && message.id && store.get(message.id)
+            ? message.id
+            : undefined;
+        ManageBookmarksPanel.show(store, id
+            ? { id, onSaved }
+            : {
+                draft: {
+                    name: typeof message.name === 'string' ? message.name : '',
+                    sql,
+                    schema: session.schema,
+                    table: session.table
+                },
+                onSaved
+            });
     }
 
     private async handleDeleteSavedQuery(ctx: MessageContext): Promise<void> {

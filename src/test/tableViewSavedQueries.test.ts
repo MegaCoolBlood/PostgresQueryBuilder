@@ -14,8 +14,7 @@ const {
     parseQueryPlaceholders,
     placeholderNames,
     renderParameterValue,
-    applyQueryParameters,
-    mergeQueryParameters
+    applyQueryParameters
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== parseQueryPlaceholders (webview copy) =====
@@ -131,31 +130,6 @@ test('applyQueryParameters matches names case-insensitively', () => {
     );
 });
 
-// ===== mergeQueryParameters (webview copy) =====
-
-test('mergeQueryParameters adds new placeholders as text', () => {
-    assert.deepEqual(
-        mergeQueryParameters('SELECT :a FROM t', []),
-        [{ name: 'a', kind: 'text' }]
-    );
-});
-
-test('mergeQueryParameters keeps the settings of a still-used placeholder', () => {
-    const merged = mergeQueryParameters('SELECT :a FROM t', [
-        { name: 'a', kind: 'number', label: 'Amount', defaultValue: '1' }
-    ]);
-    assert.equal(merged[0].kind, 'number');
-    assert.equal(merged[0].label, 'Amount');
-    assert.equal(merged[0].defaultValue, '1');
-});
-
-test('mergeQueryParameters drops placeholders that vanished from the SQL', () => {
-    assert.deepEqual(
-        mergeQueryParameters('SELECT 1', [{ name: 'a', kind: 'text' }]),
-        []
-    );
-});
-
 // ===== Parity between the extension host and the webview copies =====
 
 const PARITY_SQL = [
@@ -204,27 +178,6 @@ test('webview applyQueryParameters matches the extension implementation', () => 
         assert.equal(
             applyQueryParameters(sql, values, all),
             tsApplyQueryParameters(sql, values, all),
-            sql
-        );
-    }
-});
-
-test('webview mergeQueryParameters matches the extension implementation', () => {
-    const existing = [{ name: 'b', kind: 'number' as const, label: 'B', defaultValue: '2' }];
-    for (const sql of PARITY_SQL) {
-        assert.deepEqual(
-            mergeQueryParameters(sql, existing).map((p: any) => ({
-                name: p.name,
-                kind: p.kind,
-                label: p.label,
-                defaultValue: p.defaultValue
-            })),
-            tsMergeParameters(sql, existing).map(p => ({
-                name: p.name,
-                kind: p.kind,
-                label: p.label,
-                defaultValue: p.defaultValue
-            })),
             sql
         );
     }

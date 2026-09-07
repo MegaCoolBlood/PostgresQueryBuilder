@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { buildCustomResultColumns, buildColumnProbeSql, buildCellEditorFileName, cellEditorFileExtension, TableWebViewManager } from '../tableWebView';
+import { ManageBookmarksPanel } from '../manageBookmarksPanel';
 import { getIconSprite, getSharedStyles } from '../webviewAssets';
 
 test('buildCustomResultColumns resolves type names and column comments', () => {
@@ -226,6 +227,14 @@ async function openCustomQueryPanel(savedQuery?: any) {
     return { panel, send: (m: any) => panel.state.onMessage(m), globalStateStore, executed, savedQueryStore, storagePath };
 }
 
+/** Record the dialog requests instead of opening the Bookmarked Queries panel. */
+function captureBookmarkDialog() {
+    const list: any[] = [];
+    const original = ManageBookmarksPanel.show;
+    ManageBookmarksPanel.show = (_store: any, request?: any) => { if (request) list.push(request); };
+    return { list, restore: () => { ManageBookmarksPanel.show = original; } };
+}
+
 test('query panel: Browse opens the folder dialog and reports the choice', async () => {
     const { panel, send } = await openCustomQueryPanel();
     const originalOpen = vscodeStub.window.showOpenDialog;
@@ -412,59 +421,60 @@ test('query panel: a saved query without placeholders runs immediately', async (
     assert.equal(init.savedQueryId, 'q1');
 });
 
-test('query panel: getSavedQueries posts the stored queries back', async () => {
-    const { panel, send, savedQueryStore } = await openCustomQueryPanel();
-    savedQueryStore.queries.push({ id: 'a', name: 'A', sql: 'SELECT 1', parameters: [] });
-    await send({ command: 'getSavedQueries' });
-    const msg = panel.posted.filter(m => m.command === 'savedQueriesLoaded').pop();
-    assert.ok(msg, 'expected savedQueriesLoaded');
-    assert.equal(msg.queries.length, 1);
+test('query panel: the bookmark button opens the shared dialog with the statement', async () => {
+    const { send } = await openCustomQueryPanel();
+    const requests = captureBookmarkDialog();
+    try {
+        await send({ command: 'bookmarkQuery', id: '', name: 'public.o', sql: '  SELECT 1  ' });
+    } finally {
+        requests.restore();
+    }
+    assert.equal(requests.list.length, 1);
+    assert.equal(requests.list[0].draft.sql, 'SELECT 1');
+    assert.equal(requests.list[0].draft.name, 'public.o');
 });
 
-test('query panel: saving a new query stores it and reports its id', async () => {
+test('query panel: bookmarking a running saved query edits that query', async () => {
+    const { send, savedQueryStore } = await openCustomQueryPanel();
+    savedQueryStore.queries.push({ id: 'a', name: 'A', sql: 'SELECT 1', parameters: [] });
+    const requests = captureBookmarkDialog();
+    try {
+        await send({ command: 'bookmarkQuery', id: 'a', name: 'A', sql: 'SELECT 1' });
+    } finally {
+        requests.restore();
+    }
+    assert.equal(requests.list[0].id, 'a');
+    assert.equal(requests.list[0].draft, undefined, 'an existing query is edited, not created again');
+});
+
+test('query panel: the grid adopts the query the dialog stored', async () => {
     const { panel, send, savedQueryStore } = await openCustomQueryPanel();
-    await send({
-        command: 'saveSavedQuery',
-        id: '',
-        name: '  Orders  ',
-        sql: 'SELECT * FROM o WHERE d = :day ',
-        scope: 'workspace',
-        parameters: [{ name: 'day', kind: 'text' }]
-    });
-    assert.equal(savedQueryStore.added.length, 1);
-    assert.equal(savedQueryStore.added[0].scope, 'workspace');
-    assert.equal(savedQueryStore.added[0].query.name, 'Orders');
-    assert.equal(savedQueryStore.added[0].query.sql, 'SELECT * FROM o WHERE d = :day');
+    const requests = captureBookmarkDialog();
+    try {
+        await send({ command: 'bookmarkQuery', id: '', name: 'Q', sql: 'SELECT * FROM t WHERE a = :a' });
+        savedQueryStore.queries.push({
+            id: 'new-id', name: 'Q', sql: 'SELECT * FROM t WHERE a = :a', parameters: [{ name: 'a', kind: 'text' }]
+        });
+        requests.list[0].onSaved('new-id');
+    } finally {
+        requests.restore();
+    }
     const msg = panel.posted.find(m => m.command === 'savedQuerySaved');
     assert.ok(msg, 'expected savedQuerySaved');
     assert.equal(msg.id, 'new-id');
+    assert.equal(msg.sql, 'SELECT * FROM t WHERE a = :a');
+    assert.deepEqual(msg.parameters, [{ name: 'a', kind: 'text' }]);
 });
 
-test('query panel: saving reconciles the parameters with the SQL', async () => {
-    const { send, savedQueryStore } = await openCustomQueryPanel();
-    await send({
-        command: 'saveSavedQuery',
-        name: 'Q',
-        sql: 'SELECT * FROM t WHERE a = :a',
-        parameters: [{ name: 'gone', kind: 'number' }]
-    });
-    assert.deepEqual(savedQueryStore.added[0].query.parameters, [{ name: 'a', kind: 'text' }]);
-});
-
-test('query panel: saving over an existing query updates it', async () => {
-    const { send, savedQueryStore } = await openCustomQueryPanel();
-    savedQueryStore.queries.push({ id: 'a', name: 'A', sql: 'SELECT 1', parameters: [] });
-    await send({ command: 'saveSavedQuery', id: 'a', name: 'A2', sql: 'SELECT 2' });
-    assert.equal(savedQueryStore.added.length, 0);
-    assert.equal(savedQueryStore.updated[0].id, 'a');
-    assert.equal(savedQueryStore.updated[0].patch.name, 'A2');
-});
-
-test('query panel: saving without a name is rejected', async () => {
-    const { send, savedQueryStore } = await openCustomQueryPanel();
-    await send({ command: 'saveSavedQuery', name: '  ', sql: 'SELECT 1' });
-    assert.equal(savedQueryStore.added.length, 0);
-    assert.equal(savedQueryStore.updated.length, 0);
+test('query panel: bookmarking without a statement opens no dialog', async () => {
+    const { send } = await openCustomQueryPanel();
+    const requests = captureBookmarkDialog();
+    try {
+        await send({ command: 'bookmarkQuery', id: '', name: 'Q', sql: '   ' });
+    } finally {
+        requests.restore();
+    }
+    assert.equal(requests.list.length, 0);
 });
 
 test('query panel: deleting a saved query is forwarded to the store', async () => {

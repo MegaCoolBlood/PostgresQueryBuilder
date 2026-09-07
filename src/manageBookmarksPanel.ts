@@ -34,32 +34,57 @@ export function toParameters(raw: unknown): SavedQueryParameter[] {
     return result;
 }
 
+/** Statement a new bookmark starts from, handed over by the surface it came from. */
+export interface BookmarkDraft {
+    name: string;
+    sql: string;
+    schema?: string;
+    table?: string;
+}
+
+export interface BookmarkDialogRequest {
+    /** Open the dialog on this existing query. */
+    id?: string;
+    /** Open the dialog on a new query seeded with this draft. */
+    draft?: BookmarkDraft;
+    /** Called once with the id of the query that was created or updated. */
+    onSaved?: (id: string) => void;
+}
+
 /**
  * Edits the metadata of every bookmarked query in one place: where it is
- * stored, its name, and the description, type and default value of each of its
- * `:name` placeholders. The statement itself is edited in a normal editor tab.
+ * stored, its name, the statement itself and the description, type and default
+ * value of each of its `:name` placeholders. The same dialog creates a new
+ * bookmark, so every surface that stores a query shows the same fields.
  */
 export class ManageBookmarksPanel {
     public static readonly viewType = 'postgresManageBookmarks';
     private static current: ManageBookmarksPanel | undefined;
 
-    static show(store: SavedQueryStore): void {
+    static show(store: SavedQueryStore, request?: BookmarkDialogRequest): void {
         const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
         if (ManageBookmarksPanel.current) {
             ManageBookmarksPanel.current.panel.reveal(column);
             ManageBookmarksPanel.current.refresh();
-            return;
+        } else {
+            const panel = vscode.window.createWebviewPanel(
+                ManageBookmarksPanel.viewType,
+                'Bookmarked Queries',
+                column,
+                { enableScripts: true, retainContextWhenHidden: true }
+            );
+            ManageBookmarksPanel.current = new ManageBookmarksPanel(panel, store);
         }
-        const panel = vscode.window.createWebviewPanel(
-            ManageBookmarksPanel.viewType,
-            'Bookmarked Queries',
-            column,
-            { enableScripts: true, retainContextWhenHidden: true }
-        );
-        ManageBookmarksPanel.current = new ManageBookmarksPanel(panel, store);
+        if (request) {
+            ManageBookmarksPanel.current.requestDialog(request);
+        }
     }
 
     private readonly disposables: vscode.Disposable[] = [];
+    private ready = false;
+    private pendingDialog: Record<string, unknown> | undefined;
+    private onSaved: ((id: string) => void) | undefined;
+    private draftScope: { schema?: string; table?: string } = {};
 
     private constructor(
         private readonly panel: vscode.WebviewPanel,
@@ -72,6 +97,7 @@ export class ManageBookmarksPanel {
             try {
                 switch (msg.command) {
                     case 'ready':
+                        this.ready = true;
                         this.refresh();
                         break;
                     case 'setScope': {
@@ -118,6 +144,31 @@ export class ManageBookmarksPanel {
                                 'The query could not be shared with the workspace: no workspace folder is open.'
                             );
                         }
+                        this.reportSaved(id);
+                        break;
+                    }
+                    case 'createQuery': {
+                        const updates = msg.updates || {};
+                        const name = typeof updates.name === 'string' ? updates.name.trim() : '';
+                        const sql = typeof updates.sql === 'string' ? updates.sql.trim() : '';
+                        if (!name || !sql) {
+                            vscode.window.showErrorMessage('A bookmarked query needs a name and a statement.');
+                            break;
+                        }
+                        const scope: SavedQueryScope = updates.scope === 'workspace' ? 'workspace' : 'global';
+                        const created = await this.store.add({
+                            name,
+                            sql,
+                            parameters: mergeParameters(sql, toParameters(updates.parameters)),
+                            schema: this.draftScope.schema,
+                            table: this.draftScope.table
+                        }, scope);
+                        if (this.store.get(created.id)?.scope !== scope) {
+                            vscode.window.showWarningMessage(
+                                `"${name}" was bookmarked personally: no workspace folder is open to share it with.`
+                            );
+                        }
+                        this.reportSaved(created.id);
                         break;
                     }
                     case 'editInEditor':
@@ -143,6 +194,39 @@ export class ManageBookmarksPanel {
         this.disposables.push(this.store.onDidChange(() => this.refresh()));
     }
 
+    /** Queue the dialog; the webview can only open it once it has the query list. */
+    private requestDialog(request: BookmarkDialogRequest): void {
+        this.onSaved = request.onSaved;
+        this.draftScope = { schema: request.draft?.schema, table: request.draft?.table };
+        const sql = request.draft?.sql ?? '';
+        this.pendingDialog = request.id
+            ? { command: 'openDialog', mode: 'edit', id: request.id }
+            : {
+                command: 'openDialog',
+                mode: 'create',
+                draft: { name: request.draft?.name ?? '', sql, parameters: mergeParameters(sql, []) }
+            };
+        if (this.ready) {
+            this.flushDialog();
+        }
+    }
+
+    private flushDialog(): void {
+        const message = this.pendingDialog;
+        this.pendingDialog = undefined;
+        if (message) {
+            this.panel.webview.postMessage(message);
+        }
+    }
+
+    /** Hand the id of the stored query to whoever asked for the dialog, once. */
+    private reportSaved(id: string): void {
+        const notify = this.onSaved;
+        this.onSaved = undefined;
+        this.draftScope = {};
+        notify?.(id);
+    }
+
     private refresh(): void {
         const queries = this.store.getAll().map(q => ({
             id: q.id,
@@ -157,6 +241,7 @@ export class ManageBookmarksPanel {
         const fileUri = this.store.getWorkspaceFileUri();
         const filePath = fileUri ? vscode.workspace.asRelativePath(fileUri) : '';
         this.panel.webview.postMessage({ command: 'queriesLoaded', queries, filePath });
+        this.flushDialog();
     }
 
     private dispose(): void {
@@ -241,11 +326,11 @@ export class ManageBookmarksPanel {
     </table>
     <div class="empty" id="emptyMsg" style="display:none;">No bookmarked queries yet.</div>
 
-    <!-- Edit dialog -->
+    <!-- Bookmark dialog, used for a new query as well as for an existing one -->
     <div class="dlg-overlay" id="editOverlay">
         <div class="dlg">
             <div class="dlg-header">
-                <span>Edit Bookmarked Query</span>
+                <span id="editTitle">Edit Bookmarked Query</span>
                 <button class="btn btn-ghost btn-icon" id="editClose" title="Close">${icon('close')}</button>
             </div>
             <div class="dlg-body">
@@ -280,7 +365,7 @@ export class ManageBookmarksPanel {
                 </fieldset>
             </div>
             <div class="dlg-footer">
-                <button class="btn btn-primary" id="editSave">${icon('check')}Save</button>
+                <button class="btn btn-primary" id="editSave">${icon('check')}<span id="editSaveLabel">Save</span></button>
                 <button class="btn" id="editCancel">Cancel</button>
             </div>
         </div>
@@ -435,16 +520,32 @@ export class ManageBookmarksPanel {
             vscode.postMessage({ command: 'openFile' });
         });
 
-        // ===== Edit dialog =====
+        // ===== Bookmark dialog =====
         let editingId = null;
         const editOverlay = document.getElementById('editOverlay');
         const editParams = document.getElementById('editParams');
         const noParams = document.getElementById('noParams');
+        const editInEditorBtn = document.getElementById('editInEditor');
 
         function openEditDialog(id) {
             const item = queries.find(x => x.id === id);
-            if (!item) return;
-            editingId = id;
+            if (item) openDialog(item, false);
+        }
+
+        function openCreateDialog(draft) {
+            openDialog({
+                name: draft.name || '',
+                sql: draft.sql || '',
+                scope: 'global',
+                parameters: draft.parameters || []
+            }, true);
+        }
+
+        function openDialog(item, isNew) {
+            editingId = isNew ? null : item.id;
+            document.getElementById('editTitle').textContent = isNew ? 'Bookmark Query' : 'Edit Bookmarked Query';
+            document.getElementById('editSaveLabel').textContent = isNew ? 'Bookmark' : 'Save';
+            editInEditorBtn.style.display = isNew ? 'none' : '';
             document.getElementById('editName').value = item.name || '';
             document.getElementById('editShare').checked = item.scope === 'workspace';
             document.getElementById('editSql').value = item.sql;
@@ -452,6 +553,7 @@ export class ManageBookmarksPanel {
             item.parameters.forEach(p => addParamRow(p));
             noParams.style.display = item.parameters.length ? 'none' : 'block';
             editOverlay.classList.add('open');
+            document.getElementById('editName').focus();
         }
 
         function closeEditDialog() {
@@ -499,7 +601,6 @@ export class ManageBookmarksPanel {
         });
 
         document.getElementById('editSave').addEventListener('click', () => {
-            if (!editingId) return;
             const name = document.getElementById('editName').value.trim();
             if (!name) {
                 alert('The name must not be empty.');
@@ -510,16 +611,15 @@ export class ManageBookmarksPanel {
                 alert('The statement must not be empty.');
                 return;
             }
-            vscode.postMessage({
-                command: 'updateQuery',
-                id: editingId,
-                updates: {
-                    name,
-                    sql,
-                    parameters: gatherParameters(),
-                    scope: document.getElementById('editShare').checked ? 'workspace' : 'global'
-                }
-            });
+            const updates = {
+                name,
+                sql,
+                parameters: gatherParameters(),
+                scope: document.getElementById('editShare').checked ? 'workspace' : 'global'
+            };
+            vscode.postMessage(editingId
+                ? { command: 'updateQuery', id: editingId, updates }
+                : { command: 'createQuery', updates });
             closeEditDialog();
         });
 
@@ -535,6 +635,13 @@ export class ManageBookmarksPanel {
                     fileInfo.textContent = 'No workspace folder open — only personal queries are available.';
                 }
                 render();
+            }
+            if (msg.command === 'openDialog') {
+                if (msg.mode === 'create') {
+                    openCreateDialog(msg.draft || {});
+                } else {
+                    openEditDialog(msg.id);
+                }
             }
         });
 
