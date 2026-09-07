@@ -7,11 +7,13 @@ import {
     buildEditPlan,
     isWritableRelkind,
     resolveFieldSources,
+    splitAliasedSources,
     type IdentityStrategy,
     type RelationInfo,
     type ResultFieldInfo,
     type ViewCapabilities
 } from './resultSource';
+import { resultColumnQualifiers } from './hiddenKeyColumns';
 import type { QueryResultRow, FieldDef } from 'pg';
 
 /**
@@ -362,9 +364,10 @@ export class QueryRunner {
      *
      * PostgreSQL reports the source relation and column for every field that
      * maps 1:1 onto a table column, so this works for arbitrary SELECTs — only
-     * computed columns, aggregates and literals stay unresolved.
+     * computed columns, aggregates and literals stay unresolved. It does not
+     * report the alias, so `sql` is needed to tell two joins of one table apart.
      */
-    async resolveEditPlan(fields: ReadonlyArray<ResultFieldInfo>): Promise<ViewCapabilities> {
+    async resolveEditPlan(fields: ReadonlyArray<ResultFieldInfo>, sql?: string): Promise<ViewCapabilities> {
         const oids = [...new Set(fields.map(f => f.tableID).filter((id): id is number => !!id))];
         if (oids.length === 0) {
             return buildEditPlan([], {});
@@ -401,7 +404,8 @@ export class QueryRunner {
             }
         }
 
-        const sources = resolveFieldSources(fields, relations, attributes);
+        const resolved = resolveFieldSources(fields, relations, attributes);
+        const sources = sql ? splitAliasedSources(resolved, resultColumnQualifiers(sql)) : resolved;
         const primaryKeys: Record<number, string[]> = {};
         for (const oid of oids) {
             if (!relations[oid] || readOnlyTables.has(oid)) { continue; }

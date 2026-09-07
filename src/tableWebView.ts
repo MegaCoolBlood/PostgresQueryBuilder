@@ -12,6 +12,7 @@ import { getErrorMessage } from './logger';
 import { getIconSprite, getSharedStyles } from './webviewAssets';
 import type { ViewCapabilities, TableEditPlan } from './resultSource';
 import { resultColumnAliases } from './resultSource';
+import { addHiddenKeyColumns, isHiddenKeyColumn, planHiddenKeyColumns, type HiddenKeyColumn } from './hiddenKeyColumns';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -36,6 +37,8 @@ interface PanelSession {
     columns: ResultColumn[];
     /** Every table the current result draws columns from, once known. */
     sourceTables: TableEditPlan[];
+    /** Key columns selected silently for the current query, if any. */
+    hiddenKeys: HiddenKeyColumn[];
     disposed: boolean;
 }
 
@@ -251,7 +254,7 @@ export class TableWebViewManager {
             }
         );
 
-        const session: PanelSession = { id, panel, origin, schema, table, historyKey, columns: [], sourceTables: [], disposed: false };
+        const session: PanelSession = { id, panel, origin, schema, table, historyKey, columns: [], sourceTables: [], hiddenKeys: [], disposed: false };
         this.sessions.set(id, session);
 
         panel.onDidDispose(() => {
@@ -435,8 +438,28 @@ export class TableWebViewManager {
         // Render columns + filter row immediately while the full query runs.
         let capabilities = append ? undefined : await this.tryPostEarlyColumns(session, baseSql);
 
+        // Key columns the query leaves out are selected silently, so a change
+        // is written back by the key instead of by all displayed values.
+        if (!append) {
+            session.hiddenKeys = capabilities
+                ? planHiddenKeyColumns(baseSql, capabilities.tables, session.columns.map((c) => c.name))
+                : [];
+        }
+        const execSql = addHiddenKeyColumns(sql, session.hiddenKeys);
+
         const execStart = Date.now();
-        const result = await queryRunner.executeSQL(sql);
+        let result;
+        try {
+            result = await queryRunner.executeSQL(execSql);
+        } catch (err) {
+            if (execSql === sql) {
+                throw err;
+            }
+            // The added key columns must never cost the user their result.
+            console.warn(`Falling back to the plain query: ${getErrorMessage(err)}`);
+            session.hiddenKeys = [];
+            result = await queryRunner.executeSQL(sql);
+        }
         const durationMs = Date.now() - execStart;
 
         if (this.modifyHistoryStore) {
@@ -447,11 +470,14 @@ export class TableWebViewManager {
             }
         }
 
-        const columns = await this.resolveResultColumns(result.fields || []);
-        session.columns = columns;
-        if (!append && !capabilities) {
-            capabilities = await queryRunner.resolveEditPlan(result.fields || []);
+        let columns = await this.resolveResultColumns(result.fields || []);
+        // The result now carries the key columns, so the plan has to be built
+        // from it rather than from the probe of the original query.
+        if (!append && (!capabilities || session.hiddenKeys.length > 0)) {
+            capabilities = await queryRunner.resolveEditPlan(result.fields || [], execSql);
         }
+        columns = this.hideKeyColumns(columns, capabilities);
+        session.columns = columns;
 
         const tableInfo = capabilities ? await this.adoptSourceTable(session, capabilities, queryRunner) : undefined;
 
@@ -495,11 +521,31 @@ export class TableWebViewManager {
     }
 
     /**
+     * Keep the silently selected key columns out of the view: they exist only
+     * so a row can be identified, so they are removed from the columns and from
+     * everything the grid resolves a column name through — but not from the
+     * identity columns, which is what they were selected for.
+     */
+    private hideKeyColumns(columns: ResultColumn[], capabilities: ViewCapabilities | undefined): ResultColumn[] {
+        if (capabilities) {
+            for (const name of Object.keys(capabilities.columnSources)) {
+                if (isHiddenKeyColumn(name)) {
+                    delete capabilities.columnSources[name];
+                }
+            }
+            capabilities.editableColumns = capabilities.editableColumns.filter((n) => !isHiddenKeyColumn(n));
+            for (const plan of capabilities.tables) {
+                plan.columns = plan.columns.filter((c) => !isHiddenKeyColumn(c.name));
+            }
+        }
+        return columns.filter((c) => !isHiddenKeyColumn(c.name));
+    }
+
+    /**
      * Remember the table a result came from and return the extra fields the
      * webview needs to treat it as that table's view (constraints, mappings,
      * default query).
-     */
-    private async adoptSourceTable(
+     */    private async adoptSourceTable(
         session: PanelSession,
         capabilities: ViewCapabilities,
         queryRunner: QueryRunner
@@ -840,7 +886,7 @@ export class TableWebViewManager {
             const columns = await this.resolveResultColumns(probe.fields);
             session.columns = columns;
             const queryRunner = new QueryRunner(this.connectionManager);
-            const capabilities = await queryRunner.resolveEditPlan(probe.fields);
+            const capabilities = await queryRunner.resolveEditPlan(probe.fields, statements[0]);
             this.post(session, { command: 'columnsLoaded', columns, capabilities });
             return capabilities;
         } catch {

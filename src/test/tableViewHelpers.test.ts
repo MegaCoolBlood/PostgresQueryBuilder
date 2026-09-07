@@ -22,6 +22,7 @@ const {
     formatExecutionTime,
     emptyCapabilities,
     normalizeCapabilities,
+    sourceInstanceKey,
     buildCommitTargets,
     describeRowCount,
     columnWriteMode,
@@ -1027,6 +1028,87 @@ test('buildCommitTargets splits a joined result into one target per table', () =
     assert.deepEqual(targets.map((t: any) => t.table), ['users', 'orders']);
     assert.deepEqual(targets[0].changes.updates, [{ primaryKey: { id: 1 }, changes: { name: 'Bob' } }]);
     assert.deepEqual(targets[1].changes.updates, [{ primaryKey: { id: 9 }, changes: { qty: 5 } }]);
+});
+
+test('buildCommitTargets gives every alias of a twice-joined table its own target', () => {
+    const irwaz = { name: 'IRWAZ', tableOid: 100, schema: 'leda', table: 'eaz', sourceColumn: 'eaz_wert', qualifier: 'eaz_irwaz' };
+    const irwazId = { name: '__pqb_key_0', tableOid: 100, schema: 'leda', table: 'eaz', sourceColumn: 'eaz_id', qualifier: 'eaz_irwaz' };
+    const plawaz = { name: 'PLAWAZ', tableOid: 100, schema: 'leda', table: 'eaz', sourceColumn: 'eaz_wert', qualifier: 'eaz_plawaz' };
+    const plawazId = { name: '__pqb_key_1', tableOid: 100, schema: 'leda', table: 'eaz', sourceColumn: 'eaz_id', qualifier: 'eaz_plawaz' };
+    const caps = {
+        canEdit: true, canInsert: false, canDelete: false, canConstrain: false, canMap: false,
+        schema: null, table: null, identityStrategy: 'pk',
+        tables: [
+            { tableOid: 100, schema: 'leda', table: 'eaz', qualifier: 'eaz_irwaz', identityStrategy: 'pk', identityColumns: [irwazId], columns: [irwaz, irwazId] },
+            { tableOid: 100, schema: 'leda', table: 'eaz', qualifier: 'eaz_plawaz', identityStrategy: 'pk', identityColumns: [plawazId], columns: [plawaz, plawazId] }
+        ],
+        columnSources: { IRWAZ: irwaz, PLAWAZ: plawaz },
+        editableColumns: ['IRWAZ', 'PLAWAZ'],
+        warning: null
+    };
+    const rows = [{ IRWAZ: 'a', PLAWAZ: 'b', __pqb_key_0: 11, __pqb_key_1: 22 }];
+
+    const targets = buildCommitTargets(caps, rows, { updates: [[0, { IRWAZ: 'x', PLAWAZ: 'y' }]] });
+
+    assert.equal(targets.length, 2);
+    assert.deepEqual(targets[0].changes.updates, [{ primaryKey: { eaz_id: 11 }, changes: { eaz_wert: 'x' } }]);
+    assert.deepEqual(targets[1].changes.updates, [{ primaryKey: { eaz_id: 22 }, changes: { eaz_wert: 'y' } }]);
+});
+
+test('sourceInstanceKey separates the aliases of one table', () => {
+    assert.equal(sourceInstanceKey({ tableOid: 100 }), '100');
+    assert.equal(sourceInstanceKey({ tableOid: 100, qualifier: 'a' }), '100:a');
+    assert.notEqual(sourceInstanceKey({ tableOid: 100, qualifier: 'a' }), sourceInstanceKey({ tableOid: 100, qualifier: 'b' }));
+});
+
+/** A joined result whose second table found no partner row. */
+function outerJoinCaps() {
+    const userId = { name: 'user_id', tableOid: 100, schema: 'public', table: 'users', sourceColumn: 'id' };
+    const userName = { name: 'user_name', tableOid: 100, schema: 'public', table: 'users', sourceColumn: 'name' };
+    const attrKey = { name: '__pqb_key_0', tableOid: 200, schema: 'public', table: 'attributes', sourceColumn: 'id' };
+    const attrValue = { name: 'wert', tableOid: 200, schema: 'public', table: 'attributes', sourceColumn: 'value' };
+    return {
+        canEdit: true, canInsert: false, canDelete: false, canConstrain: false, canMap: false,
+        schema: null, table: null, identityStrategy: 'pk',
+        tables: [
+            { tableOid: 100, schema: 'public', table: 'users', identityStrategy: 'pk', identityColumns: [userId], columns: [userId, userName] },
+            { tableOid: 200, schema: 'public', table: 'attributes', identityStrategy: 'pk', identityColumns: [attrKey], columns: [attrValue] }
+        ],
+        columnSources: { user_id: userId, user_name: userName, wert: attrValue },
+        editableColumns: ['user_id', 'user_name', 'wert'],
+        warning: null
+    };
+}
+
+test('buildCommitTargets inserts into a table the join found no row in', () => {
+    const rows = [{ user_id: 1, user_name: 'Alice', wert: null, __pqb_key_0: null }];
+    const targets = buildCommitTargets(outerJoinCaps(), rows, { updates: [[0, { user_name: 'Bob', wert: 'neu' }]] });
+
+    assert.deepEqual(targets.map((t: any) => t.table), ['users', 'attributes']);
+    assert.deepEqual(targets[0].changes.updates, [{ primaryKey: { id: 1 }, changes: { name: 'Bob' } }]);
+    // Nothing to update: only the edited column is inserted, without any logic.
+    assert.deepEqual(targets[1].changes.updates, []);
+    assert.deepEqual(targets[1].changes.inserts, [{ value: 'neu' }]);
+    assert.equal(targets[1].missingRowInserts, 1);
+});
+
+test('buildCommitTargets keeps updating a joined row that does exist', () => {
+    const rows = [{ user_id: 1, user_name: 'Alice', wert: 'alt', __pqb_key_0: 9 }];
+    const targets = buildCommitTargets(outerJoinCaps(), rows, { updates: [[0, { wert: 'neu' }]] });
+
+    assert.deepEqual(targets[0].changes.updates, [{ primaryKey: { id: 9 }, changes: { value: 'neu' } }]);
+    assert.deepEqual(targets[0].changes.inserts, []);
+    assert.equal(targets[0].missingRowInserts, undefined);
+});
+
+test('buildCommitWarnings explains a change that had to become an insert', () => {
+    const rows = [{ user_id: 1, user_name: 'Alice', wert: null, __pqb_key_0: null }];
+    const targets = buildCommitTargets(outerJoinCaps(), rows, { updates: [[0, { wert: 'neu' }]] });
+    const warnings = buildCommitWarnings(null, 'db', 'db', targets);
+
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /public\.attributes/);
+    assert.match(warnings[0], /INSERT/);
 });
 
 test('buildCommitTargets skips columns without a source table', () => {

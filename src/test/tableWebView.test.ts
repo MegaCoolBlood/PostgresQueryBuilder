@@ -186,7 +186,7 @@ function createManager(overrides: { connection?: any; mappings?: any[] } = {}) {
         getMappingsForTable: (schema: string, table: string) =>
             (overrides.mappings || []).filter((m: any) => m.sourceSchema === schema && m.sourceTable === table)
     };
-    const permanentConstraintManager: any = { getConstraints: () => [] };
+    const permanentConstraintManager: any = { getConstraints: () => [], getSorts: () => [] };
     // Stand-in for SavedQueryStore: records what the panel asks it to persist.
     const savedQueryStore: any = {
         queries: [] as any[],
@@ -802,4 +802,158 @@ test('query panel: carried joins without a usable alias fall back to a plain joi
     assert.ok(init, 'expected the joined query to be opened');
     assert.ok(!init.sql.includes('LEFT JOIN parts'), `no join may be carried over: ${init.sql}`);
     assert.ok(!init.sql.includes('DROP TABLE'), `the alias must not reach the SQL: ${init.sql}`);
+});
+
+// ===== Key columns selected silently for a custom query =====
+
+/** `SELECT o.customer_id AS kunden_nr FROM orders o` — the key is not shown. */
+const KEYLESS_FIELDS = [{ name: 'kunden_nr', dataTypeID: 23, tableID: 1, columnID: 2 }];
+const KEY_FIELD = { name: '__pqb_key_0', dataTypeID: 23, tableID: 1, columnID: 1 };
+const KEYLESS_SQL = 'SELECT o.customer_id AS kunden_nr FROM orders o';
+
+/**
+ * Connection stub for a result whose key column is missing: the fields of a
+ * statement depend on whether it selects the key column.
+ */
+function keylessConnection(options: { failWithKey?: boolean } = {}) {
+    const ran: string[] = [];
+    const connection = {
+        query: async (sql: string) => {
+            const withKey = sql.includes('__pqb_key_0');
+            if (sql.includes('FROM orders')) {
+                ran.push(sql);
+                if (withKey && options.failWithKey) {
+                    throw new Error('column o.id does not exist');
+                }
+            }
+            return {
+                rows: withKey ? [{ kunden_nr: 7, __pqb_key_0: 42 }] : [{ kunden_nr: 7 }],
+                fields: withKey ? [...KEYLESS_FIELDS, KEY_FIELD] : KEYLESS_FIELDS
+            };
+        },
+        queryMetadata: async (sql: string) => {
+            if (sql.includes('FROM pg_class')) {
+                return [{ oid: 1, nspname: 'public', relname: 'orders', relkind: 'r' }];
+            }
+            if (sql.includes('FROM pg_attribute')) {
+                return [{ attrelid: 1, attnum: 1, attname: 'id' }, { attrelid: 1, attnum: 2, attname: 'customer_id' }];
+            }
+            if (sql.includes('indisprimary')) {
+                return [{ attname: 'id' }];
+            }
+            return [];
+        }
+    };
+    return { connection, ran };
+}
+
+/** Load a keyless query and return the panel plus the statements it ran. */
+async function runKeylessQuery(options: { failWithKey?: boolean } = {}) {
+    const { connection, ran } = keylessConnection(options);
+    const opened = await openCustomQueryPanel(undefined, { connection });
+    await opened.send({ command: 'loadRows', sql: KEYLESS_SQL });
+    await new Promise(resolve => setImmediate(resolve));
+    const rowsLoaded = opened.panel.posted.filter((m: any) => m.command === 'rowsLoaded').pop();
+    return { ...opened, ran, rowsLoaded };
+}
+
+test('query panel: a query that hides its key selects it silently', async () => {
+    const { ran, rowsLoaded } = await runKeylessQuery();
+    assert.ok(ran.some(sql => sql.includes('o."id" AS "__pqb_key_0"')), `key column missing in ${ran.join(' | ')}`);
+    assert.ok(rowsLoaded, 'expected the rows to be posted');
+    assert.deepEqual(rowsLoaded.columns.map((c: any) => c.name), ['kunden_nr'], 'the key must not be shown');
+    assert.equal(rowsLoaded.rows[0].__pqb_key_0, 42, 'the row keeps the key value');
+});
+
+test('query panel: the silently selected key identifies the row', async () => {
+    const { rowsLoaded } = await runKeylessQuery();
+    const caps = rowsLoaded.capabilities;
+    assert.equal(caps.identityStrategy, 'pk');
+    assert.equal(caps.warning, null, 'a key was found, so nothing has to be warned about');
+    assert.deepEqual(caps.tables[0].identityColumns.map((c: any) => c.name), ['__pqb_key_0']);
+    assert.deepEqual(caps.tables[0].identityColumns.map((c: any) => c.sourceColumn), ['id']);
+    // Everything the grid resolves a column through leaves the key out.
+    assert.deepEqual(Object.keys(caps.columnSources), ['kunden_nr']);
+    assert.deepEqual(caps.editableColumns, ['kunden_nr']);
+    assert.deepEqual(caps.tables[0].columns.map((c: any) => c.name), ['kunden_nr']);
+});
+
+test('query panel: every appended page carries the key as well', async () => {
+    const opened = await runKeylessQuery();
+    await opened.send({ command: 'loadRows', sql: `${KEYLESS_SQL} LIMIT 100 OFFSET 100`, baseSql: KEYLESS_SQL, append: true });
+    const paged = opened.ran.filter(sql => sql.includes('OFFSET 100'));
+    assert.equal(paged.length, 1, 'expected the next page to be fetched');
+    assert.ok(paged[0].includes('__pqb_key_0'), `the appended page lost the key: ${paged[0]}`);
+});
+
+test('query panel: a key that cannot be selected costs no result', async () => {
+    const { ran, rowsLoaded } = await runKeylessQuery({ failWithKey: true });
+    assert.ok(ran.some(sql => !sql.includes('__pqb_key_0')), 'expected the plain query to be run');
+    assert.ok(rowsLoaded, 'the rows must arrive anyway');
+    assert.deepEqual(rowsLoaded.columns.map((c: any) => c.name), ['kunden_nr']);
+    assert.equal(rowsLoaded.capabilities.identityStrategy, 'row');
+});
+
+// ===== A table the query joins in twice =====
+
+/** Both aliases select the same column of the same table. */
+const TWICE_SQL = 'SELECT a.wert AS "IRWAZ", b.wert AS "PLAWAZ" FROM attributes a JOIN attributes b ON b.id = a.next';
+
+/** Load a query that joins one table under two aliases. */
+async function runTwiceJoinedQuery() {
+    const ran: string[] = [];
+    const field = (name: string, columnID: number) => ({ name, dataTypeID: 25, tableID: 1, columnID });
+    const connection = {
+        query: async (sql: string) => {
+            const withKeys = sql.includes('__pqb_key_0');
+            if (sql.includes('FROM attributes')) {
+                ran.push(sql);
+            }
+            return {
+                rows: withKeys
+                    ? [{ IRWAZ: 'x', PLAWAZ: 'y', __pqb_key_0: 11, __pqb_key_1: 22 }]
+                    : [{ IRWAZ: 'x', PLAWAZ: 'y' }],
+                fields: withKeys
+                    ? [field('IRWAZ', 2), field('PLAWAZ', 2), field('__pqb_key_0', 1), field('__pqb_key_1', 1)]
+                    : [field('IRWAZ', 2), field('PLAWAZ', 2)]
+            };
+        },
+        queryMetadata: async (sql: string) => {
+            if (sql.includes('FROM pg_class')) {
+                return [{ oid: 1, nspname: 'public', relname: 'attributes', relkind: 'r' }];
+            }
+            if (sql.includes('FROM pg_attribute')) {
+                return [{ attrelid: 1, attnum: 1, attname: 'id' }, { attrelid: 1, attnum: 2, attname: 'wert' }];
+            }
+            if (sql.includes('indisprimary')) {
+                return [{ attname: 'id' }];
+            }
+            return [];
+        }
+    };
+    const opened = await openCustomQueryPanel(undefined, { connection });
+    await opened.send({ command: 'loadRows', sql: TWICE_SQL });
+    await new Promise(resolve => setImmediate(resolve));
+    return { ran, rowsLoaded: opened.panel.posted.filter((m: any) => m.command === 'rowsLoaded').pop() };
+}
+
+test('query panel: a table joined in twice gets a key per alias', async () => {
+    const { ran, rowsLoaded } = await runTwiceJoinedQuery();
+    const executed = ran.find(sql => sql.includes('__pqb_key_0')) || '';
+    assert.ok(executed.includes('a."id" AS "__pqb_key_0"'), `the first alias lost its key: ${executed}`);
+    assert.ok(executed.includes('b."id" AS "__pqb_key_1"'), `the second alias lost its key: ${executed}`);
+    assert.ok(rowsLoaded, 'expected the rows to be posted');
+    assert.deepEqual(rowsLoaded.columns.map((c: any) => c.name), ['IRWAZ', 'PLAWAZ']);
+});
+
+test('query panel: each alias of a twice-joined table identifies its own row', async () => {
+    const { rowsLoaded } = await runTwiceJoinedQuery();
+    const tables = rowsLoaded.capabilities.tables;
+
+    assert.equal(tables.length, 2, 'both occurrences must be planned separately');
+    assert.deepEqual(tables.map((t: any) => t.qualifier), ['a', 'b']);
+    assert.deepEqual(tables.map((t: any) => t.identityStrategy), ['pk', 'pk']);
+    assert.deepEqual(tables.map((t: any) => t.identityColumns[0].name), ['__pqb_key_0', '__pqb_key_1']);
+    assert.deepEqual(tables.map((t: any) => t.columns.map((c: any) => c.name)), [['IRWAZ'], ['PLAWAZ']]);
+    assert.equal(rowsLoaded.capabilities.warning, null);
 });

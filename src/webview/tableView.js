@@ -1416,6 +1416,13 @@ function normalizeCapabilities(raw) {
     };
 }
 
+// Key of the table occurrence a column or plan belongs to. A table joined in
+// twice carries the alias, because its two rows must not share one identity.
+function sourceInstanceKey(source) {
+    if (!source) { return ''; }
+    return source.qualifier ? source.tableOid + ':' + source.qualifier : String(source.tableOid);
+}
+
 // Group the pending edits of the grid by the table each edited column really
 // belongs to, so a result joined from several tables writes every change back
 // to its own table within one transaction.
@@ -1428,12 +1435,13 @@ function buildCommitTargets(caps, rows, edits) {
     const capabilities = normalizeCapabilities(caps);
     const sources = capabilities.columnSources;
     const tables = capabilities.tables;
-    const planFor = (tableOid) => tables.find(t => t.tableOid === tableOid) || null;
+    const planFor = (key) => tables.find(t => sourceInstanceKey(t) === key) || null;
     const targets = new Map();
 
     function targetFor(plan) {
-        if (!targets.has(plan.tableOid)) {
-            targets.set(plan.tableOid, {
+        const key = sourceInstanceKey(plan);
+        if (!targets.has(key)) {
+            targets.set(key, {
                 tableOid: plan.tableOid,
                 schema: plan.schema,
                 table: plan.table,
@@ -1441,7 +1449,7 @@ function buildCommitTargets(caps, rows, edits) {
                 changes: { updates: [], inserts: [], deletes: [] }
             });
         }
-        return targets.get(plan.tableOid);
+        return targets.get(key);
     }
 
     function identityFor(plan, row) {
@@ -1452,19 +1460,34 @@ function buildCommitTargets(caps, rows, edits) {
         return id;
     }
 
+    // An outer join that found no partner leaves every identity column empty:
+    // there is no row to update, so the change becomes a plain INSERT.
+    function rowIsMissing(plan, row) {
+        const identity = plan.identityColumns || [];
+        if (!row || identity.length === 0) { return false; }
+        return identity.every(col => row[col.name] === null || row[col.name] === undefined);
+    }
+
     (edits.updates || []).forEach(([rowIdx, changed]) => {
         const row = (rows || [])[rowIdx];
         const perTable = new Map();
         Object.keys(changed || {}).forEach(colName => {
             const source = sources[colName];
             if (!source) { return; }
-            if (!perTable.has(source.tableOid)) { perTable.set(source.tableOid, {}); }
-            perTable.get(source.tableOid)[source.sourceColumn] = changed[colName];
+            const key = sourceInstanceKey(source);
+            if (!perTable.has(key)) { perTable.set(key, {}); }
+            perTable.get(key)[source.sourceColumn] = changed[colName];
         });
-        perTable.forEach((changes, tableOid) => {
-            const plan = planFor(tableOid);
+        perTable.forEach((changes, key) => {
+            const plan = planFor(key);
             if (!plan || plan.identityStrategy === 'none') { return; }
-            targetFor(plan).changes.updates.push({ primaryKey: identityFor(plan, row), changes });
+            const target = targetFor(plan);
+            if (rowIsMissing(plan, row)) {
+                target.changes.inserts.push(changes);
+                target.missingRowInserts = (target.missingRowInserts || 0) + 1;
+                return;
+            }
+            target.changes.updates.push({ primaryKey: identityFor(plan, row), changes });
         });
     });
 
@@ -1696,7 +1719,7 @@ function columnWriteMode(caps, colName) {
     if (!source) {
         return 'readonly';
     }
-    const plan = capabilities.tables.find(t => t.tableOid === source.tableOid);
+    const plan = capabilities.tables.find(t => sourceInstanceKey(t) === sourceInstanceKey(source));
     return (plan && plan.identityStrategy === 'pk') ? 'editable' : 'unsafe';
 }
 
@@ -1708,12 +1731,22 @@ function isSqlEdited(generated, edited) {
         !== collapseSqlWhitespace(String(generated || '')).trim();
 }
 
-// Warnings shown in the commit preview: how reliably the rows can be matched
-// and whether the connection changed since the data was loaded.
-function buildCommitWarnings(capabilityWarning, currentConnection, loadedConnection) {
+// Warnings shown in the commit preview: how reliably the rows can be matched,
+// which changes had to become an INSERT and whether the connection changed
+// since the data was loaded.
+function buildCommitWarnings(capabilityWarning, currentConnection, loadedConnection, targets) {
     const warnings = [];
     if (capabilityWarning) {
         warnings.push(capabilityWarning);
+    }
+    const inserted = (targets || []).filter(t => t && t.missingRowInserts > 0);
+    if (inserted.length > 0) {
+        const names = [...new Set(inserted.map(t => `${t.schema}.${t.table}`))].join(', ');
+        warnings.push(
+            `The join found no row in ${names} for what you edited, so there is nothing to update: `
+            + 'an INSERT with the edited columns alone is generated instead. It sets no key and no join '
+            + 'condition — complete the statement below before executing it.'
+        );
     }
     if (currentConnection && loadedConnection && currentConnection !== loadedConnection) {
         warnings.push(
@@ -4166,7 +4199,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             sqlDialogConnection.textContent = `Current connection: ${currLabel}  |  Data loaded with: ${last}`;
         }
         if (sqlDialogWarning) {
-            const warnings = buildCommitWarnings(caps.warning, curr, lastUsedConnection);
+            const warnings = buildCommitWarnings(caps.warning, curr, lastUsedConnection, pendingChanges);
             sqlDialogWarning.textContent = warnings.map(w => `⚠ ${w}`).join('\n');
             sqlDialogWarning.style.display = warnings.length > 0 ? 'block' : 'none';
         }
@@ -5793,6 +5826,7 @@ if (typeof module !== 'undefined' && module.exports) {
         buildRowIdentity,
         emptyCapabilities,
         normalizeCapabilities,
+        sourceInstanceKey,
         buildCommitTargets,
         describeRowCount,
         columnWriteMode,

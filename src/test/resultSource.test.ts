@@ -9,6 +9,8 @@ import {
     isWritableRelkind,
     resolveFieldSources,
     resultColumnAliases,
+    sourceInstanceKey,
+    splitAliasedSources,
     ColumnSource,
     RelationInfo,
     ResultFieldInfo,
@@ -172,6 +174,70 @@ test('buildEditPlan treats read-only relations as not editable', () => {
     assert.deepEqual(caps.editableColumns, []);
 });
 
+test('buildEditPlan reports the key columns a result does not expose', () => {
+    const caps = buildEditPlan([src('name', 100, 'users')], { 100: ['tenant', 'id'] });
+    assert.deepEqual(caps.tables[0].missingKeyColumns, ['tenant', 'id']);
+});
+
+test('buildEditPlan reports only the part of a composite key that is missing', () => {
+    const caps = buildEditPlan([src('tenant', 100, 'users')], { 100: ['tenant', 'id'] });
+    assert.deepEqual(caps.tables[0].missingKeyColumns, ['id']);
+});
+
+test('buildEditPlan reports nothing missing for a table identified by its key', () => {
+    const caps = buildEditPlan([src('id', 100, 'users')], { 100: ['id'] });
+    assert.deepEqual(caps.tables[0].missingKeyColumns, []);
+});
+
+// ===== 3.1.0: a table joined in more than once =====
+
+test('splitAliasedSources marks the columns of a table used under two aliases', () => {
+    const sources = [src('IRWAZ', 100, 'eaz', 'wert'), src('PLAWAZ', 100, 'eaz', 'wert'), src('name', 200, 'users')];
+    const split = splitAliasedSources(sources, new Map([['IRWAZ', 'a'], ['PLAWAZ', 'b'], ['name', 'u']]));
+
+    assert.equal(split[0]?.qualifier, 'a');
+    assert.equal(split[1]?.qualifier, 'b');
+    assert.equal(split[2]?.qualifier, undefined);
+});
+
+test('splitAliasedSources leaves a table alone when one of its aliases is unknown', () => {
+    const sources = [src('IRWAZ', 100, 'eaz', 'wert'), src('computed', 100, 'eaz', 'wert')];
+    const split = splitAliasedSources(sources, new Map([['IRWAZ', 'a']]));
+
+    assert.equal(split[0]?.qualifier, undefined);
+    assert.equal(split[1]?.qualifier, undefined);
+});
+
+test('splitAliasedSources leaves a table used under a single alias alone', () => {
+    const split = splitAliasedSources([src('id', 100, 'users')], new Map([['id', 'u']]));
+    assert.equal(split[0]?.qualifier, undefined);
+});
+
+test('buildEditPlan gives each alias of a table its own identity', () => {
+    const sources = splitAliasedSources(
+        [src('IRWAZ', 100, 'eaz', 'wert'), src('k0', 100, 'eaz', 'id'), src('PLAWAZ', 100, 'eaz', 'wert'), src('k1', 100, 'eaz', 'id')],
+        new Map([['IRWAZ', 'a'], ['k0', 'a'], ['PLAWAZ', 'b'], ['k1', 'b']])
+    );
+    const caps = buildEditPlan(sources, { 100: ['id'] });
+
+    assert.equal(caps.tables.length, 2);
+    assert.deepEqual(caps.tables.map(t => sourceInstanceKey(t)), ['100:a', '100:b']);
+    assert.deepEqual(caps.tables.map(t => t.identityColumns.map(c => c.name)), [['k0'], ['k1']]);
+    // Two occurrences are two rows, so the result is no longer a single table.
+    assert.equal(caps.canInsert, false);
+});
+
+test('identityWarning names a table joined in twice only once', () => {
+    const sources = splitAliasedSources(
+        [src('IRWAZ', 100, 'eaz', 'wert'), src('PLAWAZ', 100, 'eaz', 'wert')],
+        new Map([['IRWAZ', 'a'], ['PLAWAZ', 'b']])
+    );
+    const caps = buildEditPlan(sources, {});
+
+    assert.equal(caps.tables.length, 2);
+    assert.match(String(caps.warning), /No primary key available for public\.eaz\. /);
+});
+
 // ===== 2.2.2: warnings =====
 
 test('identityWarning explains an empty plan', () => {
@@ -180,22 +246,22 @@ test('identityWarning explains an empty plan', () => {
 
 test('identityWarning stays silent when every table is identified by its primary key', () => {
     const plan: TableEditPlan[] = [
-        { tableOid: 100, schema: 'public', table: 'users', identityStrategy: 'pk', identityColumns: [], columns: [] }
+        { tableOid: 100, schema: 'public', table: 'users', identityStrategy: 'pk', identityColumns: [], columns: [], missingKeyColumns: [] }
     ];
     assert.equal(identityWarning(plan), null);
 });
 
 test('identityWarning names the tables that lack a primary key', () => {
     const plan: TableEditPlan[] = [
-        { tableOid: 100, schema: 'public', table: 'users', identityStrategy: 'pk', identityColumns: [], columns: [] },
-        { tableOid: 200, schema: 'app', table: 'log', identityStrategy: 'row', identityColumns: [], columns: [] }
+        { tableOid: 100, schema: 'public', table: 'users', identityStrategy: 'pk', identityColumns: [], columns: [], missingKeyColumns: [] },
+        { tableOid: 200, schema: 'app', table: 'log', identityStrategy: 'row', identityColumns: [], columns: [], missingKeyColumns: [] }
     ];
     assert.match(String(identityWarning(plan)), /app\.log/);
 });
 
 test('identityWarning reports a fully unidentifiable result', () => {
     const plan: TableEditPlan[] = [
-        { tableOid: 100, schema: 'public', table: 'users', identityStrategy: 'none', identityColumns: [], columns: [] }
+        { tableOid: 100, schema: 'public', table: 'users', identityStrategy: 'none', identityColumns: [], columns: [], missingKeyColumns: [] }
     ];
     assert.match(String(identityWarning(plan)), /cannot be identified/);
 });
@@ -204,7 +270,7 @@ test('identityWarning reports a fully unidentifiable result', () => {
 
 /** A plan whose columns are renamed by the query. */
 function aliasPlan(columns: ColumnSource[]): TableEditPlan {
-    return { tableOid: 100, schema: 'public', table: 'users', identityStrategy: 'pk', identityColumns: [], columns };
+    return { tableOid: 100, schema: 'public', table: 'users', identityStrategy: 'pk', identityColumns: [], columns, missingKeyColumns: [] };
 }
 
 test('resultColumnAliases maps a source column to the name the result gives it', () => {

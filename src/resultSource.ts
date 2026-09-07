@@ -45,6 +45,51 @@ export interface ColumnSource {
     table: string;
     /** Real column name in the source table. */
     sourceColumn: string;
+    /**
+     * Table alias this column is selected through. Set only when the query
+     * joins the same table in more than once.
+     */
+    qualifier?: string;
+}
+
+/**
+ * Key of the table occurrence a column belongs to. Two joins of the same table
+ * are two different rows, so they must not share one identity.
+ */
+export function sourceInstanceKey(source: { tableOid: number; qualifier?: string }): string {
+    return source.qualifier ? `${source.tableOid}:${source.qualifier}` : String(source.tableOid);
+}
+
+/**
+ * Mark the columns of a table the query uses under several aliases with the
+ * alias they come from. PostgreSQL reports only the relation of a field, never
+ * the alias, so without this both occurrences would be treated as one row.
+ * Columns whose alias cannot be recognised leave their table untouched.
+ */
+export function splitAliasedSources(
+    sources: ReadonlyArray<ColumnSource | null>,
+    qualifiers: ReadonlyMap<string, string>
+): Array<ColumnSource | null> {
+    const perTable = new Map<number, Set<string>>();
+    for (const source of sources) {
+        if (!source) {
+            continue;
+        }
+        const seen = perTable.get(source.tableOid) ?? new Set<string>();
+        seen.add(qualifiers.get(source.name) ?? '');
+        perTable.set(source.tableOid, seen);
+    }
+    return sources.map((source) => {
+        if (!source) {
+            return source;
+        }
+        const seen = perTable.get(source.tableOid);
+        const qualifier = qualifiers.get(source.name);
+        if (!qualifier || !seen || seen.size < 2 || seen.has('')) {
+            return source;
+        }
+        return { ...source, qualifier };
+    });
 }
 
 /**
@@ -61,11 +106,15 @@ export interface TableEditPlan {
     tableOid: number;
     schema: string;
     table: string;
+    /** Alias of this occurrence, when the table is joined in several times. */
+    qualifier?: string;
     identityStrategy: IdentityStrategy;
     /** Columns forming the WHERE clause that identifies a row. */
     identityColumns: ColumnSource[];
     /** Every result column that belongs to this table. */
     columns: ColumnSource[];
+    /** Primary-key columns the result does not expose, if any. */
+    missingKeyColumns: string[];
 }
 
 /** What the Data Viewer may offer for the current result. */
@@ -163,20 +212,25 @@ export function chooseIdentity(
     return { strategy: 'row', identityColumns };
 }
 
+/** Names of the given tables, each one only once even if it is joined twice. */
+function tableNames(tables: ReadonlyArray<TableEditPlan>): string {
+    return [...new Set(tables.map((t) => `${t.schema}.${t.table}`))].join(', ');
+}
+
 /** Human-readable reason shown in the Data Viewer when editing is limited. */
 export function identityWarning(tables: ReadonlyArray<TableEditPlan>): string | null {
     if (tables.length === 0) {
         return 'This result is not editable: none of its columns could be traced back to a table column.';
     }
     if (tables.every((t) => t.identityStrategy === 'none')) {
-        const names = tables.map((t) => `${t.schema}.${t.table}`).join(', ');
+        const names = tableNames(tables);
         return `This result is not editable: rows of ${names} cannot be identified or written back.`;
     }
     const weak = tables.filter((t) => t.identityStrategy === 'row');
     if (weak.length === 0) {
         return null;
     }
-    const names = weak.map((t) => `${t.schema}.${t.table}`).join(', ');
+    const names = tableNames(weak);
     return `No primary key available for ${names}. Rows are matched by all of their displayed values — `
         + 'a change is rejected if it would not affect exactly one row. '
         + 'Add the key columns to the query to edit safely.';
@@ -209,31 +263,38 @@ export function buildEditPlan(
     primaryKeys: Record<number, ReadonlyArray<string>>,
     readOnlyTables?: ReadonlySet<number>
 ): ViewCapabilities {
-    const byTable = new Map<number, ColumnSource[]>();
+    const byTable = new Map<string, ColumnSource[]>();
     for (const source of sources) {
         if (!source) {
             continue;
         }
-        const list = byTable.get(source.tableOid);
+        const list = byTable.get(sourceInstanceKey(source));
         if (list) {
             list.push(source);
         } else {
-            byTable.set(source.tableOid, [source]);
+            byTable.set(sourceInstanceKey(source), [source]);
         }
     }
 
     const tables: TableEditPlan[] = [];
-    for (const [tableOid, columns] of byTable.entries()) {
-        const { strategy, identityColumns } = readOnlyTables?.has(tableOid)
+    for (const columns of byTable.values()) {
+        const tableOid = columns[0].tableOid;
+        const readOnly = !!readOnlyTables?.has(tableOid);
+        const keys = primaryKeys[tableOid] || [];
+        const { strategy, identityColumns } = readOnly
             ? { strategy: 'none' as IdentityStrategy, identityColumns: [] }
-            : chooseIdentity(primaryKeys[tableOid] || [], columns);
+            : chooseIdentity(keys, columns);
         tables.push({
             tableOid,
             schema: columns[0].schema,
             table: columns[0].table,
+            qualifier: columns[0].qualifier,
             identityStrategy: strategy,
             identityColumns,
-            columns
+            columns,
+            missingKeyColumns: strategy === 'row'
+                ? keys.filter((pk) => !columns.some((c) => c.sourceColumn === pk))
+                : []
         });
     }
 
@@ -246,7 +307,7 @@ export function buildEditPlan(
             continue;
         }
         columnSources[source.name] = source;
-        const plan = tables.find((t) => t.tableOid === source.tableOid);
+        const plan = tables.find((t) => sourceInstanceKey(t) === sourceInstanceKey(source));
         if (plan && plan.identityStrategy !== 'none') {
             editableColumns.push(source.name);
         }
