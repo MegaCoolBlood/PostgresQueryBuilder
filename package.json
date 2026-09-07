@@ -373,7 +373,7 @@
         },
         "postgresQueryBuilder.savedQueriesFile": {
           "type": "string",
-          "default": ".vscode/postgres-query-builder.queries.json",
+          "default": "postgres-query-builder.queries.json",
           "description": "Workspace-relative path to the JSON file used to share bookmarked queries via git. Queries stored here are visible to everyone who opens the workspace; personal queries remain in VS Code global state."
         },
         "postgresQueryBuilder.format.enable": {
