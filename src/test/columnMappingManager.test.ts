@@ -1,7 +1,11 @@
 import './helpers/vscodeMock';
+import { vscodeStub } from './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ColumnMappingManager, CustomColumnMapping } from '../columnMappingManager';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { ColumnMappingManager, CustomColumnMapping, normalizeWorkspaceRelativePath } from '../columnMappingManager';
 
 function createMockContext() {
     const store: Record<string, any> = {};
@@ -369,4 +373,178 @@ test('normalizeColumnPairs returns empty array for non-array input', () => {
     assert.deepEqual(normalizeColumnPairs(undefined), []);
     assert.deepEqual(normalizeColumnPairs(null), []);
     assert.deepEqual(normalizeColumnPairs('nope'), []);
+});
+
+// ===== Workspace mappings file =====
+
+const WORKSPACE_FILE = 'postgres-query-builder.mappings.json';
+
+/**
+ * Point the `vscode` stub at a throwaway folder and back its `workspace.fs`
+ * with the real file system, so the workspace mappings file is actually written.
+ */
+function useTempWorkspace(t: any): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pgqb-mappings-'));
+    const originalFolders = vscodeStub.workspace.workspaceFolders;
+    const originalFs = vscodeStub.workspace.fs;
+    const originalJoinPath = vscodeStub.Uri.joinPath;
+
+    vscodeStub.workspace.workspaceFolders = [{ uri: { fsPath: root, path: root } }];
+    vscodeStub.workspace.fs = {
+        async writeFile(uri: any, content: Uint8Array) { fs.writeFileSync(uri.fsPath, content); },
+        async readFile(uri: any) { return fs.readFileSync(uri.fsPath); },
+        async createDirectory(uri: any) { fs.mkdirSync(uri.fsPath, { recursive: true }); }
+    } as any;
+    vscodeStub.Uri.joinPath = (base: any, ...segs: string[]) => {
+        const joined = path.join(base.fsPath, ...segs);
+        return { fsPath: joined, path: joined };
+    };
+
+    t.after(() => {
+        vscodeStub.workspace.workspaceFolders = originalFolders;
+        vscodeStub.workspace.fs = originalFs;
+        vscodeStub.Uri.joinPath = originalJoinPath;
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+    return root;
+}
+
+function readWorkspaceFile(root: string): any {
+    return JSON.parse(fs.readFileSync(path.join(root, WORKSPACE_FILE), 'utf8'));
+}
+
+test('normalizeWorkspaceRelativePath keeps a plain posix path', () => {
+    assert.equal(
+        normalizeWorkspaceRelativePath('.vscode/postgres-query-builder.mappings.json'),
+        '.vscode/postgres-query-builder.mappings.json'
+    );
+});
+
+test('normalizeWorkspaceRelativePath rewrites backslashes and strips path prefixes', () => {
+    assert.equal(normalizeWorkspaceRelativePath('.vscode\\mappings.json'), '.vscode/mappings.json');
+    assert.equal(normalizeWorkspaceRelativePath('./shared/mappings.json'), 'shared/mappings.json');
+    assert.equal(normalizeWorkspaceRelativePath('/shared/mappings.json'), 'shared/mappings.json');
+});
+
+test('normalizeWorkspaceRelativePath falls back to the default for empty values', () => {
+    assert.equal(normalizeWorkspaceRelativePath(''), 'postgres-query-builder.mappings.json');
+    assert.equal(normalizeWorkspaceRelativePath('   '), 'postgres-query-builder.mappings.json');
+    assert.equal(normalizeWorkspaceRelativePath(undefined), 'postgres-query-builder.mappings.json');
+});
+
+test('addMapping with workspace scope creates the shared file in the project root', async (t) => {
+    const root = useTempWorkspace(t);
+    const manager = new ColumnMappingManager(createMockContext());
+
+    const created = await manager.addMapping(createSampleMapping(), 'workspace');
+
+    assert.equal(created.scope, 'workspace');
+    assert.ok(fs.existsSync(path.join(root, WORKSPACE_FILE)), 'the workspace file should exist');
+    const file = readWorkspaceFile(root);
+    assert.equal(file.version, 1);
+    assert.equal(file.mappings.length, 1);
+    assert.equal(file.mappings[0].sourceTable, 'items');
+    assert.equal(file.mappings[0].scope, undefined, 'the scope is implied by the file, not stored in it');
+});
+
+test('createWorkspaceFile creates an empty shared file before any mapping is shared', async (t) => {
+    const root = useTempWorkspace(t);
+    const manager = new ColumnMappingManager(createMockContext());
+
+    assert.equal(manager.hasWorkspaceFile(), false);
+    const uri = await manager.createWorkspaceFile();
+
+    assert.ok(uri, 'a uri should be returned');
+    assert.equal(manager.hasWorkspaceFile(), true);
+    assert.deepEqual(readWorkspaceFile(root).mappings, []);
+});
+
+test('updateMapping moves a personal mapping into the shared file', async (t) => {
+    const root = useTempWorkspace(t);
+    const manager = new ColumnMappingManager(createMockContext());
+    const personal = await manager.addMapping(createSampleMapping(), 'global');
+    assert.equal(fs.existsSync(path.join(root, WORKSPACE_FILE)), false);
+
+    await manager.updateMapping(personal.id, { scope: 'workspace' });
+
+    const file = readWorkspaceFile(root);
+    assert.equal(file.mappings.length, 1);
+    assert.equal(file.mappings[0].id, personal.id);
+    assert.deepEqual(manager.getAllMappings().map(m => m.scope), ['workspace']);
+});
+
+test('updateMapping moves a shared mapping back out of the file', async (t) => {
+    const root = useTempWorkspace(t);
+    const manager = new ColumnMappingManager(createMockContext());
+    const shared = await manager.addMapping(createSampleMapping(), 'workspace');
+
+    await manager.updateMapping(shared.id, { scope: 'global' });
+
+    assert.deepEqual(readWorkspaceFile(root).mappings, []);
+    assert.deepEqual(manager.getAllMappings().map(m => m.scope), ['global']);
+});
+
+test('a mapping written to the shared file is read back by a new manager', async (t) => {
+    const root = useTempWorkspace(t);
+    const context = createMockContext();
+    await new ColumnMappingManager(context).addMapping(createSampleMapping({ label: 'Shared' }), 'workspace');
+
+    const reopened = new ColumnMappingManager(context).getAllMappings();
+
+    assert.equal(reopened.length, 1);
+    assert.equal(reopened[0].label, 'Shared');
+    assert.equal(reopened[0].scope, 'workspace');
+    assert.ok(root);
+});
+
+test('a configured path decides where the shared file is written', async (t) => {
+    const root = useTempWorkspace(t);
+    const originalGetConfiguration = vscodeStub.workspace.getConfiguration;
+    vscodeStub.workspace.getConfiguration = () => ({
+        get<T>(key: string, defaultValue?: T): T {
+            return (key === 'customMappingsFile' ? 'config/team-mappings.json' : defaultValue) as T;
+        }
+    });
+    t.after(() => { vscodeStub.workspace.getConfiguration = originalGetConfiguration; });
+
+    const manager = new ColumnMappingManager(createMockContext());
+    await manager.addMapping(createSampleMapping(), 'workspace');
+
+    assert.ok(fs.existsSync(path.join(root, 'config', 'team-mappings.json')), 'the configured path should be used');
+    assert.equal(fs.existsSync(path.join(root, WORKSPACE_FILE)), false, 'the default path should stay unused');
+});
+
+test('a configured path with backslashes still lands in the intended folder', async (t) => {
+    const root = useTempWorkspace(t);
+    const originalGetConfiguration = vscodeStub.workspace.getConfiguration;
+    vscodeStub.workspace.getConfiguration = () => ({
+        get<T>(key: string, defaultValue?: T): T {
+            return (key === 'customMappingsFile' ? 'shared\\mappings.json' : defaultValue) as T;
+        }
+    });
+    t.after(() => { vscodeStub.workspace.getConfiguration = originalGetConfiguration; });
+
+    const manager = new ColumnMappingManager(createMockContext());
+    await manager.addMapping(createSampleMapping(), 'workspace');
+
+    assert.ok(fs.existsSync(path.join(root, 'shared', 'mappings.json')), 'the file should live in the shared folder');
+});
+
+test('without a workspace folder a shared mapping is kept personal and reported', async (t) => {
+    const originalFolders = vscodeStub.workspace.workspaceFolders;
+    const warnings: string[] = [];
+    const originalWarn = vscodeStub.window.showWarningMessage;
+    vscodeStub.workspace.workspaceFolders = undefined;
+    vscodeStub.window.showWarningMessage = (msg: string) => { warnings.push(msg); return Promise.resolve(undefined); };
+    t.after(() => {
+        vscodeStub.workspace.workspaceFolders = originalFolders;
+        vscodeStub.window.showWarningMessage = originalWarn;
+    });
+
+    const manager = new ColumnMappingManager(createMockContext());
+    const created = await manager.addMapping(createSampleMapping(), 'workspace');
+
+    assert.equal(created.scope, 'global');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /no workspace folder is open/i);
 });

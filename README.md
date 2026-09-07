@@ -266,7 +266,7 @@ duplicating, deleting and moving between the personal and the workspace scope.
 | `postgresQueryBuilder.alwaysQuote` | `false` | Always quote identifiers in generated `SELECT`s |
 | `postgresQueryBuilder.duplicateRowResetDefaults` | `volatile` | Which columns a duplicated row leaves to their database default |
 | `postgresQueryBuilder.savedQueriesFile` | `.vscode/postgres-query-builder.queries.json` | Where shared bookmarked queries are kept |
-| `postgresQueryBuilder.customMappingsFile` | `.vscode/postgres-query-builder.mappings.json` | Where shared column mappings are kept |
+| `postgresQueryBuilder.customMappingsFile` | `postgres-query-builder.mappings.json` | Where shared column mappings are kept |
 | `postgresQueryBuilder.format.enable` | `true` | Whether the formatter is offered at all |
 | `postgresQueryBuilder.format.formatOnSave` | `false` | Format SQL files when they are saved |
 

@@ -392,7 +392,7 @@ test('the identifiers the renaming had to leave alone are still there', () => {
     );
     assert.equal(
         manifest.contributes.configuration.properties['postgresQueryBuilder.customMappingsFile'].default,
-        '.vscode/postgres-query-builder.mappings.json'
+        'postgres-query-builder.mappings.json'
     );
 });
 

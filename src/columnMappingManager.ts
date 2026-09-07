@@ -59,8 +59,20 @@ interface WorkspaceMappingsFile {
 export const MAPPING_CONDITION_OPERATORS: ReadonlySet<string> =
     new Set(['=', '!=', '<>', '>', '<', '>=', '<=', 'LIKE', 'ILIKE']);
 
-const DEFAULT_WORKSPACE_FILE = '.vscode/postgres-query-builder.mappings.json';
+const DEFAULT_WORKSPACE_FILE = 'postgres-query-builder.mappings.json';
 const FILE_VERSION = 1;
+
+/**
+ * Turn a configured `customMappingsFile` value into a workspace-relative POSIX
+ * path. `Uri.joinPath` only splits on forward slashes, so a Windows-style
+ * `.vscode\mappings.json` or a leading `./` would otherwise become part of the
+ * file name instead of separating the segments.
+ */
+export function normalizeWorkspaceRelativePath(value: unknown): string {
+    const raw = typeof value === 'string' ? value.trim() : '';
+    const posix = raw.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '').replace(/\/+$/, '');
+    return posix || DEFAULT_WORKSPACE_FILE;
+}
 
 /**
  * Sanitize the additional column pairs of a mapping: keep only well-formed
@@ -128,6 +140,14 @@ export class ColumnMappingManager {
 
     hasWorkspaceFile(): boolean {
         return !!this.workspaceFileUri && fs.existsSync(this.workspaceFileUri.fsPath);
+    }
+
+    /**
+     * Create the shared mappings file if it does not exist yet and return its
+     * location, so it can be committed even before the first mapping is shared.
+     */
+    async createWorkspaceFile(): Promise<vscode.Uri | undefined> {
+        return await this.ensureWorkspaceFile() ? this.workspaceFileUri : undefined;
     }
 
     getAllMappings(): CustomColumnMapping[] {
@@ -264,6 +284,7 @@ export class ColumnMappingManager {
             mappings: all
         };
         const json = JSON.stringify(payload, null, 2) + '\n';
+        await this.ensureDirectoryFor(uri);
         await vscode.workspace.fs.writeFile(uri, Buffer.from(json, 'utf8'));
         return all.length;
     }
@@ -434,15 +455,20 @@ export class ColumnMappingManager {
 
     // ===== Workspace file handling =====
 
+    private getConfiguredRelativePath(): string {
+        return normalizeWorkspaceRelativePath(
+            vscode.workspace.getConfiguration('postgresQueryBuilder')
+                .get<string>('customMappingsFile', DEFAULT_WORKSPACE_FILE)
+        );
+    }
+
     private refreshWorkspaceFileUri(): void {
         const folders = vscode.workspace.workspaceFolders;
         if (!folders || folders.length === 0) {
             this.workspaceFileUri = undefined;
             return;
         }
-        const rel = vscode.workspace.getConfiguration('postgresQueryBuilder')
-            .get<string>('customMappingsFile', DEFAULT_WORKSPACE_FILE) || DEFAULT_WORKSPACE_FILE;
-        this.workspaceFileUri = vscode.Uri.joinPath(folders[0].uri, rel);
+        this.workspaceFileUri = vscode.Uri.joinPath(folders[0].uri, this.getConfiguredRelativePath());
     }
 
     private loadWorkspaceMappingsSync(): void {
@@ -462,15 +488,35 @@ export class ColumnMappingManager {
         }
     }
 
+    private async ensureDirectoryFor(uri: vscode.Uri): Promise<void> {
+        const dir = path.dirname(uri.fsPath);
+        if (!fs.existsSync(dir)) {
+            await vscode.workspace.fs.createDirectory(vscode.Uri.file(dir));
+        }
+    }
+
     private async ensureWorkspaceFile(): Promise<boolean> {
-        if (!this.workspaceFileUri) return false;
-        const dir = path.dirname(this.workspaceFileUri.fsPath);
+        if (!this.workspaceFileUri) {
+            // A folder may have been opened after this manager was constructed.
+            this.refreshWorkspaceFileUri();
+        }
+        const uri = this.workspaceFileUri;
+        if (!uri) {
+            vscode.window.showWarningMessage(
+                'PostgreSQL Query Booster: no workspace folder is open, so the shared mappings file cannot be created. The mapping is kept as a personal mapping.'
+            );
+            return false;
+        }
         try {
-            if (!fs.existsSync(dir)) {
-                await vscode.workspace.fs.createDirectory(vscode.Uri.file(dir));
+            await this.ensureDirectoryFor(uri);
+            if (!fs.existsSync(uri.fsPath)) {
+                await this.persistWorkspaceFile();
             }
             return true;
-        } catch {
+        } catch (err: unknown) {
+            vscode.window.showErrorMessage(
+                `PostgreSQL Query Booster: could not create the shared mappings file ${this.getConfiguredRelativePath()}: ${getErrorMessage(err)}`
+            );
             return false;
         }
     }
@@ -496,9 +542,7 @@ export class ColumnMappingManager {
         this.fileWatcher = undefined;
         const folders = vscode.workspace.workspaceFolders;
         if (!folders || folders.length === 0 || !this.workspaceFileUri) return;
-        const rel = vscode.workspace.getConfiguration('postgresQueryBuilder')
-            .get<string>('customMappingsFile', DEFAULT_WORKSPACE_FILE) || DEFAULT_WORKSPACE_FILE;
-        const pattern = new vscode.RelativePattern(folders[0], rel);
+        const pattern = new vscode.RelativePattern(folders[0], this.getConfiguredRelativePath());
         this.fileWatcher = vscode.workspace.createFileSystemWatcher(pattern);
         const handler = () => {
             if (this.suppressWatcher) return;

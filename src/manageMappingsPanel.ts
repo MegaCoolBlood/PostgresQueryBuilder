@@ -64,12 +64,14 @@ export class ManageMappingsPanel {
                     case 'openFile': {
                         const uri = this.manager.getWorkspaceFileUri();
                         if (uri) {
-                            try {
-                                const doc = await vscode.workspace.openTextDocument(uri);
-                                await vscode.window.showTextDocument(doc);
-                            } catch {
-                                vscode.window.showInformationMessage('The workspace mappings file does not exist yet. Mark a mapping as "Workspace" to create it.');
+                            const target = this.manager.hasWorkspaceFile()
+                                ? uri
+                                : await this.manager.createWorkspaceFile();
+                            if (!target) {
+                                break;
                             }
+                            const doc = await vscode.workspace.openTextDocument(target);
+                            await vscode.window.showTextDocument(doc);
                         } else {
                             vscode.window.showWarningMessage('No workspace folder is open.');
                         }

@@ -199,8 +199,9 @@ export function activate(context: vscode.ExtensionContext) {
                         create
                     );
                     if (choice === create) {
-                        await columnMappingManager.exportToFile(uri);
-                        const doc = await vscode.workspace.openTextDocument(uri);
+                        const created = await columnMappingManager.createWorkspaceFile();
+                        if (!created) return;
+                        const doc = await vscode.workspace.openTextDocument(created);
                         await vscode.window.showTextDocument(doc);
                     }
                 }

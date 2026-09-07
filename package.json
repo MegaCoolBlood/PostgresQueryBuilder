@@ -2,7 +2,7 @@
   "name": "postgres-query-booster",
   "displayName": "PostgreSQL Query Booster",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "3.0.5",
+  "version": "3.1.0",
   "publisher": "sirlychee",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -368,7 +368,7 @@
         },
         "postgresQueryBuilder.customMappingsFile": {
           "type": "string",
-          "default": ".vscode/postgres-query-builder.mappings.json",
+          "default": "postgres-query-builder.mappings.json",
           "description": "Workspace-relative path to the JSON file used to share custom column mappings via git. Mappings stored here are visible to everyone who opens the workspace; personal mappings remain in VS Code global state."
         },
         "postgresQueryBuilder.savedQueriesFile": {
