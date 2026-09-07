@@ -164,8 +164,8 @@ editor to insert its SQL.
 
 **Manage Bookmarked Queries** (the gear icon of the view) lists every bookmark
 in one table: move a selection between the personal and the workspace scope,
-and give each placeholder a description and a default value that the prompt
-then shows.
+edit the statement — in the dialog or in a full editor tab — and give each
+placeholder a description and a default value that the prompt then shows.
 
 ---
 

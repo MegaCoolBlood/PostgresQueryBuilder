@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SavedQueryStore, SavedQueryParameter, SavedQueryScope } from './savedQueryStore';
+import { SavedQueryStore, SavedQueryParameter, SavedQueryScope, mergeParameters } from './savedQueryStore';
 import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
 import { icon } from './webviewAssets';
 import { getErrorMessage } from './logger';
@@ -101,9 +101,14 @@ export class ManageBookmarksPanel {
                         const id: string = msg.id;
                         const updates = msg.updates || {};
                         const scope: SavedQueryScope = updates.scope === 'workspace' ? 'workspace' : 'global';
-                        const patch: { name?: string; parameters?: SavedQueryParameter[] } = {
-                            parameters: toParameters(updates.parameters)
-                        };
+                        const parameters = toParameters(updates.parameters);
+                        const patch: { name?: string; sql?: string; parameters: SavedQueryParameter[] } = { parameters };
+                        const sql = typeof updates.sql === 'string' ? updates.sql.trim() : '';
+                        if (sql && sql !== this.store.get(id)?.sql) {
+                            patch.sql = sql;
+                            // The placeholders may have changed with the statement.
+                            patch.parameters = mergeParameters(sql, parameters);
+                        }
                         if (typeof updates.name === 'string' && updates.name.trim()) {
                             patch.name = updates.name.trim();
                         }
@@ -115,6 +120,9 @@ export class ManageBookmarksPanel {
                         }
                         break;
                     }
+                    case 'editInEditor':
+                        await vscode.commands.executeCommand('postgresQueryBuilder.editSavedQuerySql', msg.id);
+                        break;
                     case 'openFile': {
                         const uri = this.store.getWorkspaceFileUri();
                         if (!uri || !this.store.hasWorkspaceFile()) {
@@ -143,7 +151,8 @@ export class ManageBookmarksPanel {
             schema: q.schema,
             table: q.table,
             parameters: Array.isArray(q.parameters) ? q.parameters : [],
-            sql: q.sql.replace(/\s+/g, ' ').trim()
+            sql: q.sql,
+            preview: q.sql.replace(/\s+/g, ' ').trim()
         }));
         const fileUri = this.store.getWorkspaceFileUri();
         const filePath = fileUri ? vscode.workspace.asRelativePath(fileUri) : '';
@@ -193,7 +202,9 @@ export class ManageBookmarksPanel {
         .param-head { font-size: var(--fs-xs); color: var(--c-muted); margin-bottom: var(--sp-1); }
         .param-row { margin-top: var(--sp-1); }
         .param-name { font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; }
-        .sql-preview { font-size: var(--fs-xs); color: var(--c-muted); max-height: 60px; overflow: auto; }`;
+        .dlg textarea { width: 100%; min-height: 140px; resize: vertical; }
+        .legend-row { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-1); }
+        .legend-row span { font-size: var(--fs-xs); color: var(--c-muted); }`;
         const body = `
     <h2>Bookmarked Queries</h2>
     <div class="hint">Manage where a query is stored and what its placeholders mean. Select entries and change their scope to share them with the team (Workspace) or keep them private (Personal). The statement itself is edited with "Edit Bookmarked Query SQL".</div>
@@ -247,7 +258,14 @@ export class ManageBookmarksPanel {
                         <input type="checkbox" id="editShare" />
                         <label for="editShare" title="Store this query in the workspace file so it can be committed to git">Share with workspace (commit to git)</label>
                     </div>
-                    <div class="sql-preview mono" id="editSql"></div>
+                </fieldset>
+                <fieldset>
+                    <legend>Statement</legend>
+                    <div class="legend-row">
+                        <span>Placeholders are written as :name and are reconciled when you save.</span>
+                        <button class="btn btn-sm push-right" id="editInEditor" title="Open this statement in an editor tab with syntax highlighting and formatting">${icon('goto')}Edit in editor</button>
+                    </div>
+                    <textarea id="editSql" class="mono" spellcheck="false"></textarea>
                 </fieldset>
                 <fieldset>
                     <legend>Placeholders</legend>
@@ -320,7 +338,7 @@ export class ManageBookmarksPanel {
                     return '<tr class="' + (isSel ? 'selected' : '') + '" data-id="' + escapeHtml(item.id) + '">'
                         + '<td><input type="checkbox" class="row-cb"' + (isSel ? ' checked' : '') + ' /></td>'
                         + '<td>' + scopeBadge + '</td>'
-                        + '<td>' + escapeHtml(item.name) + '<div class="sub mono">' + escapeHtml(item.sql.slice(0, 80)) + '</div></td>'
+                        + '<td>' + escapeHtml(item.name) + '<div class="sub mono">' + escapeHtml(item.preview.slice(0, 80)) + '</div></td>'
                         + '<td class="mono">' + source + '</td>'
                         + '<td>' + params + '</td>'
                         + '<td><button class="btn btn-sm edit-btn" title="Edit this query">${icon('edit')}Edit</button></td>'
@@ -429,7 +447,7 @@ export class ManageBookmarksPanel {
             editingId = id;
             document.getElementById('editName').value = item.name || '';
             document.getElementById('editShare').checked = item.scope === 'workspace';
-            document.getElementById('editSql').textContent = item.sql;
+            document.getElementById('editSql').value = item.sql;
             editParams.innerHTML = '';
             item.parameters.forEach(p => addParamRow(p));
             noParams.style.display = item.parameters.length ? 'none' : 'block';
@@ -471,6 +489,11 @@ export class ManageBookmarksPanel {
 
         document.getElementById('editClose').addEventListener('click', closeEditDialog);
         document.getElementById('editCancel').addEventListener('click', closeEditDialog);
+        document.getElementById('editInEditor').addEventListener('click', () => {
+            if (!editingId) return;
+            vscode.postMessage({ command: 'editInEditor', id: editingId });
+            closeEditDialog();
+        });
         editOverlay.addEventListener('click', (e) => {
             if (e.target === editOverlay) closeEditDialog();
         });
@@ -482,11 +505,17 @@ export class ManageBookmarksPanel {
                 alert('The name must not be empty.');
                 return;
             }
+            const sql = document.getElementById('editSql').value.trim();
+            if (!sql) {
+                alert('The statement must not be empty.');
+                return;
+            }
             vscode.postMessage({
                 command: 'updateQuery',
                 id: editingId,
                 updates: {
                     name,
+                    sql,
                     parameters: gatherParameters(),
                     scope: document.getElementById('editShare').checked ? 'workspace' : 'global'
                 }

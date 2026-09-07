@@ -130,6 +130,11 @@ const vscodeStub = {
         showQuickPick: (_items?: any, _options?: any): Promise<any> => Promise.resolve(undefined),
         createWebviewPanel: (..._args: any[]): any => undefined
     },
+    // The namespace object must exist before a module under test copies it via
+    // `import * as vscode`; tests replace the member, never the namespace.
+    commands: {
+        executeCommand: (..._args: any[]): Promise<any> => Promise.resolve(undefined)
+    },
     ViewColumn: { One: 1, Two: 2, Three: 3, Beside: -2, Active: -1 },
     Uri: {
         file: (p: string) => ({ fsPath: p, path: p }),

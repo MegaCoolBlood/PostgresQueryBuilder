@@ -1,6 +1,6 @@
 import './helpers/vscodeMock';
 import { vscodeStub } from './helpers/vscodeMock';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { ManageBookmarksPanel, toParameters } from '../manageBookmarksPanel';
 import { SavedQuery, SavedQueryParameter, SavedQueryScope, SavedQueryStore } from '../savedQueryStore';
@@ -72,8 +72,19 @@ function fakeStore(queries: SavedQuery[], recorded: Recorded, blockMove: boolean
     return store as unknown as SavedQueryStore;
 }
 
+const originalCreate = vscodeStub.window.createWebviewPanel;
+const originalRelative = (vscodeStub.workspace as Record<string, unknown>).asRelativePath;
+after(() => {
+    vscodeStub.window.createWebviewPanel = originalCreate;
+    (vscodeStub.workspace as Record<string, unknown>).asRelativePath = originalRelative;
+});
+
+/** Releases the panel a previous test opened; it is a singleton. */
+let releasePrevious: (() => void) | undefined;
+
 /** Open the panel against a stubbed webview and capture everything it emits. */
 function openPanel(t: { after(fn: () => void): void }, queries: SavedQuery[], blockMove = false): Harness {
+    releasePrevious?.();
     const recorded: Recorded = { updates: [], moves: [], deletes: [] };
     const posted: Array<Record<string, unknown>> = [];
     let onMessage: ((msg: Record<string, unknown>) => void | Promise<void>) | undefined;
@@ -90,18 +101,14 @@ function openPanel(t: { after(fn: () => void): void }, queries: SavedQuery[], bl
         dispose: () => { /* not used */ }
     };
 
-    const originalCreate = vscodeStub.window.createWebviewPanel;
-    const originalRelative = (vscodeStub.workspace as Record<string, unknown>).asRelativePath;
     vscodeStub.window.createWebviewPanel = () => panel as never;
     (vscodeStub.workspace as Record<string, unknown>).asRelativePath =
         (uri: { fsPath: string }) => uri.fsPath;
-    t.after(() => {
-        onDispose?.();
-        vscodeStub.window.createWebviewPanel = originalCreate;
-        (vscodeStub.workspace as Record<string, unknown>).asRelativePath = originalRelative;
-    });
+    releasePrevious = () => onDispose?.();
+    t.after(() => onDispose?.());
 
     ManageBookmarksPanel.show(fakeStore(queries, recorded, blockMove));
+    assert.ok(onMessage, 'the panel of a previous test was still open');
 
     return {
         html: panel.webview.html,
@@ -113,8 +120,8 @@ function openPanel(t: { after(fn: () => void): void }, queries: SavedQuery[], bl
     };
 }
 
-function query(id: string, scope: SavedQueryScope, parameters: SavedQueryParameter[] = []): SavedQuery {
-    return { id, name: `Query ${id}`, sql: 'SELECT 1', parameters, scope, schema: 'public', table: 't' };
+function query(id: string, scope: SavedQueryScope, parameters: SavedQueryParameter[] = [], sql = 'SELECT 1'): SavedQuery {
+    return { id, name: `Query ${id}`, sql, parameters, scope, schema: 'public', table: 't' };
 }
 
 test('the panel offers a scope, a description and a default value for every placeholder', (t) => {
@@ -126,6 +133,23 @@ test('the panel offers a scope, a description and a default value for every plac
     assert.ok(panel.html.includes('Share with workspace'), 'the dialog does not say where the query is stored');
     assert.ok(panel.html.includes('>Description<'), 'the dialog does not label the description');
     assert.ok(panel.html.includes('>Default value<'), 'the dialog does not label the default value');
+});
+
+test('the edit dialog holds the statement itself and a way into a real editor', (t) => {
+    const panel = openPanel(t, [query('a', 'global')]);
+
+    assert.ok(panel.html.includes('<textarea id="editSql"'), 'the statement cannot be edited in the dialog');
+    assert.ok(panel.html.includes('id="editInEditor"'), 'the dialog does not offer an editor tab');
+});
+
+test('the raw statement reaches the dialog while the table shows a one-line preview', async (t) => {
+    const panel = openPanel(t, [query('a', 'global', [], 'SELECT *\n  FROM t')]);
+    await panel.send({ command: 'ready' });
+
+    const loaded = panel.posted.find(m => m.command === 'queriesLoaded');
+    const item = (loaded!.queries as Array<Record<string, unknown>>)[0];
+    assert.equal(item.sql, 'SELECT *\n  FROM t');
+    assert.equal(item.preview, 'SELECT * FROM t');
 });
 
 test('the panel hands the queries to the webview once it is ready', async (t) => {
@@ -167,6 +191,60 @@ test('saving the dialog without a scope change leaves the query where it is', as
     await panel.send({ command: 'updateQuery', id: 'a', updates: { name: 'Open orders', scope: 'workspace', parameters: [] } });
 
     assert.deepEqual(panel.recorded.moves, [], 'the query was moved although its scope did not change');
+});
+
+test('an edited statement is stored and its placeholders are reconciled with it', async (t) => {
+    const panel = openPanel(t, [query('a', 'global', [{ name: 'since', kind: 'number', label: 'Start' }], 'SELECT * FROM t WHERE d > :since')]);
+    await panel.send({
+        command: 'updateQuery',
+        id: 'a',
+        updates: {
+            name: 'Open orders',
+            scope: 'global',
+            sql: '  SELECT * FROM t WHERE d > :since AND c = :code  ',
+            parameters: [{ name: 'since', kind: 'number', label: 'Start' }]
+        }
+    });
+
+    assert.deepEqual(panel.recorded.updates[0].patch, {
+        parameters: [
+            { name: 'since', kind: 'number', label: 'Start' },
+            { name: 'code', kind: 'text' }
+        ],
+        sql: 'SELECT * FROM t WHERE d > :since AND c = :code',
+        name: 'Open orders'
+    });
+});
+
+test('an unchanged statement leaves the placeholder metadata exactly as it was edited', async (t) => {
+    const panel = openPanel(t, [query('a', 'global', [{ name: 'since', kind: 'text' }], 'SELECT :since')]);
+    await panel.send({
+        command: 'updateQuery',
+        id: 'a',
+        updates: {
+            name: 'Query a',
+            scope: 'global',
+            sql: 'SELECT :since',
+            parameters: [{ name: 'since', kind: 'text', defaultValue: 'today' }]
+        }
+    });
+
+    assert.deepEqual(panel.recorded.updates[0].patch, {
+        parameters: [{ name: 'since', kind: 'text', defaultValue: 'today' }],
+        name: 'Query a'
+    });
+});
+
+test('the editor button hands the query to the command that opens an editor tab', async (t) => {
+    const invoked: unknown[][] = [];
+    const originalExecute = vscodeStub.commands.executeCommand;
+    vscodeStub.commands.executeCommand = (...args: unknown[]) => { invoked.push(args); return Promise.resolve(undefined); };
+    t.after(() => { vscodeStub.commands.executeCommand = originalExecute; });
+
+    const panel = openPanel(t, [query('a', 'global')]);
+    await panel.send({ command: 'editInEditor', id: 'a' });
+
+    assert.deepEqual(invoked, [['postgresQueryBuilder.editSavedQuerySql', 'a']]);
 });
 
 test('the bulk actions move and delete every selected query', async (t) => {
