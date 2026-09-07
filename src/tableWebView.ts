@@ -944,13 +944,27 @@ export class TableWebViewManager {
                     .map((c) => ({ column: quote(String(c.column)), operator: String(c.operator), value: String(c.value ?? '') }));
 
             const sharesColumnName = target.rawColumns.some(c => source.rawColumns.includes(c));
+            // The JOINs of the query on screen can be carried over instead of
+            // wrapping it up as a derived table; they reference its aliases, so
+            // the source table has to keep the alias it had there.
+            const carriedAlias = String(message.sourceAlias || '');
+            const carriedJoins = !derivedSql
+                && typeof message.sourceJoins === 'string'
+                && /^[A-Za-z_][A-Za-z0-9_$]*$/.test(carriedAlias)
+                ? message.sourceJoins.trim()
+                : '';
             let targetAlias = '';
             let sourceAlias = '';
-            if (derivedSql || sharesColumnName) {
+            if (derivedSql || sharesColumnName || carriedJoins) {
                 targetAlias = deriveQualifier(target.firstColumnRaw, target.table);
-                sourceAlias = deriveQualifier(source.firstColumnRaw, source.table);
+                sourceAlias = carriedJoins ? carriedAlias : deriveQualifier(source.firstColumnRaw, source.table);
                 if (sourceAlias.toLowerCase() === targetAlias.toLowerCase()) {
-                    sourceAlias = `${sourceAlias}2`;
+                    // The carried alias cannot move, so the target gives way.
+                    if (carriedJoins) {
+                        targetAlias = `${targetAlias}2`;
+                    } else {
+                        sourceAlias = `${sourceAlias}2`;
+                    }
                 }
             }
 
@@ -958,8 +972,9 @@ export class TableWebViewManager {
                 target: { tableReference: target.tableReference, columns: target.columns, alias: targetAlias },
                 source: {
                     tableReference: derivedSql ? `(${derivedSql})` : source.tableReference,
-                    columns: source.columns,
-                    alias: sourceAlias
+                    columns: carriedJoins ? [] : source.columns,
+                    alias: sourceAlias,
+                    joins: carriedJoins
                 },
                 columnPairs,
                 sourceConditions: toConditions(message.sourceConditions, quoteSource),

@@ -151,7 +151,12 @@ function formatLiteralValue(value: string): string {
  * is joined to the already-listed tables. The SELECT list contains every
  * column of every table, qualified by its alias.
  */
-export function buildJoinSelect(tables: JoinTableSpec[], joins: JoinClause[], orderBy?: string): string {
+export function buildJoinSelect(
+    tables: JoinTableSpec[],
+    joins: JoinClause[],
+    orderBy?: string,
+    carried?: { joins?: string; where?: string }
+): string {
     if (tables.length === 0) {
         return '';
     }
@@ -192,6 +197,13 @@ export function buildJoinSelect(tables: JoinTableSpec[], joins: JoinClause[], or
         }
         const on = parts.join(' AND ');
         lines.push(`${join.type} ${declare(t)} ON ${on}`);
+    }
+
+    if (carried?.joins && carried.joins.trim()) {
+        lines.push(carried.joins.trim());
+    }
+    if (carried?.where && carried.where.trim()) {
+        lines.push(`WHERE ${carried.where.trim()}`);
     }
 
     const tail = orderBy && orderBy.trim() ? `\nORDER BY ${orderBy.trim()}` : '';
@@ -267,8 +279,10 @@ export interface RelatedJoinSpec {
      * The table the Data Viewer currently shows; joined in, not selected from.
      * `tableReference` may be a parenthesised sub-select, which then needs an
      * alias. `columns` are only used to qualify the carried-over clauses.
+     * `joins` are the JOIN clauses of the query it came from, appended verbatim
+     * after it — they reference its aliases, so `alias` must be its own.
      */
-    source: { tableReference: string; columns?: string[]; alias?: string };
+    source: { tableReference: string; columns?: string[]; alias?: string; joins?: string };
     /** `sourceColumn = targetColumn` equalities, both already quoted. */
     columnPairs: Array<{ sourceColumn: string; targetColumn: string }>;
     /** Mapping conditions that constrain the source table. */
@@ -308,6 +322,11 @@ export function buildRelatedTableJoin(spec: RelatedJoinSpec): string {
     const carry = (fragment: string | undefined) =>
         qualifyColumnReferences(fragment ?? '', spec.source.columns ?? [], sourceAlias);
 
+    // Carried-over JOINs bring aliases of their own into scope, and only the
+    // WHERE clause sees all of them.
+    const carriedJoins = (spec.source.joins ?? '').trim();
+    const carriedWhere = carriedJoins ? (spec.sourceWhere ?? '').trim() : '';
+
     const join: JoinClause = {
         type: spec.type ?? 'INNER JOIN',
         conditions: spec.columnPairs.map(p => ({
@@ -319,9 +338,9 @@ export function buildRelatedTableJoin(spec: RelatedJoinSpec): string {
             ...literal(spec.targetConditions, targetAlias),
             ...literal(spec.sourceConditions, sourceAlias)
         ],
-        rawConditions: spec.sourceWhere ? [carry(spec.sourceWhere)] : []
+        rawConditions: !carriedJoins && spec.sourceWhere ? [carry(spec.sourceWhere)] : []
     };
-    return buildJoinSelect(tables, [join], carry(spec.sourceOrderBy));
+    return buildJoinSelect(tables, [join], carry(spec.sourceOrderBy), { joins: carriedJoins, where: carriedWhere });
 }
 
 export interface JoinFkEdge {

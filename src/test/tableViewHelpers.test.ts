@@ -38,6 +38,8 @@ const {
     headerRelationTargets,
     isLiftableSelect,
     relatedJoinPayload,
+    parseSelectChain,
+    selectItemColumn,
     describePendingChanges
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
@@ -245,12 +247,81 @@ test('relatedJoinPayload keeps the result names when the query is joined in as a
         targetSchema: 'public', targetTable: 'customers',
         columnPairs: [{ sourceColumn: 'kunden_nr', targetColumn: 'id' }]
     };
-    const payload = relatedJoinPayload(rel, 'public', 'orders', 'SELECT o.customer_id AS kunden_nr FROM orders o JOIN parts p ON p.id = o.part_id', {
+    const payload = relatedJoinPayload(rel, 'public', 'orders', 'SELECT o.customer_id AS kunden_nr, count(*) AS teil FROM orders o GROUP BY o.customer_id', {
         columnOf: (name: string) => (name === 'kunden_nr' ? 'customer_id' : name),
         columns: ['kunden_nr', 'teil']
     });
     assert.deepEqual(payload.columnPairs, [{ sourceColumn: 'kunden_nr', targetColumn: 'id' }]);
     assert.deepEqual(payload.sourceColumns, ['kunden_nr', 'teil']);
+    assert.equal(payload.sourceJoins, '');
+});
+
+test('relatedJoinPayload carries the joins of the query over instead of nesting it', () => {
+    const rel = {
+        targetSchema: 'public', targetTable: 'customers',
+        columnPairs: [{ sourceColumn: 'kunden_nr', targetColumn: 'id' }]
+    };
+    const sql = 'SELECT o.customer_id AS kunden_nr, p.name FROM orders o'
+        + ' LEFT JOIN parts p ON p.id = o.part_id'
+        + " WHERE p.name LIKE 'A%' ORDER BY p.name";
+    const payload = relatedJoinPayload(rel, 'public', 'orders', sql, {
+        columnOf: (name: string) => (name === 'kunden_nr' ? 'customer_id' : name),
+        columns: ['kunden_nr', 'name']
+    });
+    assert.deepEqual(payload.columnPairs, [{ sourceColumn: 'customer_id', targetColumn: 'id' }]);
+    assert.equal(payload.sourceSql, '');
+    assert.deepEqual(payload.sourceColumns, []);
+    assert.equal(payload.sourceAlias, 'o');
+    assert.equal(payload.sourceJoins, 'LEFT JOIN parts p ON p.id = o.part_id');
+    assert.equal(payload.where, "p.name LIKE 'A%'");
+    assert.equal(payload.orderBy, 'p.name');
+});
+
+test('relatedJoinPayload nests the query when the column belongs to a joined table', () => {
+    const rel = {
+        targetSchema: 'public', targetTable: 'customers',
+        columnPairs: [{ sourceColumn: 'kunden_nr', targetColumn: 'id' }]
+    };
+    const sql = 'SELECT p.customer_id AS kunden_nr FROM orders o LEFT JOIN parts p ON p.id = o.part_id';
+    const payload = relatedJoinPayload(rel, 'public', 'orders', sql, {
+        columnOf: (name: string) => name,
+        columns: ['kunden_nr']
+    });
+    assert.equal(payload.sourceSql, sql);
+    assert.equal(payload.sourceJoins, '');
+    assert.equal(payload.sourceAlias, '');
+});
+
+test('parseSelectChain takes the tables of a joined select apart', () => {
+    const chain = parseSelectChain(
+        'SELECT mit.mit_id AS "ID", abt.abt_langname\nFROM bos_mitarbeiter mit\n'
+        + 'LEFT JOIN bos_abteilungen abt ON abt.abt_id = mit.mit_abt_id\n'
+        + "WHERE mit.mit_aktiv = true\nORDER BY mit.mit_id"
+    );
+    assert.equal(chain.table, 'bos_mitarbeiter');
+    assert.equal(chain.alias, 'mit');
+    assert.equal(chain.joins, 'LEFT JOIN bos_abteilungen abt ON abt.abt_id = mit.mit_abt_id');
+    assert.equal(chain.where, 'mit.mit_aktiv = true');
+    assert.equal(chain.orderBy, 'mit.mit_id');
+});
+
+test('parseSelectChain rejects what cannot be carried into another query', () => {
+    assert.equal(parseSelectChain('SELECT a FROM t'), null, 'a table without an alias');
+    assert.equal(parseSelectChain('SELECT a FROM t x, u y'), null, 'a comma-separated FROM');
+    assert.equal(parseSelectChain('SELECT DISTINCT a FROM t x'), null, 'a DISTINCT select');
+    assert.equal(parseSelectChain('SELECT a FROM t x GROUP BY a'), null, 'a grouped select');
+    assert.equal(parseSelectChain('SELECT a FROM t x -- note'), null, 'a commented select');
+    assert.equal(parseSelectChain('WITH c AS (SELECT 1) SELECT a FROM c x'), null, 'a CTE');
+    assert.equal(parseSelectChain('SELECT a FROM t x UNION SELECT b FROM u y'), null, 'a union');
+});
+
+test('selectItemColumn resolves a result name back to its table column', () => {
+    const list = 'mit.mit_id AS "ID", abt.abt_langname, upper(mit.name) AS "Name", plain_col';
+    assert.deepEqual(selectItemColumn(list, 'ID'), { alias: 'mit', column: 'mit_id' });
+    assert.deepEqual(selectItemColumn(list, 'abt_langname'), { alias: 'abt', column: 'abt_langname' });
+    assert.deepEqual(selectItemColumn(list, 'plain_col'), { alias: '', column: 'plain_col' });
+    assert.equal(selectItemColumn(list, 'Name'), null, 'a computed column has no source column');
+    assert.equal(selectItemColumn(list, 'missing'), null);
 });
 
 test('describeCharacterBudget reports usage and remaining characters', () => {

@@ -26,6 +26,7 @@
 
     - **A renamed column keeps its relations.** `SELECT o.customer_id AS kunden_nr` used to lose the foreign key of `customer_id`, because the relations were looked up under the name the table gives a column while the grid knows it under the name the query gives it. Relations are now delivered under the result's names, including the columns a mapping's conditions and composite pairs refer to.
     - **The column header follows a relation for the whole result too.** *Open … joined with …* was likewise reserved for a result from a single table. A hand-written query now offers it on every column it takes from a real table: the related table is opened and the current query is joined to it as a whole, matched on the column as the result names it.
+    - **A joined query hands its tables over instead of hiding in a sub-select.** A SELECT over a dozen `LEFT JOIN`s was carried into the new query as a derived table — the whole statement squeezed onto a single line inside a pair of brackets, unreadable and impossible to keep working on. Such a query is now taken apart: its first table is joined to the table you opened, its own `JOIN` clauses follow one per line exactly as you wrote them, and its `WHERE` becomes the `WHERE` of the new statement, where every alias it uses is in scope. A query that cannot be taken apart safely — one that groups, unions or takes the column from a table joined further down — is still carried over whole.
 
 ## 3.0.5
 

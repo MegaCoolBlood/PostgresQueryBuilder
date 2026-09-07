@@ -1565,29 +1565,115 @@ function isLiftableSelect(sql) {
 // source table itself uses for a result column, `columns` lists the names the
 // result shows.
 function relatedJoinPayload(rel, schema, table, sql, sources) {
-    const base = String(sql || '').trim();
-    const liftable = isLiftableSelect(base);
-    const parsed = liftable ? parseSqlForWhere(base) : { where: '', orderBy: '' };
+    const pairs = rel.columnPairs || [];
+    const source = relatedJoinSource(sql, pairs.length ? pairs[0].sourceColumn : '');
     const columnOf = (sources && sources.columnOf) || (name => name);
-    // Joined directly, the source columns are the table's own; carried over as
-    // a derived table they are the ones the query put in its result.
-    const rename = liftable ? columnOf : (name => name);
+    // Carried over as a derived table the columns keep the names the query gave
+    // them; in every other shape the source table is joined under its own name.
+    const rename = source.mode === 'derived' ? (name => name) : columnOf;
     return {
         sourceSchema: schema,
         sourceTable: table,
         targetSchema: rel.targetSchema,
         targetTable: rel.targetTable,
-        columnPairs: (rel.columnPairs || []).map(p => ({
-            sourceColumn: rename(p.sourceColumn),
-            targetColumn: p.targetColumn
-        })),
+        columnPairs: pairs.map(p => ({ sourceColumn: rename(p.sourceColumn), targetColumn: p.targetColumn })),
         sourceConditions: (rel.sourceConditions || []).map(c => Object.assign({}, c, { column: rename(c.column) })),
         targetConditions: rel.targetConditions || [],
-        where: parsed.where,
-        orderBy: parsed.orderBy,
-        sourceSql: liftable ? '' : base,
-        sourceColumns: liftable ? [] : ((sources && sources.columns) || [])
+        where: source.where,
+        orderBy: source.orderBy,
+        sourceSql: source.sql,
+        sourceColumns: source.mode === 'derived' ? ((sources && sources.columns) || []) : [],
+        sourceJoins: source.joins,
+        sourceAlias: source.alias
     };
+}
+
+// How the query on screen is carried into the query of the related table:
+// joined directly when it is a plain single-table SELECT ('table'), with its
+// own JOIN chain when its tables can be carried over ('chain'), and as a
+// derived table when neither works ('derived').
+function relatedJoinSource(sql, resultColumn) {
+    const base = String(sql || '').trim();
+    const empty = { mode: 'derived', where: '', orderBy: '', sql: base, joins: '', alias: '' };
+    if (isLiftableSelect(base)) {
+        const parsed = parseSqlForWhere(base);
+        return { mode: 'table', where: parsed.where, orderBy: parsed.orderBy, sql: '', joins: '', alias: '' };
+    }
+    const chain = parseSelectChain(base);
+    const column = chain ? selectItemColumn(chain.selectList, resultColumn) : null;
+    // The relation is joined on the first table of the chain, so the column has
+    // to belong to it: every other alias only comes into scope further down.
+    if (!chain || !chain.joins || !column || column.alias !== chain.alias) {
+        return empty;
+    }
+    return { mode: 'chain', where: chain.where, orderBy: chain.orderBy, sql: '', joins: chain.joins, alias: chain.alias };
+}
+
+// Clauses that stop a SELECT from being carried into another query, because
+// they describe a result rather than a set of joined rows.
+const UNCARRIED_SQL_CLAUSES = [
+    'GROUP BY', 'HAVING', 'WINDOW', 'UNION', 'UNION ALL', 'INTERSECT', 'EXCEPT', 'FETCH', 'RETURNING'
+];
+
+// Take a SELECT apart into what is needed to carry its tables into another
+// query: its select list, the first FROM table with its alias, the JOIN
+// clauses that follow verbatim, its WHERE and its ORDER BY. Anything that
+// cannot be carried over safely yields null.
+function parseSelectChain(sql) {
+    const raw = String(sql || '').trim().replace(/;\s*$/, '');
+    if (!/^SELECT\s/i.test(raw) || hasSqlComment(raw)) return null;
+    const ident = '(?:"(?:[^"]|"")+"|[A-Za-z_][\\w$]*)';
+    const fromRe = new RegExp(`^(${ident}(?:\\s*\\.\\s*${ident})?)(?:\\s+AS)?\\s+(${ident})$`, 'i');
+    const chain = { selectList: '', table: '', alias: '', joins: '', where: '', orderBy: '' };
+    const joins = [];
+    for (const seg of splitTopLevelClauses(collapseSqlWhitespace(raw))) {
+        const kw = String(seg.kw || '').toUpperCase();
+        const content = String(seg.content || '').trim();
+        if (UNCARRIED_SQL_CLAUSES.indexOf(kw) !== -1) return null;
+        if (kw === 'SELECT') {
+            if (chain.selectList || /^DISTINCT\b/i.test(content)) return null;
+            chain.selectList = content;
+        } else if (kw === 'FROM') {
+            const m = content.match(fromRe);
+            if (!m || chain.table) return null;
+            chain.table = m[1];
+            chain.alias = unquoteSqlIdentifier(m[2]);
+        } else if (/JOIN$/.test(kw)) {
+            joins.push(`${kw} ${content}`);
+        } else if (kw === 'WHERE') {
+            chain.where = content;
+        } else if (kw === 'ORDER BY') {
+            chain.orderBy = content;
+        } else if (kw !== 'LIMIT' && kw !== 'OFFSET') {
+            return null;
+        }
+    }
+    if (!chain.table || !chain.alias) return null;
+    chain.joins = joins.join('\n');
+    return chain;
+}
+
+function unquoteSqlIdentifier(token) {
+    const t = String(token || '');
+    return t.startsWith('"') && t.endsWith('"') && t.length > 1 ? t.slice(1, -1).replace(/""/g, '"') : t;
+}
+
+// The `alias.column` a select list exposes under the given result name. Only a
+// plain column reference can be joined on, so anything computed yields null.
+function selectItemColumn(selectList, resultColumn) {
+    const ident = '(?:"(?:[^"]|"")+"|[A-Za-z_][\\w$]*)';
+    const itemRe = new RegExp(`^(${ident})(?:\\s*\\.\\s*(${ident}))?(?:\\s+AS\\s+(${ident})|\\s+(${ident}))?$`, 'i');
+    for (const item of splitTopLevelCommas(String(selectList || ''))) {
+        const m = item.trim().match(itemRe);
+        if (!m) continue;
+        const alias = m[2] ? unquoteSqlIdentifier(m[1]) : '';
+        const column = unquoteSqlIdentifier(m[2] || m[1]);
+        const name = m[3] || m[4] ? unquoteSqlIdentifier(m[3] || m[4]) : column;
+        if (name === resultColumn) {
+            return { alias, column };
+        }
+    }
+    return null;
 }
 
 // Text for the row-count indicator. An exact total is only known when it was
@@ -5722,6 +5808,8 @@ if (typeof module !== 'undefined' && module.exports) {
         headerRelationTargets,
         isLiftableSelect,
         relatedJoinPayload,
+        parseSelectChain,
+        selectItemColumn,
         describePendingChanges
     };
 }

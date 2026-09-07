@@ -771,3 +771,35 @@ test('query panel: a plain single-table query is still joined to the table itsel
     assert.ok(!init.sql.includes('SELECT o.customer_id'), 'no derived table expected');
     assert.ok(init.sql.includes('orders'), `the source table must be joined in: ${init.sql}`);
 });
+
+test('query panel: the joins of the current query are carried into the new one', async () => {
+    const init = await openRelatedJoin({
+        sourceSchema: 'public', sourceTable: 'orders',
+        targetSchema: 'public', targetTable: 'customers',
+        columnPairs: [{ sourceColumn: 'customer_id', targetColumn: 'id' }],
+        where: "p.name LIKE 'A%'",
+        sourceSql: '',
+        sourceColumns: [],
+        sourceJoins: 'LEFT JOIN parts p ON p.id = o.part_id',
+        sourceAlias: 'o'
+    });
+    assert.ok(init, 'expected the joined query to be opened');
+    assert.ok(init.sql.includes('INNER JOIN orders o ON'), `the source keeps its alias: ${init.sql}`);
+    assert.ok(init.sql.includes('LEFT JOIN parts p ON p.id = o.part_id'), `carried join missing in ${init.sql}`);
+    assert.ok(init.sql.includes("WHERE p.name LIKE 'A%'"), `the WHERE clause must stay whole: ${init.sql}`);
+});
+
+test('query panel: carried joins without a usable alias fall back to a plain join', async () => {
+    const init = await openRelatedJoin({
+        sourceSchema: 'public', sourceTable: 'orders',
+        targetSchema: 'public', targetTable: 'customers',
+        columnPairs: [{ sourceColumn: 'customer_id', targetColumn: 'id' }],
+        sourceSql: '',
+        sourceColumns: [],
+        sourceJoins: 'LEFT JOIN parts p ON p.id = o.part_id',
+        sourceAlias: 'o; DROP TABLE parts'
+    });
+    assert.ok(init, 'expected the joined query to be opened');
+    assert.ok(!init.sql.includes('LEFT JOIN parts'), `no join may be carried over: ${init.sql}`);
+    assert.ok(!init.sql.includes('DROP TABLE'), `the alias must not reach the SQL: ${init.sql}`);
+});

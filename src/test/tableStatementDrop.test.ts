@@ -364,6 +364,43 @@ test('buildRelatedTableJoin joins a sub-select as the source', () => {
 
 // ===== qualifyColumnReferences =====
 
+test('buildRelatedTableJoin carries the joins of the source query over', () => {
+    const sql = buildRelatedTableJoin({
+        target: { tableReference: 'reports', columns: ['id', 'emp_id'], alias: 'r' },
+        source: {
+            tableReference: 'employees',
+            columns: [],
+            alias: 'emp',
+            joins: 'LEFT JOIN departments d ON d.id = emp.dep_id\nLEFT JOIN sites s ON s.id = d.site_id'
+        },
+        columnPairs: [{ sourceColumn: 'id', targetColumn: 'emp_id' }],
+        sourceWhere: "s.name = 'Berlin'",
+        sourceOrderBy: 'd.name'
+    });
+    assert.equal(
+        sql,
+        'SELECT\n  r.id,\n  r.emp_id\nFROM reports r\n'
+        + 'INNER JOIN employees emp ON emp.id = r.emp_id\n'
+        + 'LEFT JOIN departments d ON d.id = emp.dep_id\n'
+        + 'LEFT JOIN sites s ON s.id = d.site_id\n'
+        + "WHERE s.name = 'Berlin'\n"
+        + 'ORDER BY d.name;'
+    );
+});
+
+test('buildRelatedTableJoin keeps the WHERE clause in the ON clause without carried joins', () => {
+    const sql = buildRelatedTableJoin({
+        target: { tableReference: 'orders', columns: ['id'], alias: 'o' },
+        source: { tableReference: 'customers', columns: ['id'], alias: 'c' },
+        columnPairs: [{ sourceColumn: 'id', targetColumn: 'id' }],
+        sourceWhere: 'id > 10'
+    });
+    assert.equal(
+        sql,
+        'SELECT\n  o.id\nFROM orders o\nINNER JOIN customers c ON c.id = o.id AND c.id > 10;'
+    );
+});
+
 test('qualifyColumnReferences prefixes only known bare column names', () => {
     assert.equal(
         qualifyColumnReferences('status = 1 AND other = 2', ['status'], 'c'),
