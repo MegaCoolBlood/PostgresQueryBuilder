@@ -2067,15 +2067,56 @@ test('leaves every other function at one argument per line', () => {
     ].join('\n'));
 });
 
-test('falls back to one argument per line when a value is itself broken', () => {
+test('keeps the pairs when a value is itself broken across lines', () => {
     const out = formatSql(
         "select jsonb_build_object('a', jsonb_build_object('x', 1, 'y', 2, 'z', 3), 'b', 2, 'c', 3) from t;"
     );
-    // The outer call cannot pair its arguments around a nested multi-line call.
-    assert.ok(out.includes("  'a',\n  jsonb_build_object(\n"), out);
-    assert.ok(out.includes("  'b',\n  2,\n"), out);
-    // The nested call keeps its pairs.
-    assert.ok(out.includes("    'x', 1,\n"), out);
+    assert.equal(out, [
+        'SELECT jsonb_build_object(',
+        "  'a', jsonb_build_object(",
+        "    'x', 1,",
+        "    'y', 2,",
+        "    'z', 3",
+        '  ),',
+        "  'b', 2,",
+        "  'c', 3",
+        ')',
+        'FROM t;'
+    ].join('\n'));
+    assert.equal(formatSql(out), out);
+});
+
+test('keeps the pairs when a value is a CASE expression or a sub-select', () => {
+    const out = formatSql([
+        'select jsonb_build_object(',
+        "  'p_kst',",
+        '  case',
+        "    when r(a, b) = 'EP1' then k2(a, b)",
+        '    else k(a, b)',
+        '  end,',
+        "  'p_gewerblich',",
+        '  (select w from z where i = a),',
+        "  'p_stichtag',",
+        '  b',
+        ') into v from t where i = p;'
+    ].join('\n'));
+    assert.equal(out, [
+        'SELECT jsonb_build_object(',
+        "  'p_kst', CASE",
+        "    WHEN r(a, b) = 'EP1' THEN k2(a, b)",
+        '    ELSE k(a, b)',
+        '  END,',
+        "  'p_gewerblich', (",
+        '    SELECT w',
+        '    FROM z',
+        '    WHERE i = a',
+        '  ),',
+        "  'p_stichtag', b",
+        ')',
+        'INTO v',
+        'FROM t',
+        'WHERE i = p;'
+    ].join('\n'));
     assert.equal(formatSql(out), out);
 });
 

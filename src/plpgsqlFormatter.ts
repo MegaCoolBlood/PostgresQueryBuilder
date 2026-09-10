@@ -1341,19 +1341,6 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 : undefined;
             parenInfo.set(open, { match: close, kind, argCount, multiline, srcMulti, groups });
         }
-        // A grouped call whose arguments are themselves broken across lines would
-        // hide the tuples rather than show them, so it falls back to one argument
-        // per line. Nested parentheses are only classified once the loop is done.
-        for (const [open, info] of parenInfo) {
-            if (!info.groups) continue;
-            for (let k = open + 1; k < info.match; k++) {
-                const nested = parenInfo.get(k);
-                if ((nested && nested.multiline) || bracketInfo.get(k)?.multiline) {
-                    parenInfo.set(open, { ...info, groups: undefined });
-                    break;
-                }
-            }
-        }
     }
 
     // --- INSERT: keep the column list and the VALUES list(s) consistent -------

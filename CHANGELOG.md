@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.1.1
+
+- **A `jsonb_build_object` whose value is a `CASE` or a sub-select keeps its key/value pairs:** `postgresQueryBuilder.format.argumentGroups` promises that such a call breaks at every second comma, but as soon as one argument was itself spread over several lines — a `CASE` expression, a scalar sub-select, a nested `jsonb_build_object` — the formatter dropped the pairing for the whole call and put every single argument on its own line, so exactly the long objects that need the structure most were the ones that lost it. The grouping now survives a multi-line argument: the key stays on the line its value starts on, and the value keeps its own layout underneath.
+
 ## 3.1.0
 
 - **Sharing a custom mapping with the workspace now really produces a file to commit:** Ticking *Share with workspace (commit to git)* in the mapping dialog, or moving a mapping to *Workspace* in *Manage All Mappings*, reported success and showed the mapping with a *Workspace* badge — but `.vscode/postgres-query-builder.mappings.json` was nowhere to be found, so there was nothing to commit and nothing to hand to a colleague. The shared file is now written as soon as workspace sharing is used, and when it genuinely cannot be written the extension says why instead of quietly keeping the mapping in your personal store.
