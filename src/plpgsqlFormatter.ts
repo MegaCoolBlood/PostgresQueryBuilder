@@ -118,6 +118,8 @@ export interface FormatOptions {
     alignSingleLineCase: boolean;
     /** Align consecutive single-line IF … THEN … END IF; statements at their THEN and END IF. Default: false. */
     alignSingleLineIf: boolean;
+    /** Align the type column of a CREATE FUNCTION/PROCEDURE parameter list written one per line. Default: false. */
+    alignFunctionParameters: boolean;
     /** Per-construct multi-line wrapping thresholds. See {@link DEFAULT_THRESHOLDS}. */
     thresholds: Partial<Record<ConstructKey, ListThreshold>>;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
@@ -226,6 +228,7 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     alignCaseWhenThen: false,
     alignSingleLineCase: false,
     alignSingleLineIf: false,
+    alignFunctionParameters: false,
     thresholds: DEFAULT_THRESHOLDS,
     normalizeDataTypes: true,
     dataTypeAliases: DEFAULT_DATA_TYPE_ALIASES,
@@ -259,6 +262,7 @@ export function coerceFormatOptions(raw: {
     alignCaseWhenThen?: unknown;
     alignSingleLineCase?: unknown;
     alignSingleLineIf?: unknown;
+    alignFunctionParameters?: unknown;
     // Legacy umbrella switch: kept as fallback for backward compatibility.
     preserveSingleLineSpecialCases?: unknown;
     listThresholds?: unknown;
@@ -338,6 +342,9 @@ export function coerceFormatOptions(raw: {
         alignSingleLineIf: typeof raw.alignSingleLineIf === 'boolean'
             ? raw.alignSingleLineIf
             : DEFAULT_FORMAT_OPTIONS.alignSingleLineIf,
+        alignFunctionParameters: typeof raw.alignFunctionParameters === 'boolean'
+            ? raw.alignFunctionParameters
+            : DEFAULT_FORMAT_OPTIONS.alignFunctionParameters,
         thresholds,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
@@ -1384,6 +1391,40 @@ function splitSingleLineIfCells(line: string): { c0: string; c1: string; c2: str
     if (!(posThen >= 0 && posEnd > posThen)) return null;
     const cut = (a: number, b: number): string => line.slice(a, b).replace(/\s+$/, '');
     return { c0: cut(0, posThen), c1: cut(posThen, posEnd), c2: line.slice(posEnd).replace(/\s+$/, '') };
+}
+
+/**
+ * Align the type column of the parameters of a `CREATE FUNCTION` / `CREATE
+ * PROCEDURE` whose parameter list is written one parameter per line, by padding
+ * each parameter's name (and optional mode) so every type starts in the same
+ * column.
+ */
+function alignFunctionParameters(text: string): string {
+    const lines = text.split('\n');
+    // <indent><[mode] name><spaces><type…>; the head is the mode+name to pad.
+    const paramRe = /^(\s*)((?:(?:in|out|inout|variadic)\s+)?(?:"(?:[^"]|"")*"|[A-Za-z_][^\s]*))(\s+)(\S.*)$/i;
+    for (let i = 0; i < lines.length; i++) {
+        const open = lines[i];
+        if (!/^\s*create\b/i.test(open) || !/\b(function|procedure)\b/i.test(open)
+            || !/\($/.test(open.replace(/\s+$/, ''))) continue;
+        interface Param { line: number; indent: string; head: string; rest: string; }
+        const params: Param[] = [];
+        let j = i + 1;
+        for (; j < lines.length; j++) {
+            if (/^\s*\)/.test(lines[j])) break;
+            const m = paramRe.exec(lines[j]);
+            if (m) params.push({ line: j, indent: m[1], head: m[2], rest: m[4] });
+        }
+        if (params.length >= 2) {
+            let width = 0;
+            for (const p of params) if (p.head.length > width) width = p.head.length;
+            for (const p of params) {
+                lines[p.line] = p.indent + p.head + ' '.repeat(width - p.head.length + 1) + p.rest;
+            }
+        }
+        i = j;
+    }
+    return lines.join('\n');
 }
 
 function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string {
@@ -3140,6 +3181,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     if (opt.alignCaseWhenThen) result = alignCaseWhenThen(result);
     if (opt.alignSingleLineCase) result = alignSingleLineCase(result);
     if (opt.alignSingleLineIf) result = alignSingleLineIf(result);
+    if (opt.alignFunctionParameters) result = alignFunctionParameters(result);
     result = padLineCommentEnds(result);
     return trailingNewline ? result + '\n' : result;
 }

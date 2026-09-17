@@ -508,6 +508,11 @@
           "default": false,
           "description": "Align consecutive single-line IF ... THEN ... END IF; statements at their THEN and END IF so the body and the closing END IF line up. Statements separated by a blank line are aligned as independent groups."
         },
+        "postgresQueryBuilder.format.alignFunctionParameters": {
+          "type": "boolean",
+          "default": false,
+          "description": "Align the type column of a CREATE FUNCTION/PROCEDURE parameter list that is written one parameter per line, by padding the parameter names so every type starts in the same column."
+        },
         "postgresQueryBuilder.format.preserveSingleLineSpecialCases": {
           "type": "boolean",
           "default": true,

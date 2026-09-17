@@ -980,6 +980,7 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         alignCaseWhenThen: false,
         alignSingleLineCase: false,
         alignSingleLineIf: false,
+        alignFunctionParameters: false,
         thresholds: DEFAULT_THRESHOLDS,
         normalizeDataTypes: true,
         dataTypeAliases: {
@@ -2017,6 +2018,28 @@ test('alignSingleLineIf aligns blank-line groups independently and is off by def
     assert.equal(rows[2].indexOf(' THEN '), rows[3].indexOf(' THEN '), 'second group aligns\n' + out);
     assert.equal(formatSql(out, { alignSingleLineIf: true }), out, 'idempotent');
     assert.ok(formatSql(src).includes("IF v >= 8 THEN a := 'L'; END IF;"), 'default keeps single spaces');
+});
+
+test('alignFunctionParameters lines up the type column of a multi-line parameter list', () => {
+    const src = 'CREATE FUNCTION f(pi_classname VARCHAR, pi_objectname VARCHAR) RETURNS VARCHAR'
+        + ' LANGUAGE sql AS $$ SELECT 1 $$;';
+    const out = formatSql(src, { alignFunctionParameters: true });
+    assert.ok(out.includes('  pi_classname  VARCHAR,'), 'shorter name is padded\n' + out);
+    assert.ok(out.includes('  pi_objectname VARCHAR'), 'longest name keeps one space\n' + out);
+    const rows = out.split('\n').filter(l => /^\s+pi_/.test(l));
+    assert.equal(rows[0].indexOf('VARCHAR'), rows[1].indexOf('VARCHAR'), 'types align\n' + out);
+    assert.equal(formatSql(out, { alignFunctionParameters: true }), out, 'idempotent');
+    assert.ok(sqlSemanticallyEqual(src, out), 'meaning preserved');
+});
+
+test('alignFunctionParameters aligns past a parameter mode and is off by default', () => {
+    const src = "CREATE PROCEDURE p(IN pi_a integer, INOUT pio_longer_name text DEFAULT 'x')"
+        + ' LANGUAGE plpgsql AS $$ BEGIN NULL; END; $$;';
+    const out = formatSql(src, { alignFunctionParameters: true });
+    const rows = out.split('\n').filter(l => /^\s+(IN|INOUT)\b/.test(l));
+    assert.equal(rows[0].indexOf('INTEGER'), rows[1].indexOf('TEXT'), 'types align past the mode\n' + out);
+    // Off by default: a single space between name and type is kept.
+    assert.ok(formatSql(src).includes('IN pi_a INTEGER,'), 'default keeps single spaces');
 });
 
 test('does not collapse a SELECT whose function call was split across lines with a compound argument', () => {
