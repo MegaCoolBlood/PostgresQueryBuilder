@@ -110,6 +110,7 @@ export function formatOptionsToRepoConfig(opts: FormatOptions): Record<string, u
         preserveSingleLineIfBlocks: opts.preserveSingleLineIfBlocks,
         alignDeclarationTypes: opts.alignDeclarationTypes,
         alignSingleLineFunctions: opts.alignSingleLineFunctions,
+        alignCaseWhenThen: opts.alignCaseWhenThen,
         normalizeDataTypes: opts.normalizeDataTypes,
         dataTypeAliases: { ...opts.dataTypeAliases },
         argumentGroups,

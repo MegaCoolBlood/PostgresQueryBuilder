@@ -977,6 +977,7 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         preserveSingleLineIfBlocks: true,
         alignDeclarationTypes: false,
         alignSingleLineFunctions: false,
+        alignCaseWhenThen: false,
         thresholds: DEFAULT_THRESHOLDS,
         normalizeDataTypes: true,
         dataTypeAliases: {
@@ -1861,6 +1862,80 @@ test('alignSingleLineFunctions aligns blank-line groups independently and is off
     // Off by default: a single space between the signature and RETURNS is kept.
     const plain = formatSql(src);
     assert.ok(plain.includes('s.a_long_named_one() RETURNS INTEGER'), plain);
+});
+
+test('alignCaseWhenThen lines up THEN across single-line branches', () => {
+    const src = [
+        'SELECT',
+        '  CASE x',
+        "    WHEN 'a' THEN 1",
+        "    WHEN 'abcdef' THEN 2",
+        "    WHEN 'abc' THEN 3",
+        '  END',
+        'FROM t;'
+    ].join('\n');
+    const out = formatSql(src, { alignCaseWhenThen: true });
+    const thenCols = out.split('\n').filter(l => /\bWHEN\b/.test(l)).map(l => l.indexOf(' THEN '));
+    assert.ok(thenCols.length === 3, out);
+    assert.ok(thenCols[0] > 0 && thenCols.every(c => c === thenCols[0]), 'THEN columns align\n' + out);
+    assert.equal(formatSql(out, { alignCaseWhenThen: true }), out, 'idempotent');
+    assert.ok(sqlSemanticallyEqual(src, out), 'meaning preserved');
+});
+
+test('alignCaseWhenThen is off by default and skips branches whose body wraps to the next line', () => {
+    const src = [
+        'SELECT',
+        '  CASE x',
+        "    WHEN 'a' THEN 1",
+        "    WHEN 'abcdef' THEN 2",
+        '  END',
+        'FROM t;'
+    ].join('\n');
+    const plain = formatSql(src);
+    assert.ok(plain.includes("WHEN 'a' THEN 1"), 'default keeps a single space\n' + plain);
+    // A WHEN whose THEN ends the line (multi-line body) is left untouched.
+    const wrapped = "SELECT\n  CASE\n    WHEN a THEN\n      1\n    WHEN abcdef THEN\n      2\n  END\nFROM t;";
+    const out = formatSql(wrapped, { alignCaseWhenThen: true });
+    assert.ok(/WHEN a THEN$/m.test(out), 'a THEN that ends the line is not padded\n' + out);
+});
+
+test('a comment on its own line between CASE branches keeps its line and does not wrap the result', () => {
+    const src = [
+        'SELECT',
+        '  CASE x',
+        "    WHEN 'a' THEN foo(wert, 0)",
+        '    --section label',
+        "    WHEN 'b' THEN bar(wert, 0)",
+        '  END AS v',
+        'FROM t;'
+    ].join('\n');
+    const out = formatSql(src);
+    assert.ok(out.includes("WHEN 'a' THEN foo(wert, 0)"), 'the result stays on the WHEN line\n' + out);
+    assert.ok(/\n\s*--section label\n/.test(out), 'the comment keeps its own line\n' + out);
+    assert.ok(!/foo\(wert, 0\).*--section label/.test(out), 'the comment is not glued to the result\n' + out);
+    assert.equal(formatSql(out), out, 'idempotent');
+    assert.ok(sqlSemanticallyEqual(src, out), 'meaning preserved');
+});
+
+test('alignCaseWhenThen treats a comment line as a group break so each section aligns on its own', () => {
+    const src = [
+        'SELECT',
+        '  CASE x',
+        "    WHEN 'a' THEN 1",
+        "    WHEN 'bb' THEN 2",
+        '    --label',
+        "    WHEN 'cccccccccc' THEN 3",
+        "    WHEN 'dd' THEN 4",
+        '  END AS v',
+        'FROM t;'
+    ].join('\n');
+    const out = formatSql(src, { alignCaseWhenThen: true });
+    const thenCols = out.split('\n').filter(l => /\bWHEN\b/.test(l)).map(l => l.indexOf(' THEN '));
+    // First section (a, bb) aligns to its own longest, the second (cccc.., dd) to its own.
+    assert.equal(thenCols[0], thenCols[1], 'first section aligns\n' + out);
+    assert.equal(thenCols[2], thenCols[3], 'second section aligns\n' + out);
+    assert.ok(thenCols[2] > thenCols[0], 'the comment breaks the group\n' + out);
+    assert.equal(formatSql(out, { alignCaseWhenThen: true }), out, 'idempotent');
 });
 
 test('does not collapse a SELECT whose function call was split across lines with a compound argument', () => {

@@ -493,6 +493,11 @@
           "default": false,
           "description": "Align consecutive single-line CREATE FUNCTION statements at their RETURNS, LANGUAGE and AS clauses so the return type, volatility and body line up. Statements separated by a blank line are aligned as independent groups."
         },
+        "postgresQueryBuilder.format.alignCaseWhenThen": {
+          "type": "boolean",
+          "default": false,
+          "description": "Align the THEN of consecutive single-line WHEN ... THEN ... branches in a CASE by padding the WHEN conditions. Branches separated by a blank line are aligned as independent groups."
+        },
         "postgresQueryBuilder.format.preserveSingleLineSpecialCases": {
           "type": "boolean",
           "default": true,

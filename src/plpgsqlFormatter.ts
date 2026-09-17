@@ -112,6 +112,8 @@ export interface FormatOptions {
     alignDeclarationTypes: boolean;
     /** Align consecutive single-line CREATE FUNCTION statements at their RETURNS/LANGUAGE/AS clauses. Default: false. */
     alignSingleLineFunctions: boolean;
+    /** Align the THEN of consecutive single-line WHEN … THEN … branches in a CASE. Default: false. */
+    alignCaseWhenThen: boolean;
     /** Per-construct multi-line wrapping thresholds. See {@link DEFAULT_THRESHOLDS}. */
     thresholds: Partial<Record<ConstructKey, ListThreshold>>;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
@@ -217,6 +219,7 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     preserveSingleLineIfBlocks: true,
     alignDeclarationTypes: false,
     alignSingleLineFunctions: false,
+    alignCaseWhenThen: false,
     thresholds: DEFAULT_THRESHOLDS,
     normalizeDataTypes: true,
     dataTypeAliases: DEFAULT_DATA_TYPE_ALIASES,
@@ -247,6 +250,7 @@ export function coerceFormatOptions(raw: {
     preserveSingleLineIfBlocks?: unknown;
     alignDeclarationTypes?: unknown;
     alignSingleLineFunctions?: unknown;
+    alignCaseWhenThen?: unknown;
     // Legacy umbrella switch: kept as fallback for backward compatibility.
     preserveSingleLineSpecialCases?: unknown;
     listThresholds?: unknown;
@@ -317,6 +321,9 @@ export function coerceFormatOptions(raw: {
         alignSingleLineFunctions: typeof raw.alignSingleLineFunctions === 'boolean'
             ? raw.alignSingleLineFunctions
             : DEFAULT_FORMAT_OPTIONS.alignSingleLineFunctions,
+        alignCaseWhenThen: typeof raw.alignCaseWhenThen === 'boolean'
+            ? raw.alignCaseWhenThen
+            : DEFAULT_FORMAT_OPTIONS.alignCaseWhenThen,
         thresholds,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
@@ -1158,6 +1165,56 @@ function splitFunctionCells(line: string): { c0: string; c1: string; c2: string;
         c2: cut(posL, posA),
         c3: line.slice(posA).replace(/\s+$/, '')
     };
+}
+
+/**
+ * Align the `THEN` of consecutive single-line `WHEN … THEN …` branches (a CASE
+ * whose arms each fit on one line) by padding the `WHEN` condition, so every
+ * `THEN` starts in the same column. Only branches at the same indent with a
+ * result on the same line take part; a blank line, a differently indented branch
+ * or any other line ends the current group, which is padded to its own longest
+ * condition.
+ */
+function alignCaseWhenThen(text: string): string {
+    const lines = text.split('\n');
+    interface Branch { line: number; indent: string; head: string; rest: string; }
+    let group: Branch[] = [];
+    const flush = (): void => {
+        if (group.length >= 2) {
+            let width = 0;
+            for (const g of group) if (g.head.length > width) width = g.head.length;
+            for (const g of group) {
+                lines[g.line] = g.indent + g.head + ' '.repeat(width - g.head.length + 1) + g.rest;
+            }
+        }
+        group = [];
+    };
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const m = /^(\s*)when\b/i.exec(line);
+        let branch: Branch | null = null;
+        if (m) {
+            const mask = literalMask(line);
+            const posT = topLevelKeywordPos(line, mask, 'THEN', m[1].length + 'when'.length);
+            // A single-line branch carries its result after THEN on the same line.
+            if (posT > 0 && line.slice(posT + 'then'.length).trim().length > 0) {
+                branch = {
+                    line: i,
+                    indent: m[1],
+                    head: line.slice(m[1].length, posT).replace(/\s+$/, ''),
+                    rest: line.slice(posT).replace(/\s+$/, '')
+                };
+            }
+        }
+        if (branch) {
+            if (group.length > 0 && group[0].indent !== branch.indent) flush();
+            group.push(branch);
+        } else {
+            flush();
+        }
+    }
+    flush();
+    return lines.join('\n');
 }
 
 function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string {
@@ -2076,12 +2133,21 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             if (w === 'when') {
                 const thenIdx = findCaseKeyword(k + 1, caseEnd, new Set(['then']));
                 const clauseEnd = thenIdx >= 0 ? findCaseKeyword(thenIdx + 1, caseEnd, new Set(['when', 'else'])) : -1;
-                const resEnd = (clauseEnd >= 0 ? clauseEnd : caseEnd) - 1;
+                const branchEnd = clauseEnd >= 0 ? clauseEnd : caseEnd;
+                let resEnd = branchEnd - 1;
+                // A comment the author placed on its own line between this branch
+                // and the next belongs on its own line — exclude it from the result
+                // range and let the loop's comment handler emit it below.
+                if (thenIdx >= 0) {
+                    while (resEnd > thenIdx
+                        && (toks[resEnd].type === 'lineComment' || toks[resEnd].type === 'blockComment')
+                        && toks[resEnd].nlBefore >= 1) resEnd--;
+                }
                 const multiCond = thenIdx > k + 1 && condHasTopLevelAndOr(k + 1, thenIdx - 1);
                 const clauseSingle = !rangeHasNewline(k + 1, resEnd);
                 startLine(whenIndent, blanksFor(tk));
                 emitInline(tk); // WHEN
-                if (thenIdx < 0) { emitRange(k + 1, resEnd); k = clauseEnd >= 0 ? clauseEnd : caseEnd; continue; }
+                if (thenIdx < 0) { emitRange(k + 1, resEnd); k = branchEnd; continue; }
                 if (multiCond) {
                     renderCondMulti(k + 1, thenIdx - 1, deepIndent);
                     startLine(whenIndent, 0); emitInline(toks[thenIdx]); // THEN on its own line
@@ -2092,14 +2158,17 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                     if (clauseSingle) emitResult(thenIdx + 1, resEnd);
                     else { startLine(deepIndent, 0); emitResult(thenIdx + 1, resEnd); }
                 }
-                k = clauseEnd >= 0 ? clauseEnd : caseEnd;
+                k = resEnd + 1;
             } else if (w === 'else') {
-                const resEnd = caseEnd - 1;
+                let resEnd = caseEnd - 1;
+                while (resEnd > k
+                    && (toks[resEnd].type === 'lineComment' || toks[resEnd].type === 'blockComment')
+                    && toks[resEnd].nlBefore >= 1) resEnd--;
                 startLine(whenIndent, blanksFor(tk));
                 emitInline(tk); // ELSE
                 if (!rangeHasNewline(k + 1, resEnd)) emitResult(k + 1, resEnd);
                 else { startLine(deepIndent, 0); emitResult(k + 1, resEnd); }
-                k = caseEnd;
+                k = resEnd + 1;
             } else if (tk.type === 'lineComment' || tk.type === 'blockComment') {
                 startLine(whenIndent, blanksFor(tk));
                 out.push((indentStr(whenIndent) + tk.text).replace(/\s+$/, ''));
@@ -2899,6 +2968,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     result = result.replace(/^\n+/, '').replace(/\n+$/, '');
     if (opt.alignDeclarationTypes) result = alignDeclarationTypes(result, opt);
     if (opt.alignSingleLineFunctions) result = alignSingleLineFunctions(result);
+    if (opt.alignCaseWhenThen) result = alignCaseWhenThen(result);
     result = padLineCommentEnds(result);
     return trailingNewline ? result + '\n' : result;
 }

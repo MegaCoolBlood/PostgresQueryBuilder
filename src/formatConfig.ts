@@ -22,6 +22,7 @@ const FORMAT_SETTING_BINDINGS: readonly FormatSettingBinding[] = [
     { shortKey: 'preserveSingleLineSpecialCases', configKey: 'format.preserveSingleLineSpecialCases' },
     { shortKey: 'alignDeclarationTypes', configKey: 'format.alignDeclarationTypes' },
     { shortKey: 'alignSingleLineFunctions', configKey: 'format.alignSingleLineFunctions' },
+    { shortKey: 'alignCaseWhenThen', configKey: 'format.alignCaseWhenThen' },
     { shortKey: 'listThresholds', configKey: 'format.listThresholds' },
     { shortKey: 'normalizeDataTypes', configKey: 'format.normalizeDataTypes' },
     { shortKey: 'dataTypeAliases', configKey: 'format.dataTypeAliases' },
