@@ -112,6 +112,7 @@ export function formatOptionsToRepoConfig(opts: FormatOptions): Record<string, u
         alignSingleLineFunctions: opts.alignSingleLineFunctions,
         alignCaseWhenThen: opts.alignCaseWhenThen,
         alignSingleLineCase: opts.alignSingleLineCase,
+        alignSingleLineIf: opts.alignSingleLineIf,
         normalizeDataTypes: opts.normalizeDataTypes,
         dataTypeAliases: { ...opts.dataTypeAliases },
         argumentGroups,

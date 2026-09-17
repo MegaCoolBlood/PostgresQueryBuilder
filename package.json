@@ -503,6 +503,11 @@
           "default": false,
           "description": "Align consecutive single-line CASE ... END expressions at their THEN, ELSE and END so the result, ELSE result and closing END line up. Expressions separated by a blank line are aligned as independent groups."
         },
+        "postgresQueryBuilder.format.alignSingleLineIf": {
+          "type": "boolean",
+          "default": false,
+          "description": "Align consecutive single-line IF ... THEN ... END IF; statements at their THEN and END IF so the body and the closing END IF line up. Statements separated by a blank line are aligned as independent groups."
+        },
         "postgresQueryBuilder.format.preserveSingleLineSpecialCases": {
           "type": "boolean",
           "default": true,

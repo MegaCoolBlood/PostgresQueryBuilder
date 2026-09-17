@@ -116,6 +116,8 @@ export interface FormatOptions {
     alignCaseWhenThen: boolean;
     /** Align consecutive single-line CASE … END expressions at their THEN/ELSE/END. Default: false. */
     alignSingleLineCase: boolean;
+    /** Align consecutive single-line IF … THEN … END IF; statements at their THEN and END IF. Default: false. */
+    alignSingleLineIf: boolean;
     /** Per-construct multi-line wrapping thresholds. See {@link DEFAULT_THRESHOLDS}. */
     thresholds: Partial<Record<ConstructKey, ListThreshold>>;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
@@ -223,6 +225,7 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     alignSingleLineFunctions: false,
     alignCaseWhenThen: false,
     alignSingleLineCase: false,
+    alignSingleLineIf: false,
     thresholds: DEFAULT_THRESHOLDS,
     normalizeDataTypes: true,
     dataTypeAliases: DEFAULT_DATA_TYPE_ALIASES,
@@ -255,6 +258,7 @@ export function coerceFormatOptions(raw: {
     alignSingleLineFunctions?: unknown;
     alignCaseWhenThen?: unknown;
     alignSingleLineCase?: unknown;
+    alignSingleLineIf?: unknown;
     // Legacy umbrella switch: kept as fallback for backward compatibility.
     preserveSingleLineSpecialCases?: unknown;
     listThresholds?: unknown;
@@ -331,6 +335,9 @@ export function coerceFormatOptions(raw: {
         alignSingleLineCase: typeof raw.alignSingleLineCase === 'boolean'
             ? raw.alignSingleLineCase
             : DEFAULT_FORMAT_OPTIONS.alignSingleLineCase,
+        alignSingleLineIf: typeof raw.alignSingleLineIf === 'boolean'
+            ? raw.alignSingleLineIf
+            : DEFAULT_FORMAT_OPTIONS.alignSingleLineIf,
         thresholds,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
@@ -1295,6 +1302,88 @@ function splitSingleLineCaseCells(line: string): { c0: string; c1: string; c2: s
         c2: cut(posElse, posEnd),
         c3: line.slice(posEnd).replace(/\s+$/, '')
     };
+}
+
+/**
+ * Align consecutive single-line `IF … THEN … END IF;` statements at their
+ * top-level `THEN` and closing `END`, so the body and the `END IF` each start in
+ * the same column. Only lines that carry a top-level `THEN` and a matching outer
+ * `END` on one line take part; a blank line or any other line ends the group.
+ */
+function alignSingleLineIf(text: string): string {
+    const lines = text.split('\n');
+    interface Cells { line: number; indent: string; c0: string; c1: string; c2: string; }
+    let group: Cells[] = [];
+    const flush = (): void => {
+        if (group.length >= 2) {
+            let w0 = 0, w1 = 0;
+            for (const g of group) {
+                if (g.c0.length > w0) w0 = g.c0.length;
+                if (g.c1.length > w1) w1 = g.c1.length;
+            }
+            const pad = (s: string, w: number): string => s + ' '.repeat(w - s.length + 1);
+            for (const g of group) {
+                lines[g.line] = pad(g.c0, w0) + pad(g.c1, w1) + g.c2;
+            }
+        }
+        group = [];
+    };
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const indentM = /^(\s*)if\b/i.exec(line);
+        const cells = indentM ? splitSingleLineIfCells(line) : null;
+        if (cells && indentM) {
+            const cell: Cells = { line: i, indent: indentM[1], ...cells };
+            if (group.length > 0 && group[0].indent !== cell.indent) flush();
+            group.push(cell);
+        } else {
+            flush();
+        }
+    }
+    flush();
+    return lines.join('\n');
+}
+
+/**
+ * Split a single-line `IF … THEN … END IF;` statement at the top-level `THEN`
+ * and the `END` that closes its outermost `IF` (nested IF/CASE/LOOP/BEGIN blocks
+ * and literals are skipped) into three cells. Returns `null` unless both appear
+ * in order on one line.
+ */
+function splitSingleLineIfCells(line: string): { c0: string; c1: string; c2: string } | null {
+    const mask = literalMask(line);
+    let depth = 0;
+    let parenDepth = 0;
+    let posThen = -1, posEnd = -1;
+    const n = line.length;
+    for (let i = 0; i < n;) {
+        if (mask[i]) { i++; continue; }
+        const c = line[i];
+        if (c === '(' || c === '[') { parenDepth++; i++; continue; }
+        if (c === ')' || c === ']') { if (parenDepth > 0) parenDepth--; i++; continue; }
+        if (!/[A-Za-z_]/.test(c) || /[A-Za-z0-9_]/.test(line[i - 1] ?? '')) { i++; continue; }
+        let j = i + 1;
+        while (j < n && /[A-Za-z0-9_]/.test(line[j])) j++;
+        const w = line.slice(i, j).toLowerCase();
+        if (w === 'end') {
+            depth--;
+            if (depth === 0) { posEnd = i; break; }
+            // Skip the block-kind word (IF/CASE/LOOP) so it is not recounted.
+            let k = j;
+            while (k < n && /\s/.test(line[k])) k++;
+            let k2 = k;
+            while (k2 < n && /[A-Za-z0-9_]/.test(line[k2])) k2++;
+            const nextW = line.slice(k, k2).toLowerCase();
+            i = (nextW === 'if' || nextW === 'case' || nextW === 'loop') ? k2 : j;
+            continue;
+        }
+        if (w === 'if' || w === 'case' || w === 'begin' || w === 'loop') { depth++; i = j; continue; }
+        if (w === 'then' && depth === 1 && parenDepth === 0 && posThen < 0) posThen = i;
+        i = j;
+    }
+    if (!(posThen >= 0 && posEnd > posThen)) return null;
+    const cut = (a: number, b: number): string => line.slice(a, b).replace(/\s+$/, '');
+    return { c0: cut(0, posThen), c1: cut(posThen, posEnd), c2: line.slice(posEnd).replace(/\s+$/, '') };
 }
 
 function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string {
@@ -3050,6 +3139,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     if (opt.alignSingleLineFunctions) result = alignSingleLineFunctions(result);
     if (opt.alignCaseWhenThen) result = alignCaseWhenThen(result);
     if (opt.alignSingleLineCase) result = alignSingleLineCase(result);
+    if (opt.alignSingleLineIf) result = alignSingleLineIf(result);
     result = padLineCommentEnds(result);
     return trailingNewline ? result + '\n' : result;
 }

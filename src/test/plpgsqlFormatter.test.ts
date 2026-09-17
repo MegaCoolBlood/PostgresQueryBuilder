@@ -979,6 +979,7 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         alignSingleLineFunctions: false,
         alignCaseWhenThen: false,
         alignSingleLineCase: false,
+        alignSingleLineIf: false,
         thresholds: DEFAULT_THRESHOLDS,
         normalizeDataTypes: true,
         dataTypeAliases: {
@@ -1975,6 +1976,47 @@ test('alignSingleLineCase aligns the outer CASE of a nested expression and is of
     assert.ok(sqlSemanticallyEqual(src, out), 'meaning preserved');
     // Off by default: a single space is kept.
     assert.ok(formatSql(src).includes('CASE WHEN abcdef THEN 9 ELSE 8 END'), 'default keeps single spaces');
+});
+
+test('alignSingleLineIf lines up THEN and END IF across single-line IF statements', () => {
+    const src = [
+        'DO $$',
+        'BEGIN',
+        "  IF v >= 512 THEN a := 'A'; b := v - 512; END IF;",
+        "  IF v >= 64 THEN a := a || 'M'; b := v - 64; END IF;",
+        "  IF v = 1 THEN a := a || 'T'; END IF;",
+        'END;',
+        '$$;'
+    ].join('\n');
+    const out = formatSql(src, { alignSingleLineIf: true });
+    const rows = out.split('\n').filter(l => /^\s*IF\b/.test(l));
+    assert.equal(rows.length, 3, out);
+    const thenC = rows.map(l => l.indexOf(' THEN '));
+    const endC = rows.map(l => l.indexOf(' END IF;'));
+    assert.ok(thenC[0] > 0 && thenC.every(c => c === thenC[0]), 'THEN aligns\n' + out);
+    assert.ok(endC[0] > 0 && endC.every(c => c === endC[0]), 'END IF aligns\n' + out);
+    assert.equal(formatSql(out, { alignSingleLineIf: true }), out, 'idempotent');
+    assert.ok(sqlSemanticallyEqual(src, out), 'meaning preserved');
+});
+
+test('alignSingleLineIf aligns blank-line groups independently and is off by default', () => {
+    const src = [
+        'DO $$',
+        'BEGIN',
+        "  IF v >= 512 THEN a := 'A'; END IF;",
+        "  IF v >= 8 THEN a := 'L'; END IF;",
+        '',
+        "  IF flag THEN done := true; END IF;",
+        "  IF other THEN done := false; END IF;",
+        'END;',
+        '$$;'
+    ].join('\n');
+    const out = formatSql(src, { alignSingleLineIf: true });
+    const rows = out.split('\n').filter(l => /^\s*IF\b/.test(l));
+    assert.equal(rows[0].indexOf(' THEN '), rows[1].indexOf(' THEN '), 'first group aligns\n' + out);
+    assert.equal(rows[2].indexOf(' THEN '), rows[3].indexOf(' THEN '), 'second group aligns\n' + out);
+    assert.equal(formatSql(out, { alignSingleLineIf: true }), out, 'idempotent');
+    assert.ok(formatSql(src).includes("IF v >= 8 THEN a := 'L'; END IF;"), 'default keeps single spaces');
 });
 
 test('does not collapse a SELECT whose function call was split across lines with a compound argument', () => {
