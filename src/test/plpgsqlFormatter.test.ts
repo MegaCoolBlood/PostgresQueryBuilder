@@ -976,6 +976,7 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         preserveSingleLineRoutineHeaders: true,
         preserveSingleLineIfBlocks: true,
         alignDeclarationTypes: false,
+        alignSingleLineFunctions: false,
         thresholds: DEFAULT_THRESHOLDS,
         normalizeDataTypes: true,
         dataTypeAliases: {
@@ -1827,6 +1828,39 @@ test('alignDeclarationTypes leaves a wrapped declaration and its comments alone'
     assert.ok(out.includes('  v_a         INTEGER;'), out);
     assert.ok(out.includes('  v_long_name INTEGER;'), out);
     assert.equal(formatSql(out, { alignDeclarationTypes: true }), out, 'idempotent');
+});
+
+test('alignSingleLineFunctions lines up RETURNS, LANGUAGE and AS per group', () => {
+    const src = [
+        "CREATE OR REPLACE FUNCTION s.g_hms() RETURNS TIMESTAMP LANGUAGE SQL IMMUTABLE AS $$ SELECT now(); $$;",
+        "CREATE OR REPLACE FUNCTION s.g_short() RETURNS DATE LANGUAGE SQL STABLE AS $$ SELECT current_date; $$;"
+    ].join('\n');
+    const out = formatSql(src, { alignSingleLineFunctions: true });
+    const lines = out.split('\n');
+    const rIdx = lines.map(l => l.indexOf(' RETURNS '));
+    assert.ok(rIdx[0] > 0 && rIdx[0] === rIdx[1], 'RETURNS columns align\n' + out);
+    const lIdx = lines.map(l => l.indexOf(' LANGUAGE '));
+    assert.ok(lIdx[0] > 0 && lIdx[0] === lIdx[1], 'LANGUAGE columns align\n' + out);
+    const aIdx = lines.map(l => l.indexOf(' AS $$'));
+    assert.ok(aIdx[0] > 0 && aIdx[0] === aIdx[1], 'AS columns align\n' + out);
+    assert.equal(formatSql(out, { alignSingleLineFunctions: true }), out, 'idempotent');
+    assert.ok(sqlSemanticallyEqual(src, out), 'meaning preserved');
+});
+
+test('alignSingleLineFunctions aligns blank-line groups independently and is off by default', () => {
+    const src = [
+        "CREATE FUNCTION s.a_long_named_one() RETURNS INTEGER LANGUAGE SQL AS $$ SELECT 1; $$;",
+        "CREATE FUNCTION s.b() RETURNS INTEGER LANGUAGE SQL AS $$ SELECT 2; $$;",
+        "",
+        "CREATE FUNCTION s.c() RETURNS INTEGER LANGUAGE SQL AS $$ SELECT 3; $$;",
+        "CREATE FUNCTION s.d() RETURNS INTEGER LANGUAGE SQL AS $$ SELECT 4; $$;"
+    ].join('\n');
+    const aligned = formatSql(src, { alignSingleLineFunctions: true }).split('\n');
+    // The second group is padded to its own (shorter) longest signature.
+    assert.ok(aligned[0].indexOf(' RETURNS ') > aligned[3].indexOf(' RETURNS '), 'groups align independently');
+    // Off by default: a single space between the signature and RETURNS is kept.
+    const plain = formatSql(src);
+    assert.ok(plain.includes('s.a_long_named_one() RETURNS INTEGER'), plain);
 });
 
 test('does not collapse a SELECT whose function call was split across lines with a compound argument', () => {

@@ -109,6 +109,7 @@ export function formatOptionsToRepoConfig(opts: FormatOptions): Record<string, u
         preserveSingleLineRoutineHeaders: opts.preserveSingleLineRoutineHeaders,
         preserveSingleLineIfBlocks: opts.preserveSingleLineIfBlocks,
         alignDeclarationTypes: opts.alignDeclarationTypes,
+        alignSingleLineFunctions: opts.alignSingleLineFunctions,
         normalizeDataTypes: opts.normalizeDataTypes,
         dataTypeAliases: { ...opts.dataTypeAliases },
         argumentGroups,

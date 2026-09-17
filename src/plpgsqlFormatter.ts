@@ -110,6 +110,8 @@ export interface FormatOptions {
     preserveSingleLineIfBlocks: boolean;
     /** Align the type column of consecutive variable declarations in DECLARE sections. Default: false. */
     alignDeclarationTypes: boolean;
+    /** Align consecutive single-line CREATE FUNCTION statements at their RETURNS/LANGUAGE/AS clauses. Default: false. */
+    alignSingleLineFunctions: boolean;
     /** Per-construct multi-line wrapping thresholds. See {@link DEFAULT_THRESHOLDS}. */
     thresholds: Partial<Record<ConstructKey, ListThreshold>>;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
@@ -214,6 +216,7 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     preserveSingleLineRoutineHeaders: true,
     preserveSingleLineIfBlocks: true,
     alignDeclarationTypes: false,
+    alignSingleLineFunctions: false,
     thresholds: DEFAULT_THRESHOLDS,
     normalizeDataTypes: true,
     dataTypeAliases: DEFAULT_DATA_TYPE_ALIASES,
@@ -243,6 +246,7 @@ export function coerceFormatOptions(raw: {
     preserveSingleLineRoutineHeaders?: unknown;
     preserveSingleLineIfBlocks?: unknown;
     alignDeclarationTypes?: unknown;
+    alignSingleLineFunctions?: unknown;
     // Legacy umbrella switch: kept as fallback for backward compatibility.
     preserveSingleLineSpecialCases?: unknown;
     listThresholds?: unknown;
@@ -310,6 +314,9 @@ export function coerceFormatOptions(raw: {
         alignDeclarationTypes: typeof raw.alignDeclarationTypes === 'boolean'
             ? raw.alignDeclarationTypes
             : DEFAULT_FORMAT_OPTIONS.alignDeclarationTypes,
+        alignSingleLineFunctions: typeof raw.alignSingleLineFunctions === 'boolean'
+            ? raw.alignSingleLineFunctions
+            : DEFAULT_FORMAT_OPTIONS.alignSingleLineFunctions,
         thresholds,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
@@ -1066,6 +1073,91 @@ function alignDeclarationTypes(text: string, opt: FormatOptions): string {
         i = j;
     }
     return lines.join('\n');
+}
+
+/**
+ * Find the start offset of a top-level keyword (outside parentheses and outside
+ * any string / dollar-quoted / quoted-identifier literal) at or after `from`,
+ * or -1. `mask` is the {@link literalMask} of the line.
+ */
+function topLevelKeywordPos(line: string, mask: Uint8Array, keyword: string, from: number): number {
+    const kw = keyword.toLowerCase();
+    let depth = 0;
+    for (let i = 0; i < line.length; i++) {
+        if (mask[i]) continue;
+        const c = line[i];
+        if (c === '(' || c === '[') { depth++; continue; }
+        if (c === ')' || c === ']') { if (depth > 0) depth--; continue; }
+        if (i < from || depth !== 0) continue;
+        const prev = i > 0 ? line[i - 1] : '';
+        if (/[A-Za-z0-9_]/.test(prev)) continue;
+        if (line.slice(i, i + kw.length).toLowerCase() !== kw) continue;
+        const after = line[i + kw.length] ?? '';
+        if (/[A-Za-z0-9_]/.test(after)) continue;
+        return i;
+    }
+    return -1;
+}
+
+/**
+ * Align consecutive single-line `CREATE [OR REPLACE] FUNCTION` statements into
+ * columns at the `RETURNS`, `LANGUAGE` and `AS` clauses, so the return type,
+ * language/volatility and body line up. Only statements that carry all three
+ * clauses at the top level in that order take part; a blank line or any other
+ * line ends the current group, which is padded to its own longest cells.
+ */
+function alignSingleLineFunctions(text: string): string {
+    const lines = text.split('\n');
+    interface Cells { line: number; c0: string; c1: string; c2: string; c3: string; }
+    let group: Cells[] = [];
+    const flush = (): void => {
+        if (group.length >= 2) {
+            let w0 = 0, w1 = 0, w2 = 0;
+            for (const g of group) {
+                if (g.c0.length > w0) w0 = g.c0.length;
+                if (g.c1.length > w1) w1 = g.c1.length;
+                if (g.c2.length > w2) w2 = g.c2.length;
+            }
+            const pad = (s: string, w: number): string => s + ' '.repeat(w - s.length + 1);
+            for (const g of group) {
+                lines[g.line] = pad(g.c0, w0) + pad(g.c1, w1) + pad(g.c2, w2) + g.c3;
+            }
+        }
+        group = [];
+    };
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const cells = /^\s*create(\s+or\s+replace)?\s+function\b/i.test(line) && line.includes(';')
+            ? splitFunctionCells(line)
+            : null;
+        if (cells) { group.push({ line: i, ...cells }); continue; }
+        flush();
+    }
+    flush();
+    return lines.join('\n');
+}
+
+/**
+ * Split a single-line CREATE FUNCTION statement at its top-level `RETURNS`,
+ * `LANGUAGE` and `AS` clauses into four cells (signature, return type,
+ * language/volatility, body). Returns `null` when the three clauses are not all
+ * present in that order.
+ */
+function splitFunctionCells(line: string): { c0: string; c1: string; c2: string; c3: string } | null {
+    const mask = literalMask(line);
+    const posR = topLevelKeywordPos(line, mask, 'RETURNS', 0);
+    if (posR < 0) return null;
+    const posL = topLevelKeywordPos(line, mask, 'LANGUAGE', posR + 'RETURNS'.length);
+    if (posL < 0) return null;
+    const posA = topLevelKeywordPos(line, mask, 'AS', posL + 'LANGUAGE'.length);
+    if (posA < 0) return null;
+    const cut = (a: number, b: number): string => line.slice(a, b).replace(/\s+$/, '');
+    return {
+        c0: cut(0, posR),
+        c1: cut(posR, posL),
+        c2: cut(posL, posA),
+        c3: line.slice(posA).replace(/\s+$/, '')
+    };
 }
 
 function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string {
@@ -2806,6 +2898,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     if (opt.blankLines === 'collapse') result = result.replace(/\n{3,}/g, '\n\n');
     result = result.replace(/^\n+/, '').replace(/\n+$/, '');
     if (opt.alignDeclarationTypes) result = alignDeclarationTypes(result, opt);
+    if (opt.alignSingleLineFunctions) result = alignSingleLineFunctions(result);
     result = padLineCommentEnds(result);
     return trailingNewline ? result + '\n' : result;
 }
