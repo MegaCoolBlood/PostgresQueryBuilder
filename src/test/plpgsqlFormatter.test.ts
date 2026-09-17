@@ -975,6 +975,7 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         simpleSelectSingleLine: true,
         preserveSingleLineRoutineHeaders: true,
         preserveSingleLineIfBlocks: true,
+        alignDeclarationTypes: false,
         thresholds: DEFAULT_THRESHOLDS,
         normalizeDataTypes: true,
         dataTypeAliases: {
@@ -1774,6 +1775,58 @@ test('EXCEPTION section collapses per exceptionWhenThen threshold', () => {
 test('simpleSelectSingleLine can be disabled', () => {
     assert.equal(formatSql('select a from t;', { simpleSelectSingleLine: false }), 'SELECT a\nFROM t;');
     assert.equal(formatSql('select a from t;'), 'SELECT a FROM t;');
+});
+
+test('alignDeclarationTypes aligns the type column per blank-line group', () => {
+    const src = [
+        'CREATE FUNCTION f() RETURNS void AS $$',
+        'DECLARE',
+        '  v_err BOOLEAN := FALSE;',
+        '  v_kontingent NUMERIC;',
+        '  v_error VARCHAR(500) := pk.f(1);  --note',
+        '',
+        '  v_qty_dep_quotatype bos.qty%TYPE;',
+        '  r_q RECORD;',
+        'BEGIN',
+        '  NULL;',
+        'END;',
+        '$$ LANGUAGE plpgsql;'
+    ].join('\n');
+    const out = formatSql(src, { alignDeclarationTypes: true });
+    assert.ok(out.includes('  v_err        BOOLEAN := FALSE;'), out);
+    assert.ok(out.includes('  v_kontingent NUMERIC;'), out);
+    assert.ok(out.includes('  v_error      VARCHAR(500) := pk.f(1);  --note'), out);
+    // The second group is aligned independently of the first.
+    assert.ok(out.includes('  v_qty_dep_quotatype bos.qty%TYPE;'), out);
+    assert.ok(out.includes('  r_q                 RECORD;'), out);
+    assert.equal(formatSql(out, { alignDeclarationTypes: true }), out, 'idempotent');
+    assert.ok(sqlSemanticallyEqual(src, out), 'meaning preserved');
+});
+
+test('alignDeclarationTypes is off by default and leaves a single space', () => {
+    const src = 'DO $$\nDECLARE\n  v_err BOOLEAN;\n  v_kontingent NUMERIC;\nBEGIN\n  NULL;\nEND;\n$$;';
+    const out = formatSql(src);
+    assert.ok(out.includes('  v_err BOOLEAN;'), out);
+    assert.ok(out.includes('  v_kontingent NUMERIC;'), out);
+});
+
+test('alignDeclarationTypes leaves a wrapped declaration and its comments alone', () => {
+    const src = [
+        'DO $$',
+        'DECLARE',
+        '  -- header comment',
+        '  v_a INTEGER;',
+        '  v_long_name INTEGER;',
+        'BEGIN',
+        '  NULL;',
+        'END;',
+        '$$;'
+    ].join('\n');
+    const out = formatSql(src, { alignDeclarationTypes: true });
+    assert.ok(out.includes('  -- header comment'), 'comment stays on its own line\n' + out);
+    assert.ok(out.includes('  v_a         INTEGER;'), out);
+    assert.ok(out.includes('  v_long_name INTEGER;'), out);
+    assert.equal(formatSql(out, { alignDeclarationTypes: true }), out, 'idempotent');
 });
 
 test('does not collapse a SELECT whose function call was split across lines with a compound argument', () => {

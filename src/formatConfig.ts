@@ -20,6 +20,7 @@ const FORMAT_SETTING_BINDINGS: readonly FormatSettingBinding[] = [
     { shortKey: 'preserveSingleLineRoutineHeaders', configKey: 'format.preserveSingleLineRoutineHeaders' },
     { shortKey: 'preserveSingleLineIfBlocks', configKey: 'format.preserveSingleLineIfBlocks' },
     { shortKey: 'preserveSingleLineSpecialCases', configKey: 'format.preserveSingleLineSpecialCases' },
+    { shortKey: 'alignDeclarationTypes', configKey: 'format.alignDeclarationTypes' },
     { shortKey: 'listThresholds', configKey: 'format.listThresholds' },
     { shortKey: 'normalizeDataTypes', configKey: 'format.normalizeDataTypes' },
     { shortKey: 'dataTypeAliases', configKey: 'format.dataTypeAliases' },

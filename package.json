@@ -483,6 +483,11 @@
           "default": true,
           "description": "Keep a fully one-line simple IF ... THEN ... END IF block on one line."
         },
+        "postgresQueryBuilder.format.alignDeclarationTypes": {
+          "type": "boolean",
+          "default": false,
+          "description": "In a DECLARE section, align the type column of consecutive variable declarations by padding the variable names. Declarations separated by a blank line are aligned as independent groups."
+        },
         "postgresQueryBuilder.format.preserveSingleLineSpecialCases": {
           "type": "boolean",
           "default": true,

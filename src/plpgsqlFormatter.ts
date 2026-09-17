@@ -108,6 +108,8 @@ export interface FormatOptions {
     preserveSingleLineRoutineHeaders: boolean;
     /** Keep a fully one-line simple IF ... THEN ... END IF block on one line. Default: true. */
     preserveSingleLineIfBlocks: boolean;
+    /** Align the type column of consecutive variable declarations in DECLARE sections. Default: false. */
+    alignDeclarationTypes: boolean;
     /** Per-construct multi-line wrapping thresholds. See {@link DEFAULT_THRESHOLDS}. */
     thresholds: Partial<Record<ConstructKey, ListThreshold>>;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
@@ -211,6 +213,7 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     simpleSelectSingleLine: true,
     preserveSingleLineRoutineHeaders: true,
     preserveSingleLineIfBlocks: true,
+    alignDeclarationTypes: false,
     thresholds: DEFAULT_THRESHOLDS,
     normalizeDataTypes: true,
     dataTypeAliases: DEFAULT_DATA_TYPE_ALIASES,
@@ -239,6 +242,7 @@ export function coerceFormatOptions(raw: {
     simpleSelectSingleLine?: unknown;
     preserveSingleLineRoutineHeaders?: unknown;
     preserveSingleLineIfBlocks?: unknown;
+    alignDeclarationTypes?: unknown;
     // Legacy umbrella switch: kept as fallback for backward compatibility.
     preserveSingleLineSpecialCases?: unknown;
     listThresholds?: unknown;
@@ -303,6 +307,9 @@ export function coerceFormatOptions(raw: {
         preserveSingleLineIfBlocks: typeof raw.preserveSingleLineIfBlocks === 'boolean'
             ? raw.preserveSingleLineIfBlocks
             : (legacySingleLine ?? DEFAULT_FORMAT_OPTIONS.preserveSingleLineIfBlocks),
+        alignDeclarationTypes: typeof raw.alignDeclarationTypes === 'boolean'
+            ? raw.alignDeclarationTypes
+            : DEFAULT_FORMAT_OPTIONS.alignDeclarationTypes,
         thresholds,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
@@ -1009,6 +1016,54 @@ function padLineCommentEnds(text: string): string {
             lines[i] = line + ' ';
         }
         pos += line.length + 1;
+    }
+    return lines.join('\n');
+}
+
+/**
+ * Align the type column of consecutive variable declarations inside every
+ * `DECLARE` section. Only self-contained single-line declarations at the
+ * section's own indent take part; a blank line, a comment or a wrapped
+ * declaration ends the current group, so declarations separated by a blank line
+ * are aligned independently, each padded to its own longest variable name.
+ */
+function alignDeclarationTypes(text: string, opt: FormatOptions): string {
+    const lines = text.split('\n');
+    const unit = opt.indentStyle === 'tab' ? '\t' : ' '.repeat(Math.max(1, opt.indentSize));
+    // A declaration: <name> <type…>, where <name> is a quoted identifier or a
+    // run of non-space characters starting like an identifier.
+    const declRe = /^("(?:[^"]|"")*"|[A-Za-z_][^\s]*)(\s+)(\S.*)$/;
+    let i = 0;
+    while (i < lines.length) {
+        const head = /^(\s*)declare\s*$/i.exec(lines[i]);
+        if (!head) { i++; continue; }
+        const indent = head[1] + unit;
+        let group: { line: number; name: string; rest: string }[] = [];
+        const flush = (): void => {
+            if (group.length >= 2) {
+                let width = 0;
+                for (const g of group) if (g.name.length > width) width = g.name.length;
+                for (const g of group) {
+                    lines[g.line] = indent + g.name + ' '.repeat(width - g.name.length + 1) + g.rest;
+                }
+            }
+            group = [];
+        };
+        let j = i + 1;
+        for (; j < lines.length; j++) {
+            const line = lines[j];
+            if (/^\s*begin\b/i.test(line)) break;
+            // A declaration must sit exactly at the section indent and be a
+            // complete statement (contains its terminating `;`) on one line.
+            if (line.startsWith(indent) && !/^\s/.test(line.slice(indent.length))) {
+                const body = line.slice(indent.length);
+                const m = body.includes(';') ? declRe.exec(body) : null;
+                if (m) { group.push({ line: j, name: m[1], rest: m[3] }); continue; }
+            }
+            flush();
+        }
+        flush();
+        i = j;
     }
     return lines.join('\n');
 }
@@ -2750,6 +2805,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     let result = stripTrailingWhitespacePreservingLiterals(out.join('\n'));
     if (opt.blankLines === 'collapse') result = result.replace(/\n{3,}/g, '\n\n');
     result = result.replace(/^\n+/, '').replace(/\n+$/, '');
+    if (opt.alignDeclarationTypes) result = alignDeclarationTypes(result, opt);
     result = padLineCommentEnds(result);
     return trailingNewline ? result + '\n' : result;
 }

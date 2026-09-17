@@ -2,6 +2,8 @@
 
 ## 3.1.2
 
+- **Variable declarations can now be aligned into a clean type column:** A `DECLARE` block formatted with a single space between every name and its type left the type column ragged, so a long list of variables was hard to scan and the types of related declarations never lined up. The new *Align declaration types* option (`postgresQueryBuilder.format.alignDeclarationTypes`, off by default, also settable as `alignDeclarationTypes` in `.pgformat.json`) pads the variable names so the types start in the same column. Declarations you separated with a blank line are treated as independent groups and each is aligned to its own longest name, so `%TYPE` references and plain types stay tidy without one outlier stretching the whole block.
+
 - **A comment on its own line before a statement no longer jumps onto that statement:** A single-line block comment (`/* … */`) that you wrote on a line of its own — the usual way to label the statement below it — was pulled onto the following statement when the file was formatted, so a tidy `/* get the roles for the destination user */` followed by a `CALL` collapsed into one long line and the blank line between them disappeared. Such a comment now keeps its own line and the blank line that separated it, while a comment you deliberately put in front of code on the same line (`/* inline */ CALL foo(...)`) still stays where it is.
 
 ## 3.1.1
