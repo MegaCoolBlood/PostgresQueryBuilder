@@ -513,6 +513,11 @@
           "default": false,
           "description": "Align the type column of a CREATE FUNCTION/PROCEDURE parameter list that is written one parameter per line, by padding the parameter names so every type starts in the same column."
         },
+        "postgresQueryBuilder.format.alignNamedArguments": {
+          "type": "boolean",
+          "default": false,
+          "description": "Align the => of named call arguments written one per line, by padding the argument names so every => starts in the same column. Arguments at a different indent or separated by a blank line are aligned as independent groups."
+        },
         "postgresQueryBuilder.format.preserveSingleLineSpecialCases": {
           "type": "boolean",
           "default": true,

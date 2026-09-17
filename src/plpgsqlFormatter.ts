@@ -120,6 +120,8 @@ export interface FormatOptions {
     alignSingleLineIf: boolean;
     /** Align the type column of a CREATE FUNCTION/PROCEDURE parameter list written one per line. Default: false. */
     alignFunctionParameters: boolean;
+    /** Align the => of named call arguments written one per line. Default: false. */
+    alignNamedArguments: boolean;
     /** Per-construct multi-line wrapping thresholds. See {@link DEFAULT_THRESHOLDS}. */
     thresholds: Partial<Record<ConstructKey, ListThreshold>>;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
@@ -229,6 +231,7 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     alignSingleLineCase: false,
     alignSingleLineIf: false,
     alignFunctionParameters: false,
+    alignNamedArguments: false,
     thresholds: DEFAULT_THRESHOLDS,
     normalizeDataTypes: true,
     dataTypeAliases: DEFAULT_DATA_TYPE_ALIASES,
@@ -263,6 +266,7 @@ export function coerceFormatOptions(raw: {
     alignSingleLineCase?: unknown;
     alignSingleLineIf?: unknown;
     alignFunctionParameters?: unknown;
+    alignNamedArguments?: unknown;
     // Legacy umbrella switch: kept as fallback for backward compatibility.
     preserveSingleLineSpecialCases?: unknown;
     listThresholds?: unknown;
@@ -345,6 +349,9 @@ export function coerceFormatOptions(raw: {
         alignFunctionParameters: typeof raw.alignFunctionParameters === 'boolean'
             ? raw.alignFunctionParameters
             : DEFAULT_FORMAT_OPTIONS.alignFunctionParameters,
+        alignNamedArguments: typeof raw.alignNamedArguments === 'boolean'
+            ? raw.alignNamedArguments
+            : DEFAULT_FORMAT_OPTIONS.alignNamedArguments,
         thresholds,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
@@ -1425,6 +1432,62 @@ function alignFunctionParameters(text: string): string {
         i = j;
     }
     return lines.join('\n');
+}
+
+/**
+ * Align the `=>` of consecutive named call arguments written one per line, by
+ * padding each argument name so every `=>` starts in the same column. Only lines
+ * whose `=>` sits at the line's top level (outside parentheses and literals)
+ * take part; a line at a different indent, a positional argument, a value's
+ * continuation line or a blank line ends the current group.
+ */
+function alignNamedArguments(text: string): string {
+    const lines = text.split('\n');
+    interface Arg { line: number; indent: string; head: string; rest: string; }
+    let group: Arg[] = [];
+    const flush = (): void => {
+        if (group.length >= 2) {
+            let width = 0;
+            for (const g of group) if (g.head.length > width) width = g.head.length;
+            for (const g of group) {
+                lines[g.line] = g.indent + g.head + ' '.repeat(width - g.head.length + 1) + g.rest;
+            }
+        }
+        group = [];
+    };
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const indentM = /^(\s*)/.exec(line)!;
+        const indent = indentM[1];
+        const arrow = topLevelArrowPos(line);
+        const head = arrow > indent.length ? line.slice(indent.length, arrow).replace(/\s+$/, '') : '';
+        // The left of a named argument is a single parameter name.
+        const arg: Arg | null = arrow > indent.length && /^\S+$/.test(head)
+            ? { line: i, indent, head, rest: line.slice(arrow).replace(/\s+$/, '') }
+            : null;
+        if (arg) {
+            if (group.length > 0 && group[0].indent !== arg.indent) flush();
+            group.push(arg);
+        } else {
+            flush();
+        }
+    }
+    flush();
+    return lines.join('\n');
+}
+
+/** Offset of the first top-level `=>` (outside parens/brackets and literals), or -1. */
+function topLevelArrowPos(line: string): number {
+    const mask = literalMask(line);
+    let depth = 0;
+    for (let i = 0; i < line.length - 1; i++) {
+        if (mask[i]) continue;
+        const c = line[i];
+        if (c === '(' || c === '[') { depth++; continue; }
+        if (c === ')' || c === ']') { if (depth > 0) depth--; continue; }
+        if (depth === 0 && c === '=' && line[i + 1] === '>') return i;
+    }
+    return -1;
 }
 
 function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string {
@@ -3182,6 +3245,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     if (opt.alignSingleLineCase) result = alignSingleLineCase(result);
     if (opt.alignSingleLineIf) result = alignSingleLineIf(result);
     if (opt.alignFunctionParameters) result = alignFunctionParameters(result);
+    if (opt.alignNamedArguments) result = alignNamedArguments(result);
     result = padLineCommentEnds(result);
     return trailingNewline ? result + '\n' : result;
 }

@@ -981,6 +981,7 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         alignSingleLineCase: false,
         alignSingleLineIf: false,
         alignFunctionParameters: false,
+        alignNamedArguments: false,
         thresholds: DEFAULT_THRESHOLDS,
         normalizeDataTypes: true,
         dataTypeAliases: {
@@ -2040,6 +2041,29 @@ test('alignFunctionParameters aligns past a parameter mode and is off by default
     assert.equal(rows[0].indexOf('INTEGER'), rows[1].indexOf('TEXT'), 'types align past the mode\n' + out);
     // Off by default: a single space between name and type is kept.
     assert.ok(formatSql(src).includes('IN pi_a INTEGER,'), 'default keeps single spaces');
+});
+
+test('alignNamedArguments lines up the => of named call arguments', () => {
+    const src = "DECLARE\nBEGIN\n  x := f('Z', pi_a => 1, pi_longer => 2, pi_mid => 3);\nEND;";
+    const out = formatSql(src, { alignNamedArguments: true });
+    const rows = out.split('\n').filter(l => /=>/.test(l));
+    const cols = rows.map(l => l.indexOf('=>'));
+    assert.equal(rows.length, 3, out);
+    assert.ok(cols[0] > 0 && cols.every(c => c === cols[0]), 'every => aligns\n' + out);
+    // The positional argument is not padded.
+    assert.ok(out.includes("    'Z',"), 'positional argument untouched\n' + out);
+    assert.equal(formatSql(out, { alignNamedArguments: true }), out, 'idempotent');
+    assert.ok(sqlSemanticallyEqual(src, out), 'meaning preserved');
+});
+
+test('alignNamedArguments keeps arguments of a nested call in their own group and is off by default', () => {
+    const src = 'DECLARE\nBEGIN\n  x := outer(pi_a => 1, pi_bb => inner(nested_x => 2, y => 3), pi_c => 4);\nEND;';
+    const out = formatSql(src, { alignNamedArguments: true });
+    // A => inside a nested call on the same line is not treated as the line's arrow.
+    assert.ok(sqlSemanticallyEqual(src, out), 'meaning preserved\n' + out);
+    assert.equal(formatSql(out, { alignNamedArguments: true }), out, 'idempotent');
+    // Off by default: a single space before => is kept.
+    assert.ok(formatSql(src).includes('pi_a => 1,'), 'default keeps single spaces');
 });
 
 test('does not collapse a SELECT whose function call was split across lines with a compound argument', () => {
