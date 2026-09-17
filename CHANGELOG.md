@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.1.2
+
+- **A comment on its own line before a statement no longer jumps onto that statement:** A single-line block comment (`/* … */`) that you wrote on a line of its own — the usual way to label the statement below it — was pulled onto the following statement when the file was formatted, so a tidy `/* get the roles for the destination user */` followed by a `CALL` collapsed into one long line and the blank line between them disappeared. Such a comment now keeps its own line and the blank line that separated it, while a comment you deliberately put in front of code on the same line (`/* inline */ CALL foo(...)`) still stays where it is.
+
 ## 3.1.1
 
 - **A `jsonb_build_object` whose value is a `CASE` or a sub-select keeps its key/value pairs:** `postgresQueryBuilder.format.argumentGroups` promises that such a call breaks at every second comma, but as soon as one argument was itself spread over several lines — a `CASE` expression, a scalar sub-select, a nested `jsonb_build_object` — the formatter dropped the pairing for the whole call and put every single argument on its own line, so exactly the long objects that need the structure most were the ones that lost it. The grouping now survives a multi-line argument: the key stays on the line its value starts on, and the value keeps its own layout underneath.

@@ -2023,7 +2023,19 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 for (let k = 1; k < ls.length; k++) out.push(ls[k].replace(/\s+$/, ''));
                 prev = null;
             } else {
-                emit(t.text, { text: t.text, isKeyword: false, type: 'comment' });
+                const next = toks[i + 1];
+                // A single-line block comment the author placed on its own source
+                // line — with nothing following it on that line — stays on its own
+                // line instead of being glued to the next statement.
+                if (t.nlBefore > 0 && (!next || next.nlBefore > 0)) {
+                    if (cur !== '') flush();
+                    insertBlanks(blanks);
+                    lineIndent = pendingIndent;
+                    out.push((indentStr(lineIndent) + t.text).replace(/\s+$/, ''));
+                    prev = null;
+                } else {
+                    emit(t.text, { text: t.text, isKeyword: false, type: 'comment' });
+                }
             }
             continue;
         }

@@ -1977,6 +1977,36 @@ test('does not pad code lines or block comments that end on * or /', () => {
     assert.ok(!/\*\/ \n/.test(block), 'a block comment terminator keeps its line ending\n' + block);
 });
 
+test('a single-line block comment on its own source line is not glued to the next statement', () => {
+    const src = [
+        'DO $$',
+        'BEGIN',
+        '  FOR r IN 1..n LOOP',
+        '    /* get the roles for the destination user */',
+        '',
+        '    CALL pk.p_get(pi_websessionid, v_users[r], v_dest);',
+        '  END LOOP;',
+        'END;',
+        '$$;'
+    ].join('\n');
+    const out = formatSql(src);
+    assert.ok(
+        /\/\* get the roles for the destination user \*\/\n/.test(out),
+        'the block comment keeps its own line\n' + out
+    );
+    assert.ok(!/\*\/ CALL/.test(out), 'the comment is not glued to CALL\n' + out);
+    assert.ok(
+        /\*\/\n\n\s+CALL/.test(out),
+        'the blank line between comment and CALL is preserved\n' + out
+    );
+    assert.equal(formatSql(out), out, 'formatting is idempotent');
+});
+
+test('an inline lead block comment stays on the statement line', () => {
+    const out = formatSql('DO $$\nBEGIN\n  /* inline */ CALL foo(a, b);\nEND;\n$$;');
+    assert.ok(/\/\* inline \*\/ CALL foo/.test(out), 'inline lead comment stays attached\n' + out);
+});
+
 test('never pads a division that ends a line inside a string literal', () => {
     const res = formatSqlChecked("select 'a/' as p, 1 as q;");
     assert.ok(res.ok, res.reason);
