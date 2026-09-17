@@ -61,7 +61,24 @@ function isFormatterEnabled(): boolean {
     return vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('format.enable', true);
 }
 
+/**
+ * Append a timestamped activation phase to a crash-safe log file, so a hard
+ * extension-host crash (which leaves the Debug Console empty) can still be traced
+ * afterwards. Never throws.
+ */
+function traceActivation(context: vscode.ExtensionContext, phase: string): void {
+    try {
+        const dir = context.globalStorageUri?.fsPath;
+        if (!dir) { return; }
+        const fs = require('fs') as typeof import('fs');
+        const path = require('path') as typeof import('path');
+        fs.mkdirSync(dir, { recursive: true });
+        fs.appendFileSync(path.join(dir, 'activate-trace.log'), `[${new Date().toISOString()}] ${phase}\n`, 'utf8');
+    } catch { /* diagnostics must never throw */ }
+}
+
 export function activate(context: vscode.ExtensionContext) {
+    traceActivation(context, 'activate: enter');
     outputChannel = vscode.window.createOutputChannel('PostgreSQL Query Booster');
     context.subscriptions.push(outputChannel);
     Logger.init(outputChannel);
@@ -409,8 +426,10 @@ export function activate(context: vscode.ExtensionContext) {
         });
 
         outputChannel.appendLine('[activate] done');
+        traceActivation(context, 'activate: done');
     } catch (err: unknown) {
         outputChannel.appendLine(`[activate] FAILED: ${getErrorStack(err)}`);
+        traceActivation(context, `activate: FAILED: ${getErrorStack(err)}`);
         vscode.window.showErrorMessage(`PostgreSQL Query Booster failed to activate: ${getErrorMessage(err)}`);
         throw err;
     }
