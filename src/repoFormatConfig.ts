@@ -111,6 +111,7 @@ export function formatOptionsToRepoConfig(opts: FormatOptions): Record<string, u
         alignDeclarationTypes: opts.alignDeclarationTypes,
         alignSingleLineFunctions: opts.alignSingleLineFunctions,
         alignCaseWhenThen: opts.alignCaseWhenThen,
+        alignSingleLineCase: opts.alignSingleLineCase,
         normalizeDataTypes: opts.normalizeDataTypes,
         dataTypeAliases: { ...opts.dataTypeAliases },
         argumentGroups,

@@ -978,6 +978,7 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         alignDeclarationTypes: false,
         alignSingleLineFunctions: false,
         alignCaseWhenThen: false,
+        alignSingleLineCase: false,
         thresholds: DEFAULT_THRESHOLDS,
         normalizeDataTypes: true,
         dataTypeAliases: {
@@ -1936,6 +1937,44 @@ test('alignCaseWhenThen treats a comment line as a group break so each section a
     assert.equal(thenCols[2], thenCols[3], 'second section aligns\n' + out);
     assert.ok(thenCols[2] > thenCols[0], 'the comment breaks the group\n' + out);
     assert.equal(formatSql(out, { alignCaseWhenThen: true }), out, 'idempotent');
+});
+
+test('alignSingleLineCase lines up THEN, ELSE and END across single-line CASE expressions', () => {
+    const src = [
+        'SELECT',
+        '  CASE WHEN a = b THEN NULL ELSE x END,',
+        "  CASE WHEN prozent = altwert THEN to_date(NULL, 'dd.mm.yyyy') ELSE the_prozent END",
+        'FROM t;'
+    ].join('\n');
+    const out = formatSql(src, { alignSingleLineCase: true });
+    const rows = out.split('\n').filter(l => /^\s*CASE\b/.test(l));
+    assert.equal(rows.length, 2, out);
+    const col = (needle: string): number[] => rows.map(l => l.indexOf(needle));
+    const thenC = col(' THEN ');
+    const elseC = col(' ELSE ');
+    const endC = col(' END');
+    assert.ok(thenC[0] > 0 && thenC[0] === thenC[1], 'THEN aligns\n' + out);
+    assert.ok(elseC[0] > 0 && elseC[0] === elseC[1], 'ELSE aligns\n' + out);
+    assert.ok(endC[0] > 0 && endC[0] === endC[1], 'END aligns\n' + out);
+    assert.equal(formatSql(out, { alignSingleLineCase: true }), out, 'idempotent');
+    assert.ok(sqlSemanticallyEqual(src, out), 'meaning preserved');
+});
+
+test('alignSingleLineCase aligns the outer CASE of a nested expression and is off by default', () => {
+    const src = [
+        'SELECT',
+        '  CASE WHEN a THEN CASE WHEN x THEN 1 ELSE 2 END ELSE 0 END,',
+        '  CASE WHEN abcdef THEN 9 ELSE 8 END',
+        'FROM t;'
+    ].join('\n');
+    const out = formatSql(src, { alignSingleLineCase: true });
+    const rows = out.split('\n').filter(l => /^\s*CASE\b/.test(l));
+    const outerThen = rows.map(l => l.indexOf(' THEN '));
+    assert.ok(outerThen[0] === outerThen[1], 'the outer THEN aligns\n' + out);
+    assert.ok(out.includes('CASE WHEN x THEN 1 ELSE 2 END'), 'the nested CASE is untouched\n' + out);
+    assert.ok(sqlSemanticallyEqual(src, out), 'meaning preserved');
+    // Off by default: a single space is kept.
+    assert.ok(formatSql(src).includes('CASE WHEN abcdef THEN 9 ELSE 8 END'), 'default keeps single spaces');
 });
 
 test('does not collapse a SELECT whose function call was split across lines with a compound argument', () => {

@@ -498,6 +498,11 @@
           "default": false,
           "description": "Align the THEN of consecutive single-line WHEN ... THEN ... branches in a CASE by padding the WHEN conditions. Branches separated by a blank line are aligned as independent groups."
         },
+        "postgresQueryBuilder.format.alignSingleLineCase": {
+          "type": "boolean",
+          "default": false,
+          "description": "Align consecutive single-line CASE ... END expressions at their THEN, ELSE and END so the result, ELSE result and closing END line up. Expressions separated by a blank line are aligned as independent groups."
+        },
         "postgresQueryBuilder.format.preserveSingleLineSpecialCases": {
           "type": "boolean",
           "default": true,

@@ -114,6 +114,8 @@ export interface FormatOptions {
     alignSingleLineFunctions: boolean;
     /** Align the THEN of consecutive single-line WHEN … THEN … branches in a CASE. Default: false. */
     alignCaseWhenThen: boolean;
+    /** Align consecutive single-line CASE … END expressions at their THEN/ELSE/END. Default: false. */
+    alignSingleLineCase: boolean;
     /** Per-construct multi-line wrapping thresholds. See {@link DEFAULT_THRESHOLDS}. */
     thresholds: Partial<Record<ConstructKey, ListThreshold>>;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
@@ -220,6 +222,7 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     alignDeclarationTypes: false,
     alignSingleLineFunctions: false,
     alignCaseWhenThen: false,
+    alignSingleLineCase: false,
     thresholds: DEFAULT_THRESHOLDS,
     normalizeDataTypes: true,
     dataTypeAliases: DEFAULT_DATA_TYPE_ALIASES,
@@ -251,6 +254,7 @@ export function coerceFormatOptions(raw: {
     alignDeclarationTypes?: unknown;
     alignSingleLineFunctions?: unknown;
     alignCaseWhenThen?: unknown;
+    alignSingleLineCase?: unknown;
     // Legacy umbrella switch: kept as fallback for backward compatibility.
     preserveSingleLineSpecialCases?: unknown;
     listThresholds?: unknown;
@@ -324,6 +328,9 @@ export function coerceFormatOptions(raw: {
         alignCaseWhenThen: typeof raw.alignCaseWhenThen === 'boolean'
             ? raw.alignCaseWhenThen
             : DEFAULT_FORMAT_OPTIONS.alignCaseWhenThen,
+        alignSingleLineCase: typeof raw.alignSingleLineCase === 'boolean'
+            ? raw.alignSingleLineCase
+            : DEFAULT_FORMAT_OPTIONS.alignSingleLineCase,
         thresholds,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
@@ -1215,6 +1222,79 @@ function alignCaseWhenThen(text: string): string {
     }
     flush();
     return lines.join('\n');
+}
+
+/**
+ * Align consecutive single-line `CASE … END` expressions (each on its own line,
+ * as items of a list) at their top-level `THEN`, `ELSE` and `END`, so the
+ * result, the ELSE result and the closing END each start in the same column.
+ * Only lines that carry all three at the top level of one CASE take part; a
+ * blank line or any other line ends the current group.
+ */
+function alignSingleLineCase(text: string): string {
+    const lines = text.split('\n');
+    interface Cells { line: number; indent: string; c0: string; c1: string; c2: string; c3: string; }
+    let group: Cells[] = [];
+    const flush = (): void => {
+        if (group.length >= 2) {
+            let w0 = 0, w1 = 0, w2 = 0;
+            for (const g of group) {
+                if (g.c0.length > w0) w0 = g.c0.length;
+                if (g.c1.length > w1) w1 = g.c1.length;
+                if (g.c2.length > w2) w2 = g.c2.length;
+            }
+            const pad = (s: string, w: number): string => s + ' '.repeat(w - s.length + 1);
+            for (const g of group) {
+                lines[g.line] = pad(g.c0, w0) + pad(g.c1, w1) + pad(g.c2, w2) + g.c3;
+            }
+        }
+        group = [];
+    };
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const indentM = /^(\s*)case\b/i.exec(line);
+        const cells = indentM ? splitSingleLineCaseCells(line) : null;
+        if (cells && indentM) {
+            const cell: Cells = { line: i, indent: indentM[1], ...cells };
+            if (group.length > 0 && group[0].indent !== cell.indent) flush();
+            group.push(cell);
+        } else {
+            flush();
+        }
+    }
+    flush();
+    return lines.join('\n');
+}
+
+/**
+ * Split a single-line `CASE … END` expression at the top-level `THEN`, `ELSE`
+ * and `END` of its outermost CASE (nested CASEs and literals are skipped) into
+ * four cells. Returns `null` unless all three appear in that order on one line.
+ */
+function splitSingleLineCaseCells(line: string): { c0: string; c1: string; c2: string; c3: string } | null {
+    const mask = literalMask(line);
+    let depth = 0;
+    let posThen = -1, posElse = -1, posEnd = -1;
+    const n = line.length;
+    for (let i = 0; i < n;) {
+        if (mask[i] || !/[A-Za-z_]/.test(line[i]) || /[A-Za-z0-9_]/.test(line[i - 1] ?? '')) { i++; continue; }
+        let j = i + 1;
+        while (j < n && /[A-Za-z0-9_]/.test(line[j])) j++;
+        const w = line.slice(i, j).toLowerCase();
+        if (w === 'case') depth++;
+        else if (w === 'end') { depth--; if (depth === 0) { posEnd = i; break; } }
+        else if (depth === 1 && w === 'then' && posThen < 0) posThen = i;
+        else if (depth === 1 && w === 'else' && posElse < 0) posElse = i;
+        i = j;
+    }
+    if (!(posThen >= 0 && posElse > posThen && posEnd > posElse)) return null;
+    const cut = (a: number, b: number): string => line.slice(a, b).replace(/\s+$/, '');
+    return {
+        c0: cut(0, posThen),
+        c1: cut(posThen, posElse),
+        c2: cut(posElse, posEnd),
+        c3: line.slice(posEnd).replace(/\s+$/, '')
+    };
 }
 
 function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string {
@@ -2969,6 +3049,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     if (opt.alignDeclarationTypes) result = alignDeclarationTypes(result, opt);
     if (opt.alignSingleLineFunctions) result = alignSingleLineFunctions(result);
     if (opt.alignCaseWhenThen) result = alignCaseWhenThen(result);
+    if (opt.alignSingleLineCase) result = alignSingleLineCase(result);
     result = padLineCommentEnds(result);
     return trailingNewline ? result + '\n' : result;
 }
