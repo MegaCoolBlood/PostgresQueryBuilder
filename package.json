@@ -34,10 +34,10 @@
     "database"
   ],
   "activationEvents": [
-    "onView:postgresTableExplorer",
-    "onView:postgresTableSearch",
-    "onView:postgresModifyHistory",
-    "onView:postgresSavedQueries",
+    
+    
+    
+    
     "onStartupFinished"
   ],
   "main": "./dist/extension.js",
@@ -55,21 +55,25 @@
       "postgresQueryBuilderExplorer": [
         {
           "id": "postgresTableExplorer",
-          "name": "Tables"
+          "name": "Tables",
+          "icon": "$(table)"
         },
         {
           "id": "postgresTableSearch",
           "name": "Search",
-          "type": "webview"
+          "type": "webview",
+          "icon": "$(search)"
         },
         {
           "id": "postgresModifyHistory",
           "name": "Modify History",
-          "type": "webview"
+          "type": "webview",
+          "icon": "$(history)"
         },
         {
           "id": "postgresSavedQueries",
-          "name": "Bookmarked Queries"
+          "name": "Bookmarked Queries",
+          "icon": "$(bookmark)"
         }
       ]
     },
