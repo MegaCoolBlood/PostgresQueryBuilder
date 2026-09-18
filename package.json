@@ -328,8 +328,10 @@
         "contents": "No bookmarked queries yet.\nRun a query in the Data Viewer and use \"Bookmark Query\" to store it here. Placeholders written as :name are filled in every time the query runs."
       }
     ],
-    "configuration": {
-      "title": "PostgreSQL Query Booster",
+    "configuration": [
+    {
+      "title": "Connections",
+      "order": 1,
       "properties": {
         "postgresQueryBuilder.defaultHost": {
           "type": "string",
@@ -350,7 +352,13 @@
           "type": "array",
           "default": [],
           "description": "Saved connection configurations (passwords stored in SecretStorage)"
-        },
+        }
+      }
+    },
+    {
+      "title": "SQL & Data Viewer",
+      "order": 2,
+      "properties": {
         "postgresQueryBuilder.alwaysQualifySchema": {
           "type": "boolean",
           "default": false,
@@ -385,7 +393,13 @@
           ],
           "default": "volatile",
           "description": "Which columns are left to their database default when a row is duplicated"
-        },
+        }
+      }
+    },
+    {
+      "title": "Workspace Sharing",
+      "order": 3,
+      "properties": {
         "postgresQueryBuilder.customMappingsFile": {
           "type": "string",
           "default": "postgres-query-builder.mappings.json",
@@ -395,7 +409,13 @@
           "type": "string",
           "default": "postgres-query-builder.queries.json",
           "description": "Workspace-relative path to the JSON file used to share bookmarked queries via git. Queries stored here are visible to everyone who opens the workspace; personal queries remain in VS Code global state."
-        },
+        }
+      }
+    },
+    {
+      "title": "Formatter",
+      "order": 4,
+      "properties": {
         "postgresQueryBuilder.format.enable": {
           "type": "boolean",
           "default": true,
@@ -705,6 +725,7 @@
         }
       }
     }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run package",

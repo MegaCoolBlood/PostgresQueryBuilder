@@ -66,6 +66,15 @@ function listSourceFiles(dir: string, out: string[] = []): string[] {
 
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 
+// Settings are grouped into an array of titled configuration blocks; merge
+// their `properties` into one map so tests can look up a setting by key.
+function allSettingProperties(): Record<string, any> {
+    const groups = Array.isArray(manifest.contributes.configuration)
+        ? manifest.contributes.configuration
+        : [manifest.contributes.configuration];
+    return Object.assign({}, ...groups.map((g: { properties?: Record<string, any> }) => g.properties || {}));
+}
+
 // vsce rewrites the relative links of README.md against the repository URL and
 // refuses to package while it cannot find one.
 test('the manifest names the repository the README links are resolved against', () => {
@@ -342,7 +351,7 @@ test('every surface that shows the product name shows the new one', () => {
     );
     assert.ok(container, 'the activity bar container is gone');
     assert.equal(container.title, PRODUCT_NAME);
-    assert.equal(manifest.contributes.configuration.title, PRODUCT_NAME);
+    assert.equal(manifest.displayName, PRODUCT_NAME);
     for (const command of manifest.contributes.commands as Array<{ command: string; category?: string }>) {
         assert.equal(
             command.category,
@@ -390,16 +399,37 @@ test('the identifiers the renaming had to leave alone are still there', () => {
     const ids = manifest.contributes.commands.map((c: { command: string }) => c.command);
     assert.ok(ids.every((id: string) => id.startsWith('postgresQueryBuilder.')), 'a command id was renamed');
     assert.ok(manifest.contributes.views.postgresQueryBuilderExplorer, 'the view container id was renamed');
-    const settings = Object.keys(manifest.contributes.configuration.properties);
+    const properties = allSettingProperties();
+    const settings = Object.keys(properties);
     assert.ok(settings.every(key => key.startsWith('postgresQueryBuilder.')), 'a setting key was renamed');
     assert.equal(
-        manifest.contributes.configuration.properties['postgresQueryBuilder.savedQueriesFile'].default,
+        properties['postgresQueryBuilder.savedQueriesFile'].default,
         'postgres-query-builder.queries.json'
     );
     assert.equal(
-        manifest.contributes.configuration.properties['postgresQueryBuilder.customMappingsFile'].default,
+        properties['postgresQueryBuilder.customMappingsFile'].default,
         'postgres-query-builder.mappings.json'
     );
+});
+
+test('every setting lives in exactly one titled, ordered configuration group', () => {
+    const groups = manifest.contributes.configuration;
+    assert.ok(Array.isArray(groups), 'settings are not split into configuration groups');
+    const orders = new Set<number>();
+    const seen = new Set<string>();
+    for (const group of groups as Array<{ title?: string; order?: number; properties?: Record<string, any> }>) {
+        assert.ok(typeof group.title === 'string' && group.title.length > 0, 'a configuration group has no title');
+        assert.ok(typeof group.order === 'number', `the "${group.title}" group has no order`);
+        assert.ok(!orders.has(group.order), `two configuration groups share order ${group.order}`);
+        orders.add(group.order);
+        assert.ok(group.properties && Object.keys(group.properties).length > 0, `the "${group.title}" group is empty`);
+        for (const key of Object.keys(group.properties)) {
+            assert.ok(!seen.has(key), `${key} appears in more than one configuration group`);
+            seen.add(key);
+        }
+    }
+    // Grouping must not drop or duplicate any setting.
+    assert.equal(seen.size, Object.keys(allSettingProperties()).length);
 });
 
 test('the changelog is English from the first entry to the last', () => {
