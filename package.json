@@ -409,6 +409,16 @@
           "type": "string",
           "default": "postgres-query-builder.queries.json",
           "description": "Workspace-relative path to the JSON file used to share bookmarked queries via git. Queries stored here are visible to everyone who opens the workspace; personal queries remain in VS Code global state."
+        },
+        "postgresQueryBuilder.newBookmarksToWorkspace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Share a newly created bookmarked query with the workspace by default (commit to git) instead of keeping it personal. Falls back to personal when no workspace folder is open. The scope can still be changed in the bookmark dialog."
+        },
+        "postgresQueryBuilder.newMappingsToWorkspace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Share a newly created custom column mapping with the workspace by default (commit to git) instead of keeping it personal. Falls back to personal when no workspace folder is open. The scope can still be changed in the mapping dialog."
         }
       }
     },

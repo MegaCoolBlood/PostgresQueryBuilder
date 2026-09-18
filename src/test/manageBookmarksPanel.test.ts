@@ -301,6 +301,30 @@ test('a draft opens the dialog with the placeholders of its statement', async (t
     assert.deepEqual(dialog.draft.parameters, [{ name: 'day', kind: 'text' }]);
 });
 
+test('a new bookmark defaults to the personal scope', async (t) => {
+    const panel = openPanel(t, [], false, { draft: { name: 'Orders', sql: 'SELECT 1' } });
+    await panel.send({ command: 'ready' });
+    const dialog = panel.posted[1] as { draft: { scope: string } };
+    assert.equal(dialog.draft.scope, 'global');
+});
+
+test('a new bookmark defaults to the workspace when the setting is on', async (t) => {
+    const originalGetConfig = vscodeStub.workspace.getConfiguration;
+    vscodeStub.workspace.getConfiguration = (_section?: string) => ({
+        get<T>(key: string, defaultValue?: T): T {
+            return (key === 'newBookmarksToWorkspace' ? true : defaultValue) as T;
+        }
+    });
+    try {
+        const panel = openPanel(t, [], false, { draft: { name: 'Orders', sql: 'SELECT 1' } });
+        await panel.send({ command: 'ready' });
+        const dialog = panel.posted[1] as { draft: { scope: string } };
+        assert.equal(dialog.draft.scope, 'workspace');
+    } finally {
+        vscodeStub.workspace.getConfiguration = originalGetConfig;
+    }
+});
+
 test('an existing query opens the same dialog in edit mode', async (t) => {
     const panel = openPanel(t, [query('a', 'global')], false, { id: 'a' });
     await panel.send({ command: 'ready' });

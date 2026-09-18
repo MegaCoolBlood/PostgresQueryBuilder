@@ -199,12 +199,21 @@ export class ManageBookmarksPanel {
         this.onSaved = request.onSaved;
         this.draftScope = { schema: request.draft?.schema, table: request.draft?.table };
         const sql = request.draft?.sql ?? '';
+        // A new bookmark defaults to the workspace when the user configured it,
+        // so it can be committed to git without changing the scope every time.
+        const defaultWorkspace = vscode.workspace.getConfiguration('postgresQueryBuilder')
+            .get<boolean>('newBookmarksToWorkspace', false);
         this.pendingDialog = request.id
             ? { command: 'openDialog', mode: 'edit', id: request.id }
             : {
                 command: 'openDialog',
                 mode: 'create',
-                draft: { name: request.draft?.name ?? '', sql, parameters: mergeParameters(sql, []) }
+                draft: {
+                    name: request.draft?.name ?? '',
+                    sql,
+                    parameters: mergeParameters(sql, []),
+                    scope: defaultWorkspace ? 'workspace' : 'global'
+                }
             };
         if (this.ready) {
             this.flushDialog();
@@ -536,7 +545,7 @@ export class ManageBookmarksPanel {
             openDialog({
                 name: draft.name || '',
                 sql: draft.sql || '',
-                scope: 'global',
+                scope: draft.scope === 'workspace' ? 'workspace' : 'global',
                 parameters: draft.parameters || []
             }, true);
         }

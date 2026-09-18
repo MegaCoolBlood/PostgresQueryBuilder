@@ -424,6 +424,25 @@ test('table panel: with the option on but no persisted alias the webview derives
     assert.equal(init.tableAlias, '');
 });
 
+test('table panel: init carries the mapping-default-to-workspace option', async () => {
+    const offInit = await openTablePanelInit('public', 'orders');
+    assert.equal(offInit.newMappingDefaultWorkspace, false);
+
+    const originalGetConfig = vscodeStub.workspace.getConfiguration;
+    vscodeStub.workspace.getConfiguration = (_section?: string) => ({
+        get<T>(key: string, defaultValue?: T): T {
+            return (key === 'newMappingsToWorkspace' ? true : defaultValue) as T;
+        }
+    });
+    let onInit;
+    try {
+        onInit = await openTablePanelInit('public', 'orders');
+    } finally {
+        vscodeStub.workspace.getConfiguration = originalGetConfig;
+    }
+    assert.equal(onInit.newMappingDefaultWorkspace, true);
+});
+
 test('query panel: the injected script is not mangled by $ replacement patterns', async () => {
     const { panel } = await openCustomQueryPanel();
     const js = require('node:fs').readFileSync(

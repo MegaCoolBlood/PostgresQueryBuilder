@@ -1796,6 +1796,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // it be derived from the first column name.
     let qualifyColumnsWithAlias = false;
     let tableAlias = '';
+    // Whether a newly created custom mapping is shared with the workspace by
+    // default (the mapping dialog's "Share with workspace" checkbox).
+    let newMappingDefaultWorkspace = false;
     // Exact number of rows the current query returns, or null while unknown
     // (counting an arbitrary query is only done on request).
     let totalCount = null;
@@ -2467,6 +2470,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         alwaysQuote = Boolean(msg.alwaysQuote);
         qualifyColumnsWithAlias = Boolean(msg.qualifyColumnsWithAlias);
         tableAlias = typeof msg.tableAlias === 'string' ? msg.tableAlias : '';
+        newMappingDefaultWorkspace = Boolean(msg.newMappingDefaultWorkspace);
         permanentConstraints = Array.isArray(msg.permanentConstraints) ? msg.permanentConstraints : [];
         permanentSorts = Array.isArray(msg.permanentSorts) ? msg.permanentSorts : [];
         if (msg.thousandSeparator !== undefined) { thousandSeparator = msg.thousandSeparator; }
@@ -5541,7 +5545,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         mappingLabel.value = existingMapping ? (existingMapping.label || '') : '';
         mappingIsDefault.checked = existingMapping ? existingMapping.isDefault : true;
         if (mappingShareWorkspace) {
-            mappingShareWorkspace.checked = existingMapping ? (existingMapping.scope === 'workspace') : false;
+            mappingShareWorkspace.checked = existingMapping ? (existingMapping.scope === 'workspace') : newMappingDefaultWorkspace;
         }
 
         // Populate conditions
