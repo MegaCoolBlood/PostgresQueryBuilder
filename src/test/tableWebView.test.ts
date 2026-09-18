@@ -443,6 +443,39 @@ test('table panel: init carries the mapping-default-to-workspace option', async 
     assert.equal(onInit.newMappingDefaultWorkspace, true);
 });
 
+test('query panel: openGeneratedStatement opens the given SQL in a new editor', async () => {
+    const { panel, send } = await openCustomQueryPanel();
+    const originalOpen = vscodeStub.workspace.openTextDocument;
+    const originalShow = vscodeStub.window.showTextDocument;
+    let openedWith: any;
+    let shown = false;
+    vscodeStub.workspace.openTextDocument = (arg: any) => { openedWith = arg; return Promise.resolve({ uri: 'doc' }); };
+    vscodeStub.window.showTextDocument = () => { shown = true; return Promise.resolve(undefined); };
+    try {
+        await send({ command: 'openGeneratedStatement', sql: 'DELETE FROM orders o\nWHERE o.status = 1;' });
+    } finally {
+        vscodeStub.workspace.openTextDocument = originalOpen;
+        vscodeStub.window.showTextDocument = originalShow;
+    }
+    assert.equal(openedWith.language, 'sql');
+    assert.equal(openedWith.content, 'DELETE FROM orders o\nWHERE o.status = 1;');
+    assert.ok(shown, 'expected the generated statement to be shown in an editor');
+    assert.ok(!panel.posted.some(m => m.command === 'error'), 'no error expected');
+});
+
+test('query panel: openGeneratedStatement ignores an empty statement', async () => {
+    const { send } = await openCustomQueryPanel();
+    const originalOpen = vscodeStub.workspace.openTextDocument;
+    let opened = false;
+    vscodeStub.workspace.openTextDocument = (arg: any) => { opened = true; return Promise.resolve({ uri: arg }); };
+    try {
+        await send({ command: 'openGeneratedStatement', sql: '   ' });
+    } finally {
+        vscodeStub.workspace.openTextDocument = originalOpen;
+    }
+    assert.equal(opened, false, 'an empty statement must not open an editor');
+});
+
 test('query panel: the injected script is not mangled by $ replacement patterns', async () => {
     const { panel } = await openCustomQueryPanel();
     const js = require('node:fs').readFileSync(

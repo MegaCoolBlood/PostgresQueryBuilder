@@ -426,7 +426,8 @@ export class TableWebViewManager {
         exportData: this.handleExportData,
         selectConnection: this.handleSelectConnection,
         validateValue: this.handleValidateValue,
-        openCellInEditor: this.handleOpenCellInEditor
+        openCellInEditor: this.handleOpenCellInEditor,
+        openGeneratedStatement: this.handleOpenGeneratedStatement
     };
 
     /**
@@ -696,6 +697,19 @@ export class TableWebViewManager {
             sql,
             connectionName: this.getConnectionName()
         });
+    }
+
+    /**
+     * Open a statement the webview generated (a group UPDATE/DELETE) in a new
+     * SQL editor tab so the user can review and adjust it before running it.
+     */
+    private async handleOpenGeneratedStatement(ctx: MessageContext): Promise<void> {
+        const sql = typeof ctx.message.sql === 'string' ? ctx.message.sql.trim() : '';
+        if (!sql) {
+            return;
+        }
+        const doc = await vscode.workspace.openTextDocument({ language: 'sql', content: sql });
+        await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
     }
 
     private async handleCommitChanges(ctx: MessageContext): Promise<void> {

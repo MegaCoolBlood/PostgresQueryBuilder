@@ -26,7 +26,13 @@ const {
     buildConnectionBadge,
     canApplyQueryFilters,
     canManageTableMetadata,
-    defaultInsertTableName
+    defaultInsertTableName,
+    parseTableRefAlias,
+    unqualifiedTableName,
+    findTopLevelOn,
+    parseGroupEditQuery,
+    buildGroupEditWhere,
+    buildGroupEditSql
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
 
 // ===== 0.2.0: "Load More" for custom queries (stripTrailingLimitOffset) =====
@@ -589,6 +595,137 @@ test('cellEditorTargetState reports a cell that is gone as stale', () => {
 
 test('cellEditorTargetState refuses to write back into a read-only cell', () => {
     assert.equal(cellEditorTargetState(true, true, false), 'readonly');
+});
+
+// ===== 3.2.0: Group Edit — generate UPDATE/DELETE from the current query =====
+
+test('parseTableRefAlias splits a schema-qualified table and its alias', () => {
+    assert.deepEqual(
+        parseTableRefAlias('public.orders o'),
+        { ref: 'public.orders', alias: 'o', tableName: 'orders' }
+    );
+});
+
+test('parseTableRefAlias understands the AS keyword', () => {
+    assert.deepEqual(
+        parseTableRefAlias('public.orders AS o'),
+        { ref: 'public.orders', alias: 'o', tableName: 'orders' }
+    );
+});
+
+test('parseTableRefAlias leaves the alias empty when there is none', () => {
+    assert.deepEqual(
+        parseTableRefAlias('orders'),
+        { ref: 'orders', alias: '', tableName: 'orders' }
+    );
+});
+
+test('unqualifiedTableName strips the schema and the surrounding quotes', () => {
+    assert.equal(unqualifiedTableName('public.orders'), 'orders');
+    assert.equal(unqualifiedTableName('"My Schema"."My Table"'), 'My Table');
+    assert.equal(unqualifiedTableName('orders'), 'orders');
+});
+
+test('findTopLevelOn locates the join ON and ignores an ON inside a subquery', () => {
+    const body = 'customers c ON o.cust_id = c.id';
+    assert.equal(body.slice(findTopLevelOn(body) + 2).trim(), 'o.cust_id = c.id');
+    assert.equal(findTopLevelOn('customers c'), -1);
+    // An ON inside a parenthesized sub-select is not the join's own ON.
+    const nested = '(SELECT 1 FROM x JOIN y ON x.a = y.a) s ON s.a = t.a';
+    assert.equal(nested.slice(findTopLevelOn(nested) + 2).trim(), 's.a = t.a');
+});
+
+test('parseGroupEditQuery returns null for a non-SELECT or a set operation', () => {
+    assert.equal(parseGroupEditQuery('UPDATE t SET a = 1'), null);
+    assert.equal(parseGroupEditQuery('SELECT 1'), null);
+    assert.equal(parseGroupEditQuery('SELECT * FROM a UNION SELECT * FROM b'), null);
+    assert.equal(parseGroupEditQuery('SELECT * FROM t -- comment'), null);
+});
+
+test('parseGroupEditQuery extracts base table, alias and WHERE', () => {
+    const parsed = parseGroupEditQuery('SELECT o.id FROM public.orders o WHERE o.status = 1');
+    assert.equal(parsed.base.ref, 'public.orders');
+    assert.equal(parsed.base.alias, 'o');
+    assert.equal(parsed.base.tableName, 'orders');
+    assert.deepEqual(parsed.joins, []);
+    assert.equal(parsed.where, 'o.status = 1');
+    assert.equal(parsed.outerJoin, false);
+});
+
+test('parseGroupEditQuery captures joins with their ON conditions', () => {
+    const parsed = parseGroupEditQuery(
+        'SELECT o.id FROM orders o JOIN customers c ON o.cust_id = c.id WHERE c.region = 1'
+    );
+    assert.equal(parsed.joins.length, 1);
+    assert.deepEqual(parsed.joins[0], { ref: 'customers', alias: 'c', on: 'o.cust_id = c.id' });
+    assert.equal(parsed.where, 'c.region = 1');
+});
+
+test('parseGroupEditQuery flags an outer join', () => {
+    const parsed = parseGroupEditQuery('SELECT o.id FROM orders o LEFT JOIN customers c ON o.cust_id = c.id');
+    assert.equal(parsed.outerJoin, true);
+});
+
+test('buildGroupEditWhere combines join conditions and the original WHERE', () => {
+    const parsed = parseGroupEditQuery(
+        'SELECT o.id FROM orders o JOIN customers c ON o.cust_id = c.id WHERE c.region = 1'
+    );
+    assert.equal(buildGroupEditWhere(parsed), '(o.cust_id = c.id) AND (c.region = 1)');
+});
+
+test('buildGroupEditWhere leaves a single condition unwrapped', () => {
+    const parsed = parseGroupEditQuery('SELECT o.id FROM orders o WHERE o.status = 1');
+    assert.equal(buildGroupEditWhere(parsed), 'o.status = 1');
+});
+
+test('buildGroupEditSql builds a single-table UPDATE with the given SET columns', () => {
+    const parsed = parseGroupEditQuery('SELECT id FROM orders o WHERE o.status = 1');
+    assert.equal(
+        buildGroupEditSql('update', parsed, ['status', 'total'], (c: string) => c),
+        'UPDATE orders o\nSET\n    status = NULL,\n    total = NULL\nWHERE o.status = 1;'
+    );
+});
+
+test('buildGroupEditSql builds a single-table DELETE reflecting the WHERE', () => {
+    const parsed = parseGroupEditQuery('SELECT id FROM orders o WHERE o.status = 1');
+    assert.equal(
+        buildGroupEditSql('delete', parsed, [], (c: string) => c),
+        'DELETE FROM orders o\nWHERE o.status = 1;'
+    );
+});
+
+test('buildGroupEditSql moves a join into FROM and the ON into WHERE for an UPDATE', () => {
+    const parsed = parseGroupEditQuery(
+        'SELECT o.id FROM orders o JOIN customers c ON o.cust_id = c.id WHERE c.region = 1'
+    );
+    assert.equal(
+        buildGroupEditSql('update', parsed, ['status'], (c: string) => c),
+        'UPDATE orders o\nSET\n    status = NULL\nFROM customers c\nWHERE (o.cust_id = c.id) AND (c.region = 1);'
+    );
+});
+
+test('buildGroupEditSql moves a join into USING for a DELETE', () => {
+    const parsed = parseGroupEditQuery(
+        'SELECT o.id FROM orders o JOIN customers c ON o.cust_id = c.id WHERE c.region = 1'
+    );
+    assert.equal(
+        buildGroupEditSql('delete', parsed, [], (c: string) => c),
+        'DELETE FROM orders o\nUSING customers c\nWHERE (o.cust_id = c.id) AND (c.region = 1);'
+    );
+});
+
+test('buildGroupEditSql seeds an empty SET list with a placeholder comment', () => {
+    const parsed = parseGroupEditQuery('SELECT id FROM orders o');
+    assert.equal(
+        buildGroupEditSql('update', parsed, [], (c: string) => c),
+        'UPDATE orders o\nSET\n    -- add columns to update, e.g. <column> = NULL;'
+    );
+});
+
+test('buildGroupEditSql warns when an outer join was flattened', () => {
+    const parsed = parseGroupEditQuery('SELECT o.id FROM orders o LEFT JOIN customers c ON o.cust_id = c.id');
+    const sql = buildGroupEditSql('delete', parsed, [], (c: string) => c);
+    assert.ok(sql.startsWith('-- Note: an outer join was flattened into USING/WHERE'), sql);
 });
 
 

@@ -609,6 +609,179 @@ function formatSql(sql) {
     return lines.join('\n');
 }
 
+// ===== Group Edit: turn the current SELECT into an UPDATE/DELETE template =====
+
+// Split a fragment on top-level whitespace, ignoring whitespace inside string
+// or identifier literals and parentheses.
+function splitTopLevelSpaces(s) {
+    const parts = [];
+    let buf = '', depth = 0, inSingle = false, inDouble = false, i = 0;
+    while (i < s.length) {
+        const ch = s[i];
+        if (inSingle) { buf += ch; if (ch === "'") { if (s[i + 1] === "'") { buf += "'"; i += 2; continue; } inSingle = false; } i++; continue; }
+        if (inDouble) { buf += ch; if (ch === '"') { if (s[i + 1] === '"') { buf += '"'; i += 2; continue; } inDouble = false; } i++; continue; }
+        if (ch === "'") { inSingle = true; buf += ch; i++; continue; }
+        if (ch === '"') { inDouble = true; buf += ch; i++; continue; }
+        if (ch === '(') { depth++; buf += ch; i++; continue; }
+        if (ch === ')') { depth--; buf += ch; i++; continue; }
+        if (depth === 0 && /\s/.test(ch)) { if (buf) { parts.push(buf); buf = ''; } i++; while (i < s.length && /\s/.test(s[i])) i++; continue; }
+        buf += ch; i++;
+    }
+    if (buf) parts.push(buf);
+    return parts;
+}
+
+// The unqualified, unquoted table name of a (possibly schema-qualified) table
+// reference, e.g. `public."My Table"` -> `My Table`.
+function unqualifiedTableName(ref) {
+    let buf = '', last = '', inDouble = false, i = 0;
+    const s = String(ref || '');
+    while (i < s.length) {
+        const ch = s[i];
+        if (inDouble) { buf += ch; if (ch === '"') { if (s[i + 1] === '"') { buf += '"'; i += 2; continue; } inDouble = false; } i++; continue; }
+        if (ch === '"') { inDouble = true; buf += ch; i++; continue; }
+        if (ch === '.') { last = buf; buf = ''; i++; continue; }
+        buf += ch; i++;
+    }
+    last = buf || last;
+    if (last.length >= 2 && last[0] === '"' && last[last.length - 1] === '"') {
+        last = last.slice(1, -1).replace(/""/g, '"');
+    }
+    return last;
+}
+
+// Split a table fragment into its reference and (optional) alias, e.g.
+// `public.orders o` or `public.orders AS o` -> { ref, alias, tableName }.
+function parseTableRefAlias(fragment) {
+    const tokens = splitTopLevelSpaces(String(fragment || '').trim());
+    const ref = tokens[0] || '';
+    let alias = '';
+    if (tokens.length >= 3 && tokens[1].toUpperCase() === 'AS') {
+        alias = tokens[2];
+    } else if (tokens.length >= 2 && tokens[1].toUpperCase() !== 'AS') {
+        alias = tokens[1];
+    }
+    return { ref, alias, tableName: unqualifiedTableName(ref) };
+}
+
+// Index of the top-level `ON` keyword of a JOIN clause body, or -1 when the
+// join carries no ON condition (CROSS JOIN). Literals and parentheses are
+// skipped so an `ON` inside a sub-select is never mistaken for the join's own.
+function findTopLevelOn(s) {
+    const U = s.toUpperCase();
+    let depth = 0, inSingle = false, inDouble = false, i = 0;
+    while (i < s.length) {
+        const ch = s[i];
+        if (inSingle) { if (ch === "'") { if (s[i + 1] === "'") { i += 2; continue; } inSingle = false; } i++; continue; }
+        if (inDouble) { if (ch === '"') { if (s[i + 1] === '"') { i += 2; continue; } inDouble = false; } i++; continue; }
+        if (ch === "'") { inSingle = true; i++; continue; }
+        if (ch === '"') { inDouble = true; i++; continue; }
+        if (ch === '(') { depth++; i++; continue; }
+        if (ch === ')') { depth--; i++; continue; }
+        if (depth === 0 && (i === 0 || /\s/.test(s[i - 1])) && U.startsWith('ON', i)) {
+            const after = s[i + 2];
+            if (after === undefined || /\s/.test(after) || after === '(') { return i; }
+        }
+        i++;
+    }
+    return -1;
+}
+
+// Parse a plain SELECT into the parts a group UPDATE/DELETE needs: the base
+// table (FROM), its joins (each with its ON condition) and the WHERE body.
+// Returns null for anything that cannot be safely rewritten (a non-SELECT, a
+// set operation, a commented statement or a SELECT without a FROM clause).
+function parseGroupEditQuery(sql) {
+    const raw = String(sql == null ? '' : sql).trim().replace(/;+\s*$/, '').trim();
+    if (!raw || hasSqlComment(raw)) return null;
+    const s = collapseSqlWhitespace(raw);
+    if (!/^SELECT\b/i.test(s)) return null;
+    const segs = splitTopLevelClauses(s);
+    if (!segs.length || segs[0].kw.toUpperCase() !== 'SELECT') return null;
+
+    let base = null;
+    const joins = [];
+    let where = '';
+    let outerJoin = false;
+    for (const seg of segs) {
+        const kw = seg.kw.toUpperCase();
+        if (kw === 'FROM') {
+            const tables = splitTopLevelCommas(seg.content).map(t => t.trim()).filter(Boolean);
+            if (!tables.length) return null;
+            base = parseTableRefAlias(tables[0]);
+            // Old-style comma joins keep their predicate in WHERE; the extra
+            // tables simply move into the FROM/USING list.
+            for (let k = 1; k < tables.length; k++) {
+                const extra = parseTableRefAlias(tables[k]);
+                joins.push({ ref: extra.ref, alias: extra.alias, on: '' });
+            }
+        } else if (/JOIN$/.test(kw)) {
+            if (/(LEFT|RIGHT|FULL)/.test(kw)) outerJoin = true;
+            const onIdx = findTopLevelOn(seg.content);
+            const refPart = onIdx >= 0 ? seg.content.slice(0, onIdx) : seg.content;
+            const on = onIdx >= 0 ? seg.content.slice(onIdx + 2).trim() : '';
+            const t = parseTableRefAlias(refPart);
+            joins.push({ ref: t.ref, alias: t.alias, on });
+        } else if (kw === 'WHERE') {
+            where = seg.content.trim();
+        } else if (kw === 'UNION' || kw === 'UNION ALL' || kw === 'INTERSECT' || kw === 'EXCEPT') {
+            // A set operation has no single base table to write back to.
+            return null;
+        }
+        // GROUP BY / HAVING / ORDER BY / LIMIT / OFFSET / WINDOW do not carry
+        // over to an UPDATE/DELETE and are dropped.
+    }
+    if (!base || !base.ref) return null;
+    return { ok: true, base, joins, where, outerJoin };
+}
+
+// Build the WHERE body of a group edit: the join ON conditions and the original
+// WHERE, each wrapped in parentheses when combined so their operator precedence
+// is preserved.
+function buildGroupEditWhere(parsed) {
+    const parts = parsed.joins.map(j => j.on).filter(Boolean);
+    if (parsed.where) parts.push(parsed.where);
+    if (parts.length === 0) return '';
+    if (parts.length === 1) return parts[0];
+    return parts.map(p => '(' + p + ')').join(' AND ');
+}
+
+// Turn a parsed SELECT into an UPDATE or DELETE that hits exactly the rows the
+// SELECT returns: joins become FROM/USING tables and their ON conditions move
+// into WHERE. `setColumns` are the real column names of the base table used to
+// seed the SET list of an UPDATE. Returns '' when the query cannot be rewritten.
+function buildGroupEditSql(kind, parsed, setColumns, formatCol) {
+    if (!parsed || !parsed.ok) return '';
+    const fmt = typeof formatCol === 'function' ? formatCol : (c) => c;
+    const baseRef = parsed.base.ref + (parsed.base.alias ? ' ' + parsed.base.alias : '');
+    const usingTables = parsed.joins
+        .map(j => j.ref + (j.alias ? ' ' + j.alias : ''))
+        .join(', ');
+    const whereBody = buildGroupEditWhere(parsed);
+    const lines = [];
+    if (parsed.outerJoin) {
+        lines.push('-- Note: an outer join was flattened into '
+            + (kind === 'update' ? 'FROM' : 'USING') + '/WHERE; review which rows this affects.');
+    }
+    if (kind === 'update') {
+        lines.push('UPDATE ' + baseRef);
+        lines.push('SET');
+        const cols = Array.isArray(setColumns) ? setColumns : [];
+        if (cols.length) {
+            cols.forEach((c, i) => lines.push('    ' + fmt(c) + ' = NULL' + (i < cols.length - 1 ? ',' : '')));
+        } else {
+            lines.push('    -- add columns to update, e.g. <column> = NULL');
+        }
+        if (usingTables) lines.push('FROM ' + usingTables);
+        if (whereBody) lines.push('WHERE ' + whereBody);
+    } else {
+        lines.push('DELETE FROM ' + baseRef);
+        if (usingTables) lines.push('USING ' + usingTables);
+        if (whereBody) lines.push('WHERE ' + whereBody);
+    }
+    return lines.join('\n') + ';';
+}
+
 // Map a filter mode keyword to its SQL comparison operator.
 function filterOperatorForMode(mode) {
     switch (mode) {
@@ -1984,6 +2157,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const insertRowBtn = document.getElementById('insertRowBtn');
     const loadMoreBtn = document.getElementById('loadMoreBtn');
     const loadAllBtn = document.getElementById('loadAllBtn');
+    const groupUpdateBtn = document.getElementById('groupUpdateBtn');
+    const groupDeleteBtn = document.getElementById('groupDeleteBtn');
     const changeCount = document.getElementById('changeCount');
     const sqlDialogOverlay = document.getElementById('sqlDialogOverlay');
     const sqlDialogContent = document.getElementById('sqlDialogContent');
@@ -2520,6 +2695,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         toggle(commitBtn, caps.canEdit || caps.canInsert || caps.canDelete);
         toggle(discardBtn, caps.canEdit || caps.canInsert || caps.canDelete);
         toggle(constraintsBtn, caps.canConstrain);
+        // Group edit rewrites the current query into an UPDATE/DELETE for its
+        // base table, so it needs a result that traces back to an editable table.
+        toggle(groupUpdateBtn, caps.canEdit);
+        toggle(groupDeleteBtn, caps.canEdit);
         // Relation metadata is only fetched for a single source table; without
         // one nothing will arrive and the indicator must not keep spinning.
         if (caps.table) {
@@ -4533,6 +4712,55 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         runQuery();
     }
 
+    // ===== Group Edit Logic =====
+
+    // The real column names of the base table used to seed a group UPDATE's SET
+    // list: the editable columns of the plan whose alias/name matches the FROM
+    // table. Returns an empty list when the base table is not editable.
+    function collectGroupEditSetColumns(parsed) {
+        const baseName = parsed.base.tableName;
+        const baseAlias = parsed.base.alias;
+        const candidates = (caps.tables || []).filter(t => t.table === baseName);
+        let plan = null;
+        if (baseAlias) {
+            plan = candidates.find(t => t.qualifier === baseAlias) || null;
+        }
+        if (!plan) {
+            plan = candidates.find(t => t.identityStrategy !== 'none') || candidates[0] || null;
+        }
+        if (!plan || plan.identityStrategy === 'none') {
+            return [];
+        }
+        const seen = new Set();
+        const cols = [];
+        (plan.columns || []).forEach(c => {
+            if (c && c.sourceColumn && !seen.has(c.sourceColumn)) {
+                seen.add(c.sourceColumn);
+                cols.push(c.sourceColumn);
+            }
+        });
+        return cols;
+    }
+
+    function generateGroupEdit(kind) {
+        const sql = (queryInput.value || '').trim() || getDefaultQuery();
+        const parsed = parseGroupEditQuery(sql);
+        if (!parsed) {
+            vscode.postMessage({
+                command: 'showError',
+                text: 'A group ' + kind.toUpperCase() + ' can only be generated from a plain SELECT with a FROM clause '
+                    + '(no CTE, set operation or comment).'
+            });
+            return;
+        }
+        const setColumns = kind === 'update' ? collectGroupEditSetColumns(parsed) : [];
+        const generated = buildGroupEditSql(kind, parsed, setColumns, formatIdentifier);
+        vscode.postMessage({ command: 'openGeneratedStatement', sql: generated, kind: kind });
+    }
+
+    if (groupUpdateBtn) groupUpdateBtn.addEventListener('click', () => generateGroupEdit('update'));
+    if (groupDeleteBtn) groupDeleteBtn.addEventListener('click', () => generateGroupEdit('delete'));
+
     // ===== Saved Queries Logic =====
     const querySaveBtn = document.getElementById('querySaveBtn');
     const queryParamsBtn = document.getElementById('queryParamsBtn');
@@ -5848,6 +6076,12 @@ if (typeof module !== 'undefined' && module.exports) {
         buildConstraintOrderBy,
         buildSelectColumnList,
         deriveTableAlias,
+        parseTableRefAlias,
+        unqualifiedTableName,
+        findTopLevelOn,
+        parseGroupEditQuery,
+        buildGroupEditWhere,
+        buildGroupEditSql,
         buildColumnHeaderTitle,
         formatColumnTypeLabel,
         nextSortState,
