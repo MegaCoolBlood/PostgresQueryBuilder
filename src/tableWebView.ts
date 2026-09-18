@@ -8,6 +8,7 @@ import { SavedQueryStore, SavedQueryParameter } from './savedQueryStore';
 import { ManageBookmarksPanel } from './manageBookmarksPanel';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
 import { buildRelatedTableJoin, deriveQualifier, type RelatedJoinCondition } from './statementBuilder';
+import { QualifierStore } from './tableStatementDrop';
 import { getErrorMessage } from './logger';
 import { getIconSprite, getSharedStyles } from './webviewAssets';
 import type { ViewCapabilities, TableEditPlan } from './resultSource';
@@ -321,6 +322,15 @@ export class TableWebViewManager {
             id, `${schema}.${table}`, 'table', schema, table, `${schema}.${table}`, vscode.ViewColumn.One
         );
 
+        const qualifyColumnsWithAlias = vscode.workspace.getConfiguration('postgresQueryBuilder')
+            .get<boolean>('qualifyColumnsWithAlias', false);
+        // When the option is on, reuse the alias the user may have persisted for
+        // this table via the drag-to-editor Select statement. An empty value
+        // lets the webview derive one from the first column name.
+        const tableAlias = qualifyColumnsWithAlias
+            ? (new QualifierStore(this.context.globalState).get(schema, table) ?? '')
+            : '';
+
         this.post(session, {
             command: 'init',
             origin: 'table',
@@ -329,6 +339,8 @@ export class TableWebViewManager {
             title: `${schema}.${table}`,
             tableReference,
             alwaysQuote: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false),
+            qualifyColumnsWithAlias,
+            tableAlias,
             thousandSeparator: vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('thousandSeparator', ' '),
             duplicateRowResetDefaults: vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('duplicateRowResetDefaults', 'volatile'),
             connectionName: this.getConnectionName(),

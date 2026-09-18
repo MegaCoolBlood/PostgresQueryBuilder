@@ -802,16 +802,32 @@ function buildConstraintOrderBy(sorts, formatCol) {
 // Build the explicit column list used by the default table-view query. Instead
 // of a `*` wildcard the query bar lists every column by name. When the columns
 // are not yet known (empty list) it falls back to `*` so the query bar still
-// shows a valid statement while metadata is loading.
-function buildSelectColumnList(columns, formatCol) {
+// shows a valid statement while metadata is loading. When `alias` is a non-empty
+// string every column (and the `*` fallback) is prefixed with `alias.`.
+function buildSelectColumnList(columns, formatCol, alias) {
+    const prefix = alias ? `${alias}.` : '';
+    const star = `${prefix}*`;
     if (!Array.isArray(columns) || columns.length === 0) {
-        return '*';
+        return star;
     }
     const fmt = typeof formatCol === 'function' ? formatCol : (c) => c;
     const names = columns
-        .map((col) => (col && col.name !== undefined && col.name !== null) ? fmt(col.name) : '')
+        .map((col) => (col && col.name !== undefined && col.name !== null) ? `${prefix}${fmt(col.name)}` : '')
         .filter((s) => s !== '');
-    return names.length > 0 ? names.join(', ') : '*';
+    return names.length > 0 ? names.join(', ') : star;
+}
+
+// Mirror of deriveQualifier in src/statementBuilder.ts: the part of the first
+// column name before its first underscore, else the table name. Used to build
+// the table alias for the default query when column qualification is on.
+function deriveTableAlias(firstColumnName, table) {
+    if (firstColumnName) {
+        const underscore = String(firstColumnName).indexOf('_');
+        if (underscore > 0) {
+            return String(firstColumnName).slice(0, underscore);
+        }
+    }
+    return table;
 }
 
 // Return a new array with the column at `fromIndex` moved so it sits at
@@ -1775,6 +1791,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let tableReference = '';
     let alwaysQuote = false;
     let thousandSeparator = ' ';
+    // When on, the default table query qualifies every column with a table
+    // alias; `tableAlias` holds the alias persisted for this table, or '' to let
+    // it be derived from the first column name.
+    let qualifyColumnsWithAlias = false;
+    let tableAlias = '';
     // Exact number of rows the current query returns, or null while unknown
     // (counting an arbitrary query is only done on request).
     let totalCount = null;
@@ -2444,6 +2465,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         table = msg.table || '';
         tableReference = msg.tableReference || '';
         alwaysQuote = Boolean(msg.alwaysQuote);
+        qualifyColumnsWithAlias = Boolean(msg.qualifyColumnsWithAlias);
+        tableAlias = typeof msg.tableAlias === 'string' ? msg.tableAlias : '';
         permanentConstraints = Array.isArray(msg.permanentConstraints) ? msg.permanentConstraints : [];
         permanentSorts = Array.isArray(msg.permanentSorts) ? msg.permanentSorts : [];
         if (msg.thousandSeparator !== undefined) { thousandSeparator = msg.thousandSeparator; }
@@ -4858,14 +4881,32 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     // The default table-view query including any permanent WHERE constraints
     // and ORDER BY entries. Lists all known columns explicitly instead of `*`
-    // (falls back to `*` while column metadata is still loading).
+    // (falls back to `*` while column metadata is still loading). When the
+    // "qualify columns with alias" option is on, every column and the FROM
+    // reference carry a table alias.
     function getDefaultQuery() {
         const where = getDefaultWhere();
         const orderBy = getDefaultOrderBy();
-        const columnList = buildSelectColumnList(columns, formatIdentifier);
-        return `SELECT ${columnList} FROM ${getDefaultTableReference()}`
+        const alias = getDefaultTableAlias();
+        const columnList = buildSelectColumnList(columns, formatIdentifier, alias);
+        const fromReference = getDefaultTableReference() + (alias ? ` ${alias}` : '');
+        return `SELECT ${columnList} FROM ${fromReference}`
             + (where ? ` WHERE ${where}` : '')
             + (orderBy ? ` ORDER BY ${orderBy}` : '');
+    }
+
+    // The table alias used to qualify the default query's columns, or '' when
+    // the option is off. Prefers the alias persisted by the drag-to-editor alias
+    // system, falling back to one derived from the first column name.
+    function getDefaultTableAlias() {
+        if (!qualifyColumnsWithAlias) {
+            return '';
+        }
+        if (tableAlias) {
+            return tableAlias;
+        }
+        const firstColumn = Array.isArray(columns) && columns[0] ? columns[0].name : null;
+        return deriveTableAlias(firstColumn, table);
     }
 
     // NOTE: Keep in sync with formatIdentifier/needsQuoting in src/queryRunner.ts
@@ -5802,6 +5843,7 @@ if (typeof module !== 'undefined' && module.exports) {
         formatConstraintSort,
         buildConstraintOrderBy,
         buildSelectColumnList,
+        deriveTableAlias,
         buildColumnHeaderTitle,
         formatColumnTypeLabel,
         nextSortState,

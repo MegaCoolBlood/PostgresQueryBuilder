@@ -10,6 +10,7 @@ const {
     splitTopLevelClauses,
     buildRowIdentity,
     buildSelectColumnList,
+    deriveTableAlias,
     reorderColumns,
     reorderSelectColumns,
     buildColumnHeaderTitle,
@@ -597,6 +598,42 @@ test('buildSelectColumnList skips entries without a usable name', () => {
 
 test('buildSelectColumnList falls back to * when no column has a usable name', () => {
     assert.equal(buildSelectColumnList([{}, { name: null }]), '*');
+});
+
+test('buildSelectColumnList qualifies every column with the given alias', () => {
+    const columns = [{ name: 'id' }, { name: 'name' }];
+    assert.equal(buildSelectColumnList(columns, undefined, 'lei'), 'lei.id, lei.name');
+});
+
+test('buildSelectColumnList combines the alias with the identifier formatter', () => {
+    const columns = [{ name: 'id' }, { name: 'order' }];
+    const fmt = (c: string) => `"${c}"`;
+    assert.equal(buildSelectColumnList(columns, fmt, 't'), 't."id", t."order"');
+});
+
+test('buildSelectColumnList prefixes the * fallback with the alias', () => {
+    assert.equal(buildSelectColumnList([], undefined, 't'), 't.*');
+    assert.equal(buildSelectColumnList([{}, { name: null }], undefined, 't'), 't.*');
+});
+
+test('buildSelectColumnList without an alias is unchanged', () => {
+    const columns = [{ name: 'id' }, { name: 'name' }];
+    assert.equal(buildSelectColumnList(columns, undefined, ''), 'id, name');
+    assert.equal(buildSelectColumnList(columns), 'id, name');
+});
+
+// ===== deriveTableAlias =====
+
+test('deriveTableAlias uses the part of the first column before its underscore', () => {
+    assert.equal(deriveTableAlias('lei_id', 'leistungen'), 'lei');
+    assert.equal(deriveTableAlias('cust_order_id', 'orders'), 'cust');
+});
+
+test('deriveTableAlias falls back to the table name without a leading underscore part', () => {
+    assert.equal(deriveTableAlias('id', 'users'), 'users');
+    assert.equal(deriveTableAlias(null, 'users'), 'users');
+    assert.equal(deriveTableAlias('', 'users'), 'users');
+    assert.equal(deriveTableAlias('_id', 'users'), 'users');
 });
 
 // ===== reorderColumns =====

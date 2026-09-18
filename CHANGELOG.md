@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.2.0
+
+- **The Data Viewer can now open a table with every column already qualified by a table alias:** Opening a table produced a bare `SELECT id, name, … FROM schema.table`, so the moment you started joining or copying the query into an editor you had to add the `t.` qualifiers by hand. The new *Qualify columns with alias* option (`postgresQueryBuilder.qualifyColumnsWithAlias`, off by default) makes the default query prefix every column — and the `FROM` reference — with a table alias, e.g. `SELECT lei.id, lei.name FROM schema.leistungen lei`. It reuses the same alias system as the drag-to-editor *Select* statement: the alias you already persisted for a table is used when present, otherwise one is derived from the first column name (the part before its first underscore, else the table name). Editing, inserting and deleting keep working, because the query still has a single source table.
+
 ## 3.1.2
 
 - **Named call arguments written one per line can now be aligned at their `=>`:** A call spread over many lines with `name => value` arguments — the readable way to pass a long list of named parameters — kept a single space before each `=>`, so the arrows zig-zagged down the call and the values never lined up. The new *Align named arguments* option (`postgresQueryBuilder.format.alignNamedArguments`, off by default, also settable as `alignNamedArguments` in `.pgformat.json`) pads the argument names so every top-level `=>` starts in the same column. Positional arguments and a `=>` inside a nested call are left alone, and arguments at a different indent form independent groups.

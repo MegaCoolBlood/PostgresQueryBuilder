@@ -362,6 +362,68 @@ test('query panel: init carries the alwaysQuote setting and the query', async ()
     assert.equal(init.origin, 'query');
 });
 
+/** Open a table view and return its init message. */
+async function openTablePanelInit(schema: string, table: string, seed?: (globalStateStore: Record<string, any>) => void) {
+    const { manager, globalStateStore } = createManager();
+    if (seed) { seed(globalStateStore); }
+    const panel = createFakePanel();
+    const originalCreate = vscodeStub.window.createWebviewPanel;
+    vscodeStub.window.createWebviewPanel = () => panel;
+    try {
+        await manager.openTableView(schema, table);
+    } finally {
+        vscodeStub.window.createWebviewPanel = originalCreate;
+    }
+    return panel.posted.find(m => m.command === 'init');
+}
+
+test('table panel: init omits the alias qualifier when the option is off', async () => {
+    const init = await openTablePanelInit('public', 'orders');
+    assert.ok(init, 'expected an init message');
+    assert.equal(init.origin, 'table');
+    assert.equal(init.qualifyColumnsWithAlias, false);
+    assert.equal(init.tableAlias, '');
+});
+
+test('table panel: init carries the option and the persisted table alias', async () => {
+    const originalGetConfig = vscodeStub.workspace.getConfiguration;
+    vscodeStub.workspace.getConfiguration = (_section?: string) => ({
+        get<T>(key: string, defaultValue?: T): T {
+            return (key === 'qualifyColumnsWithAlias' ? true : defaultValue) as T;
+        }
+    });
+    let init;
+    try {
+        init = await openTablePanelInit('public', 'orders', (store) => {
+            store['tableQualifiers'] = { 'public.orders': 'ord' };
+        });
+    } finally {
+        vscodeStub.workspace.getConfiguration = originalGetConfig;
+    }
+    assert.ok(init, 'expected an init message');
+    assert.equal(init.qualifyColumnsWithAlias, true);
+    assert.equal(init.tableAlias, 'ord');
+});
+
+test('table panel: with the option on but no persisted alias the webview derives one', async () => {
+    const originalGetConfig = vscodeStub.workspace.getConfiguration;
+    vscodeStub.workspace.getConfiguration = (_section?: string) => ({
+        get<T>(key: string, defaultValue?: T): T {
+            return (key === 'qualifyColumnsWithAlias' ? true : defaultValue) as T;
+        }
+    });
+    let init;
+    try {
+        init = await openTablePanelInit('public', 'orders');
+    } finally {
+        vscodeStub.workspace.getConfiguration = originalGetConfig;
+    }
+    assert.ok(init, 'expected an init message');
+    assert.equal(init.qualifyColumnsWithAlias, true);
+    // No stored alias: the empty string tells the webview to derive one.
+    assert.equal(init.tableAlias, '');
+});
+
 test('query panel: the injected script is not mangled by $ replacement patterns', async () => {
     const { panel } = await openCustomQueryPanel();
     const js = require('node:fs').readFileSync(
