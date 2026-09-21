@@ -1435,6 +1435,39 @@ function compareIntegerStrings(a, b) {
     return left < right ? -1 : (left > right ? 1 : 0);
 }
 
+// The date/time family of a Postgres base type, or '' for anything else.
+function pgDateTimeKind(baseType) {
+    const b = String(baseType || '').toLowerCase();
+    if (b === 'date') return 'date';
+    if (b.indexOf('timestamp') === 0) return 'timestamp';
+    return '';
+}
+
+// Convert a European dotted date/time string (`DD.MM.YYYY [HH:mm[:ss]]`) — the
+// shape a spreadsheet writes in a German (or similar) locale — into the ISO form
+// Postgres parses unambiguously. A `date` column keeps only the date part, a
+// `timestamp` column keeps the time (defaulting to midnight). Anything that is
+// not this dotted shape (an already-ISO value, a plain time, other text) is
+// returned unchanged, so only clearly localized dates are rewritten.
+function localizedDateToIso(value, baseType) {
+    const kind = pgDateTimeKind(baseType);
+    if (!kind) return value;
+    const text = String(value == null ? '' : value).trim();
+    const m = text.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (!m) return value;
+    const pad = (n, w) => String(n).padStart(w, '0');
+    let year = parseInt(m[3], 10);
+    if (m[3].length <= 2) { year += year < 70 ? 2000 : 1900; }
+    const month = Number(m[2]);
+    const day = Number(m[1]);
+    // Keep an impossible day/month failing loudly instead of silently shifting it.
+    if (month < 1 || month > 12 || day < 1 || day > 31) return value;
+    const datePart = `${pad(year, 4)}-${pad(month, 2)}-${pad(day, 2)}`;
+    if (kind === 'date' || m[4] === undefined) return datePart;
+    const timePart = `${pad(m[4], 2)}:${pad(m[5], 2)}:${pad(m[6] === undefined ? 0 : m[6], 2)}`;
+    return `${datePart} ${timePart}`;
+}
+
 // Check an entered cell value against the column type the database reported.
 // Returns 'valid', 'invalid' (with a reason to show on the cell) or 'unknown'
 // for every type whose text format only Postgres itself can judge (dates,
@@ -2677,13 +2710,24 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return { startRowIdx: allRows.length, startCol: 0 };
     }
 
+    // Normalize a pasted value for its column: numeric text is de-separated, and
+    // a localized dotted date (e.g. 03.11.2011 00:00) is turned into the ISO form
+    // Postgres accepts so a spreadsheet date does not paste as an invalid value.
+    function normalizePastedCellValue(rawValue, colMeta) {
+        const isNumeric = !!colMeta && getColumnFilterType(colMeta.dataType) === 'numeric';
+        const value = normalizeCellInput(rawValue, isNumeric, thousandSeparator);
+        if (colMeta && !isNumeric && value !== null && value !== '') {
+            return localizedDateToIso(value, parsePgType(colMeta.fullType || colMeta.dataType).base);
+        }
+        return value;
+    }
+
     // Overwrite one loaded-row cell from pasted text, mirroring a manual edit:
     // numeric text is normalized, and a value equal to the original clears the
     // pending change instead of marking it.
     function applyPastedExistingCell(rowIdx, colName, rawValue) {
         const colMeta = columns.find(c => c.name === colName);
-        const isNumeric = !!colMeta && getColumnFilterType(colMeta.dataType) === 'numeric';
-        let newValue = normalizeCellInput(rawValue, isNumeric, thousandSeparator);
+        let newValue = normalizePastedCellValue(rawValue, colMeta);
         const original = allRows[rowIdx] ? allRows[rowIdx][colName] : undefined;
         const originalNorm = (original === null || original === undefined) ? null : String(original);
         const modKey = `${rowIdx}:${colName}`;
@@ -2731,8 +2775,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     columns.forEach(col => { newRow[col.name] = ''; });
                     Object.keys(partial).forEach(name => {
                         const colMeta = columns.find(c => c.name === name);
-                        const isNumeric = !!colMeta && getColumnFilterType(colMeta.dataType) === 'numeric';
-                        newRow[name] = normalizeCellInput(partial[name], isNumeric, thousandSeparator);
+                        newRow[name] = normalizePastedCellValue(partial[name], colMeta);
                     });
                     const insIdx = insertedRows.length;
                     insertedRows.push({ row: newRow, anchor: null });
@@ -6321,6 +6364,8 @@ if (typeof module !== 'undefined' && module.exports) {
         buildCommitWarnings,
         isSqlEdited,
         parsePgType,
+        pgDateTimeKind,
+        localizedDateToIso,
         validateCellValue,
         describeCharacterBudget,
         charBudgetStateClass,

@@ -31,6 +31,8 @@ const {
     isSqlEdited,
     parsePgType,
     validateCellValue,
+    pgDateTimeKind,
+    localizedDateToIso,
     formatColumnTypeLabel,
     describeCharacterBudget,
     charBudgetStateClass,
@@ -1332,6 +1334,48 @@ test('parsePgType splits length, precision and scale off a type name', () => {
     assert.deepEqual(parsePgType('timestamp without time zone'), { base: 'timestamp without time zone', isArray: false });
     assert.deepEqual(parsePgType('text[]'), { base: 'text', isArray: true });
     assert.deepEqual(parsePgType(''), { base: '', isArray: false });
+});
+
+// ===== 3.2.0: recognizing a localized date when pasting =====
+
+test('pgDateTimeKind classifies date and timestamp base types', () => {
+    assert.equal(pgDateTimeKind('date'), 'date');
+    assert.equal(pgDateTimeKind('timestamp without time zone'), 'timestamp');
+    assert.equal(pgDateTimeKind('timestamp with time zone'), 'timestamp');
+    assert.equal(pgDateTimeKind('integer'), '');
+    assert.equal(pgDateTimeKind('text'), '');
+});
+
+test('localizedDateToIso rewrites a dotted timestamp into ISO', () => {
+    assert.equal(localizedDateToIso('03.11.2011 00:00', 'timestamp without time zone'), '2011-11-03 00:00:00');
+    assert.equal(localizedDateToIso('3.1.2011 9:05:07', 'timestamp without time zone'), '2011-01-03 09:05:07');
+});
+
+test('localizedDateToIso keeps only the date part for a date column', () => {
+    assert.equal(localizedDateToIso('03.11.2011', 'date'), '2011-11-03');
+    assert.equal(localizedDateToIso('03.11.2011 12:30', 'date'), '2011-11-03');
+});
+
+test('localizedDateToIso defaults a timestamp without a time to midnight', () => {
+    assert.equal(localizedDateToIso('03.11.2011', 'timestamp without time zone'), '2011-11-03');
+});
+
+test('localizedDateToIso expands a two-digit year around the 1970 pivot', () => {
+    assert.equal(localizedDateToIso('03.11.11', 'date'), '2011-11-03');
+    assert.equal(localizedDateToIso('03.11.69', 'date'), '2069-11-03');
+    assert.equal(localizedDateToIso('03.11.70', 'date'), '1970-11-03');
+});
+
+test('localizedDateToIso leaves ISO, plain time and non-date types untouched', () => {
+    assert.equal(localizedDateToIso('2011-11-03 00:00:00', 'timestamp without time zone'), '2011-11-03 00:00:00');
+    assert.equal(localizedDateToIso('00:00', 'time without time zone'), '00:00');
+    assert.equal(localizedDateToIso('03.11.2011', 'text'), '03.11.2011');
+    assert.equal(localizedDateToIso('hello', 'date'), 'hello');
+});
+
+test('localizedDateToIso refuses an impossible day or month', () => {
+    assert.equal(localizedDateToIso('32.11.2011', 'date'), '32.11.2011');
+    assert.equal(localizedDateToIso('03.13.2011', 'date'), '03.13.2011');
 });
 
 test('validateCellValue accepts an empty cell as NULL for every type', () => {
