@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, parseClipboardTable, planClipboardPaste } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -42,6 +42,102 @@ test('cellRangeToTsv tolerates empty and malformed input', () => {
     assert.equal(cellRangeToTsv(undefined), '');
     // Empty strings (e.g. NULL cells rendered blank) are preserved as empty fields.
     assert.equal(cellRangeToTsv([['a', ''], ['', 'd']]), 'a\t\r\n\td');
+});
+
+// ===== 3.2.0: paste a block of Excel cells into the grid =====
+
+test('parseClipboardTable splits a TAB/newline block into a matrix', () => {
+    assert.deepEqual(
+        parseClipboardTable('a\tb\tc\r\nd\te\tf'),
+        [['a', 'b', 'c'], ['d', 'e', 'f']]
+    );
+});
+
+test('parseClipboardTable drops the single trailing empty row Excel appends', () => {
+    assert.deepEqual(parseClipboardTable('a\tb\r\nc\td\r\n'), [['a', 'b'], ['c', 'd']]);
+});
+
+test('parseClipboardTable keeps genuine empty cells and empty middle rows', () => {
+    assert.deepEqual(parseClipboardTable('a\t\r\n\td'), [['a', ''], ['', 'd']]);
+    assert.deepEqual(parseClipboardTable('a\tb\r\n\r\nc\td'), [['a', 'b'], [''], ['c', 'd']]);
+});
+
+test('parseClipboardTable honours quoted fields with embedded tabs, newlines and quotes', () => {
+    assert.deepEqual(parseClipboardTable('"a\tb"\tc'), [['a\tb', 'c']]);
+    assert.deepEqual(parseClipboardTable('"line1\nline2"\tx'), [['line1\nline2', 'x']]);
+    assert.deepEqual(parseClipboardTable('"say ""hi"""\ty'), [['say "hi"', 'y']]);
+});
+
+test('parseClipboardTable treats a lone quote inside plain text as a literal', () => {
+    assert.deepEqual(parseClipboardTable('5" pipe\tqty'), [['5" pipe', 'qty']]);
+});
+
+test('parseClipboardTable returns a single empty row for empty input', () => {
+    assert.deepEqual(parseClipboardTable(''), [['']]);
+    assert.deepEqual(parseClipboardTable(null), [['']]);
+});
+
+test('planClipboardPaste overwrites existing rows from the start cell', () => {
+    const plan = planClipboardPaste(
+        [['1', '2'], ['3', '4']], 0, 0, 5, ['a', 'b', 'c'], () => true
+    );
+    assert.deepEqual(plan.cellUpdates, [
+        { rowIdx: 0, colName: 'a', value: '1' },
+        { rowIdx: 0, colName: 'b', value: '2' },
+        { rowIdx: 1, colName: 'a', value: '3' },
+        { rowIdx: 1, colName: 'b', value: '4' }
+    ]);
+    assert.deepEqual(plan.newRows, []);
+});
+
+test('planClipboardPaste maps columns from the selected start column', () => {
+    const plan = planClipboardPaste([['x', 'y']], 2, 1, 5, ['a', 'b', 'c'], () => true);
+    assert.deepEqual(plan.cellUpdates, [
+        { rowIdx: 2, colName: 'b', value: 'x' },
+        { rowIdx: 2, colName: 'c', value: 'y' }
+    ]);
+});
+
+test('planClipboardPaste ignores values that fall past the last column', () => {
+    const plan = planClipboardPaste([['x', 'y', 'z']], 0, 1, 5, ['a', 'b', 'c'], () => true);
+    assert.deepEqual(plan.cellUpdates, [
+        { rowIdx: 0, colName: 'b', value: 'x' },
+        { rowIdx: 0, colName: 'c', value: 'y' }
+    ]);
+});
+
+test('planClipboardPaste skips values whose target column is not editable', () => {
+    const editable = (name: string) => name !== 'b';
+    const plan = planClipboardPaste([['1', '2', '3']], 0, 0, 5, ['a', 'b', 'c'], editable);
+    assert.deepEqual(plan.cellUpdates, [
+        { rowIdx: 0, colName: 'a', value: '1' },
+        { rowIdx: 0, colName: 'c', value: '3' }
+    ]);
+});
+
+test('planClipboardPaste turns rows past the loaded data into new rows', () => {
+    const plan = planClipboardPaste(
+        [['1', '2'], ['3', '4'], ['5', '6']], 1, 0, 2, ['a', 'b'], () => true
+    );
+    assert.deepEqual(plan.cellUpdates, [
+        { rowIdx: 1, colName: 'a', value: '1' },
+        { rowIdx: 1, colName: 'b', value: '2' }
+    ]);
+    assert.deepEqual(plan.newRows, [
+        { a: '3', b: '4' },
+        { a: '5', b: '6' }
+    ]);
+});
+
+test('planClipboardPaste appends every row as new when the start is past the data', () => {
+    const plan = planClipboardPaste([['1', '2']], 0, 0, 0, ['a', 'b'], () => true);
+    assert.deepEqual(plan.cellUpdates, []);
+    assert.deepEqual(plan.newRows, [{ a: '1', b: '2' }]);
+});
+
+test('planClipboardPaste drops a new row that maps to no editable column', () => {
+    const plan = planClipboardPaste([['x']], 0, 5, 0, ['a', 'b'], () => true);
+    assert.deepEqual(plan.newRows, []);
 });
 
 test('formatNumberDisplay uses thousand separators and comma decimal', () => {

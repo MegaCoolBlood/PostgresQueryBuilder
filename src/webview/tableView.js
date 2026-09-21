@@ -202,6 +202,87 @@ function cellRangeToTsv(rows) {
         .join('\r\n');
 }
 
+/**
+ * Parse clipboard text copied from Excel (or another spreadsheet) into a matrix
+ * of cell strings: TAB separates columns, a newline separates rows. A field is
+ * quoted with double quotes when it contains a tab, a newline or a quote, and an
+ * embedded quote is doubled — the same convention Excel writes. A single
+ * trailing empty row (Excel appends a newline) is dropped.
+ */
+function parseClipboardTable(text) {
+    const s = String(text == null ? '' : text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const rows = [];
+    let row = [];
+    let field = '';
+    let inQuotes = false;
+    let i = 0;
+    while (i < s.length) {
+        const ch = s[i];
+        if (inQuotes) {
+            if (ch === '"') {
+                if (s[i + 1] === '"') { field += '"'; i += 2; continue; }
+                inQuotes = false; i++; continue;
+            }
+            field += ch; i++; continue;
+        }
+        // A quote only opens a quoted field at the start of the field, so a lone
+        // quote inside plain text (e.g. 5" pipe) stays literal.
+        if (ch === '"' && field === '') { inQuotes = true; i++; continue; }
+        if (ch === '\t') { row.push(field); field = ''; i++; continue; }
+        if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; i++; continue; }
+        field += ch; i++;
+    }
+    row.push(field);
+    rows.push(row);
+    if (rows.length > 1) {
+        const last = rows[rows.length - 1];
+        if (last.length === 1 && last[0] === '') { rows.pop(); }
+    }
+    return rows;
+}
+
+/**
+ * Work out where a clipboard matrix lands when pasted at (`startRowIdx`,
+ * `startCol`) in Excel style: rows that fall on existing data rows become cell
+ * overwrites, rows past the last loaded row become new rows. Columns are mapped
+ * left to right from `startCol`; a value whose target column is missing or not
+ * editable is skipped. Returns `{ cellUpdates, newRows }` where every
+ * `cellUpdate` is `{ rowIdx, colName, value }` and every `newRow` a partial
+ * `{ colName: value }` map.
+ */
+function planClipboardPaste(matrix, startRowIdx, startCol, existingRowCount, columnNames, isColumnEditable) {
+    const editable = typeof isColumnEditable === 'function' ? isColumnEditable : () => true;
+    const cols = Array.isArray(columnNames) ? columnNames : [];
+    const cellUpdates = [];
+    const newRows = [];
+    (Array.isArray(matrix) ? matrix : []).forEach((rowValues, i) => {
+        const targetRowIdx = startRowIdx + i;
+        const values = Array.isArray(rowValues) ? rowValues : [];
+        if (targetRowIdx < existingRowCount) {
+            values.forEach((value, j) => {
+                const colIdx = startCol + j;
+                if (colIdx < 0 || colIdx >= cols.length) { return; }
+                const colName = cols[colIdx];
+                if (!editable(colName)) { return; }
+                cellUpdates.push({ rowIdx: targetRowIdx, colName, value });
+            });
+        } else {
+            const rowObj = {};
+            let filled = false;
+            values.forEach((value, j) => {
+                const colIdx = startCol + j;
+                if (colIdx < 0 || colIdx >= cols.length) { return; }
+                const colName = cols[colIdx];
+                if (!editable(colName)) { return; }
+                rowObj[colName] = value;
+                filled = true;
+            });
+            if (filled) { newRows.push(rowObj); }
+        }
+    });
+    return { cellUpdates, newRows };
+}
+
 function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (value === null || value === undefined) return null;
     const num = Number(value);
@@ -2552,6 +2633,131 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         e.clipboardData.setData('text/plain', lines.join('\n'));
         e.preventDefault();
+    }
+
+    // --- Paste a block of Excel cells into the grid -------------------------
+    // Ctrl+V over the grid drops the clipboard matrix in Excel style: it
+    // overwrites cells from the selected cell down/right and appends new rows
+    // when the block is taller than the loaded data.
+    document.addEventListener('paste', handleGridPaste);
+
+    // The data cell a paste starts at: the top-left of an active rectangle, else
+    // the cell that currently holds the caret. Returns null when neither exists.
+    function pasteAnchorTd() {
+        if (rangeAnchor && rangeFocus) {
+            const { minR, minC } = rangeBounds();
+            const tr = tableBody.rows[minR];
+            if (tr) {
+                const cells = tr.querySelectorAll(':scope > td[data-col]');
+                if (cells[minC]) { return cells[minC]; }
+            }
+        }
+        const active = document.activeElement;
+        const td = active && active.closest ? active.closest('td[data-col]') : null;
+        if (td && td.parentElement && td.parentElement.parentElement === tableBody) {
+            return td;
+        }
+        return null;
+    }
+
+    // Translate the anchor cell into a start position in allRows/columns index
+    // space. A cell of a loaded row overwrites from there; anything else (an
+    // insert row, or no anchor at all) appends after the last loaded row.
+    function pasteStartPosition(td) {
+        if (td) {
+            const colName = td.getAttribute('data-col');
+            const ci = columns.findIndex(c => c.name === colName);
+            const startCol = ci >= 0 ? ci : 0;
+            const rowAttr = td.getAttribute('data-row');
+            if (rowAttr !== null) {
+                return { startRowIdx: parseInt(rowAttr, 10), startCol };
+            }
+            return { startRowIdx: allRows.length, startCol };
+        }
+        return { startRowIdx: allRows.length, startCol: 0 };
+    }
+
+    // Overwrite one loaded-row cell from pasted text, mirroring a manual edit:
+    // numeric text is normalized, and a value equal to the original clears the
+    // pending change instead of marking it.
+    function applyPastedExistingCell(rowIdx, colName, rawValue) {
+        const colMeta = columns.find(c => c.name === colName);
+        const isNumeric = !!colMeta && getColumnFilterType(colMeta.dataType) === 'numeric';
+        let newValue = normalizeCellInput(rawValue, isNumeric, thousandSeparator);
+        const original = allRows[rowIdx] ? allRows[rowIdx][colName] : undefined;
+        const originalNorm = (original === null || original === undefined) ? null : String(original);
+        const modKey = `${rowIdx}:${colName}`;
+        if (newValue === '' && originalNorm === null) { newValue = null; }
+        if (newValue === originalNorm) {
+            modifiedCells.delete(modKey);
+            invalidCells.delete(modKey);
+            return null;
+        }
+        const stored = newValue === '' ? null : newValue;
+        modifiedCells.set(modKey, stored);
+        return { key: modKey, value: stored };
+    }
+
+    function handleGridPaste(e) {
+        const target = e.target;
+        // Leave paste into inputs, dialogs and the query bar to the browser.
+        if (target && target.closest
+            && target.closest('input, textarea, select, .sql-dialog-overlay')) {
+            return;
+        }
+        const text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+        if (!text) { return; }
+        const matrix = parseClipboardTable(text);
+        // A single value is an ordinary in-cell paste; let the browser handle it.
+        if (matrix.length <= 1 && (!matrix[0] || matrix[0].length <= 1)) { return; }
+        if (!caps.canEdit && !caps.canInsert) { return; }
+        e.preventDefault();
+
+        const { startRowIdx, startCol } = pasteStartPosition(pasteAnchorTd());
+        const columnNames = columns.map(c => c.name);
+        const plan = planClipboardPaste(matrix, startRowIdx, startCol, allRows.length, columnNames, isColumnEditable);
+
+        const validationTargets = [];
+        plan.cellUpdates.forEach(u => {
+            const t = applyPastedExistingCell(u.rowIdx, u.colName, u.value);
+            if (t) { validationTargets.push(t); }
+        });
+
+        let skippedRows = 0;
+        if (plan.newRows.length) {
+            if (caps.canInsert) {
+                plan.newRows.forEach(partial => {
+                    const newRow = {};
+                    columns.forEach(col => { newRow[col.name] = ''; });
+                    Object.keys(partial).forEach(name => {
+                        const colMeta = columns.find(c => c.name === name);
+                        const isNumeric = !!colMeta && getColumnFilterType(colMeta.dataType) === 'numeric';
+                        newRow[name] = normalizeCellInput(partial[name], isNumeric, thousandSeparator);
+                    });
+                    const insIdx = insertedRows.length;
+                    insertedRows.push({ row: newRow, anchor: null });
+                    Object.keys(partial).forEach(name => {
+                        validationTargets.push({ key: `ins:${insIdx}:${name}`, value: newRow[name] });
+                    });
+                });
+            } else {
+                skippedRows = plan.newRows.length;
+            }
+        }
+
+        renderBody();
+        validationTargets.forEach(t => {
+            const td = findCellByKey(t.key);
+            if (td) { checkCellValue(td, t.key, t.value); }
+        });
+        updateChangeIndicator();
+
+        if (skippedRows) {
+            vscode.postMessage({
+                command: 'showError',
+                text: `${skippedRows} pasted row(s) were skipped: new rows can only be added to a result that comes from a single table.`
+            });
+        }
     }
 
     window.addEventListener('message', (event) => {
@@ -6048,6 +6254,8 @@ if (typeof module !== 'undefined' && module.exports) {
         liveFormatNumeric,
         stripThousandSeparators,
         cellRangeToTsv,
+        parseClipboardTable,
+        planClipboardPaste,
         stripTrailingLimitOffset,
         parseSqlForWhere,
         findTopLevelKeywordIndex,
