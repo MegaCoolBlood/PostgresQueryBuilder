@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, parseClipboardTable, planClipboardPaste } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, parseClipboardTable, planClipboardPaste, singleClipboardValue } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -138,6 +138,21 @@ test('planClipboardPaste appends every row as new when the start is past the dat
 test('planClipboardPaste drops a new row that maps to no editable column', () => {
     const plan = planClipboardPaste([['x']], 0, 5, 0, ['a', 'b'], () => true);
     assert.deepEqual(plan.newRows, []);
+});
+
+test('singleClipboardValue returns the lone value of a one-cell matrix', () => {
+    assert.equal(singleClipboardValue([['hello']]), 'hello');
+    assert.equal(singleClipboardValue([['']]), '');
+    assert.equal(singleClipboardValue(parseClipboardTable('42')), '42');
+});
+
+test('singleClipboardValue returns null for a multi-cell or empty matrix', () => {
+    assert.equal(singleClipboardValue([['a', 'b']]), null);
+    assert.equal(singleClipboardValue([['a'], ['b']]), null);
+    assert.equal(singleClipboardValue([]), null);
+    assert.equal(singleClipboardValue(null), null);
+    // A one-row/one-column block with a trailing tab is two cells, not one.
+    assert.equal(singleClipboardValue(parseClipboardTable('a\t')), null);
 });
 
 test('formatNumberDisplay uses thousand separators and comma decimal', () => {

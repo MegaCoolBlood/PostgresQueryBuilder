@@ -283,6 +283,15 @@ function planClipboardPaste(matrix, startRowIdx, startCol, existingRowCount, col
     return { cellUpdates, newRows };
 }
 
+// The lone value of a clipboard matrix that holds exactly one cell, else null.
+// Used to fill a whole selected range with a single copied value (Excel style).
+function singleClipboardValue(matrix) {
+    if (!Array.isArray(matrix) || matrix.length !== 1) { return null; }
+    const row = matrix[0];
+    if (!Array.isArray(row) || row.length !== 1) { return null; }
+    return row[0];
+}
+
 function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (value === null || value === undefined) return null;
     const num = Number(value);
@@ -2742,6 +2751,51 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return { key: modKey, value: stored };
     }
 
+    // Fill every cell of the active rectangle with one value, so a single copied
+    // value pasted over a multi-cell selection lands in all of them (Excel fill).
+    function fillCellRangeWithValue(value) {
+        const { minR, maxR, minC, maxC } = rangeBounds();
+        const rows = tableBody.rows;
+        const validationTargets = [];
+        for (let r = minR; r <= maxR; r++) {
+            const tr = rows[r];
+            if (!tr) { continue; }
+            const dataCells = tr.querySelectorAll(':scope > td[data-col]');
+            for (let c = minC; c <= maxC && c < dataCells.length; c++) {
+                const td = dataCells[c];
+                const colName = td.getAttribute('data-col');
+                const rowAttr = td.getAttribute('data-row');
+                const insAttr = td.getAttribute('data-insert');
+                const dupAttr = td.getAttribute('data-dup');
+                if (rowAttr !== null) {
+                    if (!isColumnEditable(colName)) { continue; }
+                    const t = applyPastedExistingCell(parseInt(rowAttr, 10), colName, value);
+                    if (t) { validationTargets.push(t); }
+                } else if (insAttr !== null && insertedRows[parseInt(insAttr, 10)]) {
+                    const idx = parseInt(insAttr, 10);
+                    const normalized = normalizePastedCellValue(value, columns.find(x => x.name === colName));
+                    insertedRows[idx].row[colName] = normalized;
+                    validationTargets.push({ key: `ins:${idx}:${colName}`, value: normalized });
+                } else if (dupAttr !== null && duplicatedRows[parseInt(dupAttr, 10)]) {
+                    const idx = parseInt(dupAttr, 10);
+                    const entry = duplicatedRows[idx];
+                    const normalized = normalizePastedCellValue(value, columns.find(x => x.name === colName));
+                    entry.row[colName] = normalized;
+                    if (entry.defaults) { entry.defaults.delete(colName); }
+                    validationTargets.push({ key: `dup:${idx}:${colName}`, value: normalized });
+                }
+            }
+        }
+        renderBody();
+        validationTargets.forEach(t => {
+            const td = findCellByKey(t.key);
+            if (td) { checkCellValue(td, t.key, t.value); }
+        });
+        // renderBody rebuilds the tbody, so re-apply the rectangle highlight.
+        applyCellRangeHighlight();
+        updateChangeIndicator();
+    }
+
     function handleGridPaste(e) {
         const target = e.target;
         // Leave paste into inputs, dialogs and the query bar to the browser.
@@ -2752,8 +2806,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
         if (!text) { return; }
         const matrix = parseClipboardTable(text);
-        // A single value is an ordinary in-cell paste; let the browser handle it.
-        if (matrix.length <= 1 && (!matrix[0] || matrix[0].length <= 1)) { return; }
+
+        // A single copied value dropped onto a rectangle of selected cells fills
+        // every one of them; a single value anywhere else is an ordinary in-cell
+        // paste left to the browser.
+        const lone = singleClipboardValue(matrix);
+        if (lone !== null) {
+            const b = rangeAnchor && rangeFocus ? rangeBounds() : null;
+            const spansRange = b && (b.minR !== b.maxR || b.minC !== b.maxC);
+            if (spansRange && (caps.canEdit || caps.canInsert)) {
+                e.preventDefault();
+                fillCellRangeWithValue(lone);
+            }
+            return;
+        }
         if (!caps.canEdit && !caps.canInsert) { return; }
         e.preventDefault();
 
@@ -6299,6 +6365,7 @@ if (typeof module !== 'undefined' && module.exports) {
         cellRangeToTsv,
         parseClipboardTable,
         planClipboardPaste,
+        singleClipboardValue,
         stripTrailingLimitOffset,
         parseSqlForWhere,
         findTopLevelKeywordIndex,
