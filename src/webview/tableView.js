@@ -292,6 +292,15 @@ function singleClipboardValue(matrix) {
     return row[0];
 }
 
+// What releasing the mouse in a cell means: 'range' after a drag across cells,
+// 'text' when text was selected inside one cell (keep the native selection),
+// otherwise 'select' — a plain click that marks the single cell.
+function resolveMouseRelease(dragged, hasTextSelection) {
+    if (dragged) { return 'range'; }
+    if (hasTextSelection) { return 'text'; }
+    return 'select';
+}
+
 function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (value === null || value === undefined) return null;
     const num = Number(value);
@@ -2560,10 +2569,89 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         document.body.removeChild(ta);
     }
 
+    // Mark a single data cell as selected, reusing the rectangle highlight.
+    function selectSingleCell(md) {
+        rangeAnchor = { r: md.r, c: md.c };
+        rangeFocus = { r: md.r, c: md.c };
+        applyCellRangeHighlight();
+    }
+
+    // The contenteditable element a cell edits through: the .cell-content span
+    // for a loaded row, or the cell itself for an inserted/duplicated row. Only
+    // returns an element for editable cells, so read-only cells never edit.
+    function editableElementOf(target) {
+        const td = target && target.closest ? target.closest('td[data-col]') : null;
+        if (!td || td.parentElement.parentElement !== tableBody) { return null; }
+        if (td.getAttribute('data-row') !== null) {
+            return td.querySelector('.cell-content.editable-cell');
+        }
+        return td.classList.contains('editable-cell') ? td : null;
+    }
+
+    // True while a cell is in edit mode, so clicks inside it position the caret
+    // instead of re-marking the cell.
+    function isCellInEditMode(td) {
+        if (td.getAttribute('contenteditable') === 'true') { return true; }
+        return !!td.querySelector('.cell-content[contenteditable="true"]');
+    }
+
+    // Enter edit mode: make the cell editable, focus it and drop a caret at the
+    // double-clicked position (falling back to the end of the text).
+    function enterCellEditMode(editable, e) {
+        clearCellRangeSelection();
+        editable.setAttribute('contenteditable', 'true');
+        editable.focus();
+        placeCaretFromPoint(editable, e.clientX, e.clientY);
+    }
+
+    // Make an editable cell editable in place while keeping the text the user
+    // just drag-selected, so the next keystroke replaces that selection. A
+    // read-only cell keeps its text selected but does not become editable.
+    function enterEditKeepingSelection(td) {
+        const editable = editableElementOf(td);
+        if (!editable) { return; }
+        const sel = window.getSelection();
+        const saved = (sel && sel.rangeCount) ? sel.getRangeAt(0).cloneRange() : null;
+        if (!saved || !editable.contains(saved.startContainer)) { return; }
+        editable.setAttribute('contenteditable', 'true');
+        editable.focus();
+        // Focusing can collapse the selection, so restore the drag-selected range.
+        sel.removeAllRanges();
+        sel.addRange(saved);
+    }
+
+    // Leave edit mode so a later single click marks the cell again.
+    function exitCellEditMode(editable) {
+        if (editable) { editable.setAttribute('contenteditable', 'false'); }
+    }
+
+    // Put the caret where the user double-clicked, or at the end of the value
+    // when the point cannot be resolved.
+    function placeCaretFromPoint(el, x, y) {
+        const sel = window.getSelection();
+        if (!sel) { return; }
+        let range = null;
+        if (document.caretRangeFromPoint) {
+            range = document.caretRangeFromPoint(x, y);
+        } else if (document.caretPositionFromPoint) {
+            const pos = document.caretPositionFromPoint(x, y);
+            if (pos) { range = document.createRange(); range.setStart(pos.offsetNode, pos.offset); }
+        }
+        if (!range || !el.contains(range.startContainer)) {
+            range = document.createRange();
+            range.selectNodeContents(el);
+        }
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+    }
+
     tableBody.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         const td = e.target.closest('td[data-col]');
         if (!td || td.parentElement.parentElement !== tableBody) return;
+        // A cell already being edited keeps native caret / text-selection behaviour.
+        if (isCellInEditMode(td)) return;
         const coords = cellCoords(td);
         if (!coords) return;
         if (e.shiftKey && rangeAnchor) {
@@ -2573,7 +2661,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             e.preventDefault();
             return;
         }
-        // Record a potential drag anchor; a plain click still edits/focuses the cell.
+        // Record a potential drag anchor; a plain click marks the cell on release.
         rangeMouseDown = { td, r: coords.r, c: coords.c };
         rangeDragging = false;
     });
@@ -2602,13 +2690,31 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     document.addEventListener('mouseup', () => {
         if (rangeMouseDown && !rangeDragging) {
-            // Plain click (no drag): drop any previous rectangle so single-cell
-            // editing/selection behaves normally.
-            clearCellRangeSelection();
+            const sel = window.getSelection();
+            const hasText = !!(sel && !sel.isCollapsed && sel.toString().length > 0
+                && rangeMouseDown.td.contains(sel.anchorNode));
+            const action = resolveMouseRelease(rangeDragging, hasText);
+            if (action === 'text') {
+                // Text was drag-selected inside the cell: make the cell editable
+                // in place (keeping the selection) so typing overwrites it.
+                clearCellRangeSelection();
+                enterEditKeepingSelection(rangeMouseDown.td);
+            } else {
+                // Plain click: mark just this cell.
+                selectSingleCell(rangeMouseDown);
+            }
         }
         rangeMouseDown = null;
         rangeDragging = false;
         tableBody.classList.remove('range-dragging');
+    });
+
+    // Double-click a cell to edit it: the previous single-click behaviour.
+    tableBody.addEventListener('dblclick', (e) => {
+        if (e.target.closest && e.target.closest('.fk-btn')) return;
+        const editable = editableElementOf(e.target);
+        if (!editable) return;
+        enterCellEditMode(editable, e);
     });
 
     document.addEventListener('keydown', (e) => {
@@ -4098,7 +4204,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 columns.forEach(col => {
                     const val = row[col.name] || '';
                     const invalid = invalidCells.get(`ins:${w.iIdx}:${col.name}`);
-                    html += `<td class="${invalid ? 'cell-invalid' : ''}" ${invalid ? `title="${escapeAttr(invalid)}"` : ''} contenteditable="true" data-insert="${w.iIdx}" data-col="${escapeAttr(col.name)}">${escapeHtml(val)}</td>`;
+                    html += `<td class="editable-cell${invalid ? ' cell-invalid' : ''}" ${invalid ? `title="${escapeAttr(invalid)}"` : ''} contenteditable="false" data-insert="${w.iIdx}" data-col="${escapeAttr(col.name)}">${escapeHtml(val)}</td>`;
                 });
                 html += '</tr>';
             } else {
@@ -4112,7 +4218,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     const val = row[col.name] !== null && row[col.name] !== undefined ? cellToString(row[col.name]) : '';
                     const invalid = invalidCells.get(`dup:${w.dIdx}:${col.name}`);
                     const content = atDefault ? defaultMarkerHtml(col.name) : escapeHtml(val);
-                    html += `<td class="${invalid ? 'cell-invalid' : ''}" ${invalid ? `title="${escapeAttr(invalid)}"` : ''} contenteditable="true" data-dup="${w.dIdx}" data-col="${escapeAttr(col.name)}">${content}</td>`;
+                    html += `<td class="editable-cell${invalid ? ' cell-invalid' : ''}" ${invalid ? `title="${escapeAttr(invalid)}"` : ''} contenteditable="false" data-dup="${w.dIdx}" data-col="${escapeAttr(col.name)}">${content}</td>`;
                 });
                 html += '</tr>';
             }
@@ -4170,9 +4276,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 } else if (fk && currentVal !== null && currentVal !== undefined) {
                     fkBtn = `<button class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(cellToString(currentVal))}" title="Open ${fk.refSchema}.${fk.refTable}">&#8599;</button>`;
                 }
-                const editableAttr = !isDeleted && isColumnEditable(col.name) ? 'true' : 'false';
+                const canEditCell = !isDeleted && isColumnEditable(col.name);
+                const spanClass = canEditCell ? 'cell-content editable-cell' : 'cell-content';
                 const cellExtraClass = fkBtn ? ' has-fk-btn' : '';
-                html += `<td class="${cellClass}${cellExtraClass}" ${invalidReason ? `title="${escapeAttr(invalidReason)}"` : ''} data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}"><span class="cell-content" contenteditable="${editableAttr}">${displayVal}</span>${fkBtn}</td>`;
+                html += `<td class="${cellClass}${cellExtraClass}" ${invalidReason ? `title="${escapeAttr(invalidReason)}"` : ''} data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}"><span class="${spanClass}" contenteditable="false">${displayVal}</span>${fkBtn}</td>`;
             });
             html += '</tr>';
 
@@ -4279,23 +4386,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         // Attach focus/blur/input listeners for editable cell-content spans (existing rows)
-        tableBody.querySelectorAll('td[data-row] .cell-content[contenteditable="true"]').forEach(span => {
+        tableBody.querySelectorAll('td[data-row] .cell-content.editable-cell').forEach(span => {
             span.addEventListener('focus', () => { handleNullCellFocus(span); showCharBudgetBadge(span); });
-            span.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleCellEdit(e); });
+            span.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleCellEdit(e); exitCellEditMode(span); });
             span.addEventListener('input', () => { handleNumericCellInput(span); showCharBudgetBadge(span); });
         });
 
         // Attach blur listeners for inserted rows
-        tableBody.querySelectorAll('td[data-insert][contenteditable="true"]').forEach(td => {
+        tableBody.querySelectorAll('td[data-insert].editable-cell').forEach(td => {
             td.addEventListener('focus', () => showCharBudgetBadge(td));
-            td.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleInsertCellEdit(e); });
+            td.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleInsertCellEdit(e); exitCellEditMode(td); });
             td.addEventListener('input', () => { handleNumericCellInput(td); showCharBudgetBadge(td); });
         });
 
         // Attach blur listeners for duplicated rows
-        tableBody.querySelectorAll('td[data-dup][contenteditable="true"]').forEach(td => {
+        tableBody.querySelectorAll('td[data-dup].editable-cell').forEach(td => {
             td.addEventListener('focus', () => { clearDefaultMarker(td); showCharBudgetBadge(td); });
-            td.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleDupCellEdit(e); });
+            td.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleDupCellEdit(e); exitCellEditMode(td); });
             td.addEventListener('input', () => { handleNumericCellInput(td); showCharBudgetBadge(td); });
         });
 
@@ -6366,6 +6473,7 @@ if (typeof module !== 'undefined' && module.exports) {
         parseClipboardTable,
         planClipboardPaste,
         singleClipboardValue,
+        resolveMouseRelease,
         stripTrailingLimitOffset,
         parseSqlForWhere,
         findTopLevelKeywordIndex,

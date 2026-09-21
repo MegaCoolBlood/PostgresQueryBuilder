@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, parseClipboardTable, planClipboardPaste, singleClipboardValue } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -153,6 +153,21 @@ test('singleClipboardValue returns null for a multi-cell or empty matrix', () =>
     assert.equal(singleClipboardValue(null), null);
     // A one-row/one-column block with a trailing tab is two cells, not one.
     assert.equal(singleClipboardValue(parseClipboardTable('a\t')), null);
+});
+
+// ===== 3.2.0: click selects a cell, double-click edits, drag selects text =====
+
+test('resolveMouseRelease keeps a rectangle after dragging across cells', () => {
+    assert.equal(resolveMouseRelease(true, false), 'range');
+    assert.equal(resolveMouseRelease(true, true), 'range');
+});
+
+test('resolveMouseRelease keeps a text selection made inside one cell', () => {
+    assert.equal(resolveMouseRelease(false, true), 'text');
+});
+
+test('resolveMouseRelease marks the cell on a plain click', () => {
+    assert.equal(resolveMouseRelease(false, false), 'select');
 });
 
 test('formatNumberDisplay uses thousand separators and comma decimal', () => {
