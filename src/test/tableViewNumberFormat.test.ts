@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -179,6 +179,26 @@ test('isSingleCellSelection is true only for a one-cell selection', () => {
     assert.equal(isSingleCellSelection(null, { r: 2, c: 3 }), false);
     assert.equal(isSingleCellSelection({ r: 2, c: 3 }, null), false);
     assert.equal(isSingleCellSelection(null, null), false);
+});
+
+// ===== 3.2.0: typing over a multi-cell selection starts a multi-edit =====
+
+test('isPrintableTypingKey is true for a single printable character', () => {
+    assert.equal(isPrintableTypingKey({ key: 'a' }), true);
+    assert.equal(isPrintableTypingKey({ key: '5' }), true);
+    assert.equal(isPrintableTypingKey({ key: ' ' }), true);
+    assert.equal(isPrintableTypingKey({ key: 'ä' }), true);
+});
+
+test('isPrintableTypingKey is false for control keys and shortcuts', () => {
+    assert.equal(isPrintableTypingKey({ key: 'Enter' }), false);
+    assert.equal(isPrintableTypingKey({ key: 'Delete' }), false);
+    assert.equal(isPrintableTypingKey({ key: 'ArrowDown' }), false);
+    assert.equal(isPrintableTypingKey({ key: 'a', ctrlKey: true }), false);
+    assert.equal(isPrintableTypingKey({ key: 'c', metaKey: true }), false);
+    assert.equal(isPrintableTypingKey({ key: 'v', altKey: true }), false);
+    assert.equal(isPrintableTypingKey(null), false);
+    assert.equal(isPrintableTypingKey({}), false);
 });
 
 test('formatNumberDisplay uses thousand separators and comma decimal', () => {

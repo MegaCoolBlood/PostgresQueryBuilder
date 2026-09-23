@@ -307,6 +307,13 @@ function isSingleCellSelection(anchor, focus) {
     return !!anchor && !!focus && anchor.r === focus.r && anchor.c === focus.c;
 }
 
+// True for a keystroke that types a character (not a shortcut or a control key),
+// which over a multi-cell selection starts a multi-edit.
+function isPrintableTypingKey(e) {
+    return !!e && typeof e.key === 'string' && e.key.length === 1
+        && !e.ctrlKey && !e.metaKey && !e.altKey;
+}
+
 function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (value === null || value === undefined) return null;
     const num = Number(value);
@@ -2484,6 +2491,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // is filled with `fillSourceValue` (the value of the single selected cell).
     let fillDragging = false;
     let fillSourceValue = null;
+    // While set, typing edits the anchor cell and committing fills these bounds
+    // (a multi-cell selection typed over at once).
+    let multiEditBounds = null;
 
     function cellCoords(td) {
         const tr = td.closest('tr');
@@ -2822,25 +2832,101 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     });
 
     document.addEventListener('keydown', (e) => {
+        // Enter commits a multi-cell edit (fills the whole selection).
+        if (multiEditBounds && e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            blurActiveEditable();
+            return;
+        }
         if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && rangeAnchor && rangeFocus) {
             const sel = window.getSelection();
             const hasInCellText = sel && !sel.isCollapsed && sel.toString().length > 0;
             if (!hasInCellText && copyCellRangeToClipboard()) {
                 e.preventDefault();
             }
-        } else if ((e.key === 'Delete' || e.key === 'Backspace') && rangeAnchor && rangeFocus) {
-            // Clear the selected cells to NULL, unless a cell is being edited or
-            // the caret is in an input, where Delete keeps its usual meaning.
-            const ae = document.activeElement;
-            const editing = !!ae && (ae.isContentEditable
-                || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT');
-            if (!editing && setSelectedCellsNull()) {
+            return;
+        }
+        if ((e.key === 'Delete' || e.key === 'Backspace') && rangeAnchor && rangeFocus
+            && !isEditingElement(document.activeElement)) {
+            // Clear the selected cells to NULL.
+            if (setSelectedCellsNull()) {
                 e.preventDefault();
             }
-        } else if (e.key === 'Escape' && rangeAnchor) {
-            clearCellRangeSelection();
+            return;
+        }
+        if (e.key === 'Escape') {
+            if (multiEditBounds) {
+                cancelMultiEdit();
+            } else if (rangeAnchor) {
+                clearCellRangeSelection();
+            }
+            return;
+        }
+        // Typing over a multi-cell selection edits the anchor cell and, on
+        // commit, writes the value into every selected cell at once.
+        if (rangeAnchor && rangeFocus && !isSingleCellSelection(rangeAnchor, rangeFocus)
+            && isPrintableTypingKey(e) && !isEditingElement(document.activeElement)) {
+            startMultiEdit(e);
         }
     });
+
+    function blurActiveEditable() {
+        const ae = document.activeElement;
+        if (ae && typeof ae.blur === 'function') { ae.blur(); }
+    }
+
+    // True while the focus is on a cell being edited or on a form control, where
+    // Delete/typing keep their native meaning instead of acting on the selection.
+    function isEditingElement(el) {
+        return !!el && (el.isContentEditable
+            || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+    }
+
+    // Start a multi-cell edit: clear the anchor (top-left) cell, seed it with the
+    // typed character and remember the selection so committing fills all of it.
+    function startMultiEdit(e) {
+        const b = rangeBounds();
+        const tr = tableBody.rows[b.minR];
+        const cells = tr ? tr.querySelectorAll(':scope > td[data-col]') : null;
+        const anchorTd = cells ? cells[b.minC] : null;
+        const editable = anchorTd ? editableElementOf(anchorTd) : null;
+        if (!editable) { return; }
+        multiEditBounds = b;
+        editable.setAttribute('contenteditable', 'true');
+        editable.textContent = e.key;
+        editable.focus();
+        placeCaretAtEnd(editable);
+        e.preventDefault();
+    }
+
+    // Commit a multi-cell edit: write the anchor cell's typed value into every
+    // cell of the remembered selection. Called from the cell's blur handler.
+    function commitMultiEdit(editable) {
+        if (!multiEditBounds) { return; }
+        const bounds = multiEditBounds;
+        multiEditBounds = null;
+        const value = editable.textContent;
+        rangeAnchor = { r: bounds.minR, c: bounds.minC };
+        rangeFocus = { r: bounds.maxR, c: bounds.maxC };
+        fillCellRangeWithValue(value);
+    }
+
+    // Abandon a multi-cell edit: keep only the anchor cell's own value.
+    function cancelMultiEdit() {
+        multiEditBounds = null;
+        blurActiveEditable();
+    }
+
+    // Move the caret to the end of an editable element's text.
+    function placeCaretAtEnd(el) {
+        const sel = window.getSelection();
+        if (!sel) { return; }
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+    }
 
     // Set every editable cell of the current selection to NULL, keeping the
     // selection so a further edit or Save is easy. Returns false when the
@@ -4514,21 +4600,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // Attach focus/blur/input listeners for editable cell-content spans (existing rows)
         tableBody.querySelectorAll('td[data-row] .cell-content.editable-cell').forEach(span => {
             span.addEventListener('focus', () => { handleNullCellFocus(span); showCharBudgetBadge(span); });
-            span.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleCellEdit(e); exitCellEditMode(span); });
+            span.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleCellEdit(e); exitCellEditMode(span); commitMultiEdit(span); });
             span.addEventListener('input', () => { handleNumericCellInput(span); showCharBudgetBadge(span); });
         });
 
         // Attach blur listeners for inserted rows
         tableBody.querySelectorAll('td[data-insert].editable-cell').forEach(td => {
             td.addEventListener('focus', () => showCharBudgetBadge(td));
-            td.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleInsertCellEdit(e); exitCellEditMode(td); });
+            td.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleInsertCellEdit(e); exitCellEditMode(td); commitMultiEdit(td); });
             td.addEventListener('input', () => { handleNumericCellInput(td); showCharBudgetBadge(td); });
         });
 
         // Attach blur listeners for duplicated rows
         tableBody.querySelectorAll('td[data-dup].editable-cell').forEach(td => {
             td.addEventListener('focus', () => { clearDefaultMarker(td); showCharBudgetBadge(td); });
-            td.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleDupCellEdit(e); exitCellEditMode(td); });
+            td.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleDupCellEdit(e); exitCellEditMode(td); commitMultiEdit(td); });
             td.addEventListener('input', () => { handleNumericCellInput(td); showCharBudgetBadge(td); });
         });
 
@@ -6601,6 +6687,7 @@ if (typeof module !== 'undefined' && module.exports) {
         singleClipboardValue,
         resolveMouseRelease,
         isSingleCellSelection,
+        isPrintableTypingKey,
         stripTrailingLimitOffset,
         parseSqlForWhere,
         findTopLevelKeywordIndex,
