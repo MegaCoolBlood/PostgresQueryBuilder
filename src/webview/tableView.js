@@ -301,6 +301,12 @@ function resolveMouseRelease(dragged, hasTextSelection) {
     return 'select';
 }
 
+// True when the selection is a single cell, which is when the Excel-style fill
+// handle is offered at its bottom-right corner.
+function isSingleCellSelection(anchor, focus) {
+    return !!anchor && !!focus && anchor.r === focus.r && anchor.c === focus.c;
+}
+
 function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (value === null || value === undefined) return null;
     const num = Number(value);
@@ -2474,6 +2480,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let rangeFocus = null;    // {r, c} opposite corner
     let rangeMouseDown = null; // candidate anchor recorded on mousedown
     let rangeDragging = false;
+    // Excel-style fill handle: while true, dragging extends a fill region that
+    // is filled with `fillSourceValue` (the value of the single selected cell).
+    let fillDragging = false;
+    let fillSourceValue = null;
 
     function cellCoords(td) {
         const tr = td.closest('tr');
@@ -2494,6 +2504,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         rangeFocus = null;
         tableBody.querySelectorAll('td.cell-range-selected')
             .forEach(td => td.classList.remove('cell-range-selected'));
+        removeFillHandle();
+    }
+
+    // Remove the fill handle and the marker that positions it.
+    function removeFillHandle() {
+        tableBody.querySelectorAll('.fill-handle').forEach(h => h.remove());
+        tableBody.querySelectorAll('td.cell-fill-anchor')
+            .forEach(td => td.classList.remove('cell-fill-anchor'));
     }
 
     function rangeBounds() {
@@ -2508,6 +2526,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function applyCellRangeHighlight() {
         tableBody.querySelectorAll('td.cell-range-selected')
             .forEach(td => td.classList.remove('cell-range-selected'));
+        removeFillHandle();
         if (!rangeAnchor || !rangeFocus) return;
         const { minR, maxR, minC, maxC } = rangeBounds();
         const rows = tableBody.rows;
@@ -2517,6 +2536,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const dataCells = tr.querySelectorAll(':scope > td[data-col]');
             for (let c = minC; c <= maxC && c < dataCells.length; c++) {
                 dataCells[c].classList.add('cell-range-selected');
+            }
+        }
+        // Offer the fill handle on the bottom-right of a single selected cell.
+        if (!fillDragging && isSingleCellSelection(rangeAnchor, rangeFocus)) {
+            const tr = rows[maxR];
+            const cells = tr ? tr.querySelectorAll(':scope > td[data-col]') : null;
+            const td = cells ? cells[maxC] : null;
+            if (td) {
+                td.classList.add('cell-fill-anchor');
+                const handle = document.createElement('div');
+                handle.className = 'fill-handle';
+                handle.title = 'Drag to copy this value onto other cells';
+                td.appendChild(handle);
             }
         }
     }
@@ -2646,8 +2678,55 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         sel.addRange(range);
     }
 
+    // The value of the single selected cell, as a string suitable for the edit
+    // path (NULL becomes '' so the fill writes NULL into the target cells).
+    function cellFillValue(td) {
+        const col = td.getAttribute('data-col');
+        const rowAttr = td.getAttribute('data-row');
+        let raw;
+        if (rowAttr !== null) {
+            const idx = parseInt(rowAttr, 10);
+            const key = `${idx}:${col}`;
+            raw = modifiedCells.has(key) ? modifiedCells.get(key) : allRows[idx][col];
+        } else {
+            const insAttr = td.getAttribute('data-insert');
+            const dupAttr = td.getAttribute('data-dup');
+            const entry = insAttr !== null ? insertedRows[parseInt(insAttr, 10)]
+                : dupAttr !== null ? duplicatedRows[parseInt(dupAttr, 10)] : null;
+            raw = entry ? entry.row[col] : '';
+        }
+        return (raw === null || raw === undefined) ? '' : String(raw);
+    }
+
+    // Begin an Excel-style fill drag from the single selected cell's handle.
+    function beginFillDrag() {
+        if (!isSingleCellSelection(rangeAnchor, rangeFocus)) { return; }
+        const tr = tableBody.rows[rangeAnchor.r];
+        const cells = tr ? tr.querySelectorAll(':scope > td[data-col]') : null;
+        const srcTd = cells ? cells[rangeAnchor.c] : null;
+        if (!srcTd) { return; }
+        fillSourceValue = cellFillValue(srcTd);
+        fillDragging = true;
+        tableBody.classList.add('range-dragging');
+        removeFillHandle();
+    }
+
+    // Abandon a fill drag whose mouseup was missed, leaving the data untouched.
+    function cancelFillDrag() {
+        fillDragging = false;
+        fillSourceValue = null;
+        tableBody.classList.remove('range-dragging');
+        applyCellRangeHighlight();
+    }
+
     tableBody.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
+        // The fill handle of a selected cell starts a copy-drag onto other cells.
+        if (e.target.closest && e.target.closest('.fill-handle')) {
+            beginFillDrag();
+            e.preventDefault();
+            return;
+        }
         const td = e.target.closest('td[data-col]');
         if (!td || td.parentElement.parentElement !== tableBody) return;
         // A cell already being edited keeps native caret / text-selection behaviour.
@@ -2667,6 +2746,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     });
 
     document.addEventListener('mousemove', (e) => {
+        // While dragging the fill handle, extend the fill region to the cell
+        // under the cursor (anchored at the source cell).
+        if (fillDragging) {
+            if (e.buttons === 0) { cancelFillDrag(); return; }
+            const ft = e.target && e.target.closest ? e.target.closest('td[data-col]') : null;
+            if (!ft || ft.parentElement.parentElement !== tableBody) return;
+            const fc = cellCoords(ft);
+            if (!fc) return;
+            rangeFocus = fc;
+            applyCellRangeHighlight();
+            clearNativeTextSelection();
+            e.preventDefault();
+            return;
+        }
         if (!rangeMouseDown) return;
         if (e.buttons === 0) { rangeMouseDown = null; return; }
         const td = e.target && e.target.closest ? e.target.closest('td[data-col]') : null;
@@ -2689,6 +2782,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     });
 
     document.addEventListener('mouseup', () => {
+        // Releasing a fill-handle drag copies the source value into the region.
+        if (fillDragging) {
+            fillDragging = false;
+            tableBody.classList.remove('range-dragging');
+            const value = fillSourceValue;
+            fillSourceValue = null;
+            fillCellRangeWithValue(value);
+            rangeMouseDown = null;
+            rangeDragging = false;
+            return;
+        }
         if (rangeMouseDown && !rangeDragging) {
             const sel = window.getSelection();
             const hasText = !!(sel && !sel.isCollapsed && sel.toString().length > 0
@@ -6474,6 +6578,7 @@ if (typeof module !== 'undefined' && module.exports) {
         planClipboardPaste,
         singleClipboardValue,
         resolveMouseRelease,
+        isSingleCellSelection,
         stripTrailingLimitOffset,
         parseSqlForWhere,
         findTopLevelKeywordIndex,

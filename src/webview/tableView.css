@@ -251,6 +251,21 @@ body {
 .table-wrapper {
     flex: 1;
     overflow: auto;
+    position: relative;
+}
+
+/* Excel-like fill handle: the small square at the bottom-right of a single
+   selected cell that is dragged to copy the value onto other cells. It lives in
+   the scrolled content, so it stays glued to its cell while the grid scrolls. */
+.fill-handle {
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    background: var(--c-accent);
+    border: 1px solid var(--c-bg);
+    box-sizing: border-box;
+    cursor: crosshair;
+    z-index: calc(var(--z-sticky) - 1);
 }
 
 /* Veils the rows while a query runs. It starts below the pinned header and
@@ -502,6 +517,23 @@ td[contenteditable="true"]:focus {
     color: var(--vscode-editor-selectionForeground, inherit);
     outline: 1px solid var(--c-accent);
     outline-offset: -1px;
+}
+
+/* Excel-style fill handle at the bottom-right of a single selected cell; drag
+   it to copy the cell's value onto the cells it is dragged across. */
+#tableBody td.cell-fill-anchor {
+    position: relative;
+}
+
+#tableBody td.cell-fill-anchor .fill-handle {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 7px;
+    height: 7px;
+    background: var(--c-accent);
+    border: 1px solid var(--c-bg);
+    cursor: crosshair;
 }
 
 /* Suppress the native text selection while dragging a cell rectangle. */

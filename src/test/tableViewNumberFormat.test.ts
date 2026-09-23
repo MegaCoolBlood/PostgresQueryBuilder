@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -168,6 +168,17 @@ test('resolveMouseRelease keeps a text selection made inside one cell', () => {
 
 test('resolveMouseRelease marks the cell on a plain click', () => {
     assert.equal(resolveMouseRelease(false, false), 'select');
+});
+
+// ===== 3.2.0: Excel-style fill handle on a single selected cell =====
+
+test('isSingleCellSelection is true only for a one-cell selection', () => {
+    assert.equal(isSingleCellSelection({ r: 2, c: 3 }, { r: 2, c: 3 }), true);
+    assert.equal(isSingleCellSelection({ r: 2, c: 3 }, { r: 2, c: 4 }), false);
+    assert.equal(isSingleCellSelection({ r: 2, c: 3 }, { r: 5, c: 3 }), false);
+    assert.equal(isSingleCellSelection(null, { r: 2, c: 3 }), false);
+    assert.equal(isSingleCellSelection({ r: 2, c: 3 }, null), false);
+    assert.equal(isSingleCellSelection(null, null), false);
 });
 
 test('formatNumberDisplay uses thousand separators and comma decimal', () => {
