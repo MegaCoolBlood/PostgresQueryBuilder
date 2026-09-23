@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -42,6 +42,35 @@ test('cellRangeToTsv tolerates empty and malformed input', () => {
     assert.equal(cellRangeToTsv(undefined), '');
     // Empty strings (e.g. NULL cells rendered blank) are preserved as empty fields.
     assert.equal(cellRangeToTsv([['a', ''], ['', 'd']]), 'a\t\r\n\td');
+});
+
+// ===== 3.2.0: copy a cell block as an HTML table for rich paste (Teams) =====
+
+test('cellRangeToHtml wraps the block in a bordered table with one td per cell', () => {
+    assert.equal(
+        cellRangeToHtml([['a', 'b'], ['c', 'd']]),
+        '<table border="1" style="border-collapse:collapse"><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>'
+    );
+});
+
+test('cellRangeToHtml escapes HTML-special characters in the values', () => {
+    assert.equal(
+        cellRangeToHtml([['<b>', 'a & b']]),
+        '<table border="1" style="border-collapse:collapse"><tr><td>&lt;b&gt;</td><td>a &amp; b</td></tr></table>'
+    );
+});
+
+test('cellRangeToHtml renders empty and null cells as empty td', () => {
+    assert.equal(
+        cellRangeToHtml([['', null as any]]),
+        '<table border="1" style="border-collapse:collapse"><tr><td></td><td></td></tr></table>'
+    );
+});
+
+test('cellRangeToHtml returns an empty string for an empty or invalid block', () => {
+    assert.equal(cellRangeToHtml([]), '');
+    assert.equal(cellRangeToHtml(null), '');
+    assert.equal(cellRangeToHtml(undefined), '');
 });
 
 // ===== 3.2.0: paste a block of Excel cells into the grid =====

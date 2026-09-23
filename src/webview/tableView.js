@@ -203,6 +203,25 @@ function cellRangeToTsv(rows) {
 }
 
 /**
+ * Render a rectangular block of cell values as an HTML `<table>` so pasting into
+ * a rich-text target (Teams, Word, Outlook) keeps the row/column structure.
+ * Every value is HTML-escaped.
+ */
+function cellRangeToHtml(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return '';
+    const esc = (s) => String(s === null || s === undefined ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const body = rows
+        .map(row => {
+            const cells = (Array.isArray(row) ? row : [])
+                .map(c => `<td>${esc(c)}</td>`).join('');
+            return `<tr>${cells}</tr>`;
+        })
+        .join('');
+    return `<table border="1" style="border-collapse:collapse">${body}</table>`;
+}
+
+/**
  * Parse clipboard text copied from Excel (or another spreadsheet) into a matrix
  * of cell strings: TAB separates columns, a newline separates rows. A field is
  * quoted with double quotes when it contains a tab, a newline or a quote, and an
@@ -2495,6 +2514,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // (a multi-cell selection typed over at once).
     let multiEditBounds = null;
 
+    // While set, a synthetic copy event writes these two representations of the
+    // selected cells: tab-separated text and an HTML table (rich paste).
+    let pendingRangeCopy = null;
+
     function cellCoords(td) {
         const tr = td.closest('tr');
         if (!tr || tr.parentElement !== tableBody) return null;
@@ -2591,10 +2614,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const matrix = collectCellRangeMatrix();
         if (!matrix || matrix.length === 0) return false;
         const tsv = cellRangeToTsv(matrix);
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(tsv).catch(() => fallbackClipboardCopy(tsv));
-        } else {
-            fallbackClipboardCopy(tsv);
+        const html = cellRangeToHtml(matrix);
+        // A copy event lets us put both the tab-separated text (Excel) and an
+        // HTML table (Teams/Word/Outlook) on the clipboard in one go.
+        pendingRangeCopy = { tsv, html };
+        const ok = fallbackClipboardCopy(tsv);
+        pendingRangeCopy = null;
+        if (!ok && navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(tsv).catch(() => { /* nothing else to try */ });
         }
         return true;
     }
@@ -2607,8 +2634,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         ta.style.opacity = '0';
         document.body.appendChild(ta);
         ta.select();
-        try { document.execCommand('copy'); } catch (_) { /* ignore */ }
+        let ok = false;
+        try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
         document.body.removeChild(ta);
+        return ok;
     }
 
     // Mark a single data cell as selected, reusing the rectangle highlight.
@@ -2944,6 +2973,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function handleGridCopy(e) {
+        // A rectangle copy routes its two representations through this event.
+        if (pendingRangeCopy) {
+            e.preventDefault();
+            e.clipboardData.setData('text/plain', pendingRangeCopy.tsv);
+            e.clipboardData.setData('text/html', pendingRangeCopy.html);
+            return;
+        }
         const sel = window.getSelection();
         if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
 
@@ -2978,17 +3014,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (!rowMap.has(tr)) rowMap.set(tr, []);
             rowMap.get(tr).push(td);
         }
-        const lines = [];
+        const matrix = [];
         for (const rowCells of rowMap.values()) {
-            const parts = rowCells.map(td => {
+            matrix.push(rowCells.map(td => {
                 const text = getCellTextContent(td);
                 return isNumericColumn(td.getAttribute('data-col'))
                     ? stripThousandSeparators(text, thousandSeparator)
                     : text;
-            });
-            lines.push(parts.join('\t'));
+            }));
         }
-        e.clipboardData.setData('text/plain', lines.join('\n'));
+        e.clipboardData.setData('text/plain', matrix.map(r => r.join('\t')).join('\n'));
+        e.clipboardData.setData('text/html', cellRangeToHtml(matrix));
         e.preventDefault();
     }
 
@@ -6682,6 +6718,7 @@ if (typeof module !== 'undefined' && module.exports) {
         liveFormatNumeric,
         stripThousandSeparators,
         cellRangeToTsv,
+        cellRangeToHtml,
         parseClipboardTable,
         planClipboardPaste,
         singleClipboardValue,

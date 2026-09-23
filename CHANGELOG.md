@@ -2,6 +2,8 @@
 
 ## 3.2.0
 
+- **Copying a block of cells now pastes as a real table in Teams, Word and Outlook:** The grid put only tab-separated text on the clipboard, which pastes as a neat grid into Excel but as one run of plain text into a rich-text target like Teams — the rows and columns collapsed into an unreadable line. A copied cell rectangle now also carries an HTML `<table>`, so a rich-text target renders it as a bordered table with the original rows and columns, while spreadsheets and text editors still receive the tab-separated form.
+
 - **Typing over several selected cells now edits them all at once:** Giving many cells the same value meant editing each one by hand. With more than one cell selected, simply starting to type now clears the cells and enters a multi-edit: what you type is shown in the anchor cell and, on commit — pressing Enter or clicking away — written into every selected cell at once. Pressing Escape leaves the multi-edit, and read-only columns in the selection are left untouched. The values are staged as ordinary edits, so nothing is written until you press *Save*.
 
 - **Pressing Delete now clears the selected cells to NULL:** Emptying several cells meant opening each one and deleting its value by hand. With one or more cells selected, pressing Delete (or Backspace) now sets every editable cell in the selection to NULL at once and keeps them selected; a cell being edited or an input with the caret keeps Delete's usual meaning, read-only columns are left untouched, and the change is staged as an ordinary edit so nothing is written until you press *Save*.
