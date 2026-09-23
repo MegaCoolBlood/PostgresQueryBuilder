@@ -2828,10 +2828,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (!hasInCellText && copyCellRangeToClipboard()) {
                 e.preventDefault();
             }
+        } else if ((e.key === 'Delete' || e.key === 'Backspace') && rangeAnchor && rangeFocus) {
+            // Clear the selected cells to NULL, unless a cell is being edited or
+            // the caret is in an input, where Delete keeps its usual meaning.
+            const ae = document.activeElement;
+            const editing = !!ae && (ae.isContentEditable
+                || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT');
+            if (!editing && setSelectedCellsNull()) {
+                e.preventDefault();
+            }
         } else if (e.key === 'Escape' && rangeAnchor) {
             clearCellRangeSelection();
         }
     });
+
+    // Set every editable cell of the current selection to NULL, keeping the
+    // selection so a further edit or Save is easy. Returns false when the
+    // result is read-only, so Delete then keeps its default behaviour.
+    function setSelectedCellsNull() {
+        if (!rangeAnchor || !rangeFocus) { return false; }
+        if (!caps.canEdit && !caps.canInsert) { return false; }
+        fillCellRangeWithValue('');
+        return true;
+    }
 
     function isNumericColumn(colName) {
         const colMeta = columns.find(c => c.name === colName);
