@@ -3182,7 +3182,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const plan = planClipboardPaste(matrix, startRowIdx, startCol, allRows.length, columnNames, isColumnEditable);
 
         const validationTargets = [];
+        // Keys of every cell the paste wrote to, so the block can be re-selected.
+        const pastedKeys = [];
         plan.cellUpdates.forEach(u => {
+            pastedKeys.push(`${u.rowIdx}:${u.colName}`);
             const t = applyPastedExistingCell(u.rowIdx, u.colName, u.value);
             if (t) { validationTargets.push(t); }
         });
@@ -3201,6 +3204,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     insertedRows.push({ row: newRow, anchor: null });
                     Object.keys(partial).forEach(name => {
                         validationTargets.push({ key: `ins:${insIdx}:${name}`, value: newRow[name] });
+                        pastedKeys.push(`ins:${insIdx}:${name}`);
                     });
                 });
             } else {
@@ -3213,6 +3217,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const td = findCellByKey(t.key);
             if (td) { checkCellValue(td, t.key, t.value); }
         });
+        // Mark the pasted block so it stays selected after the paste.
+        markPastedRegion(pastedKeys);
         updateChangeIndicator();
 
         if (skippedRows) {
@@ -3221,6 +3227,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 text: `${skippedRows} pasted row(s) were skipped: new rows can only be added to a result that comes from a single table.`
             });
         }
+    }
+
+    // Select the bounding rectangle of the cells a paste wrote to (found by
+    // their keys in the rebuilt tbody), so the pasted block stays highlighted.
+    function markPastedRegion(keys) {
+        let minR = Infinity, maxR = -Infinity, minC = Infinity, maxC = -Infinity;
+        keys.forEach(key => {
+            const td = findCellByKey(key);
+            const cc = td ? cellCoords(td) : null;
+            if (!cc) { return; }
+            if (cc.r < minR) minR = cc.r;
+            if (cc.r > maxR) maxR = cc.r;
+            if (cc.c < minC) minC = cc.c;
+            if (cc.c > maxC) maxC = cc.c;
+        });
+        if (maxR < 0) { return; }
+        rangeAnchor = { r: minR, c: minC };
+        rangeFocus = { r: maxR, c: maxC };
+        applyCellRangeHighlight();
     }
 
     window.addEventListener('message', (event) => {
