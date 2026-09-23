@@ -3001,7 +3001,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const td = findCellByKey(t.key);
             if (td) { checkCellValue(td, t.key, t.value); }
         });
-        // renderBody rebuilds the tbody, so re-apply the rectangle highlight.
+        // renderBody drops the selection; restore it so the cells the value was
+        // copied into stay marked, then re-highlight the rebuilt tbody.
+        rangeAnchor = { r: minR, c: minC };
+        rangeFocus = { r: maxR, c: maxC };
         applyCellRangeHighlight();
         updateChangeIndicator();
     }
