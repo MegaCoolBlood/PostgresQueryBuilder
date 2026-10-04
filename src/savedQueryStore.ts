@@ -211,6 +211,18 @@ export function normalizeSavedQuery(raw: unknown): SavedQuery | undefined {
     return query;
 }
 
+/**
+ * Strip volatile fields before writing a query to the committable workspace
+ * file. `lastUsed` changes on every run and would otherwise create noisy git
+ * diffs; `scope` is implied by where the query is stored.
+ */
+export function serializeWorkspaceQuery(query: SavedQuery): SavedQuery {
+    const clean: SavedQuery = { ...query };
+    delete clean.lastUsed;
+    delete clean.scope;
+    return clean;
+}
+
 export function normalizeSavedQueries(raw: unknown): SavedQuery[] {
     if (!Array.isArray(raw)) {
         return [];
@@ -494,7 +506,7 @@ export class SavedQueryStore {
         const payload: WorkspaceQueriesFile = {
             $schema: 'postgres-query-builder.saved-queries/v1',
             version: FILE_VERSION,
-            queries: this.workspaceQueries
+            queries: this.workspaceQueries.map(serializeWorkspaceQuery)
         };
         const json = JSON.stringify(payload, null, 2) + '\n';
         this.suppressWatcher = true;

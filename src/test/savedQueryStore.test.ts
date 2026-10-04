@@ -12,6 +12,7 @@ import {
     normalizeSavedQuery,
     normalizeSavedQueries,
     sortSavedQueries,
+    serializeWorkspaceQuery,
     SavedQuery,
     SavedQueryParameter
 } from '../savedQueryStore';
@@ -238,6 +239,20 @@ test('sortSavedQueries orders by name case-insensitively', () => {
         { id: '2', name: 'Alpha', sql: 'SELECT 1', parameters: [] }
     ];
     assert.deepEqual(sortSavedQueries(queries).map(q => q.name), ['Alpha', 'beta']);
+});
+
+test('serializeWorkspaceQuery strips lastUsed and scope', () => {
+    const serialized = serializeWorkspaceQuery({
+        id: '1', name: 'x', sql: 'SELECT 1', parameters: [], lastUsed: 1788762384116, scope: 'workspace'
+    });
+    assert.deepEqual(serialized, { id: '1', name: 'x', sql: 'SELECT 1', parameters: [] });
+});
+
+test('serializeWorkspaceQuery keeps schema and table', () => {
+    const serialized = serializeWorkspaceQuery({
+        id: '1', name: 'x', sql: 'SELECT 1', parameters: [], schema: 'public', table: 't', lastUsed: 42
+    });
+    assert.deepEqual(serialized, { id: '1', name: 'x', sql: 'SELECT 1', parameters: [], schema: 'public', table: 't' });
 });
 
 // ===== SavedQueryStore =====

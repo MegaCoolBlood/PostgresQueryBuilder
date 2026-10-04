@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.2.1
+
+- **A shared saved query no longer reappears in git every time it is run:** Each workspace query in `postgres-query-builder.queries.json` stored a `lastUsed` timestamp that was rewritten whenever the query was run, so the committable file kept showing up as changed even though nothing about the query itself had been edited, producing noisy diffs and pointless commits. The `lastUsed` timestamp (along with the implied `scope`) is now kept only in memory and left out of the workspace file, so the file changes only when a query is actually added, edited or removed. Recently-used ordering within the current session is unchanged, and existing files keep working — the field is simply dropped the next time the file is written.
+
 ## 3.2.0
 
 - **A pasted block of cells now stays selected after pasting:** Pasting a copied block left the grid with no selection, so it was hard to see where the values had landed. The cells a paste writes to are now selected as a block afterwards, matching the source shape and making the inserted region easy to spot (and to copy on again).
