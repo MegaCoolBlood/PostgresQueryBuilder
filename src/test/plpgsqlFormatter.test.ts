@@ -780,6 +780,37 @@ test('does not add spaces around JSON path operators ->, ->>, #>, #>>', () => {
     );
 });
 
+test('spaceAroundJsonOperators puts a space on each side of ->, ->>, #> and #>>', () => {
+    assert.equal(
+        formatSql("v_baseurl := rec.rsp_propvalue#>>'{}';", { spaceAroundJsonOperators: true }),
+        "v_baseurl := rec.rsp_propvalue #>> '{}';"
+    );
+    assert.equal(
+        formatSql("SELECT DISTINCT elem->>'mit_id' AS mit_id FROM unnest(v_dispo_arr) AS elem;", { spaceAroundJsonOperators: true }),
+        "SELECT DISTINCT elem ->> 'mit_id' AS mit_id\nFROM unnest(v_dispo_arr) AS elem;"
+    );
+    assert.equal(
+        formatSql("v_stemp := po_tmitarbeiter->r_konflikte.mit_id::TEXT->>'mit_af_tage';", { spaceAroundJsonOperators: true }),
+        "v_stemp := po_tmitarbeiter -> r_konflikte.mit_id::TEXT ->> 'mit_af_tage';"
+    );
+    assert.equal(
+        formatSql("select v_json#>'{a,b}' from t;", { spaceAroundJsonOperators: true }),
+        "SELECT v_json #> '{a,b}' FROM t;"
+    );
+    // A chain gets a space at every operator.
+    const chain = formatSql("select data->'user'->>'name' from t;", { spaceAroundJsonOperators: true });
+    assert.equal(chain, "SELECT data -> 'user' ->> 'name' FROM t;");
+    assert.equal(formatSql(chain, { spaceAroundJsonOperators: true }), chain, 'idempotent');
+});
+
+test('spaceAroundJsonOperators is off by default and keeps the operators tight', () => {
+    assert.equal(formatSql("select v_json->>'key' from t;"), "SELECT v_json->>'key' FROM t;");
+    assert.equal(
+        formatSql("v_baseurl := rec.rsp_propvalue#>>'{}';"),
+        "v_baseurl := rec.rsp_propvalue#>>'{}';"
+    );
+});
+
 test('keeps DISTINCT ON (...) on the SELECT line', () => {
     // selectColumns default {1, 3}: 2 columns follow source layout (single-line → stays inline).
     const out = formatSql('select distinct on (a) a, b from t;');
@@ -982,6 +1013,7 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         alignSingleLineIf: false,
         alignFunctionParameters: false,
         alignNamedArguments: false,
+        spaceAroundJsonOperators: false,
         thresholds: DEFAULT_THRESHOLDS,
         normalizeDataTypes: true,
         dataTypeAliases: {

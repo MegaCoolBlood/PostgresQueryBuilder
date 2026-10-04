@@ -27,6 +27,7 @@ const FORMAT_SETTING_BINDINGS: readonly FormatSettingBinding[] = [
     { shortKey: 'alignSingleLineIf', configKey: 'format.alignSingleLineIf' },
     { shortKey: 'alignFunctionParameters', configKey: 'format.alignFunctionParameters' },
     { shortKey: 'alignNamedArguments', configKey: 'format.alignNamedArguments' },
+    { shortKey: 'spaceAroundJsonOperators', configKey: 'format.spaceAroundJsonOperators' },
     { shortKey: 'listThresholds', configKey: 'format.listThresholds' },
     { shortKey: 'normalizeDataTypes', configKey: 'format.normalizeDataTypes' },
     { shortKey: 'dataTypeAliases', configKey: 'format.dataTypeAliases' },

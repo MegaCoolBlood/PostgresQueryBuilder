@@ -122,6 +122,8 @@ export interface FormatOptions {
     alignFunctionParameters: boolean;
     /** Align the => of named call arguments written one per line. Default: false. */
     alignNamedArguments: boolean;
+    /** Put spaces around the JSON/JSONB path operators ->, ->>, #>, #>>. Default: false (tight). */
+    spaceAroundJsonOperators: boolean;
     /** Per-construct multi-line wrapping thresholds. See {@link DEFAULT_THRESHOLDS}. */
     thresholds: Partial<Record<ConstructKey, ListThreshold>>;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
@@ -232,6 +234,7 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     alignSingleLineIf: false,
     alignFunctionParameters: false,
     alignNamedArguments: false,
+    spaceAroundJsonOperators: false,
     thresholds: DEFAULT_THRESHOLDS,
     normalizeDataTypes: true,
     dataTypeAliases: DEFAULT_DATA_TYPE_ALIASES,
@@ -267,6 +270,7 @@ export function coerceFormatOptions(raw: {
     alignSingleLineIf?: unknown;
     alignFunctionParameters?: unknown;
     alignNamedArguments?: unknown;
+    spaceAroundJsonOperators?: unknown;
     // Legacy umbrella switch: kept as fallback for backward compatibility.
     preserveSingleLineSpecialCases?: unknown;
     listThresholds?: unknown;
@@ -352,6 +356,9 @@ export function coerceFormatOptions(raw: {
         alignNamedArguments: typeof raw.alignNamedArguments === 'boolean'
             ? raw.alignNamedArguments
             : DEFAULT_FORMAT_OPTIONS.alignNamedArguments,
+        spaceAroundJsonOperators: typeof raw.spaceAroundJsonOperators === 'boolean'
+            ? raw.spaceAroundJsonOperators
+            : DEFAULT_FORMAT_OPTIONS.spaceAroundJsonOperators,
         thresholds,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
@@ -1957,9 +1964,10 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         if (b === '.' || a === '.') return false;
         if (a === '::') return false;
         if (a === '(' || a === '[') return false;
-        // JSON / JSONB path operators: no spaces around ->, ->>, #>, #>>
-        if (a === '->' || a === '->>' || a === '#>' || a === '#>>') return false;
-        if (b === '->' || b === '->>' || b === '#>' || b === '#>>') return false;
+        // JSON / JSONB path operators (->, ->>, #>, #>>): tight by default, or
+        // surrounded by spaces when the option is on.
+        if (a === '->' || a === '->>' || a === '#>' || a === '#>>') return opt.spaceAroundJsonOperators;
+        if (b === '->' || b === '->>' || b === '#>' || b === '#>>') return opt.spaceAroundJsonOperators;
         if (b === '(') {
             if (p.type === 'word' && p.text.toLowerCase() === 'row') return false;
             if ((p.type === 'word' && !p.isKeyword) || p.type === 'quotedIdent' || a === ')' || a === ']') return false;
