@@ -115,6 +115,7 @@ export function formatOptionsToRepoConfig(opts: FormatOptions): Record<string, u
         alignSingleLineIf: opts.alignSingleLineIf,
         alignFunctionParameters: opts.alignFunctionParameters,
         alignNamedArguments: opts.alignNamedArguments,
+        spaceAroundJsonOperators: opts.spaceAroundJsonOperators,
         normalizeDataTypes: opts.normalizeDataTypes,
         dataTypeAliases: { ...opts.dataTypeAliases },
         argumentGroups,

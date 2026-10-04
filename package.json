@@ -557,6 +557,11 @@
           "default": false,
           "description": "Align the => of named call arguments written one per line, by padding the argument names so every => starts in the same column. Arguments at a different indent or separated by a blank line are aligned as independent groups."
         },
+        "postgresQueryBuilder.format.spaceAroundJsonOperators": {
+          "type": "boolean",
+          "default": false,
+          "description": "Put a space on each side of the JSON/JSONB path operators ->, ->>, #> and #>> (e.g. 'rec.col ->> 'id'' instead of 'rec.col->>'id''). Off by default, which keeps the operators tight against their operands."
+        },
         "postgresQueryBuilder.format.preserveSingleLineSpecialCases": {
           "type": "boolean",
           "default": true,
