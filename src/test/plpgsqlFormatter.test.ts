@@ -2021,6 +2021,46 @@ test('alignSingleLineIf aligns blank-line groups independently and is off by def
     assert.ok(formatSql(src).includes("IF v >= 8 THEN a := 'L'; END IF;"), 'default keeps single spaces');
 });
 
+test('alignSingleLineCase does not rewrite CASE text inside a multi-line string literal', () => {
+    const src = [
+        'CALL p(format(',
+        "    'INSERT INTO t (c) VALUES (%L)",
+        '     ON CONFLICT (k) DO UPDATE',
+        '         SET c = CASE',
+        "             WHEN GREATEST(",
+        "                 CASE a.bewertung WHEN ''I'' THEN 1 WHEN ''W'' THEN 2 ELSE 4 END,",
+        "                 CASE b.bewertung WHEN ''I'' THEN 1 WHEN ''W'' THEN 2 ELSE 4 END",
+        "             ) = 1 THEN ''I''",
+        "             ELSE ''S''",
+        "         END',",
+        '    v1',
+        '));'
+    ].join('\n');
+    const r = formatSqlChecked(src, { alignSingleLineCase: true });
+    assert.ok(r.ok, 'formatting is not rejected: ' + (r.reason ?? ''));
+    // The single-line CASE lines live inside the literal and must stay byte-for-byte.
+    assert.ok(
+        r.text.includes("CASE a.bewertung WHEN ''I'' THEN 1 WHEN ''W'' THEN 2 ELSE 4 END,"),
+        'the CASE text inside the string is untouched\n' + r.text
+    );
+    assert.equal(formatSql(r.text, { alignSingleLineCase: true }), r.text, 'idempotent');
+});
+
+test('alignSingleLineIf does not rewrite IF text inside a multi-line string literal', () => {
+    const src = [
+        'CALL p(format(',
+        "    'DO $do$ BEGIN",
+        "         IF x THEN a := 1; END IF;",
+        "         IF y THEN b := 2; END IF;",
+        "     END $do$',",
+        '    v1',
+        '));'
+    ].join('\n');
+    const r = formatSqlChecked(src, { alignSingleLineIf: true });
+    assert.ok(r.ok, 'formatting is not rejected: ' + (r.reason ?? ''));
+    assert.ok(r.text.includes('IF x THEN a := 1; END IF;'), 'the IF text inside the string is untouched\n' + r.text);
+});
+
 test('alignFunctionParameters lines up the type column of a multi-line parameter list', () => {
     const src = 'CREATE FUNCTION f(pi_classname VARCHAR, pi_objectname VARCHAR) RETURNS VARCHAR'
         + ' LANGUAGE sql AS $$ SELECT 1 $$;';

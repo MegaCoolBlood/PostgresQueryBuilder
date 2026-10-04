@@ -1071,13 +1071,14 @@ function padLineCommentEnds(text: string): string {
  */
 function alignDeclarationTypes(text: string, opt: FormatOptions): string {
     const lines = text.split('\n');
+    const continuation = literalContinuationLines(text);
     const unit = opt.indentStyle === 'tab' ? '\t' : ' '.repeat(Math.max(1, opt.indentSize));
     // A declaration: <name> <type…>, where <name> is a quoted identifier or a
     // run of non-space characters starting like an identifier.
     const declRe = /^("(?:[^"]|"")*"|[A-Za-z_][^\s]*)(\s+)(\S.*)$/;
     let i = 0;
     while (i < lines.length) {
-        const head = /^(\s*)declare\s*$/i.exec(lines[i]);
+        const head = continuation[i] ? null : /^(\s*)declare\s*$/i.exec(lines[i]);
         if (!head) { i++; continue; }
         const indent = head[1] + unit;
         let group: { line: number; name: string; rest: string }[] = [];
@@ -1094,6 +1095,7 @@ function alignDeclarationTypes(text: string, opt: FormatOptions): string {
         let j = i + 1;
         for (; j < lines.length; j++) {
             const line = lines[j];
+            if (continuation[j]) { flush(); continue; }
             if (/^\s*begin\b/i.test(line)) break;
             // A declaration must sit exactly at the section indent and be a
             // complete statement (contains its terminating `;`) on one line.
@@ -1143,6 +1145,7 @@ function topLevelKeywordPos(line: string, mask: Uint8Array, keyword: string, fro
  */
 function alignSingleLineFunctions(text: string): string {
     const lines = text.split('\n');
+    const continuation = literalContinuationLines(text);
     interface Cells { line: number; c0: string; c1: string; c2: string; c3: string; }
     let group: Cells[] = [];
     const flush = (): void => {
@@ -1162,6 +1165,7 @@ function alignSingleLineFunctions(text: string): string {
     };
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        if (continuation[i]) { flush(); continue; }
         const cells = /^\s*create(\s+or\s+replace)?\s+function\b/i.test(line) && line.includes(';')
             ? splitFunctionCells(line)
             : null;
@@ -1205,6 +1209,7 @@ function splitFunctionCells(line: string): { c0: string; c1: string; c2: string;
  */
 function alignCaseWhenThen(text: string): string {
     const lines = text.split('\n');
+    const continuation = literalContinuationLines(text);
     interface Branch { line: number; indent: string; head: string; rest: string; }
     let group: Branch[] = [];
     const flush = (): void => {
@@ -1219,6 +1224,7 @@ function alignCaseWhenThen(text: string): string {
     };
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        if (continuation[i]) { flush(); continue; }
         const m = /^(\s*)when\b/i.exec(line);
         let branch: Branch | null = null;
         if (m) {
@@ -1254,6 +1260,7 @@ function alignCaseWhenThen(text: string): string {
  */
 function alignSingleLineCase(text: string): string {
     const lines = text.split('\n');
+    const continuation = literalContinuationLines(text);
     interface Cells { line: number; indent: string; c0: string; c1: string; c2: string; c3: string; }
     let group: Cells[] = [];
     const flush = (): void => {
@@ -1273,6 +1280,7 @@ function alignSingleLineCase(text: string): string {
     };
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        if (continuation[i]) { flush(); continue; }
         const indentM = /^(\s*)case\b/i.exec(line);
         const cells = indentM ? splitSingleLineCaseCells(line) : null;
         if (cells && indentM) {
@@ -1326,6 +1334,7 @@ function splitSingleLineCaseCells(line: string): { c0: string; c1: string; c2: s
  */
 function alignSingleLineIf(text: string): string {
     const lines = text.split('\n');
+    const continuation = literalContinuationLines(text);
     interface Cells { line: number; indent: string; c0: string; c1: string; c2: string; }
     let group: Cells[] = [];
     const flush = (): void => {
@@ -1344,6 +1353,7 @@ function alignSingleLineIf(text: string): string {
     };
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        if (continuation[i]) { flush(); continue; }
         const indentM = /^(\s*)if\b/i.exec(line);
         const cells = indentM ? splitSingleLineIfCells(line) : null;
         if (cells && indentM) {
@@ -1408,16 +1418,18 @@ function splitSingleLineIfCells(line: string): { c0: string; c1: string; c2: str
  */
 function alignFunctionParameters(text: string): string {
     const lines = text.split('\n');
+    const continuation = literalContinuationLines(text);
     // <indent><[mode] name><spaces><type…>; the head is the mode+name to pad.
     const paramRe = /^(\s*)((?:(?:in|out|inout|variadic)\s+)?(?:"(?:[^"]|"")*"|[A-Za-z_][^\s]*))(\s+)(\S.*)$/i;
     for (let i = 0; i < lines.length; i++) {
         const open = lines[i];
-        if (!/^\s*create\b/i.test(open) || !/\b(function|procedure)\b/i.test(open)
+        if (continuation[i] || !/^\s*create\b/i.test(open) || !/\b(function|procedure)\b/i.test(open)
             || !/\($/.test(open.replace(/\s+$/, ''))) continue;
         interface Param { line: number; indent: string; head: string; rest: string; }
         const params: Param[] = [];
         let j = i + 1;
         for (; j < lines.length; j++) {
+            if (continuation[j]) continue;
             if (/^\s*\)/.test(lines[j])) break;
             const m = paramRe.exec(lines[j]);
             if (m) params.push({ line: j, indent: m[1], head: m[2], rest: m[4] });
@@ -1443,6 +1455,7 @@ function alignFunctionParameters(text: string): string {
  */
 function alignNamedArguments(text: string): string {
     const lines = text.split('\n');
+    const continuation = literalContinuationLines(text);
     interface Arg { line: number; indent: string; head: string; rest: string; }
     let group: Arg[] = [];
     const flush = (): void => {
@@ -1457,6 +1470,7 @@ function alignNamedArguments(text: string): string {
     };
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        if (continuation[i]) { flush(); continue; }
         const indentM = /^(\s*)/.exec(line)!;
         const indent = indentM[1];
         const arrow = topLevelArrowPos(line);

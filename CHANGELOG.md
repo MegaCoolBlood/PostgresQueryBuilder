@@ -2,6 +2,8 @@
 
 ## 3.2.1
 
+- **A single-line `CASE` written inside a multi-line string no longer makes the formatter skip the whole file:** With *Align single-line CASE* (or any of the sibling alignment options) switched on, the column-alignment pass scanned every physical line of the output — including lines that sit *inside* a multi-line string literal, such as the body of a `format('… CASE … END …')` call that builds dynamic SQL. It saw the `CASE … THEN … ELSE … END` text in the string, re-padded its spaces, and so changed the literal's content; the safety net then correctly refused the result and reported *"Formatting skipped to protect your code … at token 8 … (string)"*, leaving the file unformatted. Every line-based alignment pass now skips lines that begin inside a string, dollar-quoted or quoted-identifier literal, so the embedded SQL is kept byte-for-byte and the surrounding code is formatted as expected.
+
 - **A shared saved query no longer reappears in git every time it is run:** Each workspace query in `postgres-query-builder.queries.json` stored a `lastUsed` timestamp that was rewritten whenever the query was run, so the committable file kept showing up as changed even though nothing about the query itself had been edited, producing noisy diffs and pointless commits. The `lastUsed` timestamp (along with the implied `scope`) is now kept only in memory and left out of the workspace file, so the file changes only when a query is actually added, edited or removed. Recently-used ordering within the current session is unchanged, and existing files keep working — the field is simply dropped the next time the file is written.
 
 ## 3.2.0
