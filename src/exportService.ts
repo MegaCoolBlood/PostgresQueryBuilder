@@ -14,6 +14,10 @@ export interface ExportOptions {
     // Insert options
     insertTableName?: string;
     insertBatchSize?: number;
+    // ON CONFLICT clause appended to each INSERT. 'update' rewrites every column
+    // that is not part of the conflict target (the primary key by default).
+    insertOnConflict?: 'none' | 'nothing' | 'update';
+    insertConflictColumns?: string[];
     // JSON options
     jsonPretty?: boolean;
     jsonArrayWrapper?: boolean;
@@ -174,6 +178,11 @@ export class ExportService {
         const batchSize = options.insertBatchSize || 1;
 
         const colNames = columns.map(c => this.quoteIdentifier(c.name)).join(', ');
+        const onConflict = this.buildOnConflictClause(
+            options.insertOnConflict || 'none',
+            options.insertConflictColumns || [],
+            columns.map(c => c.name)
+        );
         const lines: string[] = [];
 
         if (batchSize > 1) {
@@ -183,16 +192,42 @@ export class ExportService {
                     const values = columns.map(col => this.formatSqlValue(row[col.name]));
                     return `(${values.join(', ')})`;
                 });
-                lines.push(`INSERT INTO ${tableName} (${colNames}) VALUES\n${valuesList.join(',\n')};\n`);
+                lines.push(`INSERT INTO ${tableName} (${colNames}) VALUES\n${valuesList.join(',\n')}${onConflict};\n`);
             }
         } else {
             for (const row of rows) {
                 const values = columns.map(col => this.formatSqlValue(row[col.name]));
-                lines.push(`INSERT INTO ${tableName} (${colNames}) VALUES (${values.join(', ')});`);
+                lines.push(`INSERT INTO ${tableName} (${colNames}) VALUES (${values.join(', ')})${onConflict};`);
             }
         }
 
         fs.writeFileSync(options.filePath, lines.join('\n'), 'utf8');
+    }
+
+    /**
+     * Build the ON CONFLICT clause (with a leading space) appended to an INSERT.
+     * 'none' yields no clause; 'nothing' yields `ON CONFLICT DO NOTHING`; 'update'
+     * conflicts on `conflictColumns` (the primary key) and rewrites every other
+     * column from EXCLUDED. When no usable conflict target or no updatable column
+     * is left, 'update' degrades to DO NOTHING, which is the only valid statement.
+     */
+    buildOnConflictClause(mode: 'none' | 'nothing' | 'update', conflictColumns: string[], allColumns: string[]): string {
+        if (mode === 'none') {
+            return '';
+        }
+        if (mode === 'nothing') {
+            return ' ON CONFLICT DO NOTHING';
+        }
+        const target = (conflictColumns || []).filter(c => allColumns.includes(c));
+        const setColumns = allColumns.filter(c => !target.includes(c));
+        if (target.length === 0 || setColumns.length === 0) {
+            return ' ON CONFLICT DO NOTHING';
+        }
+        const targetList = target.map(c => this.quoteIdentifier(c)).join(', ');
+        const assignments = setColumns
+            .map(c => `${this.quoteIdentifier(c)} = EXCLUDED.${this.quoteIdentifier(c)}`)
+            .join(', ');
+        return ` ON CONFLICT (${targetList}) DO UPDATE SET ${assignments}`;
     }
 
     private quoteIdentifier(name: string): string {

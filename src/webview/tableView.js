@@ -5852,6 +5852,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (defs.xmlRowElement) document.getElementById('xmlRowElement').value = defs.xmlRowElement;
         } else if (fmt === 'insert') {
             if (defs.insertBatchSize) document.getElementById('insertBatchSize').value = defs.insertBatchSize;
+            if (defs.insertOnConflict) document.getElementById('insertOnConflict').value = defs.insertOnConflict;
         } else if (fmt === 'excel') {
             if (defs.excelIncludeHeaders !== undefined) document.getElementById('excelIncludeHeaders').checked = defs.excelIncludeHeaders;
             if (defs.excelSheetName) document.getElementById('excelSheetName').value = defs.excelSheetName;
@@ -5886,6 +5887,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         } else if (fmt === 'insert') {
             opts.insertTableName = document.getElementById('insertTableName').value || defaultInsertTableName(getDefaultTableReference());
             opts.insertBatchSize = parseInt(document.getElementById('insertBatchSize').value) || 1;
+            opts.insertOnConflict = document.getElementById('insertOnConflict').value || 'none';
+            // The conflict target for DO UPDATE is the primary key; every other
+            // column is rewritten from EXCLUDED on the host side.
+            opts.insertConflictColumns = primaryKeys.slice();
         } else if (fmt === 'excel') {
             opts.excelIncludeHeaders = document.getElementById('excelIncludeHeaders').checked;
             opts.excelSheetName = document.getElementById('excelSheetName').value || 'Data';

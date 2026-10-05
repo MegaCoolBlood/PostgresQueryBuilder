@@ -547,6 +547,114 @@ test('INSERT export uses default table name when not specified', async () => {
     }
 });
 
+// ===== INSERT ON CONFLICT Tests =====
+
+test('buildOnConflictClause returns no clause for mode none', () => {
+    const service = new ExportService(createMockContext());
+    assert.equal(service.buildOnConflictClause('none', ['id'], ['id', 'name']), '');
+});
+
+test('buildOnConflictClause emits DO NOTHING', () => {
+    const service = new ExportService(createMockContext());
+    assert.equal(service.buildOnConflictClause('nothing', ['id'], ['id', 'name']), ' ON CONFLICT DO NOTHING');
+});
+
+test('buildOnConflictClause: DO UPDATE conflicts on the key and rewrites every other column', () => {
+    const service = new ExportService(createMockContext());
+    assert.equal(
+        service.buildOnConflictClause('update', ['id'], ['id', 'name', 'amount']),
+        ' ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, amount = EXCLUDED.amount'
+    );
+});
+
+test('buildOnConflictClause: DO UPDATE supports a composite key and quotes identifiers', () => {
+    const service = new ExportService(createMockContext());
+    assert.equal(
+        service.buildOnConflictClause('update', ['org id', 'id'], ['org id', 'id', 'First Name']),
+        ' ON CONFLICT ("org id", id) DO UPDATE SET "First Name" = EXCLUDED."First Name"'
+    );
+});
+
+test('buildOnConflictClause: DO UPDATE ignores conflict columns that are not exported', () => {
+    const service = new ExportService(createMockContext());
+    assert.equal(
+        service.buildOnConflictClause('update', ['id', 'missing'], ['id', 'name']),
+        ' ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name'
+    );
+});
+
+test('buildOnConflictClause: DO UPDATE degrades to DO NOTHING without a usable key', () => {
+    const service = new ExportService(createMockContext());
+    assert.equal(service.buildOnConflictClause('update', [], ['id', 'name']), ' ON CONFLICT DO NOTHING');
+});
+
+test('buildOnConflictClause: DO UPDATE degrades to DO NOTHING when every column is a key', () => {
+    const service = new ExportService(createMockContext());
+    assert.equal(service.buildOnConflictClause('update', ['id', 'name'], ['id', 'name']), ' ON CONFLICT DO NOTHING');
+});
+
+test('INSERT export appends ON CONFLICT DO NOTHING to each statement', async () => {
+    const service = new ExportService(createMockContext());
+    const filePath = getTempFile('.sql');
+    try {
+        await service.exportData(sampleRows.slice(0, 1), sampleColumns, {
+            format: 'insert',
+            filePath,
+            insertTableName: 'public.users',
+            insertBatchSize: 1,
+            insertOnConflict: 'nothing'
+        });
+        const content = fs.readFileSync(filePath, 'utf8');
+        assert.ok(content.includes("VALUES (1, 'Alice', 100.5) ON CONFLICT DO NOTHING;"));
+    } finally {
+        fs.unlinkSync(filePath);
+    }
+});
+
+test('INSERT export appends ON CONFLICT DO UPDATE for non-key columns', async () => {
+    const service = new ExportService(createMockContext());
+    const filePath = getTempFile('.sql');
+    try {
+        await service.exportData(sampleRows.slice(0, 1), sampleColumns, {
+            format: 'insert',
+            filePath,
+            insertTableName: 'public.users',
+            insertBatchSize: 1,
+            insertOnConflict: 'update',
+            insertConflictColumns: ['id']
+        });
+        const content = fs.readFileSync(filePath, 'utf8');
+        assert.ok(content.includes(
+            "VALUES (1, 'Alice', 100.5) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, amount = EXCLUDED.amount;"
+        ));
+    } finally {
+        fs.unlinkSync(filePath);
+    }
+});
+
+test('INSERT export places the ON CONFLICT clause once at the end of a batch', async () => {
+    const service = new ExportService(createMockContext());
+    const filePath = getTempFile('.sql');
+    try {
+        await service.exportData(sampleRows.slice(0, 2), sampleColumns, {
+            format: 'insert',
+            filePath,
+            insertTableName: 'my_table',
+            insertBatchSize: 2,
+            insertOnConflict: 'update',
+            insertConflictColumns: ['id']
+        });
+        const content = fs.readFileSync(filePath, 'utf8');
+        assert.ok(content.includes(
+            "(2, 'Bob', 200.75) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, amount = EXCLUDED.amount;"
+        ));
+        // Only the final VALUES tuple carries the clause, not the first.
+        assert.ok(content.includes("(1, 'Alice', 100.5),\n"));
+    } finally {
+        fs.unlinkSync(filePath);
+    }
+});
+
 // ===== Excel Export Tests =====
 
 test('Excel export creates a valid xlsx file with headers', async () => {

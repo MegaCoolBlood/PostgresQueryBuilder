@@ -190,6 +190,14 @@
                             <label for="insertBatchSize">Rows per INSERT:</label>
                             <input type="number" id="insertBatchSize" value="1" min="1" max="1000" />
                         </div>
+                        <div class="export-field">
+                            <label for="insertOnConflict">On conflict:</label>
+                            <select id="insertOnConflict">
+                                <option value="none">No clause</option>
+                                <option value="nothing">DO NOTHING</option>
+                                <option value="update">DO UPDATE (all non-key columns)</option>
+                            </select>
+                        </div>
                     </div>
                     <!-- Excel Options -->
                     <div class="export-options-group" id="exportOptsExcel" style="display:none;">
