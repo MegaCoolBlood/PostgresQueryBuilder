@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey, hasTextInputSelection, shouldCopyCellRange, computeCellNavTarget } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey, hasTextInputSelection, shouldCopyCellRange, computeCellNavTarget, computeScrollAdjustment } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -299,6 +299,46 @@ test('computeCellNavTarget returns null for a non-navigation key or an empty gri
     assert.equal(computeCellNavTarget('ArrowDown', false, null, 5, 5, 3), null);
     assert.equal(computeCellNavTarget('ArrowDown', false, { r: 0, c: 0 }, 0, 5, 3), null);
     assert.equal(computeCellNavTarget('ArrowDown', false, { r: 0, c: 0 }, 5, 0, 3), null);
+});
+
+// ===== 3.2.2: scrolling a navigated cell clear of the pinned header/columns =====
+
+const view = { top: 100, bottom: 400, left: 100, right: 500 };
+
+test('computeScrollAdjustment leaves an already-visible cell untouched', () => {
+    const cell = { top: 200, bottom: 220, left: 200, right: 280 };
+    assert.deepEqual(computeScrollAdjustment(cell, view, 30, 60), { dTop: 0, dLeft: 0 });
+});
+
+test('computeScrollAdjustment scrolls up past the pinned header, not just to the edge', () => {
+    // Cell is below the viewport top but hidden behind the 30px header.
+    const cell = { top: 110, bottom: 130, left: 200, right: 280 };
+    const { dTop, dLeft } = computeScrollAdjustment(cell, view, 30, 60);
+    assert.equal(dTop, -20); // 110 - (100 + 30)
+    assert.equal(dLeft, 0);
+});
+
+test('computeScrollAdjustment scrolls left past the frozen columns, not just to the edge', () => {
+    // Cell starts left of the viewport edge but behind the 60px frozen block.
+    const cell = { top: 200, bottom: 220, left: 110, right: 190 };
+    const { dTop, dLeft } = computeScrollAdjustment(cell, view, 30, 60);
+    assert.equal(dTop, 0);
+    assert.equal(dLeft, -50); // 110 - (100 + 60)
+});
+
+test('computeScrollAdjustment scrolls down and right when the cell is past the far edges', () => {
+    const cell = { top: 380, bottom: 430, left: 460, right: 560 };
+    const { dTop, dLeft } = computeScrollAdjustment(cell, view, 30, 60);
+    assert.equal(dTop, 30); // 430 - 400
+    assert.equal(dLeft, 60); // 560 - 500
+});
+
+test('computeScrollAdjustment keeps an oversized cell aligned below the header, not under it', () => {
+    // Cell taller than the free space: its bottom exceeds the viewport while its
+    // top is still above the header inset; aligning to the top must win.
+    const cell = { top: 120, bottom: 450, left: 200, right: 280 };
+    const { dTop } = computeScrollAdjustment(cell, view, 30, 60);
+    assert.equal(dTop, -10); // 120 - (100 + 30), never a positive (downward) scroll
 });
 
 test('formatNumberDisplay uses thousand separators and comma decimal', () => {

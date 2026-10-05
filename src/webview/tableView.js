@@ -382,6 +382,31 @@ function computeCellNavTarget(key, ctrlKey, current, rowCount, colCount, pageRow
     return { r, c };
 }
 
+// How far to scroll a container so a cell is fully visible, keeping it clear of
+// the pinned header (headInset at the top) and the frozen columns (leftInset at
+// the left). `cell` and `view` are getBoundingClientRect-style rectangles in the
+// same coordinate space; returns the scrollTop/scrollLeft deltas to apply (0
+// when that axis already shows the cell). A cell larger than the free space is
+// aligned to its top-left so its start stays reachable.
+function computeScrollAdjustment(cell, view, headInset, leftInset) {
+    const topLimit = view.top + (headInset || 0);
+    const leftLimit = view.left + (leftInset || 0);
+    let dTop = 0;
+    let dLeft = 0;
+    if (cell.top < topLimit) {
+        dTop = cell.top - topLimit;
+    } else if (cell.bottom > view.bottom) {
+        // Never push the top above the header inset while chasing the bottom.
+        dTop = Math.min(cell.bottom - view.bottom, cell.top - topLimit);
+    }
+    if (cell.left < leftLimit) {
+        dLeft = cell.left - leftLimit;
+    } else if (cell.right > view.right) {
+        dLeft = Math.min(cell.right - view.right, cell.left - leftLimit);
+    }
+    return { dTop, dLeft };
+}
+
 function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (value === null || value === undefined) return null;
     const num = Number(value);
@@ -2997,13 +3022,36 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return true;
     }
 
-    // Bring the focus cell into the scroll viewport after a keyboard move.
+    // Bring the focus cell into the scroll viewport after a keyboard move,
+    // keeping it clear of the pinned header rows and the frozen left columns
+    // that otherwise overlap a cell scrolled to the very top or left edge.
     function scrollCellIntoView(coords) {
         const tr = tableBody.rows[coords.r];
         if (!tr) { return; }
         const cells = tr.querySelectorAll(':scope > td[data-col]');
         const td = cells[coords.c];
-        if (td && td.scrollIntoView) { td.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+        const scroller = document.getElementById('tableWrapper');
+        if (!td) { return; }
+        if (!scroller) {
+            if (td.scrollIntoView) { td.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+            return;
+        }
+        const headInset = tableHead ? tableHead.getBoundingClientRect().height : 0;
+        const leftInset = frozenColumnsWidth(tr);
+        const s = scroller.getBoundingClientRect();
+        const c = td.getBoundingClientRect();
+        const { dTop, dLeft } = computeScrollAdjustment(c, s, headInset, leftInset);
+        scroller.scrollTop += dTop;
+        scroller.scrollLeft += dLeft;
+    }
+
+    // Combined width of the frozen left columns (row number + row actions) of a
+    // row, which stay pinned over the data cells as the grid scrolls sideways.
+    function frozenColumnsWidth(tr) {
+        let w = 0;
+        tr.querySelectorAll(':scope > .row-num-cell, :scope > .actions-cell')
+            .forEach(cell => { w += cell.getBoundingClientRect().width; });
+        return w;
     }
 
     function blurActiveEditable() {
@@ -6860,6 +6908,7 @@ if (typeof module !== 'undefined' && module.exports) {
         hasTextInputSelection,
         shouldCopyCellRange,
         computeCellNavTarget,
+        computeScrollAdjustment,
         stripTrailingLimitOffset,
         parseSqlForWhere,
         findTopLevelKeywordIndex,
