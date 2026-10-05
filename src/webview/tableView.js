@@ -355,6 +355,33 @@ function shouldCopyCellRange(hasRangeSelection, hasDomSelection, hasInputSelecti
     return !!hasRangeSelection && !hasDomSelection && !hasInputSelection;
 }
 
+// Compute where a navigation key moves the focus cell within a grid of
+// rowCount × colCount cells, clamped to the grid. Arrow keys move by one,
+// PageUp/PageDown by pageRows, Home/End move to the first/last column (and to
+// the first/last row too when ctrlKey is set). Returns the new {r, c}, or null
+// when the key is not a navigation key. The caller decides whether to also move
+// the anchor (plain move) or keep it (Shift-extend).
+function computeCellNavTarget(key, ctrlKey, current, rowCount, colCount, pageRows) {
+    if (!current || rowCount <= 0 || colCount <= 0) { return null; }
+    const step = Math.max(1, pageRows | 0);
+    let r = current.r;
+    let c = current.c;
+    switch (key) {
+        case 'ArrowUp': r -= 1; break;
+        case 'ArrowDown': r += 1; break;
+        case 'ArrowLeft': c -= 1; break;
+        case 'ArrowRight': c += 1; break;
+        case 'Home': c = 0; if (ctrlKey) { r = 0; } break;
+        case 'End': c = colCount - 1; if (ctrlKey) { r = rowCount - 1; } break;
+        case 'PageUp': r -= step; break;
+        case 'PageDown': r += step; break;
+        default: return null;
+    }
+    r = Math.max(0, Math.min(rowCount - 1, r));
+    c = Math.max(0, Math.min(colCount - 1, c));
+    return { r, c };
+}
+
 function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (value === null || value === undefined) return null;
     const num = Number(value);
@@ -2914,6 +2941,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             }
             return;
         }
+        // Arrow / Home / End / PageUp / PageDown move the selection; holding
+        // Shift extends it instead of collapsing to a single cell.
+        if (rangeAnchor && rangeFocus && !isEditingElement(document.activeElement)
+            && !e.altKey && isCellNavKey(e.key)) {
+            if (navigateCellSelection(e.key, e.ctrlKey, e.shiftKey)) {
+                e.preventDefault();
+            }
+            return;
+        }
         // Typing over a multi-cell selection edits the anchor cell and, on
         // commit, writes the value into every selected cell at once.
         if (rangeAnchor && rangeFocus && !isSingleCellSelection(rangeAnchor, rangeFocus)
@@ -2921,6 +2957,54 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             startMultiEdit(e);
         }
     });
+
+    function isCellNavKey(key) {
+        return key === 'ArrowUp' || key === 'ArrowDown' || key === 'ArrowLeft'
+            || key === 'ArrowRight' || key === 'Home' || key === 'End'
+            || key === 'PageUp' || key === 'PageDown';
+    }
+
+    // Number of data columns in the grid, read from the header so it is correct
+    // regardless of which (possibly empty) row the focus currently sits in.
+    function dataColumnCount() {
+        return tableBody.querySelector('tr')
+            ? tableBody.querySelector('tr').querySelectorAll(':scope > td[data-col]').length
+            : 0;
+    }
+
+    // Rows that a PageUp/PageDown jumps, derived from how many rows fit in the
+    // scroll viewport (at least one), so a page roughly matches what is visible.
+    function pageRowCount() {
+        const rows = tableBody.rows;
+        if (!rows.length) { return 1; }
+        const rowH = rows[0].getBoundingClientRect().height || 0;
+        const scroller = document.getElementById('tableWrapper') || tableBody.parentElement;
+        const viewH = scroller ? scroller.clientHeight : 0;
+        const fit = rowH > 0 && viewH > 0 ? Math.floor(viewH / rowH) : 0;
+        return Math.max(1, fit - 1);
+    }
+
+    function navigateCellSelection(key, ctrlKey, shiftKey) {
+        const target = computeCellNavTarget(
+            key, ctrlKey, rangeFocus, tableBody.rows.length, dataColumnCount(), pageRowCount());
+        if (!target) { return false; }
+        rangeFocus = target;
+        if (!shiftKey) {
+            rangeAnchor = { r: target.r, c: target.c };
+        }
+        applyCellRangeHighlight();
+        scrollCellIntoView(target);
+        return true;
+    }
+
+    // Bring the focus cell into the scroll viewport after a keyboard move.
+    function scrollCellIntoView(coords) {
+        const tr = tableBody.rows[coords.r];
+        if (!tr) { return; }
+        const cells = tr.querySelectorAll(':scope > td[data-col]');
+        const td = cells[coords.c];
+        if (td && td.scrollIntoView) { td.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+    }
 
     function blurActiveEditable() {
         const ae = document.activeElement;
@@ -6775,6 +6859,7 @@ if (typeof module !== 'undefined' && module.exports) {
         isPrintableTypingKey,
         hasTextInputSelection,
         shouldCopyCellRange,
+        computeCellNavTarget,
         stripTrailingLimitOffset,
         parseSqlForWhere,
         findTopLevelKeywordIndex,

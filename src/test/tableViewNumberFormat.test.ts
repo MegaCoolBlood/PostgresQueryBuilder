@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey, hasTextInputSelection, shouldCopyCellRange } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey, hasTextInputSelection, shouldCopyCellRange, computeCellNavTarget } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -258,6 +258,47 @@ test('shouldCopyCellRange yields to an input/textarea selection (e.g. the query 
 
 test('shouldCopyCellRange does nothing without a selected cell range', () => {
     assert.equal(shouldCopyCellRange(false, false, false), false);
+});
+
+// ===== 3.2.2: keyboard navigation of the cell selection =====
+
+test('computeCellNavTarget moves one cell per arrow key', () => {
+    const cur = { r: 2, c: 2 };
+    assert.deepEqual(computeCellNavTarget('ArrowUp', false, cur, 5, 5, 3), { r: 1, c: 2 });
+    assert.deepEqual(computeCellNavTarget('ArrowDown', false, cur, 5, 5, 3), { r: 3, c: 2 });
+    assert.deepEqual(computeCellNavTarget('ArrowLeft', false, cur, 5, 5, 3), { r: 2, c: 1 });
+    assert.deepEqual(computeCellNavTarget('ArrowRight', false, cur, 5, 5, 3), { r: 2, c: 3 });
+});
+
+test('computeCellNavTarget clamps movement to the grid edges', () => {
+    assert.deepEqual(computeCellNavTarget('ArrowUp', false, { r: 0, c: 1 }, 5, 5, 3), { r: 0, c: 1 });
+    assert.deepEqual(computeCellNavTarget('ArrowLeft', false, { r: 1, c: 0 }, 5, 5, 3), { r: 1, c: 0 });
+    assert.deepEqual(computeCellNavTarget('ArrowDown', false, { r: 4, c: 1 }, 5, 5, 3), { r: 4, c: 1 });
+    assert.deepEqual(computeCellNavTarget('ArrowRight', false, { r: 1, c: 4 }, 5, 5, 3), { r: 1, c: 4 });
+});
+
+test('computeCellNavTarget: Home/End move within the row, Ctrl jumps to the grid corners', () => {
+    const cur = { r: 2, c: 2 };
+    assert.deepEqual(computeCellNavTarget('Home', false, cur, 5, 5, 3), { r: 2, c: 0 });
+    assert.deepEqual(computeCellNavTarget('End', false, cur, 5, 5, 3), { r: 2, c: 4 });
+    assert.deepEqual(computeCellNavTarget('Home', true, cur, 5, 5, 3), { r: 0, c: 0 });
+    assert.deepEqual(computeCellNavTarget('End', true, cur, 5, 5, 3), { r: 4, c: 4 });
+});
+
+test('computeCellNavTarget: PageUp/PageDown jump by pageRows and clamp', () => {
+    assert.deepEqual(computeCellNavTarget('PageDown', false, { r: 1, c: 2 }, 20, 5, 10), { r: 11, c: 2 });
+    assert.deepEqual(computeCellNavTarget('PageUp', false, { r: 15, c: 2 }, 20, 5, 10), { r: 5, c: 2 });
+    assert.deepEqual(computeCellNavTarget('PageDown', false, { r: 15, c: 2 }, 20, 5, 10), { r: 19, c: 2 });
+    assert.deepEqual(computeCellNavTarget('PageUp', false, { r: 3, c: 2 }, 20, 5, 10), { r: 0, c: 2 });
+    // A non-positive page size still advances at least one row.
+    assert.deepEqual(computeCellNavTarget('PageDown', false, { r: 0, c: 0 }, 5, 5, 0), { r: 1, c: 0 });
+});
+
+test('computeCellNavTarget returns null for a non-navigation key or an empty grid', () => {
+    assert.equal(computeCellNavTarget('Enter', false, { r: 0, c: 0 }, 5, 5, 3), null);
+    assert.equal(computeCellNavTarget('ArrowDown', false, null, 5, 5, 3), null);
+    assert.equal(computeCellNavTarget('ArrowDown', false, { r: 0, c: 0 }, 0, 5, 3), null);
+    assert.equal(computeCellNavTarget('ArrowDown', false, { r: 0, c: 0 }, 5, 0, 3), null);
 });
 
 test('formatNumberDisplay uses thousand separators and comma decimal', () => {
