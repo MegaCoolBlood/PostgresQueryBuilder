@@ -333,6 +333,28 @@ function isPrintableTypingKey(e) {
         && !e.ctrlKey && !e.metaKey && !e.altKey;
 }
 
+// True when a focused text <input>/<textarea> holds a non-empty selection. Such
+// a selection is invisible to window.getSelection(), so the grid must check it
+// explicitly before claiming a Ctrl+C for its cell range (e.g. text highlighted
+// in the SQL query box must copy, not the selected grid cell).
+function hasTextInputSelection(el) {
+    if (!el) { return false; }
+    const tag = el.tagName;
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA') { return false; }
+    if (typeof el.selectionStart !== 'number' || typeof el.selectionEnd !== 'number') {
+        return false;
+    }
+    return el.selectionStart !== el.selectionEnd;
+}
+
+// Decide whether a Ctrl+C should copy the selected grid cell range rather than
+// letting the browser copy a text selection. Any competing text selection — in
+// the page (hasDomSelection) or inside a focused input/textarea
+// (hasInputSelection) — wins, so the highlighted text lands on the clipboard.
+function shouldCopyCellRange(hasRangeSelection, hasDomSelection, hasInputSelection) {
+    return !!hasRangeSelection && !hasDomSelection && !hasInputSelection;
+}
+
 function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (value === null || value === undefined) return null;
     const num = Number(value);
@@ -2869,8 +2891,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && rangeAnchor && rangeFocus) {
             const sel = window.getSelection();
-            const hasInCellText = sel && !sel.isCollapsed && sel.toString().length > 0;
-            if (!hasInCellText && copyCellRangeToClipboard()) {
+            const hasDomSelection = !!(sel && !sel.isCollapsed && sel.toString().length > 0);
+            const hasInputSelection = hasTextInputSelection(document.activeElement);
+            if (shouldCopyCellRange(true, hasDomSelection, hasInputSelection) && copyCellRangeToClipboard()) {
                 e.preventDefault();
             }
             return;
@@ -6750,6 +6773,8 @@ if (typeof module !== 'undefined' && module.exports) {
         resolveMouseRelease,
         isSingleCellSelection,
         isPrintableTypingKey,
+        hasTextInputSelection,
+        shouldCopyCellRange,
         stripTrailingLimitOffset,
         parseSqlForWhere,
         findTopLevelKeywordIndex,

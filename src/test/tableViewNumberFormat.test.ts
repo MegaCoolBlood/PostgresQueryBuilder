@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey, hasTextInputSelection, shouldCopyCellRange } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -228,6 +228,36 @@ test('isPrintableTypingKey is false for control keys and shortcuts', () => {
     assert.equal(isPrintableTypingKey({ key: 'v', altKey: true }), false);
     assert.equal(isPrintableTypingKey(null), false);
     assert.equal(isPrintableTypingKey({}), false);
+});
+
+// ===== 3.2.2: Ctrl+C must copy a highlighted text selection, not the grid cell =====
+
+test('hasTextInputSelection is true only when an input/textarea has a non-empty selection', () => {
+    assert.equal(hasTextInputSelection({ tagName: 'TEXTAREA', selectionStart: 2, selectionEnd: 7 }), true);
+    assert.equal(hasTextInputSelection({ tagName: 'INPUT', selectionStart: 0, selectionEnd: 3 }), true);
+});
+
+test('hasTextInputSelection is false for a collapsed caret or a non-text element', () => {
+    assert.equal(hasTextInputSelection({ tagName: 'TEXTAREA', selectionStart: 4, selectionEnd: 4 }), false);
+    assert.equal(hasTextInputSelection({ tagName: 'DIV', selectionStart: 0, selectionEnd: 3 }), false);
+    assert.equal(hasTextInputSelection({ tagName: 'INPUT' }), false);
+    assert.equal(hasTextInputSelection(null), false);
+});
+
+test('shouldCopyCellRange copies the range only when no text selection competes', () => {
+    assert.equal(shouldCopyCellRange(true, false, false), true);
+});
+
+test('shouldCopyCellRange yields to a page text selection', () => {
+    assert.equal(shouldCopyCellRange(true, true, false), false);
+});
+
+test('shouldCopyCellRange yields to an input/textarea selection (e.g. the query box)', () => {
+    assert.equal(shouldCopyCellRange(true, false, true), false);
+});
+
+test('shouldCopyCellRange does nothing without a selected cell range', () => {
+    assert.equal(shouldCopyCellRange(false, false, false), false);
 });
 
 test('formatNumberDisplay uses thousand separators and comma decimal', () => {

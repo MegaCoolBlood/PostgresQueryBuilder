@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.2.2
+
+- **Copying highlighted text from the query bar no longer copies the selected grid cell instead:** With a cell marked in the Data Viewer, selecting text elsewhere — such as the table name in the `SELECT` shown in the query bar — and pressing Ctrl+C copied the marked cell rather than the text you had highlighted, because the grid claimed every Ctrl+C whenever a cell was selected. A text selection inside an `<input>` or `<textarea>` is invisible to the page selection the grid was checking, so it never saw the competing selection. The grid now also checks for a non-empty selection in the focused input or textarea and steps aside, so Ctrl+C copies the highlighted text and only falls back to copying the cell range when nothing else is selected.
+
 ## 3.2.1
 
 - **The formatter can now put spaces around the JSON/JSONB path operators:** `->`, `->>`, `#>` and `#>>` were always printed tight against their operands (`rec.col->>'id'`), which is compact but hard to read in a long chain of accessors. The new *Space around JSON operators* option (`postgresQueryBuilder.format.spaceAroundJsonOperators`, off by default, also settable as `spaceAroundJsonOperators` in `.pgformat.json`) surrounds each of these operators with a single space instead, so `rec.rsp_propvalue#>>'{}'` becomes `rec.rsp_propvalue #>> '{}'` and a chain like `po_tmitarbeiter->r_konflikte.mit_id::TEXT->>'mit_af_tage'` becomes `po_tmitarbeiter -> r_konflikte.mit_id::TEXT ->> 'mit_af_tage'`. The default keeps the current tight spacing, and a `::cast` next to an accessor stays attached to its type.
