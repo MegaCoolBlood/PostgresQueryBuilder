@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey, hasTextInputSelection, shouldCopyCellRange, computeCellNavTarget, computeScrollAdjustment } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey, hasTextInputSelection, shouldCopyCellRange, computeCellNavTarget, computeScrollAdjustment, typingStartsCellEdit } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -228,6 +228,18 @@ test('isPrintableTypingKey is false for control keys and shortcuts', () => {
     assert.equal(isPrintableTypingKey({ key: 'v', altKey: true }), false);
     assert.equal(isPrintableTypingKey(null), false);
     assert.equal(isPrintableTypingKey({}), false);
+});
+
+// ===== 3.2.2: typing over a selected cell overwrites it (single or multi) =====
+
+test('typingStartsCellEdit starts an edit for a selected cell with a printable key', () => {
+    assert.equal(typingStartsCellEdit(true, true, false), true);
+});
+
+test('typingStartsCellEdit does nothing without a selection, for a control key, or while editing', () => {
+    assert.equal(typingStartsCellEdit(false, true, false), false);
+    assert.equal(typingStartsCellEdit(true, false, false), false);
+    assert.equal(typingStartsCellEdit(true, true, true), false);
 });
 
 // ===== 3.2.2: Ctrl+C must copy a highlighted text selection, not the grid cell =====

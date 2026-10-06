@@ -333,6 +333,14 @@ function isPrintableTypingKey(e) {
         && !e.ctrlKey && !e.metaKey && !e.altKey;
 }
 
+// Whether a printable keystroke should start editing the selected cell(s): there
+// must be a cell selection (single or multi), it must be a character key, and
+// the focus must not already be inside an editing element. Typing then
+// overwrites the cell with the typed character.
+function typingStartsCellEdit(hasSelection, isPrintable, isEditing) {
+    return !!hasSelection && !!isPrintable && !isEditing;
+}
+
 // True when a focused text <input>/<textarea> holds a non-empty selection. Such
 // a selection is invisible to window.getSelection(), so the grid must check it
 // explicitly before claiming a Ctrl+C for its cell range (e.g. text highlighted
@@ -3158,10 +3166,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             }
             return;
         }
-        // Typing over a multi-cell selection edits the anchor cell and, on
-        // commit, writes the value into every selected cell at once.
-        if (rangeAnchor && rangeFocus && !isSingleCellSelection(rangeAnchor, rangeFocus)
-            && isPrintableTypingKey(e) && !isEditingElement(document.activeElement)) {
+        // Typing over a cell selection overwrites it: a single selected cell is
+        // replaced by the typed character, and a multi-cell selection enters a
+        // multi-edit that fills the whole block on commit.
+        if (typingStartsCellEdit(rangeAnchor && rangeFocus, isPrintableTypingKey(e),
+            isEditingElement(document.activeElement))) {
             startMultiEdit(e);
         }
     });
@@ -3249,8 +3258,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
     }
 
-    // Start a multi-cell edit: clear the anchor (top-left) cell, seed it with the
-    // typed character and remember the selection so committing fills all of it.
+    // Start editing the selection by seeding the anchor (top-left) cell with the
+    // typed character; committing fills every cell of the remembered bounds (one
+    // cell for a single selection, the whole block for a multi-cell selection).
     function startMultiEdit(e) {
         const b = rangeBounds();
         const tr = tableBody.rows[b.minR];
@@ -7111,6 +7121,7 @@ if (typeof module !== 'undefined' && module.exports) {
         resolveMouseRelease,
         isSingleCellSelection,
         isPrintableTypingKey,
+        typingStartsCellEdit,
         hasTextInputSelection,
         shouldCopyCellRange,
         computeCellNavTarget,
