@@ -407,6 +407,75 @@ function computeScrollAdjustment(cell, view, headInset, leftInset) {
     return { dTop, dLeft };
 }
 
+// --- Unified edit-history (undo/redo) helpers ---------------------------------
+// The Data Viewer keeps one history stack that spans both the staged grid edits
+// (modified/inserted/duplicated/deleted cells) and the SQL query text, so
+// Ctrl+Z / Ctrl+Y walk every change back and forth in the exact order it was
+// made. These top-level helpers are pure so they can be unit-tested without a
+// DOM; the stateful capture/restore lives in the webview closure.
+
+// Deep-clone a value while preserving Map and Set instances, so a captured
+// snapshot is fully independent of the live edit state it was taken from.
+function cloneEditValue(v) {
+    if (v instanceof Map) { return new Map(Array.from(v, ([k, val]) => [k, cloneEditValue(val)])); }
+    if (v instanceof Set) { return new Set(Array.from(v, cloneEditValue)); }
+    if (Array.isArray(v)) { return v.map(cloneEditValue); }
+    if (v && typeof v === 'object') {
+        const out = {};
+        for (const k of Object.keys(v)) { out[k] = cloneEditValue(v[k]); }
+        return out;
+    }
+    return v;
+}
+
+// Serialize a value to a canonical string for structural equality. Map and Set
+// contents are order-independent (sorted); arrays keep their order because row
+// order is meaningful.
+function serializeEditValue(v) {
+    if (v instanceof Map) {
+        return 'M{' + Array.from(v, ([k, val]) => JSON.stringify(k) + ':' + serializeEditValue(val)).sort().join(',') + '}';
+    }
+    if (v instanceof Set) {
+        return 'S[' + Array.from(v, serializeEditValue).sort().join(',') + ']';
+    }
+    if (Array.isArray(v)) {
+        return '[' + v.map(serializeEditValue).join(',') + ']';
+    }
+    if (v && typeof v === 'object') {
+        return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + serializeEditValue(v[k])).join(',') + '}';
+    }
+    return JSON.stringify(v === undefined ? null : v);
+}
+
+// Structural equality of two edit snapshots (the object captured by the webview).
+function editStatesEqual(a, b) {
+    if (a === b) { return true; }
+    if (!a || !b) { return false; }
+    return serializeEditValue(a) === serializeEditValue(b);
+}
+
+// Advance the history stack by one state. Redo entries past `index` are dropped.
+// With `coalesce` the current top is replaced instead of a new entry pushed (so
+// continuous typing collapses into one step); if the coalesced value returns to
+// the entry below it, the top is removed entirely. A change equal to the current
+// top is a no-op. Returns the new { history, index }.
+function applyHistoryEntry(history, index, state, equals, coalesce) {
+    const h = history.slice(0, index + 1);
+    if (coalesce && h.length >= 2) {
+        if (equals(h[h.length - 2], state)) {
+            h.pop();
+            return { history: h, index: h.length - 1 };
+        }
+        h[h.length - 1] = state;
+        return { history: h, index: h.length - 1 };
+    }
+    if (h.length && equals(h[h.length - 1], state)) {
+        return { history: h, index: h.length - 1 };
+    }
+    h.push(state);
+    return { history: h, index: h.length - 1 };
+}
+
 function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (value === null || value === undefined) return null;
     const num = Number(value);
@@ -2285,6 +2354,98 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         selectedRowIdx = null;
     }
 
+    // --- Unified undo/redo for grid edits and the query text ------------------
+    // One stack of whole-state snapshots. Every staged change (a cell edit, a
+    // fill, a delete, a new/duplicated row, or any change to the query text)
+    // appends a snapshot; Ctrl+Z / Ctrl+Y walk it. See the pure helpers
+    // cloneEditValue / editStatesEqual / applyHistoryEntry above.
+    let editHistory = [];
+    let editHistoryIndex = 0;
+    // True while a run of continuous typing in the query box coalesces into one
+    // history step; reset by any other change or when the box loses focus.
+    let queryTypingRun = false;
+    // Guards against recording while a snapshot is being restored.
+    let historySuspended = false;
+
+    function captureEditState() {
+        return {
+            modified: cloneEditValue(modifiedCells),
+            deleted: cloneEditValue(deletedRows),
+            inserted: cloneEditValue(insertedRows),
+            duplicated: cloneEditValue(duplicatedRows),
+            invalid: cloneEditValue(invalidCells),
+            query: queryInput ? queryInput.value : ''
+        };
+    }
+
+    function restoreEditState(snap) {
+        historySuspended = true;
+        modifiedCells = cloneEditValue(snap.modified);
+        deletedRows = cloneEditValue(snap.deleted);
+        insertedRows = cloneEditValue(snap.inserted);
+        duplicatedRows = cloneEditValue(snap.duplicated);
+        invalidCells = cloneEditValue(snap.invalid);
+        if (queryInput && queryInput.value !== snap.query) {
+            queryInput.value = snap.query;
+            autoSizeQueryInput();
+        }
+        selectedRowIdx = null;
+        clearCellRangeSelection();
+        renderBody();
+        updateRowCount();
+        updateChangeIndicator();
+        historySuspended = false;
+    }
+
+    // Start a fresh history whose baseline is the current state. Called when a
+    // new result replaces the rows, since per-row-index snapshots no longer map.
+    function resetEditHistory() {
+        editHistory = [captureEditState()];
+        editHistoryIndex = 0;
+        queryTypingRun = false;
+    }
+
+    // Record the current state as the next history step. `kind === 'type'`
+    // coalesces consecutive query-box keystrokes into a single step.
+    function recordEditHistory(kind) {
+        if (historySuspended) { return; }
+        if (editHistory.length === 0) { resetEditHistory(); return; }
+        const coalesce = kind === 'type' && queryTypingRun;
+        const r = applyHistoryEntry(editHistory, editHistoryIndex, captureEditState(), editStatesEqual, coalesce);
+        editHistory = r.history;
+        editHistoryIndex = r.index;
+        queryTypingRun = kind === 'type';
+    }
+
+    function undoEdit() {
+        if (editHistoryIndex <= 0) { return false; }
+        queryTypingRun = false;
+        editHistoryIndex--;
+        restoreEditState(editHistory[editHistoryIndex]);
+        return true;
+    }
+
+    function redoEdit() {
+        if (editHistoryIndex >= editHistory.length - 1) { return false; }
+        queryTypingRun = false;
+        editHistoryIndex++;
+        restoreEditState(editHistory[editHistoryIndex]);
+        return true;
+    }
+
+    // Undo/redo is claimed only on the grid or the query box, and never while a
+    // modal dialog or another input owns its own native undo.
+    function editHistoryShortcutAllowed() {
+        const overlayOpen = Array.from(document.querySelectorAll('.sql-dialog-overlay'))
+            .some(el => el.style && el.style.display && el.style.display !== 'none');
+        if (overlayOpen) { return false; }
+        const ae = document.activeElement;
+        if (!ae || ae === document.body) { return true; }
+        if (ae === queryInput) { return true; }
+        // A cell being edited or any other field keeps its own native undo.
+        return !isEditingElement(ae);
+    }
+
     // Index of the currently "selected" existing row (the one most recently
     // clicked). New / duplicated rows are inserted directly below this row.
     // null means no row is selected -> new rows appear at the very top.
@@ -2449,6 +2610,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function setQueryText(sql) {
         queryInput.value = formatSql(sql == null ? '' : String(sql));
         autoSizeQueryInput();
+        recordEditHistory();
     }
 
     // Grow/shrink the query textarea to fit its content (bounded by the CSS
@@ -2507,6 +2669,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
     });
     queryInput.addEventListener('input', autoSizeQueryInput);
+    // Typing in the query box is one undoable step per focused run; leaving the
+    // box ends the run so the next edit starts a fresh step.
+    queryInput.addEventListener('input', () => recordEditHistory('type'));
+    queryInput.addEventListener('blur', () => { queryTypingRun = false; });
 
     queryHistoryToggle.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -2935,6 +3101,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     });
 
     document.addEventListener('keydown', (e) => {
+        // Ctrl/Cmd+Z undoes and Ctrl/Cmd+Y (or Ctrl/Cmd+Shift+Z) redoes the last
+        // staged change — grid edit or query-text change — in global order.
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+            if (editHistoryShortcutAllowed()) {
+                e.preventDefault();
+                undoEdit();
+                return;
+            }
+        }
+        if ((e.ctrlKey || e.metaKey) && !e.altKey
+            && ((e.key === 'y' || e.key === 'Y') || (e.shiftKey && (e.key === 'z' || e.key === 'Z')))) {
+            if (editHistoryShortcutAllowed()) {
+                e.preventDefault();
+                redoEdit();
+                return;
+            }
+        }
         // Enter commits a multi-cell edit (fills the whole selection).
         if (multiEditBounds && e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
@@ -3303,6 +3486,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         rangeFocus = { r: maxR, c: maxC };
         applyCellRangeHighlight();
         updateChangeIndicator();
+        recordEditHistory();
     }
 
     function handleGridPaste(e) {
@@ -3375,6 +3559,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // Mark the pasted block so it stays selected after the paste.
         markPastedRegion(pastedKeys);
         updateChangeIndicator();
+        recordEditHistory();
 
         if (skippedRows) {
             vscode.postMessage({
@@ -3625,6 +3810,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         setDataLoading(false);
         updateRowCount();
         renderTable();
+        // A fresh result is the new baseline: per-row-index snapshots from the
+        // previous rows no longer map, so the undo history starts over here.
+        if (isFreshRowLoad(currentOffset, isAppend)) {
+            resetEditHistory();
+        }
     }
 
     let fkLoaded = false;
@@ -4928,6 +5118,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         updateChangeIndicator();
+        recordEditHistory();
     }
 
     // Shared handler for editable cells in inserted/duplicated rows. `rows` is
@@ -4953,6 +5144,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         checkCellValue(td, `${idxAttr === 'data-insert' ? 'ins' : 'dup'}:${idx}:${colName}`, value);
         updateChangeIndicator();
+        recordEditHistory();
     }
 
     function handleInsertCellEdit(e) {
@@ -4990,6 +5182,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (entry.defaults) entry.defaults.delete(colName);
         renderBody();
         updateChangeIndicator();
+        recordEditHistory();
     }
 
     // Leave a single cell of a duplicate to the database.
@@ -5002,6 +5195,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         invalidCells.delete(`dup:${dIdx}:${colName}`);
         renderBody();
         updateChangeIndicator();
+        recordEditHistory();
     }
 
     // Pending database checks, keyed by request id, so a late answer for a cell
@@ -5098,11 +5292,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     window.deleteRow = function(idx) {
         deletedRows.add(idx);
         renderBody();
+        recordEditHistory();
     };
 
     window.undeleteRow = function(idx) {
         deletedRows.delete(idx);
         renderBody();
+        recordEditHistory();
     };
 
     window.duplicateRow = function(idx) {
@@ -5130,6 +5326,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         selectedRowIdx = idx;
         renderBody();
         updateRowCount();
+        recordEditHistory();
     }
 
     window.removeInsertedRow = function(idx) {
@@ -5137,6 +5334,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         reindexInvalidRowKeys('ins', idx);
         renderBody();
         updateRowCount();
+        recordEditHistory();
     };
 
     window.removeDuplicatedRow = function(idx) {
@@ -5144,6 +5342,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         reindexInvalidRowKeys('dup', idx);
         renderBody();
         updateRowCount();
+        recordEditHistory();
     };
 
     function insertRow() {
@@ -5154,6 +5353,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         insertedRows.push({ row: newRow, anchor: anchor });
         renderBody();
         updateRowCount();
+        recordEditHistory();
 
         const selector = anchor == null
             ? 'tr.row-inserted'
@@ -6523,6 +6723,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             modifiedCells.set(modKey, finalValue);
         }
         updateChangeIndicator();
+        recordEditHistory();
     }
 
     // Wire dialog buttons
@@ -6914,6 +7115,10 @@ if (typeof module !== 'undefined' && module.exports) {
         shouldCopyCellRange,
         computeCellNavTarget,
         computeScrollAdjustment,
+        cloneEditValue,
+        serializeEditValue,
+        editStatesEqual,
+        applyHistoryEntry,
         stripTrailingLimitOffset,
         parseSqlForWhere,
         findTopLevelKeywordIndex,
