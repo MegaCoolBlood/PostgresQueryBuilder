@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey, hasTextInputSelection, shouldCopyCellRange, computeCellNavTarget, computeScrollAdjustment, typingStartsCellEdit } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey, hasTextInputSelection, shouldCopyCellRange, computeCellNavTarget, computeScrollAdjustment, typingStartsCellEdit, shouldFillLoneValue } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -182,6 +182,17 @@ test('singleClipboardValue returns null for a multi-cell or empty matrix', () =>
     assert.equal(singleClipboardValue(null), null);
     // A one-row/one-column block with a trailing tab is two cells, not one.
     assert.equal(singleClipboardValue(parseClipboardTable('a\t')), null);
+});
+
+test('shouldFillLoneValue pastes a single copied value onto one selected cell or a block', () => {
+    // The key case: copy one cell, select another single cell, paste.
+    assert.equal(shouldFillLoneValue(true, true, false), true);
+    assert.equal(shouldFillLoneValue(true, false, true), true);
+});
+
+test('shouldFillLoneValue leaves the paste to the browser without a selection or write access', () => {
+    assert.equal(shouldFillLoneValue(false, true, true), false);
+    assert.equal(shouldFillLoneValue(true, false, false), false);
 });
 
 // ===== 3.2.0: click selects a cell, double-click edits, drag selects text =====

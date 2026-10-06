@@ -311,6 +311,14 @@ function singleClipboardValue(matrix) {
     return row[0];
 }
 
+// Whether a single copied value should be written into the selected cell(s):
+// there must be a cell selection (one cell or a block) and the grid must accept
+// edits or inserts. Without a selection the paste is left to the browser (an
+// in-cell paste while editing).
+function shouldFillLoneValue(hasSelection, canEdit, canInsert) {
+    return !!hasSelection && (!!canEdit || !!canInsert);
+}
+
 // What releasing the mouse in a cell means: 'range' after a drag across cells,
 // 'text' when text was selected inside one cell (keep the native selection),
 // otherwise 'select' — a plain click that marks the single cell.
@@ -3510,14 +3518,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!text) { return; }
         const matrix = parseClipboardTable(text);
 
-        // A single copied value dropped onto a rectangle of selected cells fills
-        // every one of them; a single value anywhere else is an ordinary in-cell
-        // paste left to the browser.
+        // A single copied value dropped onto a selected cell or block fills every
+        // cell of it (Excel fill); with no selection it is left to the browser as
+        // an ordinary in-cell paste.
         const lone = singleClipboardValue(matrix);
         if (lone !== null) {
-            const b = rangeAnchor && rangeFocus ? rangeBounds() : null;
-            const spansRange = b && (b.minR !== b.maxR || b.minC !== b.maxC);
-            if (spansRange && (caps.canEdit || caps.canInsert)) {
+            const hasSelection = !!(rangeAnchor && rangeFocus);
+            if (shouldFillLoneValue(hasSelection, caps.canEdit, caps.canInsert)) {
                 e.preventDefault();
                 fillCellRangeWithValue(lone);
             }
@@ -7118,6 +7125,7 @@ if (typeof module !== 'undefined' && module.exports) {
         parseClipboardTable,
         planClipboardPaste,
         singleClipboardValue,
+        shouldFillLoneValue,
         resolveMouseRelease,
         isSingleCellSelection,
         isPrintableTypingKey,
