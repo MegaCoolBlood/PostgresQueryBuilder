@@ -87,6 +87,34 @@ export const DEFAULT_THRESHOLDS: Record<ConstructKey, ListThreshold> = {
     ifElse: { inlineMax: 0, multilineMin: 3 }
 };
 
+/**
+ * Object kinds whose `CREATE` statement can be required to name a schema
+ * (`CREATE TABLE public.orders`, not `CREATE TABLE orders`). Used by the
+ * optional formatter checks ({@link FormatOptions.requireSchemaQualifier}).
+ */
+export type SchemaQualifierKind =
+    | 'function' | 'procedure' | 'table' | 'view'
+    | 'materializedView' | 'sequence' | 'type' | 'domain';
+
+/** The `CREATE` keyword sequence and a display label for each checkable kind. */
+const SCHEMA_QUALIFIER_KINDS: Record<SchemaQualifierKind, { words: string[]; label: string }> = {
+    function: { words: ['function'], label: 'FUNCTION' },
+    procedure: { words: ['procedure'], label: 'PROCEDURE' },
+    table: { words: ['table'], label: 'TABLE' },
+    view: { words: ['view'], label: 'VIEW' },
+    materializedView: { words: ['materialized', 'view'], label: 'MATERIALIZED VIEW' },
+    sequence: { words: ['sequence'], label: 'SEQUENCE' },
+    type: { words: ['type'], label: 'TYPE' },
+    domain: { words: ['domain'], label: 'DOMAIN' }
+};
+
+/** Words that may sit between `CREATE` and the object kind keyword. */
+const CREATE_LEADING_MODIFIERS = new Set([
+    'or', 'replace', 'temp', 'temporary', 'unlogged', 'global', 'local', 'recursive'
+]);
+/** Modifiers that mark a temporary object, which lives in pg_temp and so is exempt. */
+const CREATE_TEMP_MODIFIERS = new Set(['temp', 'temporary']);
+
 export interface FormatOptions {
     /** Case for SQL/PL keywords (SELECT, BEGIN, IF, ...). Default: 'upper'. */
     keywordCase: CaseStyle;
@@ -124,6 +152,12 @@ export interface FormatOptions {
     alignNamedArguments: boolean;
     /** Put spaces around the JSON/JSONB path operators ->, ->>, #>, #>>. Default: false (tight). */
     spaceAroundJsonOperators: boolean;
+    /**
+     * Optional formatter checks: object kinds whose `CREATE` statement must name
+     * a schema (e.g. `['table','function']`). A listed kind created without a
+     * schema qualifier aborts formatting with an error. Default: [] (no checks).
+     */
+    requireSchemaQualifier: SchemaQualifierKind[];
     /** Per-construct multi-line wrapping thresholds. See {@link DEFAULT_THRESHOLDS}. */
     thresholds: Partial<Record<ConstructKey, ListThreshold>>;
     /** Replace verbose type phrases with their short form (character varying -> varchar). Default: true. */
@@ -235,6 +269,7 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     alignFunctionParameters: false,
     alignNamedArguments: false,
     spaceAroundJsonOperators: false,
+    requireSchemaQualifier: [],
     thresholds: DEFAULT_THRESHOLDS,
     normalizeDataTypes: true,
     dataTypeAliases: DEFAULT_DATA_TYPE_ALIASES,
@@ -271,6 +306,7 @@ export function coerceFormatOptions(raw: {
     alignFunctionParameters?: unknown;
     alignNamedArguments?: unknown;
     spaceAroundJsonOperators?: unknown;
+    requireSchemaQualifier?: unknown;
     // Legacy umbrella switch: kept as fallback for backward compatibility.
     preserveSingleLineSpecialCases?: unknown;
     listThresholds?: unknown;
@@ -315,6 +351,10 @@ export function coerceFormatOptions(raw: {
         thresholds[key] = threshold(table[key], DEFAULT_THRESHOLDS[key]);
     });
     const aliases = normalizeDataTypeAliasTable(dataTypeAliasTable);
+    const requireSchemaQualifier = Array.isArray(raw.requireSchemaQualifier)
+        ? (raw.requireSchemaQualifier.filter(
+            (k): k is SchemaQualifierKind => typeof k === 'string' && k in SCHEMA_QUALIFIER_KINDS))
+        : DEFAULT_FORMAT_OPTIONS.requireSchemaQualifier;
     const legacySingleLine = typeof raw.preserveSingleLineSpecialCases === 'boolean'
         ? raw.preserveSingleLineSpecialCases
         : undefined;
@@ -359,6 +399,7 @@ export function coerceFormatOptions(raw: {
         spaceAroundJsonOperators: typeof raw.spaceAroundJsonOperators === 'boolean'
             ? raw.spaceAroundJsonOperators
             : DEFAULT_FORMAT_OPTIONS.spaceAroundJsonOperators,
+        requireSchemaQualifier,
         thresholds,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
             ? raw.normalizeDataTypes
@@ -860,14 +901,107 @@ interface BlockFrame { type: 'declare' | 'begin' | 'if' | 'loop' | 'case'; head:
 
 /**
  * Format a PL/pgSQL / SQL string according to `options`.
- */
-/**
+ *
  * Formats SQL / PL/pgSQL source. The core pass is applied repeatedly (up to 10
  * times) until the output stabilises, so that newly introduced line breaks
  * (e.g. nested boolean groups) are themselves re-indented on a following pass.
  */
 export function formatSql(input: string, options?: Partial<FormatOptions>): string {
     return formatSqlChecked(input, options).text;
+}
+
+/** A `CREATE` statement that an enabled check found without a schema qualifier. */
+export interface SchemaQualifierViolation {
+    kind: SchemaQualifierKind;
+    /** Display label of the object kind, e.g. `MATERIALIZED VIEW`. */
+    label: string;
+    /** The object name exactly as written (without a schema). */
+    name: string;
+    /** 1-based source line the name sits on. */
+    line: number;
+}
+
+/**
+ * Find every `CREATE` statement of a checked `kind` whose object name is not
+ * schema-qualified (`CREATE TABLE orders` instead of `CREATE TABLE s.orders`),
+ * in source order. Temporary objects are exempt because they live in `pg_temp`.
+ * Statements inside dollar-quoted bodies are not inspected (they are opaque
+ * literals to the tokenizer).
+ */
+export function findSchemaQualifierViolations(
+    input: string,
+    kinds: readonly SchemaQualifierKind[]
+): SchemaQualifierViolation[] {
+    const violations: SchemaQualifierViolation[] = [];
+    if (!Array.isArray(kinds) || kinds.length === 0) { return violations; }
+    const enabled = new Set(kinds);
+    const toks = tokenize(input);
+    const lineOf: number[] = [];
+    let line = 1;
+    for (const t of toks) { line += t.nlBefore; lineOf.push(line); }
+
+    const isComment = (idx: number): boolean =>
+        idx < toks.length && (toks[idx].type === 'lineComment' || toks[idx].type === 'blockComment');
+    const nextCode = (idx: number): number => {
+        let j = idx;
+        while (j < toks.length && isComment(j)) { j++; }
+        return j;
+    };
+    const wordAt = (idx: number): string | null =>
+        idx < toks.length && toks[idx].type === 'word' ? toks[idx].text.toLowerCase() : null;
+
+    for (let i = 0; i < toks.length; i++) {
+        if (wordAt(i) !== 'create') { continue; }
+        let j = nextCode(i + 1);
+        let isTemp = false;
+        while (j < toks.length) {
+            const w = wordAt(j);
+            if (w && CREATE_LEADING_MODIFIERS.has(w)) {
+                if (CREATE_TEMP_MODIFIERS.has(w)) { isTemp = true; }
+                j = nextCode(j + 1);
+            } else { break; }
+        }
+        const matched = matchSchemaQualifierKind(wordAt(j), wordAt(nextCode(j + 1)));
+        if (!matched) { continue; }
+        if (!enabled.has(matched.kind)) { continue; }
+        // Advance past the kind keyword(s): one word, or two for MATERIALIZED VIEW.
+        let k = nextCode(matched.words === 2 ? nextCode(j + 1) + 1 : j + 1);
+        // Skip an optional IF NOT EXISTS.
+        if (wordAt(k) === 'if' && wordAt(nextCode(k + 1)) === 'not'
+            && wordAt(nextCode(nextCode(k + 1) + 1)) === 'exists') {
+            k = nextCode(nextCode(nextCode(k + 1) + 1) + 1);
+        }
+        if (k >= toks.length) { continue; }
+        const nameTok = toks[k];
+        if (nameTok.type !== 'word' && nameTok.type !== 'quotedIdent') { continue; }
+        if (isTemp) { continue; }
+        const after = nextCode(k + 1);
+        const qualified = after < toks.length && toks[after].type === 'punct' && toks[after].text === '.';
+        if (!qualified) {
+            violations.push({ kind: matched.kind, label: SCHEMA_QUALIFIER_KINDS[matched.kind].label, name: nameTok.text, line: lineOf[k] });
+        }
+    }
+    return violations;
+}
+
+/** Match the object-kind keyword(s) following the CREATE modifiers. */
+function matchSchemaQualifierKind(
+    first: string | null,
+    second: string | null
+): { kind: SchemaQualifierKind; words: number } | null {
+    if (first === 'materialized') {
+        return second === 'view' ? { kind: 'materializedView', words: 2 } : null;
+    }
+    const single: Record<string, SchemaQualifierKind> = {
+        function: 'function', procedure: 'procedure', table: 'table',
+        view: 'view', sequence: 'sequence', type: 'type', domain: 'domain'
+    };
+    return first && single[first] ? { kind: single[first], words: 1 } : null;
+}
+
+/** Human-readable warning for a missing schema qualifier. */
+export function schemaQualifierReason(v: SchemaQualifierViolation): string {
+    return `CREATE ${v.label} "${v.name}" (line ${v.line}) is missing a schema qualifier; write it as schema.${v.name}.`;
 }
 
 /** Outcome of {@link formatSqlChecked}. */
@@ -878,6 +1012,12 @@ export interface FormatResult {
     ok: boolean;
     /** When `ok` is `false`, a human-readable explanation of why formatting was rejected. */
     reason?: string;
+    /**
+     * Non-blocking warnings from the enabled formatter checks (e.g. a missing
+     * schema qualifier). The file is still formatted; these are surfaced so the
+     * author can fix them.
+     */
+    checkWarnings?: string[];
 }
 
 /**
@@ -896,6 +1036,10 @@ export function formatSqlChecked(input: string, options?: Partial<FormatOptions>
     // line ending is restored on the way out.
     const usesCrlf = /\r/.test(input);
     const source = usesCrlf ? input.replace(/\r\n?/g, '\n') : input;
+    // Optional checks are non-blocking: collect their warnings but still format.
+    const kinds = options?.requireSchemaQualifier ?? DEFAULT_FORMAT_OPTIONS.requireSchemaQualifier;
+    const violations = findSchemaQualifierViolations(source, kinds);
+    const checkWarnings = violations.length > 0 ? violations.map(schemaQualifierReason) : undefined;
     let result = formatSqlOnce(source, options);
     for (let pass = 1; pass < 10; pass++) {
         const next = formatSqlOnce(result, options);
@@ -906,9 +1050,9 @@ export function formatSqlChecked(input: string, options?: Partial<FormatOptions>
     const dataTypeAliases = normalizeDataTypeAliasTable((options?.dataTypeAliases ?? DEFAULT_DATA_TYPE_ALIASES) as Record<string, unknown>);
     const reason = signatureDiff(source, result, normalizeTypes, dataTypeAliases);
     if (reason) {
-        return { text: input, ok: false, reason };
+        return { text: input, ok: false, reason, checkWarnings };
     }
-    return { text: usesCrlf ? result.replace(/\n/g, '\r\n') : result, ok: true };
+    return { text: usesCrlf ? result.replace(/\n/g, '\r\n') : result, ok: true, checkWarnings };
 }
 
 /**

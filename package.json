@@ -562,6 +562,35 @@
           "default": false,
           "description": "Put a space on each side of the JSON/JSONB path operators ->, ->>, #> and #>> (e.g. 'rec.col ->> 'id'' instead of 'rec.col->>'id''). Off by default, which keeps the operators tight against their operands."
         },
+        "postgresQueryBuilder.format.requireSchemaQualifier": {
+          "type": "array",
+          "default": [],
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "function",
+              "procedure",
+              "table",
+              "view",
+              "materializedView",
+              "sequence",
+              "type",
+              "domain"
+            ],
+            "enumDescriptions": [
+              "CREATE FUNCTION must name a schema (e.g. public.fn).",
+              "CREATE PROCEDURE must name a schema.",
+              "CREATE TABLE must name a schema.",
+              "CREATE VIEW must name a schema.",
+              "CREATE MATERIALIZED VIEW must name a schema.",
+              "CREATE SEQUENCE must name a schema.",
+              "CREATE TYPE must name a schema.",
+              "CREATE DOMAIN must name a schema."
+            ]
+          },
+          "description": "Formatter checks: object kinds whose CREATE statement should name a schema (e.g. 'public.orders'). When a listed kind is created without a schema qualifier, the file is still formatted but a warning naming the statement and line is shown. Temporary objects are exempt. Empty by default (no checks)."
+        },
         "postgresQueryBuilder.format.preserveSingleLineSpecialCases": {
           "type": "boolean",
           "default": true,

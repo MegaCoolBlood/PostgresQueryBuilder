@@ -141,6 +141,7 @@ interface FormatResult {
 	file: string;
 	status: 'success' | 'skipped' | 'error';
 	reason?: string;
+	warnings?: string[];
 }
 
 async function formatFile(
@@ -177,6 +178,7 @@ async function formatFile(
 		return {
 			file: sqlFile,
 			status: 'success',
+			warnings: result.checkWarnings,
 		};
 	} catch (e) {
 		return {
@@ -261,6 +263,7 @@ async function formatDirectory(args: CliArgs): Promise<void> {
 	for (const result of results) {
 		if (result.status === 'success') {
 			console.log(`✓ ${result.file}`);
+			for (const w of result.warnings ?? []) { console.log(`  ⚠ ${w}`); }
 			successCount++;
 		} else if (result.status === 'skipped') {
 			console.log(`⊘ ${result.file} - Formatting skipped: ${result.reason}`);
@@ -318,6 +321,9 @@ async function main(): Promise<void> {
 			console.error(`Formatting skipped: ${result.reason}`);
 			process.exit(1);
 		}
+
+		// Non-blocking check warnings go to stderr so stdout stays the pure SQL.
+		for (const w of result.checkWarnings ?? []) { console.error(`⚠ ${w}`); }
 
 		const output = result.text;
 

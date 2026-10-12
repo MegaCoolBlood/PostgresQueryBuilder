@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatSql, DEFAULT_FORMAT_OPTIONS, DEFAULT_THRESHOLDS, sqlSemanticallyEqual, sqlSemanticDiff, formatSqlChecked, coerceFormatOptions } from '../plpgsqlFormatter';
+import { formatSql, DEFAULT_FORMAT_OPTIONS, DEFAULT_THRESHOLDS, sqlSemanticallyEqual, sqlSemanticDiff, formatSqlChecked, coerceFormatOptions, findSchemaQualifierViolations } from '../plpgsqlFormatter';
 
 test('uppercases keywords and breaks a SELECT into clauses with a column list', () => {
     const out = formatSql('select a,b ,c from foo f join bar b on b.id=f.bid where a=1 and b>2 order by a');
@@ -1014,9 +1014,9 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         alignFunctionParameters: false,
         alignNamedArguments: false,
         spaceAroundJsonOperators: false,
+        requireSchemaQualifier: [],
         thresholds: DEFAULT_THRESHOLDS,
-        normalizeDataTypes: true,
-        dataTypeAliases: {
+        normalizeDataTypes: true,        dataTypeAliases: {
             'timestamp without time zone': 'timestamp',
             'timestamp with time zone': 'timestamptz',
             'time without time zone': 'time',
@@ -2561,3 +2561,96 @@ test('grouping keeps the statement semantically identical', () => {
     assert.ok(res.ok, res.reason);
     assert.ok(sqlSemanticallyEqual(src, res.text));
 });
+
+// ===== 3.2.2: optional "require schema qualifier" formatter checks =====
+
+test('findSchemaQualifierViolations flags an unqualified CREATE TABLE', () => {
+    const vs = findSchemaQualifierViolations('CREATE TABLE orders (id int);', ['table']);
+    assert.equal(vs.length, 1);
+    assert.equal(vs[0].kind, 'table');
+    assert.equal(vs[0].label, 'TABLE');
+    assert.equal(vs[0].name, 'orders');
+    assert.equal(vs[0].line, 1);
+});
+
+test('findSchemaQualifierViolations accepts a schema-qualified name', () => {
+    assert.deepEqual(findSchemaQualifierViolations('CREATE TABLE public.orders (id int);', ['table']), []);
+});
+
+test('findSchemaQualifierViolations only checks the enabled kinds', () => {
+    // A view without a schema, but only tables are checked.
+    assert.deepEqual(findSchemaQualifierViolations('CREATE VIEW v AS SELECT 1;', ['table']), []);
+    assert.equal(findSchemaQualifierViolations('CREATE VIEW v AS SELECT 1;', ['view']).length, 1);
+});
+
+test('findSchemaQualifierViolations handles OR REPLACE, IF NOT EXISTS and quoted names', () => {
+    assert.equal(findSchemaQualifierViolations('CREATE OR REPLACE FUNCTION fn() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql;', ['function']).length, 1);
+    assert.deepEqual(findSchemaQualifierViolations('CREATE OR REPLACE FUNCTION app.fn() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql;', ['function']), []);
+    assert.equal(findSchemaQualifierViolations('CREATE TABLE IF NOT EXISTS "My Orders" (id int);', ['table']).length, 1);
+    assert.deepEqual(findSchemaQualifierViolations('CREATE TABLE IF NOT EXISTS s."My Orders" (id int);', ['table']), []);
+});
+
+test('findSchemaQualifierViolations recognises MATERIALIZED VIEW as its own kind', () => {
+    assert.equal(findSchemaQualifierViolations('CREATE MATERIALIZED VIEW mv AS SELECT 1;', ['materializedView']).length, 1);
+    assert.deepEqual(findSchemaQualifierViolations('CREATE MATERIALIZED VIEW rep.mv AS SELECT 1;', ['materializedView']), []);
+    // A plain-view check must not fire on a materialized view.
+    assert.deepEqual(findSchemaQualifierViolations('CREATE MATERIALIZED VIEW mv AS SELECT 1;', ['view']), []);
+});
+
+test('findSchemaQualifierViolations exempts temporary objects', () => {
+    assert.deepEqual(findSchemaQualifierViolations('CREATE TEMP TABLE scratch (id int);', ['table']), []);
+    assert.deepEqual(findSchemaQualifierViolations('CREATE TEMPORARY TABLE scratch (id int);', ['table']), []);
+});
+
+test('findSchemaQualifierViolations collects every offender and reports the right lines', () => {
+    const src = 'CREATE TABLE a.first (id int);\n\nCREATE TABLE second (id int);\nCREATE TABLE third (id int);';
+    const vs = findSchemaQualifierViolations(src, ['table']);
+    assert.equal(vs.length, 2);
+    assert.equal(vs[0].name, 'second');
+    assert.equal(vs[0].line, 3);
+    assert.equal(vs[1].name, 'third');
+    assert.equal(vs[1].line, 4);
+});
+
+test('findSchemaQualifierViolations ignores CREATE inside a dollar-quoted body', () => {
+    const src = 'CREATE OR REPLACE FUNCTION app.fn() RETURNS void AS $$ BEGIN CREATE TABLE inner_t (id int); END $$ LANGUAGE plpgsql;';
+    assert.deepEqual(findSchemaQualifierViolations(src, ['table', 'function']), []);
+});
+
+test('no checks are run when the option is empty', () => {
+    assert.deepEqual(findSchemaQualifierViolations('CREATE TABLE orders (id int);', []), []);
+});
+
+test('formatSqlChecked formats an unqualified object anyway but reports a warning', () => {
+    const src = 'create table orders (id int);';
+    const res = formatSqlChecked(src, { requireSchemaQualifier: ['table'] });
+    assert.ok(res.ok, res.reason);
+    assert.ok(res.text.startsWith('CREATE TABLE orders'), 'the file is still formatted\n' + res.text);
+    assert.ok(res.checkWarnings && res.checkWarnings.length === 1);
+    assert.match(res.checkWarnings![0], /schema qualifier/);
+    assert.match(res.checkWarnings![0], /orders/);
+});
+
+test('formatSqlChecked reports no warning once the object is schema-qualified', () => {
+    const res = formatSqlChecked('create table public.orders (id int);', { requireSchemaQualifier: ['table'] });
+    assert.ok(res.ok, res.reason);
+    assert.equal(res.checkWarnings, undefined);
+    assert.ok(res.text.startsWith('CREATE TABLE public.orders'));
+});
+
+test('formatSqlChecked runs no checks by default', () => {
+    const res = formatSqlChecked('create table orders (id int);');
+    assert.ok(res.ok, res.reason);
+    assert.equal(res.checkWarnings, undefined);
+});
+
+test('coerceFormatOptions keeps only valid requireSchemaQualifier kinds', () => {
+    const opt = coerceFormatOptions({ requireSchemaQualifier: ['table', 'view', 'bogus', 42, 'function'] });
+    assert.deepEqual(opt.requireSchemaQualifier, ['table', 'view', 'function']);
+});
+
+test('coerceFormatOptions defaults requireSchemaQualifier to an empty list', () => {
+    assert.deepEqual(coerceFormatOptions({}).requireSchemaQualifier, []);
+    assert.deepEqual(coerceFormatOptions({ requireSchemaQualifier: 'table' }).requireSchemaQualifier, []);
+});
+

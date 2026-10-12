@@ -28,6 +28,7 @@ const FORMAT_SETTING_BINDINGS: readonly FormatSettingBinding[] = [
     { shortKey: 'alignFunctionParameters', configKey: 'format.alignFunctionParameters' },
     { shortKey: 'alignNamedArguments', configKey: 'format.alignNamedArguments' },
     { shortKey: 'spaceAroundJsonOperators', configKey: 'format.spaceAroundJsonOperators' },
+    { shortKey: 'requireSchemaQualifier', configKey: 'format.requireSchemaQualifier' },
     { shortKey: 'listThresholds', configKey: 'format.listThresholds' },
     { shortKey: 'normalizeDataTypes', configKey: 'format.normalizeDataTypes' },
     { shortKey: 'dataTypeAliases', configKey: 'format.dataTypeAliases' },

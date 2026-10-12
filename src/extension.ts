@@ -22,6 +22,20 @@ import { formatSqlChecked, FormatOptions } from './plpgsqlFormatter';
 import { formatOptionsToRepoConfig } from './repoFormatConfig';
 import { resolveFormatOptions } from './formatConfig';
 import { DoubleClickGate } from './doubleClick';
+
+/**
+ * Surface the non-blocking warnings an enabled formatter check produced. The
+ * file is still formatted; this only tells the author what to fix (e.g. a
+ * `CREATE TABLE` without a schema qualifier).
+ */
+function reportFormatCheckWarnings(warnings: string[] | undefined, source: string): void {
+    if (!warnings || warnings.length === 0) { return; }
+    for (const w of warnings) { outputChannel.appendLine(`[${source}] check: ${w}`); }
+    const body = warnings.length === 1
+        ? warnings[0]
+        : `${warnings.length} issues — ${warnings.join(' ')}`;
+    vscode.window.showWarningMessage(`Formatted with warnings: ${body}`);
+}
 let connectionManager: ConnectionManager;
 let tableExplorer: TableExplorerProvider;
 let tableWebViewManager: TableWebViewManager;
@@ -262,6 +276,7 @@ export function activate(context: vscode.ExtensionContext) {
                         return;
                     }
                     await editor.edit((b) => b.replace(range, outcome.text));
+                    reportFormatCheckWarnings(outcome.checkWarnings, 'formatSql');
                 } catch (err: unknown) {
                     outputChannel.appendLine(`[formatSql] ${getErrorStack(err)}`);
                     vscode.window.showErrorMessage(`Format failed: ${getErrorMessage(err)}`);
@@ -353,6 +368,7 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showWarningMessage(`Formatting skipped to protect your code: ${outcome.reason}`);
                 return [];
             }
+            reportFormatCheckWarnings(outcome.checkWarnings, source);
             return [vscode.TextEdit.replace(range, outcome.text)];
         };
         const formattingProvider: vscode.DocumentFormattingEditProvider & vscode.DocumentRangeFormattingEditProvider = {
@@ -395,6 +411,7 @@ export function activate(context: vscode.ExtensionContext) {
                             vscode.window.showWarningMessage(`Formatting skipped to protect your code: ${outcome.reason}`);
                             return [];
                         }
+                        reportFormatCheckWarnings(outcome.checkWarnings, 'formatOnSave');
                         return [vscode.TextEdit.replace(fullRange, outcome.text)];
                     } catch (err: unknown) {
                         outputChannel.appendLine(`[formatOnSave] ${getErrorStack(err)}`);
