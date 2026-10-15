@@ -840,19 +840,23 @@ function tokenize(input: string): Tok[] {
             toks.push({ type: 'punct', text: c, nlBefore: nl });
             nl = 0; i++; continue;
         }
-        // PostgreSQL `format()` specifier: a `%` immediately followed by one of
-        // the type characters `s`, `I` or `L` is a single placeholder and must
-        // never be split by inserting a space (that would change the meaning of
-        // the format string, e.g. `%L` -> `% L`). Emitting it as one token keeps
-        // the `%` and its type character glued together in the output. `%%` is
-        // already a single token because both characters are operator characters.
-        // The following character must not continue an identifier so real code
-        // like `%system` (a `%` operator applied to `system`) is left untouched.
-        if (c === '%' && (c2 === 's' || c2 === 'I' || c2 === 'L')) {
-            const after = input[i + 2];
-            if (after === undefined || !/[A-Za-z0-9_$\u0080-\uffff]/.test(after)) {
-                toks.push({ type: 'operator', text: input.slice(i, i + 2), nlBefore: nl });
-                nl = 0; i += 2; continue;
+        // PostgreSQL `format()` specifier: a complete conversion specification
+        // `%[position$][-][width]type` with the type character `s`, `I` or `L` is
+        // a single placeholder and must never be split by inserting spaces (that
+        // would change the meaning of the format string, e.g. `%L` -> `% L` or
+        // `%1$L` -> `% 1 $ L`). Emitting it as one token keeps all its characters
+        // glued together in the output. `%%` is already a single token because
+        // both characters are operator characters. The character after the
+        // specifier must not continue an identifier so real code like `%system`
+        // (a `%` operator applied to `system`) is left untouched.
+        if (c === '%') {
+            const spec = /^%(?:\d+\$)?-?(?:\d+|\*)?[sIL]/.exec(input.slice(i));
+            if (spec) {
+                const after = input[i + spec[0].length];
+                if (after === undefined || !/[A-Za-z0-9_$\u0080-\uffff]/.test(after)) {
+                    toks.push({ type: 'operator', text: spec[0], nlBefore: nl });
+                    nl = 0; i += spec[0].length; continue;
+                }
             }
         }
         // Operator run. In PostgreSQL `--` and `/*` always start a comment and

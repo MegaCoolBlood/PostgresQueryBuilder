@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.2.3
+
+- **A numbered `format()` placeholder such as `%1$L` is no longer torn apart:** Inside a dollar-quoted template that the formatter reformats as code — for example the `$fmt$ … $fmt$` body of an `EXECUTE format(…)` — a placeholder that names its argument by position came back as `% 1 $ L`, and the spaces turned a valid format string into SQL that fails at runtime. Only the short forms `%s`, `%I` and `%L` were recognised as a single unit; `%1$L` was read as a modulo operator, the number `1`, a stray `$` and the identifier `L`, each of which was then spaced out like ordinary operands. The formatter now understands the whole conversion specification — the optional `position$`, the `-` flag and the width (including `*`) in front of the type character — so `%1$L`, `%2$s`, `%-10s` and `%2$-20I` are emitted exactly as written. A plain modulo (`a % b`, `a %system`) is still treated as an operator.
+
 ## 3.2.2
 
 - **The formatter can now warn about CREATE statements that omit the schema:** There was no way to have the formatter point out DDL that is not schema-qualified, so `CREATE TABLE orders …` and `CREATE FUNCTION fn …` passed unnoticed. A new *Require schema qualifier* check (`postgresQueryBuilder.format.requireSchemaQualifier`, also settable as `requireSchemaQualifier` in `.pgformat.json`, empty by default) takes a list of object kinds — *function*, *procedure*, *table*, *view*, *materializedView*, *sequence*, *type*, *domain* — that should name a schema. The file is still formatted as usual; each listed kind created without a schema qualifier is then reported as a warning naming the statement and line (e.g. *Formatted with warnings: CREATE TABLE "orders" (line 12) is missing a schema qualifier*), so nothing is blocked. Temporary objects are exempt because they live in `pg_temp`, and statements inside a function body are not inspected.

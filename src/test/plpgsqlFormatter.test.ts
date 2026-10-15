@@ -1080,6 +1080,60 @@ test('does not merge % into a following identifier that is not a format type cha
     assert.equal(formatSql('select a % l from t;'), 'SELECT a % l FROM t;');
 });
 
+test('keeps positional format() specifiers like %1$L intact in a reformatted dollar body', () => {
+    const src = [
+        'CREATE OR REPLACE PROCEDURE p(v_sesn TEXT)',
+        'LANGUAGE plpgsql AS $body$',
+        'BEGIN',
+        '  EXECUTE format(',
+        '    $fmt$',
+        '      DELETE',
+        '      FROM bos_locks',
+        '      WHERE lck_ses_session_id = %1$L',
+        '        AND NOT (lck_ses_uid_kennung ILIKE %3$L);',
+        '      SELECT',
+        '        %1$L,  -- here goes v_sesn',
+        '        %2$s,',
+        '        upper(%3$L)',
+        '      FROM bos_benutzer benu',
+        '      WHERE benu.uid_kennung ILIKE %3$L',
+        '    $fmt$,',
+        '    v_sesn, 1, v_sesn);',
+        'END;',
+        '$body$;',
+    ].join('\n');
+    const r = formatSqlChecked(src);
+    assert.equal(r.ok, true, r.reason);
+    assert.ok(!/%\s|\d\s\$|\$\s[sIL]/.test(r.text), 'a positional specifier must never be split\n' + r.text);
+    assert.ok(r.text.includes('lck_ses_session_id = %1$L'), r.text);
+    assert.ok(r.text.includes('ILIKE %3$L'), r.text);
+    assert.ok(r.text.includes('%2$s,'), r.text);
+    assert.ok(r.text.includes('upper(%3$L)'), r.text);
+    // Formatting the result again must not change it.
+    assert.equal(formatSql(r.text), r.text);
+});
+
+test('keeps the flag and width parts of a format() specifier glued together', () => {
+    const src = [
+        'DO $outer$',
+        'BEGIN',
+        '  EXECUTE format($fmt$',
+        '    SELECT %10s, %-10s, %2$-20I, %*s',
+        '    FROM t',
+        '  $fmt$, a, b, c, d);',
+        'END',
+        '$outer$;',
+    ].join('\n');
+    const r = formatSqlChecked(src);
+    assert.equal(r.ok, true, r.reason);
+    for (const spec of ['%10s', '%-10s', '%2$-20I', '%*s']) {
+        assert.ok(r.text.includes(spec), spec + ' must survive unsplit\n' + r.text);
+    }
+    // A positional parameter of a prepared statement is still a parameter.
+    assert.equal(formatSql('select a from t where b = $1 % $2;'), 'SELECT a FROM t WHERE b = $1 % $2;');
+});
+
+
 test('format() specifier keeps the code semantically identical (safety net not tripped)', () => {
     const src = [
         'DO $outer$',
