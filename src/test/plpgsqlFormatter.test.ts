@@ -1208,6 +1208,40 @@ test('does not mistake a cast, an assignment or an array slice for a psql variab
         'DO $$\nDECLARE\n  x INT;\nBEGIN\n  x := 1;\nEND\n$$;');
 });
 
+test('gives every row of a multi-row VALUES list its own line when the source did', () => {
+    const src = [
+        'INSERT INTO tmp_vars (key, val) VALUES',
+        "('var1', 'a'),",
+        "('var2', 'b'),",
+        "('var3', 'c');",
+    ].join('\n');
+    const out = formatSql(src);
+    assert.equal(out, [
+        'INSERT INTO tmp_vars(KEY, val)',
+        'VALUES',
+        "  ('var1', 'a'),",
+        "  ('var2', 'b'),",
+        "  ('var3', 'c');",
+    ].join('\n'));
+    assert.equal(formatSql(out), out);
+});
+
+test('keeps a VALUES list the author wrote on one line inline', () => {
+    assert.equal(formatSql('insert into t (a, b) values (1, 2), (3, 4);'),
+        'INSERT INTO t(a, b)\nVALUES (1, 2), (3, 4);');
+    assert.equal(formatSql('insert into t (a, b) values (1, 2);'),
+        'INSERT INTO t(a, b)\nVALUES (1, 2);');
+});
+
+test('valuesRows threshold forces or prevents one row per line', () => {
+    const src = 'insert into t (a, b) values (1, 2), (3, 4);';
+    assert.equal(formatSql(src, { thresholds: { valuesRows: { inlineMax: 1, multilineMin: 2 } } }),
+        'INSERT INTO t(a, b)\nVALUES\n  (1, 2),\n  (3, 4);');
+    const multi = 'insert into t (a, b) values\n(1, 2),\n(3, 4);';
+    assert.equal(formatSql(multi, { thresholds: { valuesRows: { inlineMax: 2, multilineMin: 3 } } }),
+        'INSERT INTO t(a, b)\nVALUES (1, 2), (3, 4);');
+});
+
 
 test('format() specifier keeps the code semantically identical (safety net not tripped)', () => {
     const src = [

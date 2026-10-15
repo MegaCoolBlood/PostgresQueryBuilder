@@ -646,6 +646,7 @@
             "groupByColumns": "1, 4",
             "orderByColumns": "1, 4",
             "insertColumns": "2, 10",
+            "valuesRows": "1, 10",
             "arrayLiterals": "2, 10",
             "inLists": "2, 10",
             "booleanGroups": "1, 3",
@@ -712,6 +713,11 @@
               "type": "string",
               "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
               "description": "INSERT column list and VALUES list – \"inlineMax, multilineMin\": single line with at most inlineMax columns, multi-line from multilineMin columns on, in between as written in the source. The column list and the VALUES list always use the same layout. Default: 2, 6."
+            },
+            "valuesRows": {
+              "type": "string",
+              "pattern": "^\\s*\\d+\\s*[,;: ]\\s*\\d+\\s*$",
+              "description": "Row tuples of a multi-row VALUES list – \"inlineMax, multilineMin\": single line with at most inlineMax rows, one row per line from multilineMin rows on, in between as written in the source. What is inside one tuple is laid out by insertColumns. Default: 1, 10."
             },
             "arrayLiterals": {
               "type": "string",

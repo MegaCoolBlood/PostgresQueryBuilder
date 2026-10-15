@@ -45,6 +45,7 @@ export type ConstructKey =
     | 'groupByColumns'
     | 'orderByColumns'
     | 'insertColumns'
+    | 'valuesRows'
     | 'arrayLiterals'
     | 'inLists'
     | 'booleanGroups'
@@ -75,6 +76,7 @@ export const DEFAULT_THRESHOLDS: Record<ConstructKey, ListThreshold> = {
     groupByColumns: { inlineMax: 1, multilineMin: 4 },
     orderByColumns: { inlineMax: 1, multilineMin: 4 },
     insertColumns: { inlineMax: 2, multilineMin: 10 },
+    valuesRows: { inlineMax: 1, multilineMin: 10 },
     arrayLiterals: { inlineMax: 2, multilineMin: 10 },
     inLists: { inlineMax: 2, multilineMin: 10 },
     booleanGroups: { inlineMax: 1, multilineMin: 3 },
@@ -2381,6 +2383,30 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         return { count: hasTok ? commas + 1 : 0, srcMulti: hasNewline };
     };
 
+    /**
+     * Number of row tuples in the `VALUES` list starting at `idx` and whether the
+     * author put them on separate lines. Only the tuples themselves are counted;
+     * what is inside one tuple is laid out by `insertColumns`.
+     */
+    const valuesListInfo = (idx: number): { count: number; srcMulti: boolean } => {
+        let depth = 0, count = 0, srcMulti = false;
+        for (let k = idx + 1; k < toks.length; k++) {
+            const tk = toks[k];
+            if (depth === 0) {
+                if (tk.text === ';' || tk.text === ')') break;
+                if (tk.type === 'word' && tk.text.toLowerCase() !== 'default') break;
+            }
+            if (tk.text === '(') {
+                if (depth === 0) {
+                    count++;
+                    if (count > 1 && tk.nlBefore >= 1) srcMulti = true;
+                }
+                depth++;
+            } else if (tk.text === ')') depth = Math.max(0, depth - 1);
+        }
+        return { count, srcMulti };
+    };
+
     // --- CASE expression helpers -------------------------------------------
     /**
      * Index of the `END` that closes the `CASE` at `caseIdx` (block-aware).
@@ -3165,6 +3191,18 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                     pendingIndent = clauseIndent + 1;
                     flush();
                     lastWord = w; continue;
+                }
+
+                // Multi-row VALUES: give each row tuple its own line when the
+                // author did. The tuple contents follow `insertColumns`.
+                if (w === 'values') {
+                    const info = valuesListInfo(i);
+                    if (wantsMultiline(info.count, info.srcMulti, 'valuesRows')) {
+                        lists.push({ depth: pd, indent: clauseIndent + 1 });
+                        pendingIndent = clauseIndent + 1;
+                        flush();
+                        lastWord = w; continue;
+                    }
                 }
 
                 // Old-style comma FROM list (FROM a, b, c): keep it broken across
