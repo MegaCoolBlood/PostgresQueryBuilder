@@ -1201,6 +1201,27 @@ test('keeps a psql variable glued to its colon in an ordinary statement', () => 
         "SELECT *\nFROM t\nWHERE id = :var1\n  AND n = :'name';");
 });
 
+test('a psql meta-command ends the statement before it and is not indented', () => {
+    const src = [
+        "COPY (select line_text from gen_interface_expfiles order by line_no) TO STDOUT WITH (FORMAT csv) \\g :outfile",
+        '',
+        '\\i :outfile',
+        '',
+        'DO $$',
+        'BEGIN',
+        "  CALL p_clear_session('ENDE');",
+        'END $$;',
+    ].join('\n');
+    const r = formatSqlChecked(src);
+    assert.equal(r.ok, true, r.reason);
+    // `\g` sends the query it is written behind, so it stays on that line …
+    assert.ok(/WITH \(FORMAT csv\) \\g :outfile\n/.test(r.text), r.text);
+    // … and neither the next meta-command nor the next statement is indented.
+    assert.ok(r.text.includes('\n\\i :outfile\n'), r.text);
+    assert.ok(r.text.includes('\nDO $$\n'), r.text);
+    assert.equal(formatSql(r.text), r.text);
+});
+
 test('does not mistake a cast, an assignment or an array slice for a psql variable', () => {
     assert.equal(formatSql('select a::text, b[1:3], c[i:j] from t;'),
         'SELECT\n  a::TEXT,\n  b[1 : 3],\n  c[i : j]\nFROM t;');

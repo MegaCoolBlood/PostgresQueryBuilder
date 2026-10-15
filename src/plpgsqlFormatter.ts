@@ -885,11 +885,12 @@ function tokenize(input: string): Tok[] {
                 }
             }
         }
-        // psql meta-command such as `\pset footer off` or `\set ECHO none`: a
-        // backslash that opens a line runs to the end of that line and is read by
-        // psql itself, not by the server. The whole line is kept as one token so
-        // it is neither lexed as SQL nor merged with the statement after it.
-        if (c === '\\' && (nl > 0 || toks.length === 0) && /[A-Za-z?!]/.test(c2 || '')) {
+        // psql meta-command such as `\pset footer off`, `\set ECHO none` or the
+        // `\g :outfile` that sends the query before it. A backslash is not a legal
+        // character in SQL outside a literal, so it always introduces a command
+        // that psql itself reads up to the end of the line. The whole line is kept
+        // as one token so it is neither lexed as SQL nor merged with its neighbours.
+        if (c === '\\' && /[A-Za-z?!]/.test(c2 || '')) {
             let j = i + 1;
             while (j < n && input[j] !== '\n') j++;
             toks.push({ type: 'directive', text: input.slice(i, j).replace(/\s+$/, ''), nlBefore: nl });
@@ -2775,12 +2776,24 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             continue;
         }
 
-        // --- Script directive (`@UP`, `@PLSQL`, …) ---------------------------
+        // --- Script directive (`@UP`, `\pset …`, `\g …`) ---------------------
         if (t.type === 'directive') {
-            if (cur !== '') flush();
-            insertBlanks(blanks);
-            lineIndent = pendingIndent;
-            out.push((indentStr(lineIndent) + t.text).replace(/\s+$/, ''));
+            // The directive ends whatever statement text came before it, so the
+            // next statement restarts at the current statement level. A directive
+            // the author wrote behind code (`… \g :outfile`) stays on that line.
+            if (t.nlBefore === 0 && cur !== '') {
+                cur += ' ' + t.text;
+                flush();
+            } else if (t.nlBefore === 0 && out.length > 0) {
+                out[out.length - 1] = (out[out.length - 1] + ' ' + t.text).replace(/\s+$/, '');
+            } else {
+                if (cur !== '') flush();
+                insertBlanks(blanks);
+                lineIndent = blockIndent;
+                out.push((indentStr(lineIndent) + t.text).replace(/\s+$/, ''));
+            }
+            pendingIndent = blockIndent;
+            lastWord = '';
             prev = null;
             continue;
         }
