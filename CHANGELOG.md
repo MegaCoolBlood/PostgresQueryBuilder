@@ -2,7 +2,10 @@
 
 ## 3.2.3
 
+- **Deployment-script markers such as `@UP` or `@PLSQL` keep their own line:** In a migration script that wraps its statements in `@UP` / `@PLSQL` / `@DOWN` markers, formatting collapsed every marker into the following statement and inserted a space after the `@`, turning the file into `@ UP @ PLSQL UPDATE …` — the markers are read line by line by the deployment tooling, so the result was no longer usable. The `@` was taken for PostgreSQL's absolute-value operator and the marker name for its operand. A `@` that opens a line, is followed by a plain word and by nothing else up to the end of that line is now recognised as a directive: it stays alone on its line, keeps the blank lines around it, and the statement after it is formatted as usual. `@` used as an operator (`@ -5`, `@>`, or a line that continues after `@col`) is unaffected.
+
 - **A numbered `format()` placeholder such as `%1$L` is no longer torn apart:** Inside a dollar-quoted template that the formatter reformats as code — for example the `$fmt$ … $fmt$` body of an `EXECUTE format(…)` — a placeholder that names its argument by position came back as `% 1 $ L`, and the spaces turned a valid format string into SQL that fails at runtime. Only the short forms `%s`, `%I` and `%L` were recognised as a single unit; `%1$L` was read as a modulo operator, the number `1`, a stray `$` and the identifier `L`, each of which was then spaced out like ordinary operands. The formatter now understands the whole conversion specification — the optional `position$`, the `-` flag and the width (including `*`) in front of the type character — so `%1$L`, `%2$s`, `%-10s` and `%2$-20I` are emitted exactly as written. A plain modulo (`a % b`, `a %system`) is still treated as an operator.
+
 
 ## 3.2.2
 

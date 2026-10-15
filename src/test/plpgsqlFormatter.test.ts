@@ -1133,6 +1133,43 @@ test('keeps the flag and width parts of a format() specifier glued together', ()
     assert.equal(formatSql('select a from t where b = $1 % $2;'), 'SELECT a FROM t WHERE b = $1 % $2;');
 });
 
+test('keeps deployment-script directives like @UP on their own line', () => {
+    const src = [
+        ' -- SCRIPT NUMBER 319',
+        '@UP',
+        '@PLSQL',
+        "UPDATE leda.bos_wtm_calendar_entries SET wtce_value = '4,35' WHERE wtce_wtc_id = 23 AND wtce_wtcp_id = 1931;",
+        '@PLSQL',
+        '@UP',
+        '',
+        '@DOWN',
+        '@PLSQL',
+        '',
+        '@PLSQL',
+        '@DOWN',
+    ].join('\n');
+    const r = formatSqlChecked(src);
+    assert.equal(r.ok, true, r.reason);
+    const lines = r.text.split('\n');
+    assert.ok(!/@\s/.test(r.text), 'a directive must never be split into `@ UP`\n' + r.text);
+    assert.deepEqual(lines.slice(0, 4), [
+        '-- SCRIPT NUMBER 319',
+        '@UP',
+        '@PLSQL',
+        'UPDATE leda.bos_wtm_calendar_entries',
+    ], r.text);
+    // The closing directives keep the blank line the author put between them.
+    assert.ok(r.text.includes('@PLSQL\n@UP\n\n@DOWN\n@PLSQL\n\n@PLSQL\n@DOWN'), r.text);
+    assert.equal(formatSql(r.text), r.text);
+});
+
+test('still treats @ as an operator when it is not a standalone directive', () => {
+    assert.equal(formatSql('select @ -5;'), 'SELECT @ - 5;');
+    // `@col` opens the line but is followed by more code, so it is the operator.
+    assert.equal(formatSql('select a from t\nwhere @col > 5;'), 'SELECT a FROM t WHERE @ col > 5;');
+    assert.equal(formatSql("select a from t where b @> '{1}';"), "SELECT a FROM t WHERE b @> '{1}';");
+});
+
 
 test('format() specifier keeps the code semantically identical (safety net not tripped)', () => {
     const src = [

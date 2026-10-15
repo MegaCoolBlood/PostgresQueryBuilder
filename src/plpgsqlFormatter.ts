@@ -688,7 +688,8 @@ function dollarBodyIsCode(body: string): boolean {
 
 type TokType =
     | 'word' | 'quotedIdent' | 'string' | 'dollar' | 'number'
-    | 'param' | 'lineComment' | 'blockComment' | 'punct' | 'operator';
+    | 'param' | 'lineComment' | 'blockComment' | 'punct' | 'operator'
+    | 'directive';
 
 interface Tok {
     type: TokType;
@@ -857,6 +858,22 @@ function tokenize(input: string): Tok[] {
                     toks.push({ type: 'operator', text: spec[0], nlBefore: nl });
                     nl = 0; i += spec[0].length; continue;
                 }
+            }
+        }
+        // Deployment-script directive such as `@UP` or `@PLSQL`: a `@` that opens
+        // its own line, is followed by a bare word and by nothing else up to the
+        // end of that line, is a marker the surrounding tooling reads line by
+        // line, not the absolute-value operator. Emitting it as one token lets the
+        // renderer keep it on its own line instead of gluing it to the next
+        // statement as `@ UP @ PLSQL UPDATE …`.
+        if (c === '@' && (nl > 0 || toks.length === 0) && /[A-Za-z_]/.test(c2 || '')) {
+            let j = i + 1;
+            while (j < n && /[A-Za-z0-9_]/.test(input[j])) j++;
+            let k = j;
+            while (k < n && (input[k] === ' ' || input[k] === '\t' || input[k] === '\r')) k++;
+            if (k >= n || input[k] === '\n') {
+                toks.push({ type: 'directive', text: input.slice(i, j), nlBefore: nl });
+                nl = 0; i = j; continue;
             }
         }
         // Operator run. In PostgreSQL `--` and `/*` always start a comment and
@@ -2696,6 +2713,16 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                     emit(t.text, { text: t.text, isKeyword: false, type: 'comment' });
                 }
             }
+            continue;
+        }
+
+        // --- Script directive (`@UP`, `@PLSQL`, …) ---------------------------
+        if (t.type === 'directive') {
+            if (cur !== '') flush();
+            insertBlanks(blanks);
+            lineIndent = pendingIndent;
+            out.push((indentStr(lineIndent) + t.text).replace(/\s+$/, ''));
+            prev = null;
             continue;
         }
 
