@@ -5,6 +5,7 @@ import { POSTGRES_RESERVED_KEYWORDS } from './reservedKeywords';
 import {
     attributeKey,
     buildEditPlan,
+    disambiguateColumnNames,
     isWritableRelkind,
     resolveFieldSources,
     splitAliasedSources,
@@ -13,7 +14,7 @@ import {
     type ResultFieldInfo,
     type ViewCapabilities
 } from './resultSource';
-import { resultColumnQualifiers } from './hiddenKeyColumns';
+import { resultColumnQualifiers, selectListQualifiers } from './hiddenKeyColumns';
 import type { QueryResultRow, FieldDef } from 'pg';
 
 /**
@@ -34,6 +35,22 @@ export const SELECTABLE_TABLE_TYPES_SQL = SELECTABLE_TABLE_TYPES.map(t => `'${t}
 
 /** Schemas that should never appear in the table tree / pickers. */
 const SYSTEM_SCHEMAS_SQL = `'pg_catalog', 'information_schema', 'pg_toast'`;
+
+/**
+ * The result fields with a name that is unique within the result. A name
+ * PostgreSQL reports twice (`SELECT a.x, b.x`) is qualified with the alias the
+ * column is selected through, read from the select list of `sql`. Every other
+ * field is returned unchanged, so a result without duplicates is untouched.
+ */
+export function uniqueFieldNames<T extends { name: string }>(fields: ReadonlyArray<T>, sql?: string): T[] {
+    const names = disambiguateColumnNames(
+        fields.map((f) => f.name),
+        sql ? selectListQualifiers(sql) : null
+    );
+    return fields.map((field, index) => (
+        names[index] === field.name ? field : { ...field, name: names[index] }
+    ));
+}
 
 /**
  * Build a query that lists all selectable relations as `(table_schema,
@@ -642,12 +659,15 @@ export class QueryRunner {
     }
 
     async executeSQL(sql: string): Promise<{ rows: QueryResultRow[]; fields: FieldDef[]; rowCount: number }> {
-        const result = await this.connectionManager.query(sql);
-        return {
-            rows: result.rows || [],
-            fields: result.fields || [],
-            rowCount: result.rowCount || 0
-        };
+        const result = await this.connectionManager.queryPositional(sql);
+        const fields = uniqueFieldNames(result.fields || [], sql);
+        const values: unknown[][] = (result.rows as unknown[][]) || [];
+        const rows = values.map((rowValues) => {
+            const row: Record<string, unknown> = {};
+            fields.forEach((field, index) => { row[field.name] = rowValues[index]; });
+            return row as QueryResultRow;
+        });
+        return { rows, fields, rowCount: result.rowCount || 0 };
     }
 
     generateSQL(targets: ReadonlyArray<CommitTarget>): string {

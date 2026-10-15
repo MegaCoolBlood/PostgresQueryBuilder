@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addHiddenKeyColumns, isHiddenKeyColumn, planHiddenKeyColumns, resultColumnQualifiers } from '../hiddenKeyColumns';
+import { addHiddenKeyColumns, isHiddenKeyColumn, planHiddenKeyColumns, resultColumnQualifiers, selectListQualifiers } from '../hiddenKeyColumns';
 import type { ColumnSource, IdentityStrategy, TableEditPlan } from '../resultSource';
 
 function col(name: string, tableOid: number, table: string, sourceColumn: string): ColumnSource {
@@ -79,6 +79,33 @@ test('resultColumnQualifiers reports the alias every column is selected through'
 test('resultColumnQualifiers leaves out a name two aliases give the same way', () => {
     const qualifiers = resultColumnQualifiers('SELECT a.value, b.value FROM attributes a JOIN attributes b ON b.id = a.next');
     assert.equal(qualifiers.has('value'), false);
+});
+
+test('resultColumnQualifiers also answers for the alias-qualified spelling', () => {
+    const qualifiers = resultColumnQualifiers('SELECT a.value, b.value FROM attributes a JOIN attributes b ON b.id = a.next');
+    assert.equal(qualifiers.get('a.value'), 'a');
+    assert.equal(qualifiers.get('b.value'), 'b');
+});
+
+test('selectListQualifiers reports one alias per result column', () => {
+    assert.deepEqual(
+        selectListQualifiers('SELECT a.x, b.x, total, count(*) FROM t a JOIN t b ON b.id = a.next'),
+        ['a', 'b', '', null]
+    );
+});
+
+test('selectListQualifiers refuses a list whose columns cannot be counted', () => {
+    assert.equal(selectListQualifiers('SELECT * FROM t'), null);
+    assert.equal(selectListQualifiers('SELECT a.*, b.x FROM t a JOIN t b ON b.id = a.next'), null);
+    assert.equal(selectListQualifiers('UPDATE t SET x = 1'), null);
+    assert.equal(selectListQualifiers('SELECT a.x FROM t a; SELECT 1'), null);
+});
+
+test('selectListQualifiers reads past a DISTINCT and ignores nested commas', () => {
+    assert.deepEqual(
+        selectListQualifiers('SELECT DISTINCT a.x, coalesce(b.y, b.z) FROM t a JOIN t b ON b.id = a.next'),
+        ['a', null]
+    );
 });
 
 test('resultColumnQualifiers reports nothing for a query that cannot be read', () => {

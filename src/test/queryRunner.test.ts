@@ -8,12 +8,14 @@ function createRunner({
     options = { alwaysQualifySchema: false, alwaysQuote: false },
     activeConnectionConfig,
     queryHandler,
+    positionalHandler,
     metadataHandler,
     pool
 }: {
     options?: SelectOptions;
     activeConnectionConfig?: any;
     queryHandler?: (sql: string, params?: any[]) => Promise<any> | any;
+    positionalHandler?: (sql: string, params?: any[]) => Promise<any> | any;
     metadataHandler?: (sql: string, params?: any[]) => Promise<any[]> | any[];
     pool?: any;
 } = {}) {
@@ -25,6 +27,13 @@ function createRunner({
             queryCalls.push({ sql, params });
             if (queryHandler) {
                 return await queryHandler(sql, params);
+            }
+            return { rows: [], fields: [], rowCount: 0 };
+        },
+        queryPositional: async (sql: string, params?: any[]) => {
+            queryCalls.push({ sql, params });
+            if (positionalHandler) {
+                return await positionalHandler(sql, params);
             }
             return { rows: [], fields: [], rowCount: 0 };
         },
@@ -243,13 +252,43 @@ test('getColumns maps a column comment and defaults a missing comment to null', 
     assert.deepEqual(metadataCalls[0].params, ['public', 'users']);
 });
 
-test('executeSQL normalizes empty fields and rowCount', async () => {
+test('executeSQL normalizes a result without fields, rows or rowCount', async () => {
     const { runner } = createRunner({
-        queryHandler: () => ({ rows: [{ id: 1 }] })
+        positionalHandler: () => ({})
     });
 
     const result = await runner.executeSQL('SELECT 1');
-    assert.deepEqual(result, { rows: [{ id: 1 }], fields: [], rowCount: 0 });
+    assert.deepEqual(result, { rows: [], fields: [], rowCount: 0 });
+});
+
+test('executeSQL keys the row values by their result column', async () => {
+    const { runner } = createRunner({
+        positionalHandler: () => ({
+            rows: [[1, 'Alice']],
+            fields: [{ name: 'id' }, { name: 'name' }],
+            rowCount: 1
+        })
+    });
+
+    const result = await runner.executeSQL('SELECT id, name FROM users');
+    assert.deepEqual(result.rows, [{ id: 1, name: 'Alice' }]);
+    assert.deepEqual(result.fields.map(f => f.name), ['id', 'name'], 'unique names stay as they are');
+});
+
+test('executeSQL keeps both values when two columns share a name', async () => {
+    const { runner } = createRunner({
+        positionalHandler: () => ({
+            rows: [[20, 'left', null, null]],
+            fields: [{ name: 'a' }, { name: 'b' }, { name: 'a' }, { name: 'b' }],
+            rowCount: 1
+        })
+    });
+
+    const result = await runner.executeSQL('SELECT x.a, x.b, y.a, y.b FROM t x LEFT JOIN t y ON y.c > x.c');
+    assert.deepEqual(result.fields.map(f => f.name), ['x.a', 'x.b', 'y.a', 'y.b'],
+        'a duplicated name is qualified with the alias it is selected through');
+    assert.deepEqual(result.rows, [{ 'x.a': 20, 'x.b': 'left', 'y.a': null, 'y.b': null }],
+        'the values of the first alias must survive the ones of the second');
 });
 
 test('generateSQL includes update, insert, delete, and reserved keyword quoting rules', () => {

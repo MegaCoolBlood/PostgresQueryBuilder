@@ -195,6 +195,10 @@ function qualifierOf(plan: TableEditPlan, items: ReadonlyArray<SelectItem>): str
  * Result column name -> the table alias it is selected through. Only plain
  * `alias.column` items are reported, and a name used by two different aliases
  * is left out because it could not be told apart afterwards.
+ *
+ * A column whose name occurs twice is renamed to `alias.name` before it reaches
+ * the grid, so that spelling is reported as well — it is what the edit plan
+ * sees for exactly those columns.
  */
 export function resultColumnQualifiers(sql: string): Map<string, string> {
     const list = parseSelectList(sql);
@@ -207,6 +211,7 @@ export function resultColumnQualifiers(sql: string): Map<string, string> {
         if (!item.qualifier) {
             continue;
         }
+        qualifiers.set(`${item.qualifier}.${item.name}`, item.qualifier);
         const known = qualifiers.get(item.name);
         if (known !== undefined && known !== item.qualifier) {
             ambiguous.add(item.name);
@@ -218,6 +223,48 @@ export function resultColumnQualifiers(sql: string): Map<string, string> {
     }
     return qualifiers;
 }
+
+/**
+ * The alias of every select-list item, in result-column order: the qualifier as
+ * written, `''` for an unqualified item and `null` for an item that is not a
+ * plain column reference. `null` is returned for a select list whose items
+ * cannot be matched to result columns one by one — a `*` stands for an unknown
+ * number of columns, and a set operation or a non-SELECT has no such list.
+ */
+export function selectListQualifiers(sql: string): Array<string | null> | null {
+    const stripped = sql.replace(/;\s*$/, '');
+    const masked = maskForScan(stripped);
+    if (masked.includes(';')) {
+        return null;
+    }
+    const selectMatch = /^\s*SELECT\b/i.exec(masked);
+    if (!selectMatch) {
+        return null;
+    }
+    const depths = parenDepths(masked);
+    const from = findFromClause(masked, depths);
+    if (from < 0) {
+        return null;
+    }
+    let listStart = selectMatch[0].length;
+    const lead = /^\s*(?:DISTINCT|ALL)\b/i.exec(masked.slice(listStart, from));
+    if (lead) {
+        listStart += lead[0].length;
+    }
+    const readable = maskSql(stripped);
+    const out: Array<string | null> = [];
+    for (const [start, end] of splitTopLevelCommas(masked, listStart, from, depths)) {
+        const text = masked.slice(start, end).trim();
+        // `*` and `a.*` expand to an unknown number of columns.
+        if (text === '' || /(?:^|\.\s*)\*$/.test(text)) {
+            return null;
+        }
+        const match = PLAIN_ITEM.exec(readable.slice(start, end).trim());
+        out.push(match ? (match[2] ? match[1] : '') : null);
+    }
+    return out;
+}
+
 
 /**
  * The key columns that should be selected silently for the given result, in the

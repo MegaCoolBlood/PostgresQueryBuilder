@@ -181,6 +181,18 @@ function createManager(overrides: { connection?: any; mappings?: any[] } = {}) {
         }),
         ...(overrides.connection || {})
     };
+    // Rows reach the grid through the positional path, so derive it from the
+    // name-keyed stub each test defines.
+    if (!connectionManager.queryPositional) {
+        connectionManager.queryPositional = async (sql: string, params?: any[]) => {
+            const result = await connectionManager.query(sql, params);
+            const fields = result.fields || [];
+            return {
+                ...result,
+                rows: (result.rows || []).map((row: any) => fields.map((f: any) => row[f.name]))
+            };
+        };
+    }
     const columnMappingManager: any = {
         onDidChange: () => ({ dispose() {} }),
         getMappingsForTable: (schema: string, table: string) =>
@@ -1070,4 +1082,79 @@ test('query panel: each alias of a twice-joined table identifies its own row', a
     assert.deepEqual(tables.map((t: any) => t.identityColumns[0].name), ['__pqb_key_0', '__pqb_key_1']);
     assert.deepEqual(tables.map((t: any) => t.columns.map((c: any) => c.name)), [['IRWAZ'], ['PLAWAZ']]);
     assert.equal(rowsLoaded.capabilities.warning, null);
+});
+
+// ===== Two result columns that carry the same name =====
+
+/** Both aliases select the same unaliased columns, so the names collide. */
+const DUPLICATE_SQL = 'SELECT a.a, a.b, b.a, b.b FROM things a LEFT JOIN things b ON b.c > a.c WHERE a.a = 20';
+
+/** Load a query whose result names two columns `a` and two columns `b`. */
+async function runDuplicateNameQuery() {
+    const field = (name: string, columnID: number) => ({ name, dataTypeID: 23, tableID: 1, columnID });
+    const fieldsOf = (sql: string) => {
+        const base = [field('a', 1), field('b', 2), field('a', 1), field('b', 2)];
+        return sql.includes('__pqb_key_0')
+            ? [...base, field('__pqb_key_0', 4), field('__pqb_key_1', 4)]
+            : base;
+    };
+    const connection = {
+        // The probe for the early header asks for the columns only.
+        query: async (sql: string) => ({ rows: [], fields: fieldsOf(sql) }),
+        // The real result: the second alias found no match, so its values are
+        // NULL while the first alias has values.
+        queryPositional: async (sql: string) => ({
+            rows: [sql.includes('__pqb_key_0') ? [20, 7, null, null, 11, null] : [20, 7, null, null]],
+            fields: fieldsOf(sql),
+            rowCount: 1
+        }),
+        queryMetadata: async (sql: string) => {
+            if (sql.includes('FROM pg_class')) {
+                return [{ oid: 1, nspname: 'public', relname: 'things', relkind: 'r' }];
+            }
+            if (sql.includes('FROM pg_attribute')) {
+                return [
+                    { attrelid: 1, attnum: 1, attname: 'a' },
+                    { attrelid: 1, attnum: 2, attname: 'b' },
+                    { attrelid: 1, attnum: 3, attname: 'c' },
+                    { attrelid: 1, attnum: 4, attname: 'id' }
+                ];
+            }
+            if (sql.includes('indisprimary')) {
+                return [{ attname: 'id' }];
+            }
+            return [];
+        }
+    };
+    const opened = await openCustomQueryPanel(undefined, { connection });
+    await opened.send({ command: 'loadRows', sql: DUPLICATE_SQL });
+    await new Promise(resolve => setImmediate(resolve));
+    return { rowsLoaded: opened.panel.posted.filter((m: any) => m.command === 'rowsLoaded').pop() };
+}
+
+test('query panel: duplicated column names carry the alias they are selected through', async () => {
+    const { rowsLoaded } = await runDuplicateNameQuery();
+    assert.ok(rowsLoaded, 'expected the rows to be posted');
+    assert.deepEqual(rowsLoaded.columns.map((c: any) => c.name), ['a.a', 'a.b', 'b.a', 'b.b']);
+});
+
+test('query panel: a column shown twice keeps the values of both aliases', async () => {
+    const { rowsLoaded } = await runDuplicateNameQuery();
+    assert.deepEqual(rowsLoaded.rows[0]['a.a'], 20, 'the first alias must not be overwritten');
+    assert.deepEqual(rowsLoaded.rows[0]['a.b'], 7);
+    assert.equal(rowsLoaded.rows[0]['b.a'], null, 'the unmatched join stays empty');
+    assert.equal(rowsLoaded.rows[0]['b.b'], null);
+});
+
+test('query panel: a renamed column still resolves to its own table occurrence', async () => {
+    const { rowsLoaded } = await runDuplicateNameQuery();
+    const sources = rowsLoaded.capabilities.columnSources;
+    assert.deepEqual(sources['a.a'].qualifier, 'a');
+    assert.deepEqual(sources['a.a'].sourceColumn, 'a', 'the real column keeps its own name');
+    assert.deepEqual(sources['b.a'].qualifier, 'b');
+    assert.deepEqual(
+        rowsLoaded.capabilities.tables.map((t: any) => t.qualifier),
+        ['a', 'b'],
+        'both occurrences are written back separately'
+    );
 });

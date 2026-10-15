@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
-import { QueryRunner, buildRelationListQuery, type CommitTarget, type ForeignKeyInfo, type ReferencingTableInfo } from './queryRunner';
+import { QueryRunner, buildRelationListQuery, uniqueFieldNames, type CommitTarget, type ForeignKeyInfo, type ReferencingTableInfo } from './queryRunner';
 import { ExportService } from './exportService';
 import { ColumnMappingManager, MAPPING_CONDITION_OPERATORS, type CustomColumnMapping } from './columnMappingManager';
 import { PermanentConstraintManager } from './permanentConstraintManager';
@@ -911,10 +911,13 @@ export class TableWebViewManager {
             if (!probe.fields || probe.fields.length === 0) {
                 return undefined;
             }
-            const columns = await this.resolveResultColumns(probe.fields);
+            // Same renaming as for the real result, so the early header does not
+            // change once the rows arrive.
+            const fields = uniqueFieldNames(probe.fields, statements[0]);
+            const columns = await this.resolveResultColumns(fields);
             session.columns = columns;
             const queryRunner = new QueryRunner(this.connectionManager);
-            const capabilities = await queryRunner.resolveEditPlan(probe.fields, statements[0]);
+            const capabilities = await queryRunner.resolveEditPlan(fields, statements[0]);
             this.post(session, { command: 'columnsLoaded', columns, capabilities });
             return capabilities;
         } catch {

@@ -143,6 +143,44 @@ export function attributeKey(tableOid: number, attnum: number): string {
 }
 
 /**
+ * Result column names in which no name occurs twice.
+ *
+ * PostgreSQL happily returns the same name for two columns (`SELECT a.x, b.x`),
+ * but rows, the edit plan, the grid and every filter are keyed by that name, so
+ * one of the two columns would silently replace the other — the result would
+ * show the values of the last one for both. A name that occurs more than once
+ * is therefore qualified with the alias it is selected through (`a.x`, `b.x`);
+ * where no alias is known, or where that is still not unique, a counter is
+ * appended (`x`, `x_2`). Names that occur once are returned unchanged.
+ */
+export function disambiguateColumnNames(
+    names: ReadonlyArray<string>,
+    qualifiers?: ReadonlyArray<string | null> | null
+): string[] {
+    const occurrences = new Map<string, number>();
+    for (const name of names) {
+        occurrences.set(name, (occurrences.get(name) ?? 0) + 1);
+    }
+    const aligned = qualifiers && qualifiers.length === names.length ? qualifiers : null;
+    const taken = new Set<string>(names.filter((n) => occurrences.get(n) === 1));
+    return names.map((name, index) => {
+        if (occurrences.get(name) === 1) {
+            return name;
+        }
+        const qualifier = aligned ? aligned[index] : null;
+        const base = qualifier ? `${qualifier}.${name}` : name;
+        let candidate = base;
+        let seq = 2;
+        while (taken.has(candidate)) {
+            candidate = `${base}_${seq}`;
+            seq++;
+        }
+        taken.add(candidate);
+        return candidate;
+    });
+}
+
+/**
  * Map every result field to its source table column, or to `null` for computed
  * columns, literals and aggregates (which PostgreSQL reports with a zero
  * `tableID`/`columnID`).

@@ -4361,7 +4361,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             // from the WHERE clause on merge.
             newClausesByCol[col.name] = val
                 ? buildFilterClause(
-                    formatIdentifier(col.name), val, filterType,
+                    formatColumnReference(col.name), val, filterType,
                     !!exactFilters[col.name], getFilterOperator(col.name), thousandSeparator
                 )
                 : '';
@@ -4635,6 +4635,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const lower = colPart.toLowerCase();
         const fmtLower = formatIdentifier(colName).toLowerCase();
         return lower === fmtLower
+            || lower === formatColumnReference(colName).toLowerCase()
             || lower === `"${colName.toLowerCase()}"`
             || lower === colName.toLowerCase();
     }
@@ -4659,7 +4660,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function applyOrderBy(colName, direction, mode) {
-        const fmtCol = formatIdentifier(colName);
+        const fmtCol = formatColumnReference(colName);
         const baseSql = (queryInput.value || '').trim() || `SELECT * FROM ${getDefaultTableReference()}`;
         const parsed = parseSqlForOrder(baseSql);
         let newOrder;
@@ -6223,6 +6224,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function needsQuoting(identifier) {
         return !/^[a-z_][a-z0-9_$]*$/.test(identifier) || POSTGRES_RESERVED_KEYWORDS.has(String(identifier).toLowerCase());
+    }
+
+    // SQL reference of a result column. A column whose name occurs twice in the
+    // result carries the alias it is selected through (`a.x`), and that has to
+    // be written as `a."x"` — quoting it as one name would not resolve.
+    function formatColumnReference(colName) {
+        const source = (caps.columnSources || {})[colName];
+        if (source && source.qualifier && source.sourceColumn) {
+            return formatIdentifier(source.qualifier) + '.' + formatIdentifier(source.sourceColumn);
+        }
+        return formatIdentifier(colName);
     }
 
     function escapeHtml(text) {

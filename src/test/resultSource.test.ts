@@ -5,6 +5,7 @@ import {
     attributeKey,
     buildEditPlan,
     chooseIdentity,
+    disambiguateColumnNames,
     identityWarning,
     isWritableRelkind,
     resolveFieldSources,
@@ -43,6 +44,31 @@ test('isWritableRelkind assumes writable when the kind is unknown', () => {
 
 test('attributeKey combines relation oid and attribute number', () => {
     assert.equal(attributeKey(16385, 2), '16385:2');
+});
+
+// ===== result column names that occur twice =====
+
+test('disambiguateColumnNames leaves a result without duplicates untouched', () => {
+    assert.deepEqual(disambiguateColumnNames(['id', 'name'], ['a', 'b']), ['id', 'name']);
+});
+
+test('disambiguateColumnNames qualifies a duplicated name with its alias', () => {
+    assert.deepEqual(
+        disambiguateColumnNames(['a', 'b', 'a', 'b'], ['x', 'x', 'y', 'y']),
+        ['x.a', 'x.b', 'y.a', 'y.b']
+    );
+});
+
+test('disambiguateColumnNames numbers duplicates when no alias is known', () => {
+    assert.deepEqual(disambiguateColumnNames(['a', 'a', 'a'], null), ['a', 'a_2', 'a_3']);
+    assert.deepEqual(disambiguateColumnNames(['a', 'a'], ['x']), ['a', 'a_2'], 'a misaligned list is ignored');
+});
+
+test('disambiguateColumnNames never collides with a name the result already has', () => {
+    assert.deepEqual(
+        disambiguateColumnNames(['a', 'a', 'x.a'], ['x', 'x', '']),
+        ['x.a_2', 'x.a_3', 'x.a']
+    );
 });
 
 test('resolveFieldSources maps aliased fields back to their table column', () => {

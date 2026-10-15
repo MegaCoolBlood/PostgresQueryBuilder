@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as dns from 'dns';
 import { promisify } from 'util';
-import { Pool, PoolConfig, QueryResult, QueryResultRow, types as pgTypes } from 'pg';
+import { Pool, PoolConfig, QueryArrayResult, QueryResult, QueryResultRow, types as pgTypes } from 'pg';
 import { createHash } from 'crypto';
 import { Logger, getErrorMessage } from './logger';
 import { buildHtmlDocument } from './webviewUtils';
@@ -502,6 +502,19 @@ export class ConnectionManager {
             throw new Error('Not connected to a database');
         }
         return this.pool.query(sql, params as unknown[] | undefined);
+    }
+
+    /**
+     * Run a query and return each row as an array of values in column order.
+     * A row object is keyed by column name, so a result that names two columns
+     * alike (`SELECT a.x, b.x`) would lose one of them; reading the values by
+     * position keeps every column of such a result intact.
+     */
+    async queryPositional(sql: string, params?: unknown[]): Promise<QueryArrayResult> {
+        if (!this.pool) {
+            throw new Error('Not connected to a database');
+        }
+        return this.pool.query({ text: sql, rowMode: 'array', values: params as unknown[] | undefined });
     }
 
     async queryMetadata(sql: string, params?: unknown[]): Promise<QueryResultRow[]> {
