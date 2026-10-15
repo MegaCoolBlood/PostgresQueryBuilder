@@ -1170,6 +1170,44 @@ test('still treats @ as an operator when it is not a standalone directive', () =
     assert.equal(formatSql("select a from t where b @> '{1}';"), "SELECT a FROM t WHERE b @> '{1}';");
 });
 
+test('keeps psql meta-command lines and variable references verbatim', () => {
+    const src = [
+        '\\pset footer off',
+        '\\set ECHO none',
+        '',
+        "\\set outfile 'gen_interface_expfiles' :var1 '.sql'",
+        '',
+        'INSERT INTO tmp_vars (key, val) VALUES',
+        "            ('var1', :'var1'),",
+        "            ('var2', :\"var2\");",
+    ].join('\n');
+    const r = formatSqlChecked(src);
+    assert.equal(r.ok, true, r.reason);
+    const lines = r.text.split('\n');
+    assert.deepEqual(lines.slice(0, 5), [
+        '\\pset footer off',
+        '\\set ECHO none',
+        '',
+        "\\set outfile 'gen_interface_expfiles' :var1 '.sql'",
+        '',
+    ], r.text);
+    assert.ok(r.text.includes("('var1', :'var1')"), r.text);
+    assert.ok(r.text.includes('(\'var2\', :"var2")'), r.text);
+    assert.equal(formatSql(r.text), r.text);
+});
+
+test('keeps a psql variable glued to its colon in an ordinary statement', () => {
+    assert.equal(formatSql("select * from t where id = :var1 and n = :'name';"),
+        "SELECT *\nFROM t\nWHERE id = :var1\n  AND n = :'name';");
+});
+
+test('does not mistake a cast, an assignment or an array slice for a psql variable', () => {
+    assert.equal(formatSql('select a::text, b[1:3], c[i:j] from t;'),
+        'SELECT\n  a::TEXT,\n  b[1 : 3],\n  c[i : j]\nFROM t;');
+    assert.equal(formatSql('do $$ declare x int; begin x := 1; end $$;'),
+        'DO $$\nDECLARE\n  x INT;\nBEGIN\n  x := 1;\nEND\n$$;');
+});
+
 
 test('format() specifier keeps the code semantically identical (safety net not tripped)', () => {
     const src = [

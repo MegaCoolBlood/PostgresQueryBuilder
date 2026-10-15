@@ -712,6 +712,8 @@ function tokenize(input: string): Tok[] {
     const n = input.length;
     let i = 0;
     let nl = 0;
+    // Open `[` subscripts, where a bare `:` is a slice bound, not a psql variable.
+    let bracket = 0;
     while (i < n) {
         const c = input[i];
         const c2 = input[i + 1];
@@ -809,6 +811,25 @@ function tokenize(input: string): Tok[] {
                 nl = 0; i = j; continue;
             }
         }
+        // psql variable interpolation: `:name`, `:'name'` and `:"name"` are one
+        // reference, so the colon must stay glued to it (`: 'var1'` is no longer
+        // a variable and makes the script fail). `::` (cast) and `:=`
+        // (assignment) start with a colon too but never with a name character,
+        // so they still go through the operator run below.
+        if (c === ':' && /[A-Za-z_'"]/.test(c2 || '')) {
+            if (c2 === "'" || c2 === '"') {
+                const close = input.indexOf(c2, i + 2);
+                if (close !== -1 && !input.slice(i + 2, close).includes('\n')) {
+                    toks.push({ type: 'param', text: input.slice(i, close + 1), nlBefore: nl });
+                    nl = 0; i = close + 1; continue;
+                }
+            } else if (bracket === 0) {
+                let j = i + 1;
+                while (j < n && /[A-Za-z0-9_]/.test(input[j])) j++;
+                toks.push({ type: 'param', text: input.slice(i, j), nlBefore: nl });
+                nl = 0; i = j; continue;
+            }
+        }
         // Number
         if (/\d/.test(c)) {
             let j = i + 1;
@@ -838,6 +859,8 @@ function tokenize(input: string): Tok[] {
         }
         // Parentheses / structural punctuation
         if (c === '(' || c === ')' || c === ',' || c === ';' || c === '.' || c === '[' || c === ']') {
+            if (c === '[') bracket++;
+            else if (c === ']') bracket = Math.max(0, bracket - 1);
             toks.push({ type: 'punct', text: c, nlBefore: nl });
             nl = 0; i++; continue;
         }
@@ -859,6 +882,16 @@ function tokenize(input: string): Tok[] {
                     nl = 0; i += spec[0].length; continue;
                 }
             }
+        }
+        // psql meta-command such as `\pset footer off` or `\set ECHO none`: a
+        // backslash that opens a line runs to the end of that line and is read by
+        // psql itself, not by the server. The whole line is kept as one token so
+        // it is neither lexed as SQL nor merged with the statement after it.
+        if (c === '\\' && (nl > 0 || toks.length === 0) && /[A-Za-z?!]/.test(c2 || '')) {
+            let j = i + 1;
+            while (j < n && input[j] !== '\n') j++;
+            toks.push({ type: 'directive', text: input.slice(i, j).replace(/\s+$/, ''), nlBefore: nl });
+            nl = 0; i = j; continue;
         }
         // Deployment-script directive such as `@UP` or `@PLSQL`: a `@` that opens
         // its own line, is followed by a bare word and by nothing else up to the
