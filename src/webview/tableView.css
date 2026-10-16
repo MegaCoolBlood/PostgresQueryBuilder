@@ -650,6 +650,41 @@ body.row-resizing * {
     opacity: 0.6;
 }
 
+/* Thin strip along the top edge of a column header: clicking it selects the
+   whole column, dragging along the strips selects several. The rest of the
+   header keeps sorting on click and reordering on drag. It stops short of the
+   resize handle on the right edge. */
+.col-select-strip {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 6px;
+    height: 6px;
+    cursor: pointer;
+    z-index: calc(var(--z-sticky) + 1);
+}
+
+.col-select-strip:hover {
+    background: var(--c-accent);
+    opacity: 0.6;
+}
+
+/* A selected column keeps its write-mode colour and gains an accent bar on top. */
+thead th.col-selected {
+    box-shadow: inset 0 3px 0 var(--c-accent), inset 0 -1px 0 var(--c-border);
+}
+
+/* Clicking a row number selects the row, dragging over them selects several.
+   Sticky cells must stay opaque, so the selection tint is mixed onto the page. */
+#tableBody td.row-num-cell {
+    cursor: pointer;
+}
+
+#tableBody tr td.row-num-cell.row-num-selected {
+    background: color-mix(in srgb, var(--c-accent) 30%, var(--c-bg));
+    color: var(--c-fg);
+}
+
 body.col-resizing,
 body.col-resizing * {
     cursor: col-resize !important;

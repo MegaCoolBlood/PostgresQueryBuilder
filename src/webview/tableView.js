@@ -334,6 +334,43 @@ function isSingleCellSelection(anchor, focus) {
     return !!anchor && !!focus && anchor.r === focus.r && anchor.c === focus.c;
 }
 
+// The corners of a selection made over whole lines: kind 'rows' (clicking or
+// dragging over row numbers) spans every column of rows from..to, kind 'cols'
+// (the select strip on top of a column header) spans every row of columns
+// from..to. Indexes are clamped to the grid; null when there is nothing to select.
+function lineSelectionCorners(kind, from, to, rowCount, colCount) {
+    if (!(rowCount > 0) || !(colCount > 0)) { return null; }
+    const clamp = (v, max) => Math.max(0, Math.min(max, Number.isInteger(v) ? v : 0));
+    if (kind === 'rows') {
+        return {
+            anchor: { r: clamp(from, rowCount - 1), c: 0 },
+            focus: { r: clamp(to, rowCount - 1), c: colCount - 1 }
+        };
+    }
+    if (kind === 'cols') {
+        return {
+            anchor: { r: 0, c: clamp(from, colCount - 1) },
+            focus: { r: rowCount - 1, c: clamp(to, colCount - 1) }
+        };
+    }
+    return null;
+}
+
+// Which row numbers and column headers to mark for a selection rectangle
+// ({minR, maxR, minC, maxC}): rows whose every column is selected, and columns
+// whose every row is selected. Each part is {min, max} or null.
+function fullySelectedLines(bounds, rowCount, colCount) {
+    const result = { rows: null, cols: null };
+    if (!bounds || !(rowCount > 0) || !(colCount > 0)) { return result; }
+    if (bounds.minC <= 0 && bounds.maxC >= colCount - 1) {
+        result.rows = { min: Math.max(0, bounds.minR), max: Math.min(rowCount - 1, bounds.maxR) };
+    }
+    if (bounds.minR <= 0 && bounds.maxR >= rowCount - 1) {
+        result.cols = { min: Math.max(0, bounds.minC), max: Math.min(colCount - 1, bounds.maxC) };
+    }
+    return result;
+}
+
 // True for a keystroke that types a character (not a shortcut or a control key),
 // which over a multi-cell selection starts a multi-edit.
 function isPrintableTypingKey(e) {
@@ -2793,7 +2830,31 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         rangeFocus = null;
         tableBody.querySelectorAll('td.cell-range-selected')
             .forEach(td => td.classList.remove('cell-range-selected'));
+        markSelectedLines();
         removeFillHandle();
+    }
+
+    // Mark the row numbers and column headers of rows/columns that are selected
+    // as a whole (by row-number / header-strip selection or a full-width drag).
+    function markSelectedLines() {
+        tableBody.querySelectorAll('td.row-num-selected')
+            .forEach(td => td.classList.remove('row-num-selected'));
+        tableHead.querySelectorAll('th.col-selected')
+            .forEach(th => th.classList.remove('col-selected'));
+        if (!rangeAnchor || !rangeFocus) return;
+        const lines = fullySelectedLines(rangeBounds(), tableBody.rows.length, columns.length);
+        if (lines.rows) {
+            for (let r = lines.rows.min; r <= lines.rows.max; r++) {
+                const numCell = tableBody.rows[r] ? tableBody.rows[r].querySelector(':scope > td.row-num-cell') : null;
+                if (numCell) numCell.classList.add('row-num-selected');
+            }
+        }
+        if (lines.cols) {
+            const headers = tableHead.querySelectorAll('tr:first-child > th[data-col]');
+            for (let c = lines.cols.min; c <= lines.cols.max && c < headers.length; c++) {
+                headers[c].classList.add('col-selected');
+            }
+        }
     }
 
     // Remove the fill handle and the marker that positions it.
@@ -2816,6 +2877,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         tableBody.querySelectorAll('td.cell-range-selected')
             .forEach(td => td.classList.remove('cell-range-selected'));
         removeFillHandle();
+        markSelectedLines();
         if (!rangeAnchor || !rangeFocus) return;
         const { minR, maxR, minC, maxC } = rangeBounds();
         const rows = tableBody.rows;
@@ -3014,8 +3076,72 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         applyCellRangeHighlight();
     }
 
+    // Whole-row / whole-column selection: pressing a row number (or the select
+    // strip on top of a column header) selects that line, dragging over further
+    // row numbers / strips extends it, Shift extends from the current anchor.
+    let lineDrag = null; // { kind: 'rows'|'cols', from }
+    // The click that ends a column-strip gesture must not sort the column.
+    let colSelectEndedAt = 0;
+
+    function selectLines(kind, from, to) {
+        const corners = lineSelectionCorners(kind, from, to, tableBody.rows.length, columns.length);
+        if (!corners) return;
+        rangeAnchor = corners.anchor;
+        rangeFocus = corners.focus;
+        applyCellRangeHighlight();
+    }
+
+    function beginLineSelection(e, kind, index) {
+        const from = (e.shiftKey && rangeAnchor)
+            ? (kind === 'rows' ? rangeAnchor.r : rangeAnchor.c)
+            : index;
+        // Commit a cell that is being edited before the selection replaces it.
+        if (document.activeElement && typeof document.activeElement.blur === 'function') {
+            document.activeElement.blur();
+        }
+        rangeMouseDown = null;
+        rangeDragging = false;
+        lineDrag = { kind, from };
+        tableBody.classList.add('range-dragging');
+        if (kind === 'cols') {
+            // Header cells are draggable for reordering; that must not start here.
+            tableHead.querySelectorAll('tr:first-child > th[data-col]').forEach(th => { th.draggable = false; });
+        }
+        selectLines(kind, from, index);
+        clearNativeTextSelection();
+        e.preventDefault();
+    }
+
+    // The row or column index of the line under the pointer during a line drag.
+    function lineIndexAt(target, kind) {
+        if (!target || !target.closest) return -1;
+        if (kind === 'rows') {
+            const tr = target.closest('tr');
+            return tr && tr.parentElement === tableBody ? tr.sectionRowIndex : -1;
+        }
+        const cell = target.closest('th[data-col], td[data-col]');
+        if (!cell || !(tableHead.contains(cell) || tableBody.contains(cell))) return -1;
+        return columns.findIndex(c => c.name === cell.getAttribute('data-col'));
+    }
+
+    function endLineSelection() {
+        if (!lineDrag) return;
+        if (lineDrag.kind === 'cols') {
+            colSelectEndedAt = Date.now();
+            tableHead.querySelectorAll('tr:first-child > th[data-col]').forEach(th => { th.draggable = true; });
+        }
+        lineDrag = null;
+        tableBody.classList.remove('range-dragging');
+    }
+
     tableBody.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
+        // A row number selects the whole row (the resize handle stops propagation).
+        const numCell = e.target.closest ? e.target.closest('td.row-num-cell') : null;
+        if (numCell && numCell.parentElement && numCell.parentElement.parentElement === tableBody) {
+            beginLineSelection(e, 'rows', numCell.parentElement.sectionRowIndex);
+            return;
+        }
         // The fill handle of a selected cell starts a copy-drag onto other cells.
         if (e.target.closest && e.target.closest('.fill-handle')) {
             beginFillDrag();
@@ -3041,6 +3167,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     });
 
     document.addEventListener('mousemove', (e) => {
+        if (lineDrag) {
+            if (e.buttons === 0) { endLineSelection(); return; }
+            const idx = lineIndexAt(e.target, lineDrag.kind);
+            if (idx >= 0) selectLines(lineDrag.kind, lineDrag.from, idx);
+            clearNativeTextSelection();
+            e.preventDefault();
+            return;
+        }
         // While dragging the fill handle, extend the fill region to the cell
         // under the cursor (anchored at the source cell).
         if (fillDragging) {
@@ -3077,6 +3211,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     });
 
     document.addEventListener('mouseup', () => {
+        if (lineDrag) {
+            endLineSelection();
+            return;
+        }
         // Releasing a fill-handle drag copies the source value into the region.
         if (fillDragging) {
             fillDragging = false;
@@ -4180,7 +4318,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const commentTitle = buildColumnHeaderTitle(col);
             const titleAttr = commentTitle ? ` title="${escapeAttr(commentTitle)}"` : '';
             const commentMark = commentTitle ? ' <span class="col-comment-indicator" aria-hidden="true">🛈</span>' : '';
-            html += `<th class="${cls}" draggable="true" data-col="${escapeAttr(col.name)}"${titleAttr}>${escapeHtml(col.name)}${commentMark}<br><small class="col-type">${escapeHtml(formatColumnTypeLabel(col))}</small><div class="col-resize-handle" title="Drag to change column width"></div></th>`;
+            html += `<th class="${cls}" draggable="true" data-col="${escapeAttr(col.name)}"${titleAttr}><div class="col-select-strip" title="Click to select this column, drag to select several columns"></div>${escapeHtml(col.name)}${commentMark}<br><small class="col-type">${escapeHtml(formatColumnTypeLabel(col))}</small><div class="col-resize-handle" title="Drag to change column width"></div></th>`;
         });
         html += '</tr>';
 
@@ -4235,8 +4373,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         updateStickyFilterOffset();
 
         tableHead.querySelectorAll('tr:first-child th[data-col]').forEach(th => {
-            th.addEventListener('click', () => {
+            th.addEventListener('click', (e) => {
                 if (Date.now() - colResizeEndedAt < 200) return;
+                if (Date.now() - colSelectEndedAt < 200) return;
+                if (e.target.closest && e.target.closest('.col-select-strip')) return;
                 sortState = nextSortState(sortState, th.getAttribute('data-col'));
                 renderTable();
             });
@@ -4248,6 +4388,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const resizeHandle = th.querySelector('.col-resize-handle');
             if (resizeHandle) {
                 resizeHandle.addEventListener('mousedown', startColumnResize);
+            }
+            const selectStrip = th.querySelector('.col-select-strip');
+            if (selectStrip) {
+                selectStrip.addEventListener('mousedown', (e) => {
+                    if (e.button !== 0) return;
+                    e.stopPropagation();
+                    const idx = columns.findIndex(c => c.name === th.getAttribute('data-col'));
+                    if (idx >= 0) beginLineSelection(e, 'cols', idx);
+                });
             }
             attachColumnDragHandlers(th);
         });
@@ -7140,6 +7289,8 @@ if (typeof module !== 'undefined' && module.exports) {
         shouldFillLoneValue,
         resolveMouseRelease,
         isSingleCellSelection,
+        lineSelectionCorners,
+        fullySelectedLines,
         isPrintableTypingKey,
         typingStartsCellEdit,
         hasTextInputSelection,

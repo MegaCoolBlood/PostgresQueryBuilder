@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.3.0
+
+- **Whole rows and whole columns can be selected in one gesture:** Selecting a complete row or column in the Data Viewer meant dragging across every one of its cells, which for a wide row or a long column was tedious and easy to get wrong. Clicking a row number now selects every cell of that row, and dragging over several row numbers (or *Shift*-clicking a second one) selects all rows in between. Columns work the same way through the thin strip along the top edge of a column header: click it to select the column, drag along the strips to select several columns. The rest of the header is unchanged — clicking it still sorts and dragging it still reorders the column. The selection behaves like any other cell block, so *Ctrl+C* copies it, *Delete* sets it to `NULL`, pasting and typing fill it, and the selected row numbers and column headers are highlighted.
+
 ## 3.2.3
 
 - **A query that selects the same column name twice now shows both columns and both values:** Joining a table to itself and selecting the same columns through each alias — `SELECT a.a, a.b, b.a, b.b FROM things a LEFT JOIN things b ON b.c > a.c` — produced a grid with the columns listed twice under the same names (`a, b, a, b`), and every value of the first alias was replaced by the value of the second one; with an unmatched `LEFT JOIN` the whole row therefore looked empty even though the first alias had matched. The rows arrived from the server keyed by column name, so the second column of a name silently overwrote the first. Result values are now read by position, and a name the result uses more than once is qualified with the alias it is selected through (`a.a`, `b.a`; a plain counter such as `a_2` where no alias can be determined). Columns with a unique name are untouched, and filtering, sorting and editing a renamed column address the right table occurrence.
