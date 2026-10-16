@@ -551,6 +551,52 @@ function planFillExtension(source, pointer) {
         : { direction: 'left', target: { minR: source.minR, maxR: source.maxR, minC: pointer.c, maxC: source.minC - 1 } };
 }
 
+// Every cell a fill from the `source` block along `plan` writes, as
+// [{ r, c, value }]: each column (vertical fill) or row (horizontal fill) of the
+// block is continued as a series where its type allows and repeated otherwise.
+// `valueAt(r, c)` reads a source value, `kindOfColumn(c)` gives the column's
+// series kind; a row continues only when all its source columns share a kind.
+// Both the drag preview and the fill itself use this, so they always agree.
+function planSeriesWrites(source, plan, valueAt, kindOfColumn) {
+    if (!source || !plan) return [];
+    const t = plan.target;
+    const vertical = plan.direction === 'down' || plan.direction === 'up';
+    const forward = plan.direction === 'down' || plan.direction === 'right';
+    const count = vertical ? t.maxR - t.minR + 1 : t.maxC - t.minC + 1;
+    const writes = [];
+    const laneFrom = vertical ? source.minC : source.minR;
+    const laneTo = vertical ? source.maxC : source.maxR;
+    for (let lane = laneFrom; lane <= laneTo; lane++) {
+        const values = [];
+        let kind;
+        if (vertical) {
+            for (let r = source.minR; r <= source.maxR; r++) values.push(valueAt(r, lane));
+            kind = kindOfColumn(lane);
+        } else {
+            const kinds = new Set();
+            for (let c = source.minC; c <= source.maxC; c++) {
+                values.push(valueAt(lane, c));
+                kinds.add(kindOfColumn(c));
+            }
+            kind = kinds.size === 1 ? [...kinds][0] : '';
+        }
+        continueSeries(forward ? values : values.slice().reverse(), kind, count).forEach((value, i) => {
+            writes.push(vertical
+                ? { r: forward ? t.minR + i : t.maxR - i, c: lane, value }
+                : { r: lane, c: forward ? t.minC + i : t.maxC - i, value });
+        });
+    }
+    return writes;
+}
+
+// The text a cell shows while a fill drag previews the value it would receive:
+// an empty value becomes NULL, a number is displayed the way the grid shows it.
+function fillPreviewText(value, isNumeric, thousandSeparator) {
+    const text = value === null || value === undefined ? '' : String(value);
+    if (text === '') return 'NULL';
+    return isNumeric ? formatNumberDisplay(text, thousandSeparator) : text;
+}
+
 // The corners of a selection made over whole lines: kind 'rows' (clicking or
 // dragging over row numbers) spans every column of rows from..to, kind 'cols'
 // (the select strip on top of a column header) spans every row of columns
@@ -3361,8 +3407,61 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (fillSourceBounds) { selectBounds(fillSourceBounds); }
         fillSourceBounds = null;
         fillPlan = null;
+        clearFillPreview();
         tableBody.classList.remove('range-dragging');
         applyCellRangeHighlight();
+    }
+
+    // --- Fill preview: while the handle is dragged, every cell the fill would
+    // write shows the value it would receive, laid over its current content.
+    let fillPreviewKey = '';
+
+    function clearFillPreview() {
+        fillPreviewKey = '';
+        tableBody.querySelectorAll('td.cell-fill-preview').forEach(td => {
+            td.classList.remove('cell-fill-preview');
+            td.removeAttribute('data-fill-preview');
+        });
+    }
+
+    // Whether a fill writes into this cell; mirrors stageCellFill.
+    function cellAcceptsFill(td) {
+        if (td.getAttribute('data-row') !== null) return isColumnEditable(td.getAttribute('data-col'));
+        const ins = td.getAttribute('data-insert');
+        if (ins !== null) return !!insertedRows[parseInt(ins, 10)];
+        const dup = td.getAttribute('data-dup');
+        return dup !== null && !!duplicatedRows[parseInt(dup, 10)];
+    }
+
+    // The writes of the current drag: the series of a block, or the copied value
+    // of a single cell into every other cell of the dragged rectangle.
+    function currentFillWrites() {
+        if (fillSourceBounds) return fillPlan ? seriesWritesFor(fillSourceBounds, fillPlan) : [];
+        if (!rangeAnchor || !rangeFocus) return [];
+        const { minR, maxR, minC, maxC } = rangeBounds();
+        const writes = [];
+        for (let r = minR; r <= maxR; r++) {
+            for (let c = minC; c <= maxC; c++) {
+                if (r !== rangeAnchor.r || c !== rangeAnchor.c) writes.push({ r, c, value: fillSourceValue });
+            }
+        }
+        return writes;
+    }
+
+    function updateFillPreview() {
+        const key = fillSourceBounds
+            ? JSON.stringify(fillPlan)
+            : JSON.stringify([rangeAnchor, rangeFocus]);
+        if (key === fillPreviewKey) return;
+        clearFillPreview();
+        fillPreviewKey = key;
+        currentFillWrites().forEach(w => {
+            const td = dataCellAt(w.r, w.c);
+            if (!td || !cellAcceptsFill(td)) return;
+            td.setAttribute('data-fill-preview',
+                fillPreviewText(w.value, isNumericColumn(td.getAttribute('data-col')), thousandSeparator));
+            td.classList.add('cell-fill-preview');
+        });
     }
 
     // Whole-row / whole-column selection: pressing a row number (or the select
@@ -3485,6 +3584,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 rangeFocus = fc;
             }
             applyCellRangeHighlight();
+            updateFillPreview();
             clearNativeTextSelection();
             e.preventDefault();
             return;
@@ -3526,6 +3626,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             fillSourceValue = null;
             fillSourceBounds = null;
             fillPlan = null;
+            clearFillPreview();
             if (!source) {
                 fillCellRangeWithValue(value);
             } else if (plan) {
@@ -3976,45 +4077,24 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // series where its type allows, and repeating its values otherwise.
     function fillCellRangeWithSeries(source, plan) {
         const t = plan.target;
-        const vertical = plan.direction === 'down' || plan.direction === 'up';
-        const forward = plan.direction === 'down' || plan.direction === 'right';
-        const kindOf = (c) => (columns[c] ? seriesKindForType(columns[c].fullType || columns[c].dataType) : '');
         const validationTargets = [];
-        const lanes = vertical
-            ? { from: source.minC, to: source.maxC, count: t.maxR - t.minR + 1 }
-            : { from: source.minR, to: source.maxR, count: t.maxC - t.minC + 1 };
-        for (let lane = lanes.from; lane <= lanes.to; lane++) {
-            const values = [];
-            let kind;
-            if (vertical) {
-                for (let r = source.minR; r <= source.maxR; r++) {
-                    const td = dataCellAt(r, lane);
-                    values.push(td ? cellFillValue(td) : '');
-                }
-                kind = kindOf(lane);
-            } else {
-                const kinds = new Set();
-                for (let c = source.minC; c <= source.maxC; c++) {
-                    const td = dataCellAt(lane, c);
-                    values.push(td ? cellFillValue(td) : '');
-                    kinds.add(kindOf(c));
-                }
-                // A row continues only when all its source columns share a kind.
-                kind = kinds.size === 1 ? [...kinds][0] : '';
-            }
-            const series = continueSeries(forward ? values : values.slice().reverse(), kind, lanes.count);
-            series.forEach((value, i) => {
-                const pos = vertical
-                    ? { r: forward ? t.minR + i : t.maxR - i, c: lane }
-                    : { r: lane, c: forward ? t.minC + i : t.maxC - i };
-                const td = dataCellAt(pos.r, pos.c);
-                if (td) { stageCellFill(td, value, validationTargets); }
-            });
-        }
+        seriesWritesFor(source, plan).forEach(w => {
+            const td = dataCellAt(w.r, w.c);
+            if (td) { stageCellFill(td, w.value, validationTargets); }
+        });
         finishCellFill(validationTargets, {
             minR: Math.min(source.minR, t.minR), maxR: Math.max(source.maxR, t.maxR),
             minC: Math.min(source.minC, t.minC), maxC: Math.max(source.maxC, t.maxC)
         });
+    }
+
+    function seriesWritesFor(source, plan) {
+        return planSeriesWrites(
+            source,
+            plan,
+            (r, c) => { const td = dataCellAt(r, c); return td ? cellFillValue(td) : ''; },
+            (c) => (columns[c] ? seriesKindForType(columns[c].fullType || columns[c].dataType) : '')
+        );
     }
 
     function handleGridPaste(e) {
@@ -7664,6 +7744,8 @@ if (typeof module !== 'undefined' && module.exports) {
         seriesKindForType,
         continueSeries,
         planFillExtension,
+        planSeriesWrites,
+        fillPreviewText,
         lineSelectionCorners,
         fullySelectedLines,
         isPrintableTypingKey,

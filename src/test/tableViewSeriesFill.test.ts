@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { seriesKindForType, continueSeries, planFillExtension } = require(
+const { seriesKindForType, continueSeries, planFillExtension, planSeriesWrites, fillPreviewText } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -158,4 +158,68 @@ test('planFillExtension follows the axis the pointer left the block furthest alo
 test('planFillExtension extends nothing while the pointer is inside the block', () => {
     assert.equal(planFillExtension(block, { r: 2, c: 2 }), null);
     assert.equal(planFillExtension(null, { r: 2, c: 2 }), null);
+});
+
+// ===== planSeriesWrites (shared by the drag preview and the fill) =====
+
+// A 4 x 3 grid: column 0 numbers, column 1 dates, column 2 text.
+const grid = [
+    ['1', '2024-01-31', 'A'],
+    ['3', '2024-02-29', 'B'],
+    ['', '', ''],
+    ['', '', '']
+];
+const valueAt = (r: number, c: number) => grid[r][c];
+const kindOf = (c: number) => ['number', 'date', ''][c];
+
+test('planSeriesWrites continues each column of a block filled downwards', () => {
+    const source = { minR: 0, maxR: 1, minC: 0, maxC: 2 };
+    const plan = planFillExtension(source, { r: 3, c: 2 });
+    assert.deepEqual(planSeriesWrites(source, plan, valueAt, kindOf), [
+        { r: 2, c: 0, value: '5' }, { r: 3, c: 0, value: '7' },
+        { r: 2, c: 1, value: '2024-03-31' }, { r: 3, c: 1, value: '2024-04-30' },
+        { r: 2, c: 2, value: 'A' }, { r: 3, c: 2, value: 'B' }
+    ]);
+});
+
+test('planSeriesWrites fills upwards starting next to the block', () => {
+    const g = [['', ''], ['', ''], ['5', 'x'], ['7', 'y']];
+    const source = { minR: 2, maxR: 3, minC: 0, maxC: 1 };
+    const plan = planFillExtension(source, { r: 0, c: 0 });
+    assert.deepEqual(planSeriesWrites(source, plan, (r: number, c: number) => g[r][c], (c: number) => ['number', ''][c]), [
+        { r: 1, c: 0, value: '3' }, { r: 0, c: 0, value: '1' },
+        { r: 1, c: 1, value: 'y' }, { r: 0, c: 1, value: 'x' }
+    ]);
+});
+
+test('planSeriesWrites continues a row sideways only when its columns share a kind', () => {
+    const g = [['1', '2', '', ''], ['x', 'y', '', '']];
+    const at = (r: number, c: number) => g[r][c];
+    const source = { minR: 0, maxR: 1, minC: 0, maxC: 1 };
+    const plan = planFillExtension(source, { r: 0, c: 3 });
+    assert.deepEqual(planSeriesWrites(source, plan, at, () => 'number'), [
+        { r: 0, c: 2, value: '3' }, { r: 0, c: 3, value: '4' },
+        { r: 1, c: 2, value: 'x' }, { r: 1, c: 3, value: 'y' }
+    ]);
+    const mixed = (c: number) => ['number', ''][c];
+    assert.deepEqual(planSeriesWrites(source, plan, at, mixed).slice(0, 2), [
+        { r: 0, c: 2, value: '1' }, { r: 0, c: 3, value: '2' }
+    ]);
+});
+
+test('planSeriesWrites writes nothing without a plan', () => {
+    assert.deepEqual(planSeriesWrites({ minR: 0, maxR: 1, minC: 0, maxC: 0 }, null, valueAt, kindOf), []);
+});
+
+// ===== fillPreviewText =====
+
+test('fillPreviewText shows a number the way the grid displays it', () => {
+    assert.equal(fillPreviewText('1234567.5', true, ' '), '1 234 567,5');
+    assert.equal(fillPreviewText('7', true, ' '), '7');
+});
+
+test('fillPreviewText shows other values as they are and an empty value as NULL', () => {
+    assert.equal(fillPreviewText('2024-03-31', false, ' '), '2024-03-31');
+    assert.equal(fillPreviewText('', true, ' '), 'NULL');
+    assert.equal(fillPreviewText(null, false, ' '), 'NULL');
 });

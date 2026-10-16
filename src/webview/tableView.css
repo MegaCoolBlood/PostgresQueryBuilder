@@ -532,6 +532,26 @@ td[contenteditable="true"]:focus {
     position: relative;
 }
 
+/* Fill preview: while the fill handle is dragged, a cell the fill would write
+   shows the value it would receive, laid over its current content. The overlay
+   is opaque so the old value does not shine through. */
+#tableBody td.cell-fill-preview {
+    position: relative;
+}
+
+#tableBody td.cell-fill-preview::after {
+    content: attr(data-fill-preview);
+    position: absolute;
+    inset: 0;
+    padding: var(--sp-1) var(--sp-2);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-style: italic;
+    color: var(--c-fg);
+    background: color-mix(in srgb, var(--c-accent) 18%, var(--c-bg));
+}
+
 #tableBody td.cell-fill-anchor .fill-handle {
     position: absolute;
     right: 0;
