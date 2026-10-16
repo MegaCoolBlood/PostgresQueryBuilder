@@ -106,6 +106,13 @@ column as a tooltip.
 
 - Click a cell to edit it. Modified cells are marked, and the toolbar counts
   what is pending.
+- Drag the small square at the bottom-right corner of a selection to fill
+  further cells, like in Excel. From one cell its value is copied; from several
+  cells numbers, dates, timestamps and times are continued as a series — the
+  steps between the selected values repeat in turn (`1, 3, 2` → `4, 3, 5, 4 …`),
+  and dates on the same day of the month (or all on a month's last day) step
+  by whole months. Other values are repeated. A fill works downwards, upwards
+  and sideways, and one *Ctrl+Z* takes it back.
 - A long value opens in a real editor tab with syntax highlighting through
   **Open Value in Editor** — saving the tab writes the value back, closing it
   discards it, emptying it sets the cell to `NULL`.

@@ -15,6 +15,11 @@ const dnsLookup = promisify(dns.lookup);
 // from what is actually stored in the database. We override the parser to return the
 // raw string from the server so the value is shown 1:1 as stored.
 pgTypes.setTypeParser(1114, (val: string) => val);
+// PostgreSQL OID 1082 = DATE. Parsed into a Date at local midnight, a date would
+// reach the Data Viewer and every export as a UTC timestamp — one day early in a
+// timezone east of UTC (`2024-01-31` → `2024-01-30T23:00:00.000Z`). Keep the raw
+// `YYYY-MM-DD` instead; the Excel export turns it back into a real date cell.
+pgTypes.setTypeParser(1082, (val: string) => val);
 
 export interface ConnectionConfig {
     name: string;

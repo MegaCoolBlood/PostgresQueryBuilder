@@ -42,6 +42,28 @@ export interface ExportDefaultsMap {
 /** A single result row keyed by column name, as produced by the query layer. */
 export type ExportRow = Record<string, unknown>;
 
+/** Display format given to the date cells of an Excel export. */
+export const EXCEL_DATE_FORMAT = 'yyyy-mm-dd';
+
+/**
+ * The value an Excel cell receives. A `date` column arrives as the raw
+ * `YYYY-MM-DD` text and is turned into a real Excel date; the Date is built at
+ * UTC midnight because Excel serials carry no timezone, so a local-midnight Date
+ * would land on the previous day east of UTC. Everything else is written as is.
+ */
+export function excelCellValue(value: unknown, dataType: string): unknown {
+    if (value === null || value === undefined) return '';
+    if (String(dataType || '').trim().toLowerCase() === 'date' && typeof value === 'string') {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+        if (m) {
+            const d = new Date(Date.UTC(2000, Number(m[2]) - 1, Number(m[3])));
+            d.setUTCFullYear(Number(m[1]));
+            if (d.getUTCMonth() === Number(m[2]) - 1) return d;
+        }
+    }
+    return value;
+}
+
 export class ExportService {
     private context: vscode.ExtensionContext;
 
@@ -257,12 +279,13 @@ export class ExportService {
         }
 
         for (const row of rows) {
-            const values = columns.map(col => {
-                const val = row[col.name];
-                if (val === null || val === undefined) return '';
-                return val;
+            const values = columns.map(col => excelCellValue(row[col.name], col.dataType));
+            const added = worksheet.addRow(values);
+            values.forEach((v, i) => {
+                if (v instanceof Date && String(columns[i].dataType || '').trim().toLowerCase() === 'date') {
+                    added.getCell(i + 1).numFmt = EXCEL_DATE_FORMAT;
+                }
             });
-            worksheet.addRow(values);
         }
 
         worksheet.columns.forEach((column: any) => {

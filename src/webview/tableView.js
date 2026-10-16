@@ -334,6 +334,223 @@ function isSingleCellSelection(anchor, focus) {
     return !!anchor && !!focus && anchor.r === focus.r && anchor.c === focus.c;
 }
 
+// ===== Excel-like series fill ===============================================
+// Dragging the fill handle of a multi-cell selection continues the selected
+// values as a series: the steps between them are repeated in turn (1, 3, 2 →
+// +2, -1 → 4, 3, 5, 4 …). Numbers, dates, timestamps and times form series;
+// anything else — or a run containing NULL or unreadable text — is repeated.
+
+// The series family of a column type: 'number', 'date', 'timestamp', 'time',
+// or '' when the column's values are repeated instead of continued.
+function seriesKindForType(dataType) {
+    const parsed = parsePgType(dataType);
+    if (parsed.isArray) return '';
+    const base = parsed.base;
+    if (/^(smallint|integer|bigint|int|int2|int4|int8|numeric|decimal|real|double precision|float4|float8)$/.test(base)) return 'number';
+    if (base === 'date') return 'date';
+    if (base.indexOf('timestamp') === 0) return 'timestamp';
+    if (base === 'time' || base === 'timetz' || base.indexOf('time ') === 0) return 'time';
+    return '';
+}
+
+// A plain decimal ('-12', '1.50', '.5') as a scaled BigInt, or null.
+function parseSeriesNumber(text) {
+    const m = /^\s*([+-]?)(\d*)(?:\.(\d*))?\s*$/.exec(String(text));
+    if (!m || (m[2] === '' && !m[3])) return null;
+    const frac = m[3] || '';
+    const v = BigInt((m[2] || '0') + frac);
+    return { v: m[1] === '-' ? -v : v, scale: frac.length };
+}
+
+function formatSeriesNumber(v, scale) {
+    const neg = v < 0n;
+    let s = (neg ? -v : v).toString();
+    if (scale > 0) {
+        s = s.padStart(scale + 1, '0');
+        s = s.slice(0, -scale) + '.' + s.slice(-scale);
+    }
+    return (neg ? '-' : '') + s;
+}
+
+const SERIES_DAY_MICROS = 86400000000n;
+
+// Days since 1970-01-01 for a proleptic Gregorian date, or null when invalid.
+function seriesDaysFromCivil(y, mo, d) {
+    const dt = new Date(Date.UTC(2000, mo - 1, d));
+    dt.setUTCFullYear(y);
+    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+    return Math.round(dt.getTime() / 86400000);
+}
+
+function seriesCivilFromDays(days) {
+    const dt = new Date(days * 86400000);
+    return { y: dt.getUTCFullYear(), mo: dt.getUTCMonth() + 1, d: dt.getUTCDate() };
+}
+
+function seriesDaysInMonth(y, mo) {
+    const dt = new Date(Date.UTC(2000, mo, 0));
+    dt.setUTCFullYear(y, mo, 0);
+    return dt.getUTCDate();
+}
+
+// Parse a date, timestamp or time value into its parts and a microsecond
+// position on one axis (days * 24h + time of day). Null when unreadable.
+function parseSeriesDateTime(text, kind) {
+    const s = String(text).trim();
+    let m, y = 1970, mo = 1, d = 1, hasDate = false, sep = '', timeParts = null;
+    if (kind === 'time') {
+        m = /^(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?(Z|[+-]\d{2}(?::?\d{2})?)?$/.exec(s);
+        if (!m) return null;
+        timeParts = [m[1], m[2], m[3], m[4], m[5]];
+    } else {
+        m = /^(\d{4})-(\d{2})-(\d{2})(?:([T ])(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?(Z|[+-]\d{2}(?::?\d{2})?)?)?$/.exec(s);
+        if (!m) return null;
+        y = Number(m[1]); mo = Number(m[2]); d = Number(m[3]);
+        hasDate = true;
+        if (m[4]) {
+            sep = m[4];
+            timeParts = [m[5], m[6], m[7], m[8], m[9]];
+        }
+    }
+    const days = seriesDaysFromCivil(y, mo, d);
+    if (days === null) return null;
+    let tod = 0n, hasTime = false, hasSeconds = false, fracDigits = 0, zone = '';
+    if (timeParts) {
+        const [hh, mi, ss, frac, z] = timeParts;
+        if (Number(hh) > 23 || Number(mi) > 59 || (ss !== undefined && Number(ss) > 59)) return null;
+        hasTime = true;
+        hasSeconds = ss !== undefined;
+        fracDigits = frac ? frac.length : 0;
+        zone = z || '';
+        const micros = frac ? BigInt(frac.padEnd(6, '0')) : 0n;
+        tod = ((BigInt(hh) * 60n + BigInt(mi)) * 60n + BigInt(ss || '0')) * 1000000n + micros;
+    }
+    return { y, mo, d, days, tod, hasDate, hasTime, sep, hasSeconds, fracDigits, zone,
+        pos: BigInt(days) * SERIES_DAY_MICROS + tod };
+}
+
+function formatSeriesDateTime(pos, shape) {
+    const pad = (n, w) => String(n).padStart(w, '0');
+    let days = pos / SERIES_DAY_MICROS;
+    let tod = pos % SERIES_DAY_MICROS;
+    if (tod < 0n) { tod += SERIES_DAY_MICROS; days -= 1n; }
+    let out = '';
+    if (shape.hasDate) {
+        const c = seriesCivilFromDays(Number(days));
+        out = `${pad(c.y, 4)}-${pad(c.mo, 2)}-${pad(c.d, 2)}`;
+    }
+    if (shape.hasTime) {
+        const totalSeconds = tod / 1000000n;
+        const hh = totalSeconds / 3600n, mi = (totalSeconds / 60n) % 60n, ss = totalSeconds % 60n;
+        let t = `${pad(hh, 2)}:${pad(mi, 2)}`;
+        if (shape.hasSeconds || shape.fracDigits > 0) t += `:${pad(ss, 2)}`;
+        if (shape.fracDigits > 0) t += '.' + pad(tod % 1000000n, 6).slice(0, shape.fracDigits);
+        out += (shape.hasDate ? shape.sep : '') + t + shape.zone;
+    }
+    return out;
+}
+
+// Continue numeric values; null when one of them is not a plain number.
+function continueNumberSeries(values, count) {
+    const parsed = values.map(parseSeriesNumber);
+    if (parsed.some(p => p === null)) return null;
+    const scale = Math.max(...parsed.map(p => p.scale));
+    const nums = parsed.map(p => p.v * 10n ** BigInt(scale - p.scale));
+    const steps = nums.slice(1).map((v, i) => v - nums[i]);
+    const out = [];
+    let cur = nums[nums.length - 1];
+    for (let i = 0; i < count; i++) {
+        cur += steps[i % steps.length];
+        out.push(formatSeriesNumber(cur, scale));
+    }
+    return out;
+}
+
+// Continue date/time values; null when one of them cannot be read. Dates and
+// timestamps on the same day of the month (or all on the last day of their
+// month) at the same time step by whole months, so 31 Jan, 29 Feb continues
+// with 31 Mar; everything else steps by the exact distance between the values.
+function continueDateTimeSeries(values, kind, count) {
+    const parsed = values.map(v => parseSeriesDateTime(v, kind));
+    if (parsed.some(p => p === null)) return null;
+    const zone = parsed[0].zone;
+    if (parsed.some(p => p.zone !== zone || p.hasTime !== parsed[0].hasTime)) return null;
+    const last = parsed[parsed.length - 1];
+    const shape = {
+        hasDate: last.hasDate,
+        hasTime: last.hasTime,
+        sep: last.sep,
+        zone,
+        hasSeconds: parsed.some(p => p.hasSeconds),
+        fracDigits: Math.max(...parsed.map(p => p.fracDigits))
+    };
+    const out = [];
+    const sameTime = parsed.every(p => p.tod === parsed[0].tod);
+    const sameDay = parsed.every(p => p.d === parsed[0].d);
+    const monthEnds = parsed.every(p => p.d === seriesDaysInMonth(p.y, p.mo));
+    if (kind !== 'time' && sameTime && (sameDay || monthEnds)) {
+        const months = parsed.map(p => p.y * 12 + (p.mo - 1));
+        const steps = months.slice(1).map((v, i) => v - months[i]);
+        let cur = months[months.length - 1];
+        for (let i = 0; i < count; i++) {
+            cur += steps[i % steps.length];
+            const y = Math.floor(cur / 12), mo = cur - y * 12 + 1;
+            const dim = seriesDaysInMonth(y, mo);
+            const d = monthEnds && !sameDay ? dim : Math.min(parsed[0].d, dim);
+            const days = seriesDaysFromCivil(y, mo, d);
+            if (days === null) return null;
+            out.push(formatSeriesDateTime(BigInt(days) * SERIES_DAY_MICROS + parsed[0].tod, shape));
+        }
+        return out;
+    }
+    const positions = parsed.map(p => p.pos);
+    const steps = positions.slice(1).map((v, i) => v - positions[i]);
+    let cur = positions[positions.length - 1];
+    for (let i = 0; i < count; i++) {
+        cur += steps[i % steps.length];
+        // A time of day wraps around midnight.
+        const pos = kind === 'time' ? ((cur % SERIES_DAY_MICROS) + SERIES_DAY_MICROS) % SERIES_DAY_MICROS : cur;
+        out.push(formatSeriesDateTime(pos, shape));
+    }
+    return out;
+}
+
+// The `count` values that follow `values` (ordered away from the source), as
+// the fill handle writes them. A series needs at least two values of a series
+// kind; otherwise the values are repeated in order (A, B → A, B, A …).
+function continueSeries(values, kind, count) {
+    const n = values.length;
+    if (!(count > 0) || n === 0) return [];
+    let out = null;
+    if (n >= 2 && kind === 'number') out = continueNumberSeries(values, count);
+    else if (n >= 2 && (kind === 'date' || kind === 'timestamp' || kind === 'time')) out = continueDateTimeSeries(values, kind, count);
+    if (out) return out;
+    const repeated = [];
+    for (let i = 0; i < count; i++) repeated.push(values[i % n]);
+    return repeated;
+}
+
+// Where a fill drag from the `source` block ({minR, maxR, minC, maxC}) extends
+// to with the pointer over cell {r, c}: one direction only, the one the pointer
+// has moved furthest out of the block in (ties go vertical, like Excel).
+// Returns { direction: 'down'|'up'|'right'|'left', target } — target being the
+// new cells only — or null while the pointer is still inside the block.
+function planFillExtension(source, pointer) {
+    if (!source || !pointer) return null;
+    const down = pointer.r - source.maxR, up = source.minR - pointer.r;
+    const right = pointer.c - source.maxC, left = source.minC - pointer.c;
+    const vertical = Math.max(down, up), horizontal = Math.max(right, left);
+    if (vertical <= 0 && horizontal <= 0) return null;
+    if (vertical >= horizontal) {
+        return down > 0
+            ? { direction: 'down', target: { minR: source.maxR + 1, maxR: pointer.r, minC: source.minC, maxC: source.maxC } }
+            : { direction: 'up', target: { minR: pointer.r, maxR: source.minR - 1, minC: source.minC, maxC: source.maxC } };
+    }
+    return right > 0
+        ? { direction: 'right', target: { minR: source.minR, maxR: source.maxR, minC: source.maxC + 1, maxC: pointer.c } }
+        : { direction: 'left', target: { minR: source.minR, maxR: source.maxR, minC: pointer.c, maxC: source.minC - 1 } };
+}
+
 // The corners of a selection made over whole lines: kind 'rows' (clicking or
 // dragging over row numbers) spans every column of rows from..to, kind 'cols'
 // (the select strip on top of a column header) spans every row of columns
@@ -2850,10 +3067,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let rangeFocus = null;    // {r, c} opposite corner
     let rangeMouseDown = null; // candidate anchor recorded on mousedown
     let rangeDragging = false;
-    // Excel-style fill handle: while true, dragging extends a fill region that
-    // is filled with `fillSourceValue` (the value of the single selected cell).
+    // Excel-style fill handle: while true, dragging extends a fill region. From a
+    // single cell the region is filled with `fillSourceValue`; from a block of
+    // cells (`fillSourceBounds`) it extends along one axis (`fillPlan`) and the
+    // block's values are continued as a series or repeated.
     let fillDragging = false;
     let fillSourceValue = null;
+    let fillSourceBounds = null;
+    let fillPlan = null;
     // While set, typing edits the anchor cell and committing fills these bounds
     // (a multi-cell selection typed over at once).
     let multiEditBounds = null;
@@ -2940,8 +3161,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 dataCells[c].classList.add('cell-range-selected');
             }
         }
-        // Offer the fill handle on the bottom-right of a single selected cell.
-        if (!fillDragging && isSingleCellSelection(rangeAnchor, rangeFocus)) {
+        // Offer the fill handle on the bottom-right corner of the selection.
+        if (!fillDragging) {
             const tr = rows[maxR];
             const cells = tr ? tr.querySelectorAll(':scope > td[data-col]') : null;
             const td = cells ? cells[maxC] : null;
@@ -2949,7 +3170,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 td.classList.add('cell-fill-anchor');
                 const handle = document.createElement('div');
                 handle.className = 'fill-handle';
-                handle.title = 'Drag to copy this value onto other cells';
+                handle.title = isSingleCellSelection(rangeAnchor, rangeFocus)
+                    ? 'Drag to copy this value onto other cells'
+                    : 'Drag to continue the selected values onto further cells';
                 td.appendChild(handle);
             }
         }
@@ -3106,23 +3329,38 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return (raw === null || raw === undefined) ? '' : String(raw);
     }
 
-    // Begin an Excel-style fill drag from the single selected cell's handle.
+    // Begin an Excel-style fill drag from the selection's handle.
     function beginFillDrag() {
-        if (!isSingleCellSelection(rangeAnchor, rangeFocus)) { return; }
-        const tr = tableBody.rows[rangeAnchor.r];
-        const cells = tr ? tr.querySelectorAll(':scope > td[data-col]') : null;
-        const srcTd = cells ? cells[rangeAnchor.c] : null;
-        if (!srcTd) { return; }
-        fillSourceValue = cellFillValue(srcTd);
+        if (!rangeAnchor || !rangeFocus) { return; }
+        if (isSingleCellSelection(rangeAnchor, rangeFocus)) {
+            const tr = tableBody.rows[rangeAnchor.r];
+            const cells = tr ? tr.querySelectorAll(':scope > td[data-col]') : null;
+            const srcTd = cells ? cells[rangeAnchor.c] : null;
+            if (!srcTd) { return; }
+            fillSourceValue = cellFillValue(srcTd);
+            fillSourceBounds = null;
+        } else {
+            fillSourceBounds = rangeBounds();
+        }
+        fillPlan = null;
         fillDragging = true;
         tableBody.classList.add('range-dragging');
         removeFillHandle();
+    }
+
+    // Select a block given as {minR, maxR, minC, maxC}.
+    function selectBounds(b) {
+        rangeAnchor = { r: b.minR, c: b.minC };
+        rangeFocus = { r: b.maxR, c: b.maxC };
     }
 
     // Abandon a fill drag whose mouseup was missed, leaving the data untouched.
     function cancelFillDrag() {
         fillDragging = false;
         fillSourceValue = null;
+        if (fillSourceBounds) { selectBounds(fillSourceBounds); }
+        fillSourceBounds = null;
+        fillPlan = null;
         tableBody.classList.remove('range-dragging');
         applyCellRangeHighlight();
     }
@@ -3234,7 +3472,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (!ft || ft.parentElement.parentElement !== tableBody) return;
             const fc = cellCoords(ft);
             if (!fc) return;
-            rangeFocus = fc;
+            if (fillSourceBounds) {
+                // A block extends along one axis only; show source plus new cells.
+                fillPlan = planFillExtension(fillSourceBounds, fc);
+                const s = fillSourceBounds;
+                const t = fillPlan ? fillPlan.target : s;
+                selectBounds({
+                    minR: Math.min(s.minR, t.minR), maxR: Math.max(s.maxR, t.maxR),
+                    minC: Math.min(s.minC, t.minC), maxC: Math.max(s.maxC, t.maxC)
+                });
+            } else {
+                rangeFocus = fc;
+            }
             applyCellRangeHighlight();
             clearNativeTextSelection();
             e.preventDefault();
@@ -3266,13 +3515,25 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             endLineSelection();
             return;
         }
-        // Releasing a fill-handle drag copies the source value into the region.
+        // Releasing a fill-handle drag copies the source value into the region,
+        // or continues a block of values as a series.
         if (fillDragging) {
             fillDragging = false;
             tableBody.classList.remove('range-dragging');
             const value = fillSourceValue;
+            const source = fillSourceBounds;
+            const plan = fillPlan;
             fillSourceValue = null;
-            fillCellRangeWithValue(value);
+            fillSourceBounds = null;
+            fillPlan = null;
+            if (!source) {
+                fillCellRangeWithValue(value);
+            } else if (plan) {
+                fillCellRangeWithSeries(source, plan);
+            } else {
+                selectBounds(source);
+                applyCellRangeHighlight();
+            }
             rangeMouseDown = null;
             rangeDragging = false;
             return;
@@ -3647,53 +3908,113 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return { key: modKey, value: stored };
     }
 
-    // Fill every cell of the active rectangle with one value, so a single copied
-    // value pasted over a multi-cell selection lands in all of them (Excel fill).
-    function fillCellRangeWithValue(value) {
-        const { minR, maxR, minC, maxC } = rangeBounds();
-        const rows = tableBody.rows;
-        const validationTargets = [];
-        for (let r = minR; r <= maxR; r++) {
-            const tr = rows[r];
-            if (!tr) { continue; }
-            const dataCells = tr.querySelectorAll(':scope > td[data-col]');
-            for (let c = minC; c <= maxC && c < dataCells.length; c++) {
-                const td = dataCells[c];
-                const colName = td.getAttribute('data-col');
-                const rowAttr = td.getAttribute('data-row');
-                const insAttr = td.getAttribute('data-insert');
-                const dupAttr = td.getAttribute('data-dup');
-                if (rowAttr !== null) {
-                    if (!isColumnEditable(colName)) { continue; }
-                    const t = applyPastedExistingCell(parseInt(rowAttr, 10), colName, value);
-                    if (t) { validationTargets.push(t); }
-                } else if (insAttr !== null && insertedRows[parseInt(insAttr, 10)]) {
-                    const idx = parseInt(insAttr, 10);
-                    const normalized = normalizePastedCellValue(value, columns.find(x => x.name === colName));
-                    insertedRows[idx].row[colName] = normalized;
-                    validationTargets.push({ key: `ins:${idx}:${colName}`, value: normalized });
-                } else if (dupAttr !== null && duplicatedRows[parseInt(dupAttr, 10)]) {
-                    const idx = parseInt(dupAttr, 10);
-                    const entry = duplicatedRows[idx];
-                    const normalized = normalizePastedCellValue(value, columns.find(x => x.name === colName));
-                    entry.row[colName] = normalized;
-                    if (entry.defaults) { entry.defaults.delete(colName); }
-                    validationTargets.push({ key: `dup:${idx}:${colName}`, value: normalized });
-                }
-            }
+    // Stage `value` into one data cell exactly like a paste does: loaded rows go
+    // through the modified-cell map (skipping read-only columns), inserted and
+    // duplicated rows are written directly. Cells to validate are collected.
+    function stageCellFill(td, value, validationTargets) {
+        const colName = td.getAttribute('data-col');
+        const rowAttr = td.getAttribute('data-row');
+        const insAttr = td.getAttribute('data-insert');
+        const dupAttr = td.getAttribute('data-dup');
+        if (rowAttr !== null) {
+            if (!isColumnEditable(colName)) { return; }
+            const t = applyPastedExistingCell(parseInt(rowAttr, 10), colName, value);
+            if (t) { validationTargets.push(t); }
+        } else if (insAttr !== null && insertedRows[parseInt(insAttr, 10)]) {
+            const idx = parseInt(insAttr, 10);
+            const normalized = normalizePastedCellValue(value, columns.find(x => x.name === colName));
+            insertedRows[idx].row[colName] = normalized;
+            validationTargets.push({ key: `ins:${idx}:${colName}`, value: normalized });
+        } else if (dupAttr !== null && duplicatedRows[parseInt(dupAttr, 10)]) {
+            const idx = parseInt(dupAttr, 10);
+            const entry = duplicatedRows[idx];
+            const normalized = normalizePastedCellValue(value, columns.find(x => x.name === colName));
+            entry.row[colName] = normalized;
+            if (entry.defaults) { entry.defaults.delete(colName); }
+            validationTargets.push({ key: `dup:${idx}:${colName}`, value: normalized });
         }
+    }
+
+    // Re-render after a fill, validate the written cells, keep `bounds` selected
+    // and record the whole fill as one undo step.
+    function finishCellFill(validationTargets, bounds) {
         renderBody();
         validationTargets.forEach(t => {
             const td = findCellByKey(t.key);
             if (td) { checkCellValue(td, t.key, t.value); }
         });
-        // renderBody drops the selection; restore it so the cells the value was
-        // copied into stay marked, then re-highlight the rebuilt tbody.
-        rangeAnchor = { r: minR, c: minC };
-        rangeFocus = { r: maxR, c: maxC };
+        // renderBody drops the selection; restore it so the filled cells stay
+        // marked, then re-highlight the rebuilt tbody.
+        selectBounds(bounds);
         applyCellRangeHighlight();
         updateChangeIndicator();
         recordEditHistory();
+    }
+
+    function dataCellAt(r, c) {
+        const tr = tableBody.rows[r];
+        const cells = tr ? tr.querySelectorAll(':scope > td[data-col]') : null;
+        return cells ? cells[c] || null : null;
+    }
+
+    // Fill every cell of the active rectangle with one value, so a single copied
+    // value pasted over a multi-cell selection lands in all of them (Excel fill).
+    function fillCellRangeWithValue(value) {
+        const bounds = rangeBounds();
+        const validationTargets = [];
+        for (let r = bounds.minR; r <= bounds.maxR; r++) {
+            for (let c = bounds.minC; c <= bounds.maxC; c++) {
+                const td = dataCellAt(r, c);
+                if (td) { stageCellFill(td, value, validationTargets); }
+            }
+        }
+        finishCellFill(validationTargets, bounds);
+    }
+
+    // Excel-like series fill: extend the `source` block in `plan.direction`,
+    // continuing each column (vertical) or row (horizontal) of the block as a
+    // series where its type allows, and repeating its values otherwise.
+    function fillCellRangeWithSeries(source, plan) {
+        const t = plan.target;
+        const vertical = plan.direction === 'down' || plan.direction === 'up';
+        const forward = plan.direction === 'down' || plan.direction === 'right';
+        const kindOf = (c) => (columns[c] ? seriesKindForType(columns[c].fullType || columns[c].dataType) : '');
+        const validationTargets = [];
+        const lanes = vertical
+            ? { from: source.minC, to: source.maxC, count: t.maxR - t.minR + 1 }
+            : { from: source.minR, to: source.maxR, count: t.maxC - t.minC + 1 };
+        for (let lane = lanes.from; lane <= lanes.to; lane++) {
+            const values = [];
+            let kind;
+            if (vertical) {
+                for (let r = source.minR; r <= source.maxR; r++) {
+                    const td = dataCellAt(r, lane);
+                    values.push(td ? cellFillValue(td) : '');
+                }
+                kind = kindOf(lane);
+            } else {
+                const kinds = new Set();
+                for (let c = source.minC; c <= source.maxC; c++) {
+                    const td = dataCellAt(lane, c);
+                    values.push(td ? cellFillValue(td) : '');
+                    kinds.add(kindOf(c));
+                }
+                // A row continues only when all its source columns share a kind.
+                kind = kinds.size === 1 ? [...kinds][0] : '';
+            }
+            const series = continueSeries(forward ? values : values.slice().reverse(), kind, lanes.count);
+            series.forEach((value, i) => {
+                const pos = vertical
+                    ? { r: forward ? t.minR + i : t.maxR - i, c: lane }
+                    : { r: lane, c: forward ? t.minC + i : t.maxC - i };
+                const td = dataCellAt(pos.r, pos.c);
+                if (td) { stageCellFill(td, value, validationTargets); }
+            });
+        }
+        finishCellFill(validationTargets, {
+            minR: Math.min(source.minR, t.minR), maxR: Math.max(source.maxR, t.maxR),
+            minC: Math.min(source.minC, t.minC), maxC: Math.max(source.maxC, t.maxC)
+        });
     }
 
     function handleGridPaste(e) {
@@ -7340,6 +7661,9 @@ if (typeof module !== 'undefined' && module.exports) {
         shouldFillLoneValue,
         resolveMouseRelease,
         isSingleCellSelection,
+        seriesKindForType,
+        continueSeries,
+        planFillExtension,
         lineSelectionCorners,
         fullySelectedLines,
         isPrintableTypingKey,

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { ExportService, ExportOptions } from '../exportService';
+import { ExportService, ExportOptions, excelCellValue, EXCEL_DATE_FORMAT } from '../exportService';
 
 function createMockContext() {
     const store: Record<string, any> = {};
@@ -736,6 +736,67 @@ test('Excel export includes SQL sheet when requested', async () => {
         assert.equal(sqlSheet.getRow(2).getCell(1).value, sql);
     } finally {
         fs.unlinkSync(filePath);
+    }
+});
+
+// ===== excelCellValue (3.3.0: dates arrive as raw text) =====
+
+test('excelCellValue turns a raw date into a UTC-midnight Excel date', () => {
+    const v = excelCellValue('2024-01-31', 'date');
+    assert.ok(v instanceof Date);
+    assert.equal((v as Date).toISOString(), '2024-01-31T00:00:00.000Z');
+});
+
+test('excelCellValue keeps years below 100 and rejects impossible dates', () => {
+    assert.equal((excelCellValue('0099-12-31', 'date') as Date).toISOString(), '0099-12-31T00:00:00.000Z');
+    assert.equal(excelCellValue('2024-02-30', 'date'), '2024-02-30');
+    assert.equal(excelCellValue('infinity', 'date'), 'infinity');
+});
+
+test('excelCellValue leaves other columns and NULLs alone', () => {
+    assert.equal(excelCellValue('2024-01-31', 'text'), '2024-01-31');
+    assert.equal(excelCellValue('2024-01-31 10:00:00', 'timestamp without time zone'), '2024-01-31 10:00:00');
+    assert.equal(excelCellValue(42, 'integer'), 42);
+    assert.equal(excelCellValue(null, 'date'), '');
+    assert.equal(excelCellValue(undefined, 'date'), '');
+});
+
+test('Excel export writes a date column as real date cells on the right day', async () => {
+    const service = new ExportService(createMockContext());
+    const filePath = getTempFile('.xlsx');
+    try {
+        await service.exportData(
+            [{ id: 1, due: '2024-01-31' }, { id: 2, due: null }],
+            [{ name: 'id', dataType: 'integer' }, { name: 'due', dataType: 'date' }],
+            { format: 'excel', filePath, excelIncludeHeaders: true, excelSheetName: 'Data', excelIncludeSqlSheet: false }
+        );
+        const ExcelJS = require('exceljs');
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.readFile(filePath);
+        const cell = workbook.getWorksheet('Data').getRow(2).getCell(2);
+        assert.ok(cell.value instanceof Date, 'expected a date cell, not text');
+        assert.equal(cell.value.toISOString(), '2024-01-31T00:00:00.000Z');
+        assert.equal(cell.numFmt, EXCEL_DATE_FORMAT);
+        assert.equal(workbook.getWorksheet('Data').getRow(2).getCell(1).numFmt, undefined);
+    } finally {
+        fs.unlinkSync(filePath);
+    }
+});
+
+test('CSV and INSERT exports write a raw date as written in the database', async () => {
+    const service = new ExportService(createMockContext());
+    const csvPath = getTempFile('.csv');
+    const sqlPath = getTempFile('.sql');
+    const rows = [{ due: '2024-01-31' }];
+    const cols = [{ name: 'due', dataType: 'date' }];
+    try {
+        await service.exportData(rows, cols, { format: 'csv', filePath: csvPath, csvIncludeHeaders: false, csvQuoteStrings: false });
+        assert.equal(fs.readFileSync(csvPath, 'utf8').trim(), '2024-01-31');
+        await service.exportData(rows, cols, { format: 'insert', filePath: sqlPath, insertTableName: 't' });
+        assert.ok(fs.readFileSync(sqlPath, 'utf8').includes("('2024-01-31')"));
+    } finally {
+        fs.unlinkSync(csvPath);
+        fs.unlinkSync(sqlPath);
     }
 });
 
