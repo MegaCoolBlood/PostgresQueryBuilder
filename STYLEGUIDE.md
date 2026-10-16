@@ -13,6 +13,12 @@ that breaks it fails `npm test`.
    not `white`/`black`. Every colour MUST come from a `--vscode-*` theme variable,
    normally through one of the semantic tokens in section 3. This is what keeps
    Dark+, Light+ and High Contrast usable.
+   *The one exception* is a custom mouse-cursor image: the browser draws it
+   outside the page, so it cannot read a theme variable. Such a cursor is an
+   SVG data URI declared once as a `--cursor-*` custom property, drawn `black`
+   with a `white` outline like the operating system's own arrow, and always
+   followed by a built-in fallback cursor (see `--cursor-select-row` in
+   `tableView.css`). Nothing else may use these words.
 2. **No raw `z-index`.** Use one of the four layer tokens. Stacking bugs are
    otherwise impossible to reason about across eight surfaces.
 3. **No inline `style="…"` carrying colour, `padding` or `font-size`.** Put it in

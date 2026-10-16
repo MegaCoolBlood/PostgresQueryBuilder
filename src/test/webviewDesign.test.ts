@@ -54,6 +54,42 @@ test('every webview stylesheet in TypeScript defines no literal colour', () => {
     }
 });
 
+/** `black` / `white` as a colour word (not part of `white-space` or a class name). */
+const BLACK_OR_WHITE = /(?<![\w-])(?:black|white)(?![\w-])/gi;
+/** The documented exception: a `--cursor-*` property holding an SVG cursor plus a built-in fallback. */
+const CURSOR_IMAGE_DECL = /--cursor-[\w-]+:\s*url\("data:image\/svg\+xml,[^"]*"\)\s+\d+\s+\d+,\s*[a-z-]+;/g;
+
+function withoutCommentsAndCursorImages(css: string): string {
+    return css.replace(/\/\*[\s\S]*?\*\//g, '').replace(CURSOR_IMAGE_DECL, '');
+}
+
+test('black and white appear only inside a --cursor-* image declaration', () => {
+    const sheets: Array<[string, string]> = [
+        ['shared.css', getSharedStyles()],
+        ['tableView.css', fs.readFileSync(path.join(WEBVIEW, 'tableView.css'), 'utf8')]
+    ];
+    for (const file of STYLE_OWNERS) {
+        for (const block of extractStyleBlocks(fs.readFileSync(path.join(SRC, file), 'utf8'))) {
+            sheets.push([file, block]);
+        }
+    }
+    for (const [name, css] of sheets) {
+        assert.deepEqual(withoutCommentsAndCursorImages(css).match(BLACK_OR_WHITE), null,
+            `${name} uses black/white outside a --cursor-* image`);
+    }
+});
+
+test('row numbers and column-select strips show the Excel-style select arrows', () => {
+    const css = fs.readFileSync(path.join(WEBVIEW, 'tableView.css'), 'utf8');
+    const declared = css.match(CURSOR_IMAGE_DECL) || [];
+    assert.ok(declared.some(d => d.startsWith('--cursor-select-row:') && d.trimEnd().endsWith('e-resize;')),
+        'expected the row arrow with an e-resize fallback');
+    assert.ok(declared.some(d => d.startsWith('--cursor-select-column:') && d.trimEnd().endsWith('s-resize;')),
+        'expected the column arrow with an s-resize fallback');
+    assert.match(css, /#tableBody td\.row-num-cell\s*\{\s*cursor:\s*var\(--cursor-select-row\);/);
+    assert.match(css, /\.col-select-strip\s*\{[^}]*cursor:\s*var\(--cursor-select-column\);/);
+});
+
 test('no webview stylesheet uses a raw z-index; the shared tokens define the stacking order', () => {
     const sheets = [getSharedStyles(), fs.readFileSync(path.join(WEBVIEW, 'tableView.css'), 'utf8')];
     for (const file of STYLE_OWNERS) {

@@ -11,6 +11,13 @@
     /* Visible height of a cell's content. Dragging a row's resize handle raises
        it on that row so a multi-line value can be read. */
     --row-content-max-h: 20px;
+    /* Excel-style select arrows over the row numbers (pointing right) and the
+       column-select strips (pointing down). A cursor image is drawn outside the
+       page and cannot read theme variables, so — like the operating system's own
+       arrow — it is black with a white outline; this is the one documented
+       exception to "no literal colour" (STYLEGUIDE.md, hard rule 1). */
+    --cursor-select-row: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M15 8 9 2v4H1v4h8v4z' fill='black' stroke='white' stroke-width='1.2' stroke-linejoin='round'/%3E%3C/svg%3E") 15 8, e-resize;
+    --cursor-select-column: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M8 15 2 9h4V1h4v8h4z' fill='black' stroke='white' stroke-width='1.2' stroke-linejoin='round'/%3E%3C/svg%3E") 8 15, s-resize;
 }
 
 body {
@@ -660,7 +667,7 @@ body.row-resizing * {
     left: 0;
     right: 6px;
     height: 6px;
-    cursor: pointer;
+    cursor: var(--cursor-select-column);
     z-index: calc(var(--z-sticky) + 1);
 }
 
@@ -677,7 +684,7 @@ thead th.col-selected {
 /* Clicking a row number selects the row, dragging over them selects several.
    Sticky cells must stay opaque, so the selection tint is mixed onto the page. */
 #tableBody td.row-num-cell {
-    cursor: pointer;
+    cursor: var(--cursor-select-row);
 }
 
 #tableBody tr td.row-num-cell.row-num-selected {
