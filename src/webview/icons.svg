@@ -28,4 +28,5 @@
     <symbol id="icon-plug" viewBox="0 0 16 16"><path d="M6 2v3M10 2v3"/><path d="M4.5 5h7v2.5a3.5 3.5 0 01-7 0z"/><path d="M8 11v3"/></symbol>
     <symbol id="icon-params" viewBox="0 0 16 16"><path d="M2.5 5h6M11.5 5h2M2.5 11h2M7.5 11h6"/><circle cx="10" cy="5" r="1.5"/><circle cx="6" cy="11" r="1.5"/></symbol>
     <symbol id="icon-grip" viewBox="0 0 16 16"><path class="f" d="M6 3.2a1 1 0 110 2 1 1 0 010-2zM10 3.2a1 1 0 110 2 1 1 0 010-2zM6 7a1 1 0 110 2 1 1 0 010-2zM10 7a1 1 0 110 2 1 1 0 010-2zM6 10.8a1 1 0 110 2 1 1 0 010-2zM10 10.8a1 1 0 110 2 1 1 0 010-2z"/></symbol>
+    <symbol id="icon-terminal" viewBox="0 0 16 16"><path d="M3.5 4.5L7 8l-3.5 3.5"/><path d="M8.5 12h4"/></symbol>
 </svg>

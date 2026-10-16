@@ -10,6 +10,8 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
     readonly onDidChangeFilter = this._onDidChangeFilter.event;
     private _onDidRequestManageMappings = new vscode.EventEmitter<void>();
     readonly onDidRequestManageMappings = this._onDidRequestManageMappings.event;
+    private _onDidRequestPsqlConsole = new vscode.EventEmitter<void>();
+    readonly onDidRequestPsqlConsole = this._onDidRequestPsqlConsole.event;
 
     private _filterText = '';
 
@@ -36,6 +38,8 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
                 this._onDidChangeFilter.fire(this._filterText);
             } else if (message.type === 'manageMappings') {
                 this._onDidRequestManageMappings.fire();
+            } else if (message.type === 'openPsqlConsole') {
+                this._onDidRequestPsqlConsole.fire();
             }
         });
     }
@@ -67,6 +71,9 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
     <div class="hint">Several terms separated by spaces: the matches with the most hits come first</div>
     <div class="button-row">
         <button class="btn" id="manageMappingsBtn" title="Open the manager for all custom column mappings (bulk share/move/delete)">${icon('goto')}Manage All Mappings</button>
+    </div>
+    <div class="button-row">
+        <button class="btn" id="psqlConsoleBtn" title="Open psql for the active connection in a terminal">${icon('terminal')}Open psql Console</button>
     </div>`;
         const script = `
         const vscode = acquireVsCodeApi();
@@ -80,6 +87,9 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
         });
         document.getElementById('manageMappingsBtn').addEventListener('click', () => {
             vscode.postMessage({ type: 'manageMappings' });
+        });
+        document.getElementById('psqlConsoleBtn').addEventListener('click', () => {
+            vscode.postMessage({ type: 'openPsqlConsole' });
         });
         input.focus();`;
         return buildHtmlDocument({ webview, styles, body, script });

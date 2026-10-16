@@ -22,6 +22,7 @@ import { formatSqlChecked, FormatOptions } from './plpgsqlFormatter';
 import { formatOptionsToRepoConfig } from './repoFormatConfig';
 import { resolveFormatOptions } from './formatConfig';
 import { DoubleClickGate } from './doubleClick';
+import { PsqlConsole } from './psqlConsole';
 
 /**
  * Surface the non-blocking warnings an enabled formatter check produced. The
@@ -241,6 +242,14 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.commands.registerCommand('postgresQueryBuilder.manageCustomMappings', () => {
                 ManageMappingsPanel.show(context, columnMappingManager);
             }),
+            vscode.commands.registerCommand('postgresQueryBuilder.openPsqlConsole', async () => {
+                try {
+                    await new PsqlConsole(connectionManager).open();
+                } catch (err: unknown) {
+                    outputChannel.appendLine(`[openPsqlConsole] ${getErrorStack(err)}`);
+                    vscode.window.showErrorMessage(`Could not open the psql console: ${getErrorMessage(err)}`);
+                }
+            }),
             vscode.commands.registerCommand('postgresQueryBuilder.viewDataFromSelect', async () => {
                 try {
                     await viewDataFromSelect.run(vscode.window.activeTextEditor);
@@ -430,6 +439,9 @@ export function activate(context: vscode.ExtensionContext) {
         });
         searchViewProvider.onDidRequestManageMappings(() => {
             ManageMappingsPanel.show(context, columnMappingManager);
+        });
+        searchViewProvider.onDidRequestPsqlConsole(() => {
+            vscode.commands.executeCommand('postgresQueryBuilder.openPsqlConsole');
         });
 
         const modifyHistoryProvider = new ModifyHistoryViewProvider(modifyHistoryStore);

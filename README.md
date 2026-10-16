@@ -190,6 +190,24 @@ timestamp, so you can see afterwards what ran and copy it back out.
 
 ---
 
+## psql console
+
+**Open psql Console** — from the Command Palette or the button in the *Search*
+view — starts the real `psql` in a VS Code terminal, connected to the active
+connection. Every psql command works there as usual: `\d`, `\dt`, `\x`,
+`\timing`, `\copy`, `\i`, `\watch`, tab completion and command history.
+
+- The password is taken from the SecretStorage and handed over as
+  `PGPASSWORD`; it never appears on a command line, in the terminal or in a
+  file, and the terminal is not restored after a window reload.
+- A `search_path` set with **Show / Edit search_path** applies to the console
+  as well.
+- `psql` is looked up on `PATH` and, on Windows, in
+  `Program Files\PostgreSQL\<version>\bin` (newest first). Point
+  `postgresQueryBuilder.psqlPath` at it if it lives elsewhere.
+
+---
+
 ## The PL/pgSQL formatter
 
 The extension registers a formatter for the languages `sql`, `plpgsql` and
@@ -239,6 +257,7 @@ Every command lives in the Command Palette (`Ctrl+Shift+P`) under the category
 | Refresh Table Explorer | Reload schemas and tables |
 | Open Table | Open a table in the Data Viewer |
 | Open SQL Editor | Open the panel for ad-hoc SQL |
+| Open psql Console | Start `psql` for the active connection in a terminal |
 | View Data | Run the `SELECT` under the cursor in the Data Viewer |
 | Format PL/pgSQL | Format the current SQL file |
 | Export Formatter Settings to .pgformat.json | Write the current formatter settings into a file |
@@ -272,6 +291,7 @@ duplicating, deleting and moving between the personal and the workspace scope.
 | `postgresQueryBuilder.defaultHost` | `localhost` | Host a new connection form starts with |
 | `postgresQueryBuilder.defaultPort` | `5432` | Port a new connection form starts with |
 | `postgresQueryBuilder.defaultDatabase` | `postgres` | Database a new connection form starts with |
+| `postgresQueryBuilder.psqlPath` | empty | `psql` used by the console; empty searches `PATH` and the default install folders |
 | `postgresQueryBuilder.thousandSeparator` | space | Separator numbers are displayed with |
 | `postgresQueryBuilder.alwaysQualifySchema` | `false` | Always write the schema into generated `SELECT`s |
 | `postgresQueryBuilder.alwaysQuote` | `false` | Always quote identifiers in generated `SELECT`s |
@@ -291,6 +311,7 @@ all of them can be moved into a `.pgformat.json`.
 
 - VS Code 1.85 or newer
 - Network access to a PostgreSQL server
+- For the psql console only: the PostgreSQL client tools (`psql`)
 
 Passwords are kept in the SecretStorage of VS Code, not in `settings.json`, and
 nothing is sent anywhere except to the database you connect to.

@@ -120,6 +120,16 @@ export class ConnectionManager {
         return this.activeConfig;
     }
 
+    /** The password stored in SecretStorage for a saved connection, if any. */
+    async getStoredPassword(name: string): Promise<string | undefined> {
+        return this.context.secrets.get(`pgqb_password_${name}`);
+    }
+
+    /** The `search_path` override of the active connection, or `null` for the server default. */
+    getSearchPathOverride(): string | null {
+        return this.searchPathOverride;
+    }
+
     getPool(): Pool | null {
         return this.pool;
     }

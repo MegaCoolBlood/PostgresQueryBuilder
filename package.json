@@ -139,6 +139,12 @@
         "category": "PostgreSQL Query Booster"
       },
       {
+        "command": "postgresQueryBuilder.openPsqlConsole",
+        "title": "Open psql Console",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(terminal)"
+      },
+      {
         "command": "postgresQueryBuilder.viewDataFromSelect",
         "title": "View Data",
         "category": "PostgreSQL Query Booster"
@@ -352,6 +358,11 @@
           "type": "array",
           "default": [],
           "description": "Saved connection configurations (passwords stored in SecretStorage)"
+        },
+        "postgresQueryBuilder.psqlPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `psql` executable (or the folder containing it) used by **Open psql Console**. Leave empty to search `PATH` and, on Windows, the default `Program Files\\PostgreSQL\\<version>\\bin` folders (newest version first)."
         }
       }
     },
