@@ -1427,6 +1427,19 @@ function computeResizedColumnWidth(startWidth, deltaX, minWidth, maxWidth) {
     return Math.round(w);
 }
 
+// How many pixels to auto-scroll the grid per animation frame while a column
+// is being resized with the pointer at (or past) the right edge of the visible
+// grid. Inside the last `zone` pixels the speed rises with the depth into the
+// zone up to `maxStep`; elsewhere it is 0. This is what lets the last column be
+// widened beyond the edge of the panel, as in Excel.
+function columnResizeEdgeStep(clientX, visibleRight, zone, maxStep) {
+    const x = Number(clientX), right = Number(visibleRight);
+    if (!isFinite(x) || !isFinite(right) || !(zone > 0) || !(maxStep > 0)) { return 0; }
+    const depth = x - (right - zone);
+    if (depth <= 0) { return 0; }
+    return Math.max(1, Math.round(maxStep * Math.min(1, depth / zone)));
+}
+
 // Quote a column name for use inside a CSS attribute selector.
 function cssStringLiteral(value) {
     return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
@@ -2571,27 +2584,65 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const col = th.getAttribute('data-col');
         // The header is draggable for reordering; that must not start here.
         th.draggable = false;
-        colResizeState = { col, th, startX: e.clientX, startWidth: th.getBoundingClientRect().width };
+        const scroller = document.getElementById('tableWrapper');
+        colResizeState = {
+            col, th, startX: e.clientX, lastX: e.clientX,
+            startWidth: th.getBoundingClientRect().width,
+            scroller, startScrollLeft: scroller ? scroller.scrollLeft : 0,
+            autoScrolled: 0, frame: 0
+        };
         document.addEventListener('mousemove', onColumnResizeMove);
         document.addEventListener('mouseup', endColumnResize);
+        window.addEventListener('blur', endColumnResize);
         document.body.classList.add('col-resizing');
+    }
+
+    function applyResizedColumnWidth() {
+        const s = colResizeState;
+        columnWidths[s.col] = computeResizedColumnWidth(s.startWidth, s.lastX - s.startX + s.autoScrolled, MIN_COL_W, MAX_COL_W);
+        applyColumnWidths();
     }
 
     function onColumnResizeMove(e) {
         if (!colResizeState) return;
-        const delta = e.clientX - colResizeState.startX;
-        columnWidths[colResizeState.col] = computeResizedColumnWidth(colResizeState.startWidth, delta, MIN_COL_W, MAX_COL_W);
-        applyColumnWidths();
+        // A release outside the panel may never arrive as a mouseup.
+        if (e.buttons === 0) { endColumnResize(); return; }
+        colResizeState.lastX = e.clientX;
+        applyResizedColumnWidth();
+        if (!colResizeState.frame) {
+            colResizeState.frame = requestAnimationFrame(columnResizeAutoScroll);
+        }
+    }
+
+    // While the pointer rests at the right edge of the grid, keep widening the
+    // column and scroll along with it, so the last column is not capped by the
+    // edge of the panel.
+    const COL_RESIZE_EDGE_ZONE = 32;
+    const COL_RESIZE_EDGE_MAX_STEP = 10;
+    function columnResizeAutoScroll() {
+        const s = colResizeState;
+        if (!s) return;
+        s.frame = 0;
+        if (!s.scroller || columnWidths[s.col] >= MAX_COL_W) return;
+        const visibleRight = s.scroller.getBoundingClientRect().left + s.scroller.clientWidth;
+        const step = columnResizeEdgeStep(s.lastX, visibleRight, COL_RESIZE_EDGE_ZONE, COL_RESIZE_EDGE_MAX_STEP);
+        if (step <= 0) return;
+        s.autoScrolled += step;
+        applyResizedColumnWidth();
+        s.scroller.scrollLeft = s.startScrollLeft + s.autoScrolled;
+        s.frame = requestAnimationFrame(columnResizeAutoScroll);
     }
 
     function endColumnResize() {
         if (colResizeState) {
+            if (colResizeState.frame) cancelAnimationFrame(colResizeState.frame);
             colResizeState.th.draggable = true;
             colResizeEndedAt = Date.now();
         }
         colResizeState = null;
         document.removeEventListener('mousemove', onColumnResizeMove);
         document.removeEventListener('mouseup', endColumnResize);
+        window.removeEventListener('blur', endColumnResize);
         document.body.classList.remove('col-resizing');
     }
 
@@ -7340,6 +7391,7 @@ if (typeof module !== 'undefined' && module.exports) {
         nextSortState,
         computeResizedRowHeight,
         computeResizedColumnWidth,
+        columnResizeEdgeStep,
         cssStringLiteral,
         buildColumnWidthCss,
         remainingRowCount,

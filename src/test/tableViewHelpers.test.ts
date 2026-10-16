@@ -17,6 +17,7 @@ const {
     nextSortState,
     computeResizedRowHeight,
     computeResizedColumnWidth,
+    columnResizeEdgeStep,
     cssStringLiteral,
     buildColumnWidthCss,
     remainingRowCount,
@@ -883,6 +884,34 @@ test('computeResizedColumnWidth rounds to whole pixels', () => {
 test('computeResizedColumnWidth treats non-numeric inputs as zero', () => {
     assert.equal(computeResizedColumnWidth(NaN as any, 100, 40, 1200), 100);
     assert.equal(computeResizedColumnWidth(150, undefined as any, 40, 1200), 150);
+});
+
+// ===== columnResizeEdgeStep (3.3.0: widen the last column past the panel edge) =====
+
+test('columnResizeEdgeStep does not scroll while the pointer is away from the right edge', () => {
+    assert.equal(columnResizeEdgeStep(500, 1000, 32, 10), 0);
+    assert.equal(columnResizeEdgeStep(968, 1000, 32, 10), 0);
+});
+
+test('columnResizeEdgeStep scrolls slowly at the start of the edge zone', () => {
+    assert.equal(columnResizeEdgeStep(969, 1000, 32, 10), 1);
+});
+
+test('columnResizeEdgeStep speeds up deeper into the edge zone', () => {
+    assert.equal(columnResizeEdgeStep(984, 1000, 32, 10), 5);
+    assert.ok(columnResizeEdgeStep(990, 1000, 32, 10) > columnResizeEdgeStep(975, 1000, 32, 10));
+});
+
+test('columnResizeEdgeStep scrolls at full speed at and beyond the edge', () => {
+    assert.equal(columnResizeEdgeStep(1000, 1000, 32, 10), 10);
+    assert.equal(columnResizeEdgeStep(1015, 1000, 32, 10), 10);
+});
+
+test('columnResizeEdgeStep returns 0 for invalid input', () => {
+    assert.equal(columnResizeEdgeStep(NaN, 1000, 32, 10), 0);
+    assert.equal(columnResizeEdgeStep(990, undefined as any, 32, 10), 0);
+    assert.equal(columnResizeEdgeStep(990, 1000, 0, 10), 0);
+    assert.equal(columnResizeEdgeStep(990, 1000, 32, 0), 0);
 });
 
 // ===== cssStringLiteral =====
