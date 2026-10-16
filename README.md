@@ -202,6 +202,8 @@ connection. Every psql command works there as usual: `\d`, `\dt`, `\x`,
   file, and the terminal is not restored after a window reload.
 - A `search_path` set with **Show / Edit search_path** applies to the console
   as well.
+- On Windows the console is switched to the Windows code page (`chcp`) before
+  psql starts, so umlauts and quotation marks are displayed correctly.
 - `psql` is looked up on `PATH` and, on Windows, in
   `Program Files\PostgreSQL\<version>\bin` (newest first). Point
   `postgresQueryBuilder.psqlPath` at it if it lives elsewhere.

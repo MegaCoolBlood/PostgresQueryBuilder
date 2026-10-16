@@ -6,10 +6,12 @@ import * as path from 'node:path';
 import {
     PSQL_APPLICATION_NAME,
     PsqlConsole,
-    PsqlLocatorHost,
+    PsqlHost,
     buildPsqlEnvironment,
+    buildPsqlLaunch,
     escapePgOption,
     locatePsql,
+    parseAnsiCodePage,
     psqlTerminalName,
     sortVersionsDescending
 } from '../psqlConsole';
@@ -31,13 +33,15 @@ function fakeHost(
     platform: NodeJS.Platform,
     env: Record<string, string | undefined>,
     files: string[],
-    dirs: Record<string, string[]> = {}
-): PsqlLocatorHost {
+    dirs: Record<string, string[]> = {},
+    codePage: number | null = null
+): PsqlHost {
     return {
         platform,
         env,
         isFile: (p) => files.includes(p),
-        listDirectory: (p) => dirs[p] ?? []
+        listDirectory: (p) => dirs[p] ?? [],
+        ansiCodePage: () => codePage
     };
 }
 
@@ -129,6 +133,41 @@ test('locatePsql returns null when psql is nowhere to be found', () => {
     assert.equal(locatePsql('', fakeHost('linux', { PATH: '/usr/bin' }, [])), null);
 });
 
+// ===== parseAnsiCodePage =====
+
+test('parseAnsiCodePage reads the ACP value from reg query output', () => {
+    const out = '\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage\r\n    ACP    REG_SZ    1252\r\n\r\n';
+    assert.equal(parseAnsiCodePage(out), 1252);
+    assert.equal(parseAnsiCodePage('    ACP    REG_SZ    65001'), 65001);
+});
+
+test('parseAnsiCodePage returns null for unexpected output', () => {
+    assert.equal(parseAnsiCodePage(''), null);
+    assert.equal(parseAnsiCodePage('ERROR: The system was unable to find the specified registry key or value.'), null);
+    assert.equal(parseAnsiCodePage('    OEMCP    REG_SZ    850'), null);
+    assert.equal(parseAnsiCodePage('    ACP    REG_SZ    0'), null);
+});
+
+// ===== buildPsqlLaunch =====
+
+test('buildPsqlLaunch switches the Windows console to the ANSI code page before psql starts', () => {
+    const exe = 'C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe';
+    assert.deepEqual(buildPsqlLaunch(exe, 'win32', 1252, 'C:\\WINDOWS\\system32\\cmd.exe'), {
+        shellPath: 'C:\\WINDOWS\\system32\\cmd.exe',
+        shellArgs: '/d /s /c "chcp 1252>nul & "C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe""'
+    });
+});
+
+test('buildPsqlLaunch falls back to cmd.exe when ComSpec is not set', () => {
+    assert.equal(buildPsqlLaunch('C:\\pg\\psql.exe', 'win32', 1252, undefined).shellPath, 'cmd.exe');
+});
+
+test('buildPsqlLaunch starts psql directly when the code page is unknown or outside Windows', () => {
+    assert.deepEqual(buildPsqlLaunch('C:\\pg\\psql.exe', 'win32', null, 'cmd.exe'), { shellPath: 'C:\\pg\\psql.exe' });
+    assert.deepEqual(buildPsqlLaunch('/usr/bin/psql', 'linux', 1252, undefined), { shellPath: '/usr/bin/psql' });
+    assert.deepEqual(buildPsqlLaunch('/usr/bin/psql', 'darwin', null, undefined), { shellPath: '/usr/bin/psql' });
+});
+
 // ===== PsqlConsole.open =====
 
 interface FakeConnection {
@@ -169,6 +208,34 @@ test('PsqlConsole opens psql in a transient terminal with the connection environ
         assert.equal(opts.shellArgs, undefined, 'nothing secret may go onto the command line');
         assert.deepEqual(state.passwordLookups, ['Prod DB']);
         assert.equal(shown, true);
+    } finally {
+        vscodeStub.window.createTerminal = original;
+    }
+});
+
+test('PsqlConsole on Windows starts psql through cmd with the ANSI code page, keeping the password off the command line', async () => {
+    const created: any[] = [];
+    const original = vscodeStub.window.createTerminal;
+    vscodeStub.window.createTerminal = (options: any) => {
+        created.push(options);
+        return { show() {}, dispose() {} };
+    };
+    try {
+        const exe = 'C:\\Program Files\\PostgreSQL\\17\\bin\\psql.exe';
+        const host = fakeHost(
+            'win32',
+            { PATH: 'C:\\Windows', ProgramFiles: 'C:\\Program Files', ComSpec: 'C:\\WINDOWS\\system32\\cmd.exe' },
+            [exe],
+            { 'C:\\Program Files\\PostgreSQL': ['17'] },
+            1252
+        );
+        const state: FakeConnection = { connected: true, passwordLookups: [], searchPath: null };
+        await new PsqlConsole(fakeConnectionManager(state), host).open();
+        assert.equal(created.length, 1);
+        assert.equal(created[0].shellPath, 'C:\\WINDOWS\\system32\\cmd.exe');
+        assert.equal(created[0].shellArgs, `/d /s /c "chcp 1252>nul & "${exe}""`);
+        assert.ok(!created[0].shellArgs.includes('s3cret'));
+        assert.equal(created[0].env.PGPASSWORD, 's3cret');
     } finally {
         vscodeStub.window.createTerminal = original;
     }
