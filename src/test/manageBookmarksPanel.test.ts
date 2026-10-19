@@ -2,7 +2,7 @@ import './helpers/vscodeMock';
 import { vscodeStub } from './helpers/vscodeMock';
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { ManageBookmarksPanel, toParameters } from '../manageBookmarksPanel';
+import { ManageBookmarksPanel, toParameters, rankTagSuggestions } from '../manageBookmarksPanel';
 import { SavedQuery, SavedQueryParameter, SavedQueryScope, SavedQueryStore } from '../savedQueryStore';
 
 // ===== Reading the edit dialog back =====
@@ -374,9 +374,39 @@ test('editing a query reports its id back to the caller once', async (t) => {
 
 test('the panel shows a Tags column, a bulk tag button and a tag field in the dialog', (t) => {
     const panel = openPanel(t, [query('a', 'global')]);
-    for (const marker of ['<th>Tags</th>', 'id="editTagsSel"', 'id="editTags"', 'id="editTagInput"', 'list="tagSuggestions"']) {
+    for (const marker of ['<th>Tags</th>', 'id="editTagsSel"', 'id="editTags"', 'id="editTagInput"', 'id="tagSuggest"']) {
         assert.ok(panel.html.includes(marker), `the panel is missing ${marker}`);
     }
+});
+
+// ===== rankTagSuggestions (tag autocomplete) =====
+
+const TAGS = ['Ops', 'Reports', 'Reports/Monthly', 'Reports/Yearly', 'Sales', 'Sales/Reports archive'];
+
+test('rankTagSuggestions puts tags that start with the typed text first', () => {
+    assert.deepEqual(rankTagSuggestions(TAGS, [], 'rep', 8), ['Reports', 'Reports/Monthly', 'Reports/Yearly', 'Sales/Reports archive']);
+});
+
+test('rankTagSuggestions finds a nested tag by its last level, then any containing tag', () => {
+    assert.deepEqual(rankTagSuggestions(TAGS, [], 'month', 8), ['Reports/Monthly']);
+    assert.deepEqual(rankTagSuggestions(TAGS, [], 'arch', 8), ['Sales/Reports archive']);
+    assert.deepEqual(rankTagSuggestions(['Xops', 'Ops/A', 'Ops'], [], 'ops', 8), ['Ops/A', 'Ops', 'Xops']);
+});
+
+test('rankTagSuggestions skips tags the query already carries, regardless of case', () => {
+    assert.deepEqual(rankTagSuggestions(TAGS, ['reports'], 'rep', 2), ['Reports/Monthly', 'Reports/Yearly']);
+});
+
+test('rankTagSuggestions offers every remaining tag when nothing is typed, up to the limit', () => {
+    assert.deepEqual(rankTagSuggestions(TAGS, ['Ops'], '  ', 3), ['Reports', 'Reports/Monthly', 'Reports/Yearly']);
+    assert.deepEqual(rankTagSuggestions(TAGS, [], 'zzz', 8), []);
+});
+
+test('the dialog suggests tags through its own list, not a datalist the keyboard cannot reach', (t) => {
+    const panel = openPanel(t, [query('a', 'global')]);
+    assert.ok(!panel.html.includes('<datalist'), 'a datalist suggestion cannot be accepted with Enter or Tab');
+    assert.ok(panel.html.includes('const rankTagSuggestions = function rankTagSuggestions('), 'the ranking is not inlined');
+    assert.match(panel.html, /e\.key === 'Enter' \|\| \(e\.key === 'Tab' && !e\.shiftKey\)\) && open/);
 });
 
 test('the webview receives every query\'s tags and the tags in use for suggestions', async (t) => {

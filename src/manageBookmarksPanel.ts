@@ -35,6 +35,35 @@ export function toParameters(raw: unknown): SavedQueryParameter[] {
     return result;
 }
 
+/**
+ * The existing tags offered while a tag is typed into the bookmark dialog:
+ * tags the query does not carry yet that contain the typed text, ranked by how
+ * they match — the whole tag starts with it, then one of its levels does
+ * (`Monthly` finds `Reports/Monthly`), then it appears anywhere. Ties keep the
+ * order of `allTags`. Nothing typed offers every remaining tag.
+ *
+ * Self-contained on purpose: its source is inlined into the webview script.
+ */
+export function rankTagSuggestions(allTags: string[], chosen: string[], typed: string, limit: number): string[] {
+    const needle = String(typed || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const taken = new Set((chosen || []).map(t => String(t).toLowerCase()));
+    const ranked: Array<{ tag: string; rank: number; index: number }> = [];
+    (allTags || []).forEach((tag, index) => {
+        const lower = String(tag).toLowerCase();
+        if (taken.has(lower)) return;
+        let rank = 0;
+        if (needle) {
+            if (lower.startsWith(needle)) rank = 0;
+            else if (lower.split('/').some(level => level.startsWith(needle))) rank = 1;
+            else if (lower.includes(needle)) rank = 2;
+            else return;
+        }
+        ranked.push({ tag, rank, index });
+    });
+    ranked.sort((a, b) => a.rank - b.rank || a.index - b.index);
+    return ranked.slice(0, limit).map(r => r.tag);
+}
+
 /** Statement a new bookmark starts from, handed over by the surface it came from. */
 export interface BookmarkDraft {
     name: string;
@@ -315,7 +344,14 @@ export class ManageBookmarksPanel {
         .tag-chip { display: inline-flex; align-items: center; gap: 2px; margin: 0 var(--sp-1) 2px 0; }
         .tag-chip .tag-remove { padding: 0; border: none; background: none; color: inherit; cursor: pointer; line-height: 1; }
         .tag-field { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1); }
-        .tag-field input[type="text"] { flex: 1 1 140px; width: auto; min-width: 120px; }`;
+        .tag-field input[type="text"] { flex: 1 1 140px; width: auto; min-width: 120px; }
+        /* Suggestions for the tag being typed; in the flow, so the scrolling dialog body cannot clip it. */
+        .tag-suggest { grid-column: 2; list-style: none; margin: 0; padding: 2px 0; max-height: 168px; overflow-y: auto; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-surface); }
+        .tag-suggest[hidden] { display: none; }
+        .tag-suggest li { padding: 2px var(--sp-2); font-size: var(--fs-sm); cursor: pointer; }
+        .tag-suggest li.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+        .tag-suggest li .muted { margin-left: var(--sp-1); }
+        .tag-hint { grid-column: 2; font-size: var(--fs-xs); color: var(--c-muted); }`;
         const body = `
     <h2>Bookmarked Queries</h2>
     <div class="hint">Manage where a query is stored and what its placeholders mean. Select entries and change their scope to share them with the team (Workspace) or keep them private (Personal). The statement itself is edited with "Edit Bookmarked Query SQL".</div>
@@ -368,10 +404,11 @@ export class ManageBookmarksPanel {
                         <label for="editName">Name</label><input type="text" id="editName" />
                         <label for="editTagInput">Tags</label>
                         <div class="tag-field" id="editTags">
-                            <input type="text" id="editTagInput" list="tagSuggestions" placeholder="Add a tag, Enter to confirm (use / to nest)" />
+                            <input type="text" id="editTagInput" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="tagSuggest" aria-expanded="false" placeholder="Add a tag (use / to nest)" />
                         </div>
+                        <ul class="tag-suggest" id="tagSuggest" role="listbox" hidden></ul>
+                        <div class="tag-hint">Enter or Tab takes the highlighted tag, ↑ ↓ choose, a comma keeps exactly what you typed.</div>
                     </div>
-                    <datalist id="tagSuggestions"></datalist>
                     <div class="dlg-row">
                         <input type="checkbox" id="editShare" />
                         <label for="editShare" title="Store this query in the workspace file so it can be committed to git">Share with workspace (commit to git)</label>
@@ -409,6 +446,7 @@ export class ManageBookmarksPanel {
         ${WEBVIEW_ESCAPE_HTML_JS}
 
         const KINDS = ${JSON.stringify(PARAMETER_KINDS)};
+        const rankTagSuggestions = ${rankTagSuggestions.toString()};
         const vscode = acquireVsCodeApi();
         let queries = [];
         let filtered = [];
@@ -596,6 +634,9 @@ export class ManageBookmarksPanel {
         let dialogTags = [];
         const editTags = document.getElementById('editTags');
         const editTagInput = document.getElementById('editTagInput');
+        const tagSuggest = document.getElementById('tagSuggest');
+        let suggestItems = [];
+        let suggestActive = -1;
 
         // Same tidying as the host: trimmed levels, no empty ones, single spaces.
         function cleanTag(raw) {
@@ -615,14 +656,38 @@ export class ManageBookmarksPanel {
         }
 
         editTagInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.key === ',') {
+            const open = !tagSuggest.hidden && suggestItems.length > 0;
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (!open) { showTagSuggestions(true); return; }
+                const n = suggestItems.length;
+                suggestActive = (suggestActive + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+                renderTagSuggestions();
+            } else if ((e.key === 'Enter' || (e.key === 'Tab' && !e.shiftKey)) && open && suggestActive >= 0) {
+                e.preventDefault();
+                acceptTagSuggestion(suggestActive);
+            } else if (e.key === 'Enter' || e.key === ',') {
+                // Without a suggestion list, or with a comma, the typed text is taken as it is.
                 e.preventDefault();
                 addDialogTags(editTagInput.value);
                 editTagInput.value = '';
+                hideTagSuggestions();
+            } else if (e.key === 'Escape' && open) {
+                e.preventDefault();
+                e.stopPropagation();
+                hideTagSuggestions();
             } else if (e.key === 'Backspace' && editTagInput.value === '' && dialogTags.length) {
                 dialogTags.pop();
                 renderDialogTags();
             }
+        });
+        editTagInput.addEventListener('input', () => showTagSuggestions(false));
+        editTagInput.addEventListener('blur', hideTagSuggestions);
+        tagSuggest.addEventListener('mousedown', (e) => {
+            const li = e.target.closest('li[data-index]');
+            if (!li) return;
+            e.preventDefault(); // keep the focus in the input
+            acceptTagSuggestion(Number(li.getAttribute('data-index')));
         });
         editTags.addEventListener('click', (e) => {
             const btn = e.target.closest('.tag-remove');
@@ -632,9 +697,49 @@ export class ManageBookmarksPanel {
             renderDialogTags();
         });
 
-        function fillTagSuggestions() {
-            document.getElementById('tagSuggestions').innerHTML =
-                allTags.map(t => '<option value="' + escapeHtml(t) + '"></option>').join('');
+        // ===== Tag suggestions: existing tags matching what is typed, plus the
+        // typed text itself as a new tag; the first entry is highlighted.
+        function hideTagSuggestions() {
+            suggestItems = [];
+            suggestActive = -1;
+            tagSuggest.hidden = true;
+            tagSuggest.innerHTML = '';
+            editTagInput.setAttribute('aria-expanded', 'false');
+            editTagInput.removeAttribute('aria-activedescendant');
+        }
+
+        function showTagSuggestions(showAll) {
+            const typed = cleanTag(editTagInput.value);
+            if (!typed && !showAll) { hideTagSuggestions(); return; }
+            const items = rankTagSuggestions(allTags, dialogTags, typed, 8).map(tag => ({ tag, isNew: false }));
+            const known = allTags.concat(dialogTags).some(t => t.toLowerCase() === typed.toLowerCase());
+            if (typed && !known) items.push({ tag: typed, isNew: true });
+            if (!items.length) { hideTagSuggestions(); return; }
+            suggestItems = items;
+            suggestActive = 0;
+            renderTagSuggestions();
+        }
+
+        function renderTagSuggestions() {
+            tagSuggest.innerHTML = suggestItems.map((item, i) =>
+                '<li role="option" id="tagSuggest' + i + '" data-index="' + i + '"'
+                + (i === suggestActive ? ' class="active" aria-selected="true"' : ' aria-selected="false"') + '>'
+                + escapeHtml(item.tag) + (item.isNew ? '<span class="muted">new tag</span>' : '') + '</li>'
+            ).join('');
+            tagSuggest.hidden = false;
+            editTagInput.setAttribute('aria-expanded', 'true');
+            editTagInput.setAttribute('aria-activedescendant', 'tagSuggest' + suggestActive);
+            const active = tagSuggest.children[suggestActive];
+            if (active) active.scrollIntoView({ block: 'nearest' });
+        }
+
+        function acceptTagSuggestion(index) {
+            const item = suggestItems[index];
+            if (!item) return;
+            addDialogTags(item.tag);
+            editTagInput.value = '';
+            hideTagSuggestions();
+            editTagInput.focus();
         }
 
         function openDialog(item, isNew) {
@@ -646,6 +751,7 @@ export class ManageBookmarksPanel {
             document.getElementById('editShare').checked = item.scope === 'workspace';
             dialogTags = (item.tags || []).slice();
             editTagInput.value = '';
+            hideTagSuggestions();
             renderDialogTags();
             document.getElementById('editSql').value = item.sql;
             editParams.innerHTML = '';
@@ -731,7 +837,6 @@ export class ManageBookmarksPanel {
             if (msg.command === 'queriesLoaded') {
                 queries = msg.queries || [];
                 allTags = msg.allTags || [];
-                fillTagSuggestions();
                 const existing = new Set(queries.map(item => item.id));
                 selected = new Set(Array.from(selected).filter(id => existing.has(id)));
                 if (msg.filePath) {
