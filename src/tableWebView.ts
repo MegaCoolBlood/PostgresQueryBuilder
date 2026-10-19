@@ -9,8 +9,10 @@ import { ManageBookmarksPanel } from './manageBookmarksPanel';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
 import { buildRelatedTableJoin, deriveQualifier, type RelatedJoinCondition } from './statementBuilder';
 import { QualifierStore } from './tableStatementDrop';
-import { getErrorMessage } from './logger';
+import { getErrorMessage, Logger } from './logger';
 import { getIconSprite, getSharedStyles } from './webviewAssets';
+import { formatSqlChecked } from './plpgsqlFormatter';
+import { getFormatOptions, isFormatterEnabled } from './formatSettings';
 import type { ViewCapabilities, TableEditPlan } from './resultSource';
 import { resultColumnAliases } from './resultSource';
 import { addHiddenKeyColumns, isHiddenKeyColumn, planHiddenKeyColumns, type HiddenKeyColumn } from './hiddenKeyColumns';
@@ -159,6 +161,64 @@ export function buildCellEditorFileName(table: string, column: string, dataType:
     return `${safe(table, 'result')}.${safe(column, 'value')}.${cellEditorFileExtension(dataType)}`;
 }
 
+/** What the SQL editor's autocomplete knows about the active connection. */
+export interface CompletionCatalog {
+    schemas: string[];
+    relations: Array<{ schema: string; name: string; kind: string }>;
+    searchPath: string[];
+}
+
+/** Webview URIs of the Monaco bundle the query bar loads. */
+export interface QueryEditorAssets {
+    script: string;
+    css: string;
+    worker: string;
+}
+
+/**
+ * The Monaco files of `dist/monaco/` as webview URIs, or null when they were
+ * not built (or the webview cannot map them) — the query bar then stays a
+ * plain text box.
+ */
+export function queryEditorAssets(
+    extensionPath: string,
+    toWebviewUri: ((file: string) => string) | undefined,
+    exists: (file: string) => boolean = fs.existsSync
+): QueryEditorAssets | null {
+    const dir = path.join(extensionPath, 'dist', 'monaco');
+    const files = { script: 'monaco.js', css: 'monaco.css', worker: 'editor.worker.js' };
+    if (!toWebviewUri || !Object.values(files).every((f) => exists(path.join(dir, f)))) {
+        return null;
+    }
+    return {
+        script: toWebviewUri(path.join(dir, files.script)),
+        css: toWebviewUri(path.join(dir, files.css)),
+        worker: toWebviewUri(path.join(dir, files.worker))
+    };
+}
+
+/**
+ * Format the query bar's statement with the PL/pgSQL formatter and the user's
+ * settings — the same result as Shift+Alt+F in a .sql file. A rejected or
+ * disabled run is explained to the user and leaves the text unchanged.
+ */
+export function formatQueryBarText(sql: string): { ok: boolean; text: string } {
+    if (!isFormatterEnabled()) {
+        vscode.window.showInformationMessage('The SQL formatter is turned off (postgresQueryBuilder.format.enable).');
+        return { ok: false, text: sql };
+    }
+    const outcome = formatSqlChecked(sql, getFormatOptions());
+    if (!outcome.ok) {
+        vscode.window.showWarningMessage(`Formatting skipped to protect your code: ${outcome.reason ?? 'unknown reason'}`);
+        return { ok: false, text: sql };
+    }
+    if (outcome.checkWarnings && outcome.checkWarnings.length > 0) {
+        vscode.window.showWarningMessage(`Formatted with warnings: ${outcome.checkWarnings.join(' ')}`);
+    }
+    // A query box has no use for the trailing newline a file gets.
+    return { ok: true, text: outcome.text.replace(/\s+$/, '') };
+}
+
 /** One cell value currently open in an editor tab. */
 interface CellEditorLink {
     sessionId: string;
@@ -250,7 +310,8 @@ export class TableWebViewManager {
                 enableScripts: true,
                 retainContextWhenHidden: true,
                 localResourceRoots: [
-                    vscode.Uri.file(path.join(this.context.extensionPath, 'src', 'webview'))
+                    vscode.Uri.file(path.join(this.context.extensionPath, 'src', 'webview')),
+                    vscode.Uri.file(path.join(this.context.extensionPath, 'dist', 'monaco'))
                 ]
             }
         );
@@ -427,7 +488,8 @@ export class TableWebViewManager {
         selectConnection: this.handleSelectConnection,
         validateValue: this.handleValidateValue,
         openCellInEditor: this.handleOpenCellInEditor,
-        openGeneratedStatement: this.handleOpenGeneratedStatement
+        openGeneratedStatement: this.handleOpenGeneratedStatement,
+        queryEditorRequest: this.handleQueryEditorRequest
     };
 
     /**
@@ -1188,6 +1250,67 @@ export class TableWebViewManager {
         }
     }
 
+    /**
+     * Serves the SQL editor of the query bar: the catalog and the columns its
+     * autocomplete offers, and formatting with the extension's PL/pgSQL
+     * formatter. Every request is answered — with `null` when it cannot be — so
+     * the editor never waits; failures are logged instead of shown, because
+     * they happen while typing.
+     */
+    private async handleQueryEditorRequest(ctx: MessageContext): Promise<void> {
+        const { session, message } = ctx;
+        let result: unknown = null;
+        try {
+            if (message.kind === 'catalog') {
+                result = await this.loadCompletionCatalog();
+            } else if (message.kind === 'columns') {
+                result = await this.loadCompletionColumns(String(message.schema ?? ''), String(message.table ?? ''));
+            } else if (message.kind === 'format') {
+                result = formatQueryBarText(String(message.sql ?? ''));
+            }
+        } catch (err: unknown) {
+            Logger.error('TableWebViewManager.handleQueryEditorRequest', err);
+        }
+        this.post(session, { command: 'queryEditorResponse', requestId: message.requestId, result });
+    }
+
+    /** Schemas, relations and search_path of the active connection; empty when not connected. */
+    private async loadCompletionCatalog(): Promise<CompletionCatalog> {
+        if (!this.connectionManager.isConnected()) {
+            return { schemas: [], relations: [], searchPath: [] };
+        }
+        const [relations, schemas, searchPath] = await Promise.all([
+            this.connectionManager.queryMetadata(buildRelationListQuery()),
+            this.connectionManager.queryMetadata(
+                `SELECT nspname FROM pg_catalog.pg_namespace
+                 WHERE nspname NOT IN ('pg_catalog', 'information_schema') AND nspname NOT LIKE 'pg\\_%'
+                 ORDER BY nspname`
+            ),
+            this.connectionManager.queryMetadata('SELECT unnest(current_schemas(false)) AS schema_name')
+        ]);
+        return {
+            schemas: schemas.map((r) => String(r.nspname)),
+            relations: relations.map((r) => ({ schema: String(r.table_schema), name: String(r.table_name), kind: String(r.rel_kind) })),
+            searchPath: searchPath.map((r) => String(r.schema_name))
+        };
+    }
+
+    private async loadCompletionColumns(schema: string, table: string): Promise<Array<{ name: string; type: string }>> {
+        if (!this.connectionManager.isConnected() || !schema || !table) {
+            return [];
+        }
+        const rows = await this.connectionManager.queryMetadata(
+            `SELECT a.attname AS column_name, pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type
+             FROM pg_catalog.pg_attribute a
+             JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped
+             ORDER BY a.attnum`,
+            [schema, table]
+        );
+        return rows.map((r) => ({ name: String(r.column_name), type: String(r.data_type) }));
+    }
+
     private async handleBrowseExportLocation(ctx: MessageContext): Promise<void> {
         const { session } = ctx;
         const folderUri = await vscode.window.showOpenDialog({
@@ -1283,10 +1406,18 @@ export class TableWebViewManager {
         const htmlPath = path.join(this.context.extensionPath, 'src', 'webview', 'tableView.html');
         const cssPath = path.join(this.context.extensionPath, 'src', 'webview', 'tableView.css');
         const jsPath = path.join(this.context.extensionPath, 'src', 'webview', 'tableView.js');
+        const editorJsPath = path.join(this.context.extensionPath, 'src', 'webview', 'queryEditor.js');
 
         let html = fs.readFileSync(htmlPath, 'utf8');
         const css = fs.readFileSync(cssPath, 'utf8');
         const js = fs.readFileSync(jsPath, 'utf8');
+        const editorJs = fs.readFileSync(editorJsPath, 'utf8');
+        const assets = queryEditorAssets(
+            this.context.extensionPath,
+            typeof webview.asWebviewUri === 'function' ? (file) => webview.asWebviewUri(vscode.Uri.file(file)).toString() : undefined
+        );
+        // The SQL editor module comes first: tableView.js attaches it to the query box.
+        const script = `window.QUERY_EDITOR_ASSETS = ${JSON.stringify(assets)};\n${editorJs}\n${js}`;
 
         // Inject CSS and JS inline for simplicity. The replacement must be a
         // function: with a string replacement, `$'`/`$&` inside the script (e.g.
@@ -1295,7 +1426,7 @@ export class TableWebViewManager {
         html = html.replace('/* SHARED_CSS_PLACEHOLDER */', () => getSharedStyles());
         html = html.replace('<!-- ICON_SPRITE_PLACEHOLDER -->', () => getIconSprite());
         html = html.replace('/* CSS_PLACEHOLDER */', () => css);
-        html = html.replace('/* JS_PLACEHOLDER */', () => js);
+        html = html.replace('/* JS_PLACEHOLDER */', () => script);
 
         return html;
     }

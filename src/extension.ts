@@ -18,9 +18,9 @@ import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore } from './tableStatementDrop';
 import { ViewDataFromSelect } from './viewDataFromSelect';
 import { Logger, getErrorMessage, getErrorStack } from './logger';
-import { formatSqlChecked, FormatOptions } from './plpgsqlFormatter';
+import { formatSqlChecked } from './plpgsqlFormatter';
 import { formatOptionsToRepoConfig } from './repoFormatConfig';
-import { resolveFormatOptions } from './formatConfig';
+import { getFormatOptions, isFormatterEnabled } from './formatSettings';
 import { DoubleClickGate } from './doubleClick';
 import { PsqlConsole } from './psqlConsole';
 
@@ -58,23 +58,6 @@ const savedQueryClicks = new DoubleClickGate();
 
 /** Language IDs the PL/pgSQL formatter applies to. */
 const FORMATTER_LANGUAGES = ['sql', 'postgres', 'pgsql'];
-
-/** Read the formatter settings from configuration.
- * Repository-level `.pgformat.json` takes precedence over VS Code settings. */
-function getFormatOptions(): FormatOptions {
-    const cfg = vscode.workspace.getConfiguration('postgresQueryBuilder');
-    const folders = vscode.workspace.workspaceFolders;
-    return resolveFormatOptions(
-        (configKey) => cfg.get(configKey),
-        folders && folders.length > 0 ? folders[0].uri.fsPath : undefined,
-        cfg.get<string>('format.configPath')
-    );
-}
-
-/** Whether the formatter is enabled (master toggle). */
-function isFormatterEnabled(): boolean {
-    return vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('format.enable', true);
-}
 
 /**
  * Append a timestamped activation phase to a crash-safe log file, so a hard

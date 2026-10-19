@@ -5,10 +5,12 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
-import { buildCustomResultColumns, buildColumnProbeSql, buildCellEditorFileName, cellEditorFileExtension, TableWebViewManager } from '../tableWebView';
+import { buildCustomResultColumns, buildColumnProbeSql, buildCellEditorFileName, cellEditorFileExtension, TableWebViewManager, queryEditorAssets, formatQueryBarText } from '../tableWebView';
 import { QueryRunner } from '../queryRunner';
 import { ManageBookmarksPanel } from '../manageBookmarksPanel';
 import { getIconSprite, getSharedStyles } from '../webviewAssets';
+import { formatSqlChecked } from '../plpgsqlFormatter';
+import { getFormatOptions } from '../formatSettings';
 
 test('buildCustomResultColumns resolves type names and column comments', () => {
     const fields = [
@@ -1157,4 +1159,134 @@ test('query panel: a renamed column still resolves to its own table occurrence',
         ['a', 'b'],
         'both occurrences are written back separately'
     );
+});
+
+// ===== SQL editor of the query bar (3.3.0) =====
+
+test('queryEditorAssets maps the Monaco files to webview URIs when they were built', () => {
+    const assets = queryEditorAssets('/ext', (f) => `uri:${f.replace(/\\/g, '/')}`, () => true);
+    assert.deepEqual(assets, {
+        script: 'uri:/ext/dist/monaco/monaco.js',
+        css: 'uri:/ext/dist/monaco/monaco.css',
+        worker: 'uri:/ext/dist/monaco/editor.worker.js'
+    });
+});
+
+test('queryEditorAssets yields null without the bundle or without a URI mapping, so the text box stays', () => {
+    assert.equal(queryEditorAssets('/ext', (f) => f, (f) => !f.endsWith('editor.worker.js')), null);
+    assert.equal(queryEditorAssets('/ext', undefined, () => true), null);
+});
+
+test('data viewer: the SQL editor module is injected before the grid script that attaches it', async () => {
+    const { panel } = await openCustomQueryPanel();
+    const html = panel.webview.html;
+    const editorJs = fs.readFileSync(path.join(EXTENSION_PATH, 'src', 'webview', 'queryEditor.js'), 'utf8');
+    const gridJs = fs.readFileSync(path.join(EXTENSION_PATH, 'src', 'webview', 'tableView.js'), 'utf8');
+    assert.ok(html.includes(editorJs), 'the editor module is missing');
+    assert.ok(html.indexOf(editorJs) < html.indexOf(gridJs), 'the editor module must come first');
+    // The stub webview cannot map resource URIs, so the panel falls back to the text box.
+    assert.ok(html.includes('window.QUERY_EDITOR_ASSETS = null;'));
+});
+
+test('query editor: the catalog lists schemas, relations and the search_path of the connection', async () => {
+    const { panel, send } = await openCustomQueryPanel(undefined, {
+        connection: {
+            isConnected: () => true,
+            queryMetadata: async (sql: string) => {
+                if (sql.includes('pg_namespace')) return [{ nspname: 'public' }, { nspname: 'sales' }];
+                if (sql.includes('current_schemas')) return [{ schema_name: 'public' }];
+                return [
+                    { table_schema: 'public', table_name: 'orders', rel_kind: 'table' },
+                    { table_schema: 'sales', table_name: 'totals', rel_kind: 'matview' }
+                ];
+            }
+        }
+    });
+    await send({ command: 'queryEditorRequest', requestId: 7, kind: 'catalog' });
+    const reply = panel.posted.find((m: any) => m.command === 'queryEditorResponse');
+    assert.deepEqual(reply, {
+        command: 'queryEditorResponse',
+        requestId: 7,
+        result: {
+            schemas: ['public', 'sales'],
+            relations: [
+                { schema: 'public', name: 'orders', kind: 'table' },
+                { schema: 'sales', name: 'totals', kind: 'matview' }
+            ],
+            searchPath: ['public']
+        }
+    });
+});
+
+test('query editor: without a connection the catalog is empty and nobody is asked to connect', async () => {
+    let prompts = 0;
+    const { panel, send } = await openCustomQueryPanel(undefined, {
+        connection: { isConnected: () => false, ensureConnected: async () => { prompts++; return true; } }
+    });
+    const before = prompts;
+    await send({ command: 'queryEditorRequest', requestId: 1, kind: 'catalog' });
+    const reply = panel.posted.find((m: any) => m.command === 'queryEditorResponse');
+    assert.deepEqual(reply.result, { schemas: [], relations: [], searchPath: [] });
+    assert.equal(prompts, before, 'typing must never open the connection picker');
+});
+
+test('query editor: columns come with their types, read by parameter', async () => {
+    const calls: any[] = [];
+    const { panel, send } = await openCustomQueryPanel(undefined, {
+        connection: {
+            isConnected: () => true,
+            queryMetadata: async (sql: string, params?: any[]) => {
+                calls.push({ sql, params });
+                return [{ column_name: 'id', data_type: 'integer' }, { column_name: 'Order Date', data_type: 'date' }];
+            }
+        }
+    });
+    await send({ command: 'queryEditorRequest', requestId: 2, kind: 'columns', schema: 'public', table: "o'rders" });
+    const reply = panel.posted.find((m: any) => m.command === 'queryEditorResponse');
+    assert.deepEqual(reply.result, [{ name: 'id', type: 'integer' }, { name: 'Order Date', type: 'date' }]);
+    assert.deepEqual(calls[0].params, ['public', "o'rders"]);
+    assert.ok(!calls[0].sql.includes("o'rders"), 'names must never be interpolated');
+});
+
+test('query editor: a failing lookup is answered with null instead of an error popup', async () => {
+    const errors: string[] = [];
+    const original = vscodeStub.window.showErrorMessage;
+    vscodeStub.window.showErrorMessage = (msg: string) => { errors.push(msg); return Promise.resolve(undefined); };
+    try {
+        const { panel, send } = await openCustomQueryPanel(undefined, {
+            connection: { isConnected: () => true, queryMetadata: async () => { throw new Error('boom'); } }
+        });
+        await send({ command: 'queryEditorRequest', requestId: 3, kind: 'catalog' });
+        const reply = panel.posted.find((m: any) => m.command === 'queryEditorResponse');
+        assert.equal(reply.requestId, 3);
+        assert.equal(reply.result, null);
+        assert.deepEqual(errors, []);
+    } finally {
+        vscodeStub.window.showErrorMessage = original;
+    }
+});
+
+test('query editor: formatting uses the PL/pgSQL formatter and drops the trailing newline', async () => {
+    const { panel, send } = await openCustomQueryPanel();
+    await send({ command: 'queryEditorRequest', requestId: 4, kind: 'format', sql: 'select a, b from t where a = 1' });
+    const reply = panel.posted.find((m: any) => m.command === 'queryEditorResponse');
+    assert.equal(reply.result.ok, true);
+    assert.equal(reply.result.text, formatSqlChecked('select a, b from t where a = 1', getFormatOptions()).text.replace(/\s+$/, ''));
+    assert.match(reply.result.text, /^SELECT/);
+    assert.ok(!/\s$/.test(reply.result.text));
+});
+
+test('formatQueryBarText leaves the text alone and says why when the formatter is turned off', () => {
+    const info: string[] = [];
+    const originalConfig = vscodeStub.workspace.getConfiguration;
+    const originalInfo = vscodeStub.window.showInformationMessage;
+    vscodeStub.workspace.getConfiguration = () => ({ get: <T>(key: string, def?: T) => (key === 'format.enable' ? false : def) as T });
+    vscodeStub.window.showInformationMessage = (msg: string) => { info.push(msg); return Promise.resolve(undefined); };
+    try {
+        assert.deepEqual(formatQueryBarText('select 1'), { ok: false, text: 'select 1' });
+        assert.match(info[0], /postgresQueryBuilder\.format\.enable/);
+    } finally {
+        vscodeStub.workspace.getConfiguration = originalConfig;
+        vscodeStub.window.showInformationMessage = originalInfo;
+    }
 });

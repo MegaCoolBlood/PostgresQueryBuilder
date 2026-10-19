@@ -6,14 +6,37 @@ argument-hint: "What the Data Viewer should do"
 
 # Data Viewer
 
-The grid is four files that must stay in agreement:
+The grid is five files that must stay in agreement:
 
 | File | Role |
 | --- | --- |
 | [src/webview/tableView.html](../../../src/webview/tableView.html) | skeleton + one template per dialog, plus four placeholders |
 | [src/webview/tableView.css](../../../src/webview/tableView.css) | surface-specific styling only (base styling lives in `shared.css`) |
 | [src/webview/tableView.js](../../../src/webview/tableView.js) | ~4900 lines of browser code |
+| [src/webview/queryEditor.js](../../../src/webview/queryEditor.js) | the query bar's Monaco editor: loading, theme, autocomplete, formatting |
 | [src/tableWebView.ts](../../../src/tableWebView.ts) | extension host: panels, message handlers, database access |
+
+### The query bar editor
+
+`queryEditor.js` is injected in front of `tableView.js` (same `<script>`), and
+`tableView.js` calls `window.QueryEditor.attach(queryInput, …)`. The Monaco
+bundle itself is built by `esbuild.js` into `dist/monaco/` and loaded at runtime
+from the URIs the host puts into `window.QUERY_EDITOR_ASSETS` (null when the
+bundle is missing — the textarea then stays the editor).
+
+- **The `#queryInput` textarea stays the API.** Once Monaco is up, the textarea
+  is hidden, its `value` reads/writes the editor, `focus()` focuses it, and
+  editor changes are re-dispatched as `input` / `blur`. Keep reading and writing
+  `queryInput.value` — never talk to Monaco from `tableView.js`.
+- **Undo is the grid's.** Monaco's Ctrl+Z / Ctrl+Y are rebound to `undoEdit` /
+  `redoEdit`, so grid edits and query changes share one history.
+- **Host round trips** go through one command, `queryEditorRequest`
+  (`kind: 'catalog' | 'columns' | 'format'`), answered by `queryEditorResponse`
+  with the same `requestId`. Every request is answered (with `null` on failure)
+  and errors are logged, not shown — they happen while typing.
+- Completion logic is pure and exported (`extractTableReferences`,
+  `completionContext`, `buildSuggestions`, …); test it in
+  [src/test/queryEditor.test.ts](../../../src/test/queryEditor.test.ts).
 
 Follow [STYLEGUIDE.md](../../../STYLEGUIDE.md) for anything visual — no literal
 colours, no raw `z-index`, `.btn` classes, `icon()` for glyphs.
@@ -41,7 +64,7 @@ the function form of `replace`, so `$&` inside injected SQL cannot expand:
 html = html.replace('/* SHARED_CSS_PLACEHOLDER */', () => getSharedStyles());
 html = html.replace('<!-- ICON_SPRITE_PLACEHOLDER -->', () => getIconSprite());
 html = html.replace('/* CSS_PLACEHOLDER */', () => css);
-html = html.replace('/* JS_PLACEHOLDER */', () => js);
+html = html.replace('/* JS_PLACEHOLDER */', () => script); // assets + queryEditor.js + tableView.js
 ```
 
 ## How the browser side is organised

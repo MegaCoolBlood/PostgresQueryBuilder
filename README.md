@@ -101,6 +101,16 @@ column as a tooltip.
 - The **query bar** shows the SQL behind the grid. Edit it and press
   `Ctrl+Enter` to run whatever you like; the grid stays editable as long as its
   rows can be traced back to one table.
+- The query bar is a real code editor — Monaco, the editor VS Code itself is
+  built on — with PostgreSQL syntax highlighting in the colours of your theme,
+  multi-cursor editing, find and replace, bracket matching and VS Code's
+  keyboard shortcuts. Autocomplete suggests the columns of the tables in the
+  statement (after `o.` only those of the table aliased `o`), tables and views
+  of the connection where a table name belongs (after `sales.` those of that
+  schema), and PostgreSQL's keywords and built-in functions. **Format SQL** and
+  `Shift+Alt+F` format the statement with the extension's own formatter and
+  your formatter settings, exactly like a `.sql` file. `Ctrl+Z` still steps back
+  through grid edits and query changes together.
 
 ### Editing rows
 
@@ -299,7 +309,8 @@ duplicating, deleting and moving between the personal and the workspace scope.
 | `Enter` | Filter inputs | Apply the column filter |
 | `Alt+←` / `Alt+→` | Single record view | Previous / next row |
 | `Esc` | Dialogs | Close |
-| `Shift+Alt+F` | SQL files | Format |
+| `Shift+Alt+F` | SQL files, query bar | Format |
+| `Ctrl+Space` | Query bar | Show the autocomplete suggestions |
 
 ---
 

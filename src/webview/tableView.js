@@ -649,6 +649,25 @@ function typingStartsCellEdit(hasSelection, isPrintable, isEditing) {
     return !!hasSelection && !!isPrintable && !isEditing;
 }
 
+// True when the element sits inside the query bar's code editor (Monaco),
+// including its suggest and find widgets. The editor owns typing and its
+// clipboard keys there, whatever element it uses to take input — a hidden
+// textarea or a plain <div> driven by the browser's EditContext API.
+function isInCodeEditor(el) {
+    return !!(el && typeof el.closest === 'function' && el.closest('.monaco-editor, .query-editor'));
+}
+
+// True for an element that takes typed text: a form field, a cell being
+// edited, or the query bar's code editor. Keys pressed there keep their
+// meaning instead of acting on the grid's cell selection.
+function isTextEntryElement(el) {
+    if (!el) { return false; }
+    if (el.isContentEditable) { return true; }
+    const tag = el.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') { return true; }
+    return isInCodeEditor(el);
+}
+
 // True when a focused text <input>/<textarea> holds a non-empty selection. Such
 // a selection is invisible to window.getSelection(), so the grid must check it
 // explicitly before claiming a Ctrl+C for its cell range (e.g. text highlighted
@@ -2771,6 +2790,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const ae = document.activeElement;
         if (!ae || ae === document.body) { return true; }
         if (ae === queryInput) { return true; }
+        if (queryEditor && queryEditor.hasFocus()) { return true; }
         // A cell being edited or any other field keeps its own native undo.
         return !isEditingElement(ae);
     }
@@ -3023,8 +3043,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     queryRunBtn.addEventListener('click', runQuery);
     if (queryFormatBtn) {
         queryFormatBtn.addEventListener('click', () => {
-            setQueryText(queryInput.value);
-            queryInput.focus();
+            if (queryEditor) {
+                queryEditor.format();
+            } else {
+                setQueryText(queryInput.value);
+                queryInput.focus();
+            }
         });
     }
     queryInput.addEventListener('keydown', (e) => {
@@ -3040,6 +3064,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // box ends the run so the next edit starts a fresh step.
     queryInput.addEventListener('input', () => recordEditHistory('type'));
     queryInput.addEventListener('blur', () => { queryTypingRun = false; });
+
+    // The query box becomes a Monaco editor (highlighting, autocomplete, the
+    // extension's formatter) once its bundle has loaded; until then, and when it
+    // is not available, the textarea itself stays the editor.
+    const queryEditor = window.QueryEditor
+        ? window.QueryEditor.attach(queryInput, {
+            postMessage: (msg) => vscode.postMessage(msg),
+            onRun: runQuery,
+            onUndo: undoEdit,
+            onRedo: redoEdit,
+            onDiscreteEdit: () => { queryTypingRun = false; },
+            quoteIdent: formatIdentifier
+        })
+        : null;
 
     queryHistoryToggle.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -3692,6 +3730,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             return;
         }
         if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && rangeAnchor && rangeFocus) {
+            // In the code editor Ctrl+C copies the editor's text (VS Code copies
+            // the current line when nothing is selected), never the cell range.
+            if (isInCodeEditor(document.activeElement)) { return; }
             const sel = window.getSelection();
             const hasDomSelection = !!(sel && !sel.isCollapsed && sel.toString().length > 0);
             const hasInputSelection = hasTextInputSelection(document.activeElement);
@@ -3810,11 +3851,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (ae && typeof ae.blur === 'function') { ae.blur(); }
     }
 
-    // True while the focus is on a cell being edited or on a form control, where
-    // Delete/typing keep their native meaning instead of acting on the selection.
+    // True while the focus is on a cell being edited, on a form control or in
+    // the query bar's code editor, where Delete/typing keep their native meaning
+    // instead of acting on the selection.
     function isEditingElement(el) {
-        return !!el && (el.isContentEditable
-            || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+        return isTextEntryElement(el);
     }
 
     // Start editing the selection by seeding the anchor (top-left) cell with the
@@ -4099,9 +4140,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function handleGridPaste(e) {
         const target = e.target;
-        // Leave paste into inputs, dialogs and the query bar to the browser.
+        // Leave paste into inputs, dialogs, the query bar and its code editor to them.
         if (target && target.closest
-            && target.closest('input, textarea, select, .sql-dialog-overlay')) {
+            && target.closest('input, textarea, select, .sql-dialog-overlay, .monaco-editor, .query-editor')) {
             return;
         }
         const text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
@@ -7750,6 +7791,8 @@ if (typeof module !== 'undefined' && module.exports) {
         fullySelectedLines,
         isPrintableTypingKey,
         typingStartsCellEdit,
+        isInCodeEditor,
+        isTextEntryElement,
         hasTextInputSelection,
         shouldCopyCellRange,
         computeCellNavTarget,

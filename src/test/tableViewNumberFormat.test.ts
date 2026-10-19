@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey, hasTextInputSelection, shouldCopyCellRange, computeCellNavTarget, computeScrollAdjustment, typingStartsCellEdit, shouldFillLoneValue } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey, hasTextInputSelection, shouldCopyCellRange, computeCellNavTarget, computeScrollAdjustment, typingStartsCellEdit, shouldFillLoneValue, isInCodeEditor, isTextEntryElement } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -592,4 +592,50 @@ test('escapeSqlString escapes single quotes', () => {
     assert.equal(escapeSqlString("O'Reilly"), "O''Reilly");
     assert.equal(escapeSqlString("it's a 'test'"), "it''s a ''test''");
     assert.equal(escapeSqlString('no quotes'), 'no quotes');
+});
+
+// ===== 3.3.0: the query bar's code editor owns typing and its clipboard keys =====
+
+/** A stand-in element: `ancestors` lists the selectors its closest() matches. */
+function fakeElement(tagName: string, ancestors: string[] = [], isContentEditable = false) {
+    return {
+        tagName,
+        isContentEditable,
+        closest: (selector: string) => (selector.split(',').some(s => ancestors.includes(s.trim())) ? {} : null)
+    };
+}
+
+test('isInCodeEditor is true for every element inside the Monaco editor of the query bar', () => {
+    assert.equal(isInCodeEditor(fakeElement('TEXTAREA', ['.monaco-editor', '.query-editor'])), true);
+    assert.equal(isInCodeEditor(fakeElement('DIV', ['.monaco-editor'])), true, 'the EditContext input is a plain div');
+    assert.equal(isInCodeEditor(fakeElement('INPUT', ['.monaco-editor'])), true, 'the find widget');
+    assert.equal(isInCodeEditor(fakeElement('TD')), false);
+    assert.equal(isInCodeEditor(null), false);
+});
+
+test('isTextEntryElement keeps typing, Delete and arrows away from the grid while the code editor has focus', () => {
+    assert.equal(isTextEntryElement(fakeElement('DIV', ['.monaco-editor'])), true);
+    assert.equal(isTextEntryElement(fakeElement('TEXTAREA')), true);
+    assert.equal(isTextEntryElement(fakeElement('INPUT')), true);
+    assert.equal(isTextEntryElement(fakeElement('SELECT')), true);
+    assert.equal(isTextEntryElement(fakeElement('SPAN', [], true)), true, 'a cell being edited');
+    assert.equal(isTextEntryElement(fakeElement('TD')), false);
+    assert.equal(isTextEntryElement(fakeElement('BODY')), false);
+    assert.equal(isTextEntryElement(null), false);
+});
+
+test('typing in the code editor does not start a cell edit even with a selected cell', () => {
+    const editorFocus = fakeElement('DIV', ['.monaco-editor']);
+    assert.equal(typingStartsCellEdit(true, true, isTextEntryElement(editorFocus)), false);
+});
+
+test('the grid leaves Ctrl+C and Ctrl+V in the code editor to the editor', () => {
+    const source = require('node:fs').readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    assert.match(source, /e\.key === 'C'\) && rangeAnchor && rangeFocus\) \{\s*\/\/[^\n]*\n[^\n]*\n\s*if \(isInCodeEditor\(document\.activeElement\)\) \{ return; \}/);
+    assert.match(source, /target\.closest\('input, textarea, select, \.sql-dialog-overlay, \.monaco-editor, \.query-editor'\)/);
+});
+
+test('the code editor takes input through a textarea, which VS Code can paste into', () => {
+    const source = require('node:fs').readFileSync(path.join(__dirname, '../../../src/webview/queryEditor.js'), 'utf8');
+    assert.match(source, /editContext: false,/);
 });

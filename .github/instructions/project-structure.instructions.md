@@ -26,6 +26,11 @@ edit only the `.ts` file.
 
 - `npm run compile` → esbuild bundles `src/extension.ts`, `server/language-server.ts`
   and `cli/format-cli.ts` into `dist/`. This is what the installed extension runs.
+  It also builds the Monaco editor of the Data Viewer's query bar into
+  `dist/monaco/` (script, stylesheet, codicon font, editor worker) from the
+  `monaco-editor` dev dependency — only when Monaco or `esbuild.js` changed, so
+  delete `dist/monaco/` to force a rebuild. Without it the query bar falls back
+  to a plain text box.
 - `npm run compile:test` → `tsc -p ./` emits `out/`. This is what the tests run.
 
 A change is only visible in an installed VSIX after `npm run package` /

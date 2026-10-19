@@ -98,6 +98,26 @@ body {
     white-space: pre;
 }
 
+/* Monaco replaces the textarea once loaded; the textarea stays as its interface. */
+.query-input.query-input-replaced {
+    display: none;
+}
+
+/* The Monaco editor of the query bar. Its height follows the statement (set by
+   queryEditor.js) between one line and the textarea's former maximum. */
+.query-editor {
+    flex: 1;
+    min-width: 0;
+    height: calc(var(--query-editor-height, 24px) + 2px); /* + the 1px border on each side */
+    border: 1px solid var(--vscode-input-border, var(--c-border));
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.query-editor.focused {
+    border-color: var(--c-accent);
+}
+
 /* Query history typeahead */
 .query-history {
     position: relative;
