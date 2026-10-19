@@ -110,6 +110,7 @@ test('resolveFormatOptions ignores an empty/whitespace configPath and uses .pgfo
         assert.equal(options.keywordCase, 'lower');
     });
 });
+
 test('resolveFormatOptions reads replaceDashesInBlockComments from settings and .pgformat.json', () => {
     const fromSetting = resolveFormatOptions(configKey =>
         configKey === 'format.replaceDashesInBlockComments' ? true : undefined);

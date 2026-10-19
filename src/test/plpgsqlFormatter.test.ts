@@ -850,6 +850,20 @@ test('replaceDashesInBlockComments reaches block comments in a function body', (
     assert.doesNotMatch(result.text, /--/);
 });
 
+test('replaceDashesInBlockComments reaches dollar-quoted code but not dollar-quoted text', () => {
+    const on = { replaceDashesInBlockComments: true };
+    const template = 'do $do$\nbegin\nexecute format($q$\nselect a /*-- note --*/\nfrom t\n$q$);\nend;\n$do$;';
+    const formatted = formatSqlChecked(template, on);
+    assert.equal(formatted.ok, true, formatted.reason);
+    assert.match(formatted.text, /SELECT a \/\*== note ==\*\//);
+    assert.equal(formatSql(formatted.text, on), formatted.text, 'idempotent');
+
+    const text = "select $t$\nhello /*-- kept --*/\nworld\n$t$ as s;";
+    const kept = formatSqlChecked(text, on);
+    assert.equal(kept.ok, true, kept.reason);
+    assert.match(kept.text, /hello \/\*-- kept --\*\//);
+});
+
 test('replaceDashesInBlockComments is off by default and keeps the dashes', () => {
     assert.equal(
         formatSql('/*--- Build report + info sheet ----- */\nselect 1;'),

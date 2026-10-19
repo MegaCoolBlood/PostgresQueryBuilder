@@ -548,7 +548,9 @@ function replaceBlockCommentDashes(text: string): string {
  * expanding dollar-quoted bodies recursively. Used both for the fast equality
  * check and for producing a human-readable explanation of the first difference.
  * With `commentDashes`, block comments are compared as
- * {@link replaceBlockCommentDashes} would print them.
+ * {@link replaceBlockCommentDashes} would print them — but only at the top
+ * level and inside dollar bodies the formatter rewrites ({@link dollarBodyIsCode}),
+ * so a dollar-quoted data string stays compared verbatim.
  */
 function semanticTokens(input: string, normalizeTypes: boolean, dataTypeAliases: Record<string, string>, commentDashes = false): SemTok[] {
     const out: SemTok[] = [];
@@ -558,7 +560,7 @@ function semanticTokens(input: string, normalizeTypes: boolean, dataTypeAliases:
         const short = clean.length > 40 ? clean.slice(0, 37) + '…' : clean;
         return `\`${short}\` (${type})`;
     };
-    const walk = (src: string): void => {
+    const walk = (src: string, dashes: boolean): void => {
         let toks = tokenize(src);
         if (normalizeTypes) toks = normalizeTypePhrases(toks, typeAliases);
         for (const t of toks) {
@@ -568,7 +570,7 @@ function semanticTokens(input: string, normalizeTypes: boolean, dataTypeAliases:
                     // Tag is compared case-insensitively; the body is reformatted
                     // by the formatter, so compare it by its own token stream.
                     out.push({ sig: '$<' + m[1].toLowerCase(), display: label('dollar-tag', m[1]) });
-                    walk(m[2]);
+                    walk(m[2], dashes && dollarBodyIsCode(m[2]));
                     out.push({ sig: '>$', display: label('dollar-tag', m[1]) });
                     continue;
                 }
@@ -580,12 +582,12 @@ function semanticTokens(input: string, normalizeTypes: boolean, dataTypeAliases:
             const text = t.type === 'word'
                 ? t.text.toLowerCase()
                 : (t.type === 'lineComment' || t.type === 'blockComment')
-                    ? (commentDashes && t.type === 'blockComment' ? replaceBlockCommentDashes(t.text) : t.text).replace(/\s+/g, ' ').trim()
+                    ? (dashes && t.type === 'blockComment' ? replaceBlockCommentDashes(t.text) : t.text).replace(/\s+/g, ' ').trim()
                     : t.text;
             out.push({ sig: t.type + '\u0000' + text, display: label(t.type, t.text) });
         }
     };
-    walk(input);
+    walk(input, commentDashes);
     return out;
 }
 
