@@ -2,7 +2,7 @@
   "name": "postgres-query-booster",
   "displayName": "PostgreSQL Query Booster",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "3.3.0",
+  "version": "3.3.1",
   "publisher": "sirlychee",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -583,6 +583,11 @@
           "type": "boolean",
           "default": false,
           "description": "Put a space on each side of the JSON/JSONB path operators ->, ->>, #> and #>> (e.g. 'rec.col ->> 'id'' instead of 'rec.col->>'id''). Off by default, which keeps the operators tight against their operands."
+        },
+        "postgresQueryBuilder.format.replaceDashesInBlockComments": {
+          "type": "boolean",
+          "default": false,
+          "description": "Replace every run of two or more dashes inside a /* ... */ block comment with the same number of equals signs, e.g. '/*--- Build report ----- */' becomes '/*=== Build report ===== */'. Single dashes, -- line comments and string literals are never changed. Off by default."
         },
         "postgresQueryBuilder.format.requireSchemaQualifier": {
           "type": "array",

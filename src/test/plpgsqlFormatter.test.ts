@@ -811,6 +811,58 @@ test('spaceAroundJsonOperators is off by default and keeps the operators tight',
     );
 });
 
+test('replaceDashesInBlockComments turns dash runs in a block comment into equals signs', () => {
+    const on = { replaceDashesInBlockComments: true };
+    const banner = formatSql('/*--- Build report + info sheet ----- */\nselect 1;', on);
+    assert.equal(banner, '/*=== Build report + info sheet ===== */\nSELECT 1;');
+    assert.equal(formatSql(banner, on), banner, 'idempotent');
+    // Single dashes are text (hyphens, minus signs) and stay.
+    assert.equal(
+        formatSql('select 1 /* e-mail: a - b -- c */;', on),
+        'SELECT 1 /* e-mail: a - b == c */;'
+    );
+    // Multi-line and nested block comments are rewritten as a whole.
+    assert.equal(
+        formatSql('/*----\n  note /* -- inner -- */\n----*/\nselect 1;', on),
+        '/*====\n  note /* == inner == */\n====*/\nSELECT 1;'
+    );
+});
+
+test('replaceDashesInBlockComments leaves line comments and literals alone', () => {
+    const on = { replaceDashesInBlockComments: true };
+    assert.equal(formatSql('-- ---- heading ----\nselect 1;', on), '-- ---- heading ----\nSELECT 1;');
+    assert.equal(
+        formatSql("select '/*-- not a comment --*/' as s;", on),
+        "SELECT '/*-- not a comment --*/' AS s;"
+    );
+    assert.equal(
+        formatSql('select $q$ /*-- kept --*/ $q$ as s;', on),
+        'SELECT $q$ /*-- kept --*/ $q$ AS s;'
+    );
+});
+
+test('replaceDashesInBlockComments reaches block comments in a function body', () => {
+    const on = { replaceDashesInBlockComments: true };
+    const src = 'create function s.f() returns void language plpgsql as $$\nbegin\n/*-- step 1 --*/\nperform 1;\nend;\n$$;';
+    const result = formatSqlChecked(src, on);
+    assert.equal(result.ok, true, result.reason);
+    assert.match(result.text, /\/\*== step 1 ==\*\//);
+    assert.doesNotMatch(result.text, /--/);
+});
+
+test('replaceDashesInBlockComments is off by default and keeps the dashes', () => {
+    assert.equal(
+        formatSql('/*--- Build report + info sheet ----- */\nselect 1;'),
+        '/*--- Build report + info sheet ----- */\nSELECT 1;'
+    );
+});
+
+test('coerceFormatOptions accepts replaceDashesInBlockComments only as a boolean', () => {
+    assert.equal(coerceFormatOptions({ replaceDashesInBlockComments: true }).replaceDashesInBlockComments, true);
+    assert.equal(coerceFormatOptions({ replaceDashesInBlockComments: 'yes' }).replaceDashesInBlockComments, false);
+    assert.equal(coerceFormatOptions({}).replaceDashesInBlockComments, false);
+});
+
 test('keeps DISTINCT ON (...) on the SELECT line', () => {
     // selectColumns default {1, 3}: 2 columns follow source layout (single-line → stays inline).
     const out = formatSql('select distinct on (a) a, b from t;');
@@ -1014,6 +1066,7 @@ test('DEFAULT_FORMAT_OPTIONS matches the agreed defaults', () => {
         alignFunctionParameters: false,
         alignNamedArguments: false,
         spaceAroundJsonOperators: false,
+        replaceDashesInBlockComments: false,
         requireSchemaQualifier: [],
         thresholds: DEFAULT_THRESHOLDS,
         normalizeDataTypes: true,        dataTypeAliases: {

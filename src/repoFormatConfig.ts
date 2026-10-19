@@ -116,6 +116,7 @@ export function formatOptionsToRepoConfig(opts: FormatOptions): Record<string, u
         alignFunctionParameters: opts.alignFunctionParameters,
         alignNamedArguments: opts.alignNamedArguments,
         spaceAroundJsonOperators: opts.spaceAroundJsonOperators,
+        replaceDashesInBlockComments: opts.replaceDashesInBlockComments,
         requireSchemaQualifier: [...opts.requireSchemaQualifier],
         normalizeDataTypes: opts.normalizeDataTypes,
         dataTypeAliases: { ...opts.dataTypeAliases },

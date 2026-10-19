@@ -110,3 +110,17 @@ test('resolveFormatOptions ignores an empty/whitespace configPath and uses .pgfo
         assert.equal(options.keywordCase, 'lower');
     });
 });
+test('resolveFormatOptions reads replaceDashesInBlockComments from settings and .pgformat.json', () => {
+    const fromSetting = resolveFormatOptions(configKey =>
+        configKey === 'format.replaceDashesInBlockComments' ? true : undefined);
+    assert.equal(fromSetting.replaceDashesInBlockComments, true);
+
+    withTempDir(dir => {
+        fs.writeFileSync(
+            path.join(dir, REPO_FORMAT_CONFIG_FILENAME),
+            JSON.stringify({ replaceDashesInBlockComments: false })
+        );
+        const fromRepo = resolveFormatOptions(() => true, dir);
+        assert.equal(fromRepo.replaceDashesInBlockComments, false);
+    });
+});

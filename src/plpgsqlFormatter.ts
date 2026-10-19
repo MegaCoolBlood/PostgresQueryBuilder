@@ -154,6 +154,8 @@ export interface FormatOptions {
     alignNamedArguments: boolean;
     /** Put spaces around the JSON/JSONB path operators ->, ->>, #>, #>>. Default: false (tight). */
     spaceAroundJsonOperators: boolean;
+    /** Replace every run of two or more dashes inside a block comment with as many `=` (a `---` banner becomes `===`). Default: false. */
+    replaceDashesInBlockComments: boolean;
     /**
      * Optional formatter checks: object kinds whose `CREATE` statement must name
      * a schema (e.g. `['table','function']`). A listed kind created without a
@@ -271,6 +273,7 @@ export const DEFAULT_FORMAT_OPTIONS: FormatOptions = {
     alignFunctionParameters: false,
     alignNamedArguments: false,
     spaceAroundJsonOperators: false,
+    replaceDashesInBlockComments: false,
     requireSchemaQualifier: [],
     thresholds: DEFAULT_THRESHOLDS,
     normalizeDataTypes: true,
@@ -308,6 +311,7 @@ export function coerceFormatOptions(raw: {
     alignFunctionParameters?: unknown;
     alignNamedArguments?: unknown;
     spaceAroundJsonOperators?: unknown;
+    replaceDashesInBlockComments?: unknown;
     requireSchemaQualifier?: unknown;
     // Legacy umbrella switch: kept as fallback for backward compatibility.
     preserveSingleLineSpecialCases?: unknown;
@@ -401,6 +405,9 @@ export function coerceFormatOptions(raw: {
         spaceAroundJsonOperators: typeof raw.spaceAroundJsonOperators === 'boolean'
             ? raw.spaceAroundJsonOperators
             : DEFAULT_FORMAT_OPTIONS.spaceAroundJsonOperators,
+        replaceDashesInBlockComments: typeof raw.replaceDashesInBlockComments === 'boolean'
+            ? raw.replaceDashesInBlockComments
+            : DEFAULT_FORMAT_OPTIONS.replaceDashesInBlockComments,
         requireSchemaQualifier,
         thresholds,
         normalizeDataTypes: typeof raw.normalizeDataTypes === 'boolean'
@@ -529,11 +536,21 @@ interface SemTok {
 }
 
 /**
+ * Turn every run of two or more dashes in a block comment into as many `=`.
+ * Neither `/*` nor `*\/` contains a dash, so the comment's bounds are kept.
+ */
+function replaceBlockCommentDashes(text: string): string {
+    return text.replace(/-{2,}/g, run => '='.repeat(run.length));
+}
+
+/**
  * Flatten `input` into its meaning-carrying tokens (see {@link tokenSignature}),
  * expanding dollar-quoted bodies recursively. Used both for the fast equality
  * check and for producing a human-readable explanation of the first difference.
+ * With `commentDashes`, block comments are compared as
+ * {@link replaceBlockCommentDashes} would print them.
  */
-function semanticTokens(input: string, normalizeTypes: boolean, dataTypeAliases: Record<string, string>): SemTok[] {
+function semanticTokens(input: string, normalizeTypes: boolean, dataTypeAliases: Record<string, string>, commentDashes = false): SemTok[] {
     const out: SemTok[] = [];
     const typeAliases = buildTypePhraseAliases(dataTypeAliases);
     const label = (type: string, text: string): string => {
@@ -563,7 +580,7 @@ function semanticTokens(input: string, normalizeTypes: boolean, dataTypeAliases:
             const text = t.type === 'word'
                 ? t.text.toLowerCase()
                 : (t.type === 'lineComment' || t.type === 'blockComment')
-                    ? t.text.replace(/\s+/g, ' ').trim()
+                    ? (commentDashes && t.type === 'blockComment' ? replaceBlockCommentDashes(t.text) : t.text).replace(/\s+/g, ' ').trim()
                     : t.text;
             out.push({ sig: t.type + '\u0000' + text, display: label(t.type, t.text) });
         }
@@ -577,9 +594,9 @@ function semanticTokens(input: string, normalizeTypes: boolean, dataTypeAliases:
  * when they are equivalent (formatting is safe), or a human-readable message
  * describing the first divergence when they are not.
  */
-function signatureDiff(input: string, output: string, normalizeTypes: boolean, dataTypeAliases: Record<string, string>): string | null {
-    const a = semanticTokens(input, normalizeTypes, dataTypeAliases);
-    const b = semanticTokens(output, normalizeTypes, dataTypeAliases);
+function signatureDiff(input: string, output: string, normalizeTypes: boolean, dataTypeAliases: Record<string, string>, commentDashes = false): string | null {
+    const a = semanticTokens(input, normalizeTypes, dataTypeAliases, commentDashes);
+    const b = semanticTokens(output, normalizeTypes, dataTypeAliases, commentDashes);
     const len = Math.min(a.length, b.length);
     for (let i = 0; i < len; i++) {
         if (a[i].sig !== b[i].sig) {
@@ -1105,7 +1122,8 @@ export function formatSqlChecked(input: string, options?: Partial<FormatOptions>
     }
     const normalizeTypes = options?.normalizeDataTypes ?? DEFAULT_FORMAT_OPTIONS.normalizeDataTypes;
     const dataTypeAliases = normalizeDataTypeAliasTable((options?.dataTypeAliases ?? DEFAULT_DATA_TYPE_ALIASES) as Record<string, unknown>);
-    const reason = signatureDiff(source, result, normalizeTypes, dataTypeAliases);
+    const commentDashes = options?.replaceDashesInBlockComments ?? DEFAULT_FORMAT_OPTIONS.replaceDashesInBlockComments;
+    const reason = signatureDiff(source, result, normalizeTypes, dataTypeAliases, commentDashes);
     if (reason) {
         return { text: input, ok: false, reason, checkWarnings };
     }
@@ -1727,7 +1745,10 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     };
     const trailingNewline = /\n\s*$/.test(input);
     const typeAliases = buildTypePhraseAliases(normalizeDataTypeAliasTable(opt.dataTypeAliases as Record<string, unknown>));
-    const toks = opt.normalizeDataTypes ? normalizeTypePhrases(tokenize(input), typeAliases) : tokenize(input);
+    let toks = opt.normalizeDataTypes ? normalizeTypePhrases(tokenize(input), typeAliases) : tokenize(input);
+    if (opt.replaceDashesInBlockComments) {
+        toks = toks.map(t => t.type === 'blockComment' ? { ...t, text: replaceBlockCommentDashes(t.text) } : t);
+    }
     const depths = computeDepths(toks);
 
     // --- Pre-scan: classify every parenthesis -------------------------------

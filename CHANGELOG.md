@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.3.1
+
+- **The formatter can turn dashes in block comments into equals signs:** A banner comment such as `/*--- Build report + info sheet ----- */` contains `--`, which tools and readers that do not track block comments take for the start of a line comment, and the dashes also clash visually with real `--` comments next to it. The new *Replace dashes in block comments* option (`postgresQueryBuilder.format.replaceDashesInBlockComments`, off by default, also settable as `replaceDashesInBlockComments` in `.pgformat.json`) replaces every run of two or more dashes inside a `/* … */` comment with the same number of equals signs, so the banner becomes `/*=== Build report + info sheet ===== */`. It applies to single-line, multi-line and nested block comments, including those inside function bodies; a single dash such as in `e-mail` or `a - b` stays, and `--` line comments, string literals and dollar-quoted strings are never touched.
+
 ## 3.3.0
 
 - **The Data Viewer's query bar is a real SQL editor:** The SQL behind the grid was edited in a plain text box — no colours, no suggestions, and *Format SQL* only reflowed a simple `SELECT` with a small formatter of its own that knew nothing of your formatter settings. The query bar is now Monaco, the editor VS Code itself is built on, so it behaves like an editor tab: PostgreSQL syntax highlighting in the colours of the active theme (including light and high-contrast themes, and following a theme switch), multi-cursor editing, *Ctrl+D*, *Alt+↑/↓*, find and replace, bracket matching, comment toggling and line numbers. The box grows with the statement up to its former maximum height and scrolls beyond it.
