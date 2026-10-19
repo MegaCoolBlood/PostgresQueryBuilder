@@ -27,6 +27,8 @@ export interface SavedQuery {
     table?: string;
     lastUsed?: number;
     scope?: SavedQueryScope;
+    /** Folder-like labels; a `/` nests them (`Reports/Monthly`). */
+    tags?: string[];
 }
 
 interface WorkspaceQueriesFile {
@@ -208,7 +210,73 @@ export function normalizeSavedQuery(raw: unknown): SavedQuery | undefined {
     if (typeof r.lastUsed === 'number') {
         query.lastUsed = r.lastUsed;
     }
+    const tags = normalizeTags(r.tags);
+    if (tags.length) {
+        query.tags = tags;
+    }
     return query;
+}
+
+/**
+ * Tidy one tag: surrounding and repeated whitespace is dropped, and each `/`
+ * separated level is trimmed with empty levels removed, so ` Reports / Monthly/`
+ * becomes `Reports/Monthly`. Returns '' for a tag with no content.
+ */
+export function normalizeTag(raw: unknown): string {
+    if (typeof raw !== 'string') {
+        return '';
+    }
+    return raw
+        .split('/')
+        .map(part => part.replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+        .join('/');
+}
+
+/**
+ * A clean tag list: tidied, without duplicates (compared case-insensitively,
+ * the first spelling wins) and sorted, so the stored file stays stable.
+ * Accepts an array or a comma-separated string.
+ */
+export function normalizeTags(raw: unknown): string[] {
+    const items = typeof raw === 'string' ? raw.split(',') : Array.isArray(raw) ? raw : [];
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const item of items) {
+        const tag = normalizeTag(item);
+        const key = tag.toLowerCase();
+        if (tag && !seen.has(key)) {
+            seen.add(key);
+            result.push(tag);
+        }
+    }
+    return result.sort(compareTags);
+}
+
+/** Case-insensitive, level-aware order: `A`, `A/B`, `A B`. */
+export function compareTags(a: string, b: string): number {
+    const pa = a.split('/'), pb = b.split('/');
+    for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
+        const d = pa[i].localeCompare(pb[i], undefined, { sensitivity: 'base' });
+        if (d !== 0) return d;
+    }
+    return pa.length - pb.length;
+}
+
+/** Every tag in use, each spelled the way it first appears, sorted. */
+export function collectTags(queries: SavedQuery[]): string[] {
+    return normalizeTags(queries.flatMap(q => q.tags ?? []));
+}
+
+/** `tags` plus `tag`, unless it is already there (case-insensitively). */
+export function withTag(tags: string[] | undefined, tag: string): string[] {
+    return normalizeTags([...(tags ?? []), tag]);
+}
+
+/** `tags` without `tag` (case-insensitively). */
+export function withoutTag(tags: string[] | undefined, tag: string): string[] {
+    const key = normalizeTag(tag).toLowerCase();
+    return normalizeTags((tags ?? []).filter(t => normalizeTag(t).toLowerCase() !== key));
 }
 
 /**
@@ -240,6 +308,16 @@ export function normalizeSavedQueries(raw: unknown): SavedQuery[] {
 /** Sort by name, case-insensitively, so the tree order is stable. */
 export function sortSavedQueries(queries: SavedQuery[]): SavedQuery[] {
     return [...queries].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+}
+
+/** Store a normalized tag list on `query`, or drop the field when it is empty. */
+function applyTags(query: SavedQuery, tags: unknown): void {
+    const clean = normalizeTags(tags);
+    if (clean.length) {
+        query.tags = clean;
+    } else {
+        delete query.tags;
+    }
 }
 
 /**
@@ -307,6 +385,7 @@ export class SavedQueryStore {
             lastUsed: Date.now()
         };
         delete created.scope;
+        applyTags(created, query.tags);
         await this.insert(created, scope);
         this._onDidChange.fire();
         return { ...created, scope };
@@ -319,24 +398,55 @@ export class SavedQueryStore {
         }
         const clean: Partial<SavedQuery> = { ...patch };
         delete clean.scope;
+        delete clean.tags;
         if (patch.parameters !== undefined) {
             clean.parameters = normalizeParameters(patch.parameters);
         }
+        const merge = (q: SavedQuery): SavedQuery => {
+            const next = { ...q, ...clean };
+            if (patch.tags !== undefined) {
+                applyTags(next, patch.tags);
+            }
+            return next;
+        };
         if (scope === 'workspace') {
             const idx = this.workspaceQueries.findIndex(q => q.id === id);
             if (idx >= 0) {
-                this.workspaceQueries[idx] = { ...this.workspaceQueries[idx], ...clean };
+                this.workspaceQueries[idx] = merge(this.workspaceQueries[idx]);
                 await this.persistWorkspaceFile();
             }
         } else {
             const all = this.getGlobalQueries();
             const idx = all.findIndex(q => q.id === id);
             if (idx >= 0) {
-                all[idx] = { ...all[idx], ...clean };
+                all[idx] = merge(all[idx]);
                 await this.context.globalState.update(SavedQueryStore.STORAGE_KEY, all);
             }
         }
         this._onDidChange.fire();
+    }
+
+    /** Add `tag` to every listed query that does not carry it yet. */
+    async addTag(ids: string[], tag: string): Promise<void> {
+        if (!normalizeTag(tag)) {
+            return;
+        }
+        for (const id of ids) {
+            const query = this.get(id);
+            if (query) {
+                await this.update(id, { tags: withTag(query.tags, tag) });
+            }
+        }
+    }
+
+    /** Remove `tag` from every listed query; `undefined` removes all their tags. */
+    async removeTag(ids: string[], tag?: string): Promise<void> {
+        for (const id of ids) {
+            const query = this.get(id);
+            if (query) {
+                await this.update(id, { tags: tag === undefined ? [] : withoutTag(query.tags, tag) });
+            }
+        }
     }
 
     async delete(id: string): Promise<void> {

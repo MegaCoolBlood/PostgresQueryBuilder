@@ -172,6 +172,14 @@ number, identifier or raw — so its value ends up in the SQL properly quoted
 instead of merely concatenated. A bookmarked query can be dragged into an
 editor to insert its SQL.
 
+Tags sort the view into folders: every tag is a folder, a query with several
+tags appears in each of them, and queries without a tag are collected under
+*Untagged*. A `/` nests folders, so `Reports/Monthly` sits inside `Reports`.
+Tags are set in the bookmark dialog — when a query is bookmarked, and later with
+**Edit Bookmarked Query...** from the context menu — by dragging queries onto a
+tag folder, or with **Edit Tags** for every selected row in **Manage Bookmarked
+Queries**. Dropping queries onto *Untagged* removes their tags after asking.
+
 **Manage Bookmarked Queries** (the gear icon of the view) lists every bookmark
 in one table: move a selection between the personal and the workspace scope,
 edit the statement — in the dialog or in a full editor tab — and give each
@@ -273,7 +281,8 @@ Every command lives in the Command Palette (`Ctrl+Shift+P`) under the category
 | Export Formatter Settings to .pgformat.json | Write the current formatter settings into a file |
 | Bookmark Query... | Store the statement under the cursor |
 | Run Bookmarked Query... | Pick a bookmarked query and run it |
-| Manage Bookmarked Queries... | Open the panel for scope and placeholder metadata |
+| Edit Bookmarked Query... | Change name, tags, scope, statement and placeholders of a bookmark |
+| Manage Bookmarked Queries... | Open the panel for scope, tags and placeholder metadata |
 | Manage Custom Column Mappings... | Open the mappings panel |
 | Import / Export Custom Column Mappings... | Exchange mappings as a file |
 

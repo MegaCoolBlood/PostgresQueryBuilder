@@ -352,7 +352,7 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.window.createTreeView('postgresSavedQueries', {
                 treeDataProvider: savedQueryExplorer,
                 canSelectMany: true,
-                dragAndDropController: new SavedQueryDragController()
+                dragAndDropController: new SavedQueryDragController(savedQueryStore)
             }),
             vscode.languages.registerDocumentDropEditProvider('*', new SavedQueryDropProvider(savedQueryStore))
         );
@@ -578,6 +578,15 @@ function registerSavedQueryCommands(context: vscode.ExtensionContext): void {
             await savedQueryEditor.open(query.id);
         }),
 
+        // The bookmark dialog edits everything about a query in one place:
+        // name, tags, scope, statement and placeholders.
+        vscode.commands.registerCommand('postgresQueryBuilder.editSavedQuery', async (arg?: unknown) => {
+            const query = await resolveSavedQuery(arg);
+            if (query) {
+                ManageBookmarksPanel.show(savedQueryStore, { id: query.id });
+            }
+        }),
+
         vscode.commands.registerCommand('postgresQueryBuilder.duplicateSavedQuery', async (arg?: unknown) => {
             const query = await resolveSavedQuery(arg);
             if (!query) {
@@ -589,7 +598,8 @@ function registerSavedQueryCommands(context: vscode.ExtensionContext): void {
                     sql: query.sql,
                     parameters: query.parameters,
                     schema: query.schema,
-                    table: query.table
+                    table: query.table,
+                    tags: query.tags
                 },
                 query.scope === 'workspace' ? 'workspace' : 'global'
             );

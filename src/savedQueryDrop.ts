@@ -9,10 +9,38 @@ import { SavedQueryTreeNode } from './savedQueryExplorer';
  */
 export const SAVED_QUERY_DRAG_MIME = 'application/vnd.postgresquerybuilder.savedquery';
 
-/** Drag controller for the "Bookmarked Queries" tree view. */
+/**
+ * What dropping bookmarked queries onto a tree node does: onto a tag folder (or
+ * a query inside one) the folder's tag is added; onto "Untagged" (or a query in
+ * it) all tags are removed; anywhere else nothing happens.
+ */
+export function planTagDrop(target: SavedQueryTreeNode | undefined): { action: 'add'; tag: string } | { action: 'clear' } | undefined {
+    if (!target) return undefined;
+    if (target.type === 'tag') return { action: 'add', tag: target.path };
+    if (target.type === 'untagged') return { action: 'clear' };
+    if (target.parent === undefined) return undefined;
+    return target.parent ? { action: 'add', tag: target.parent } : { action: 'clear' };
+}
+
+/** Parse the ids a drag carried, ignoring anything malformed. */
+export function parseDraggedIds(text: string): string[] {
+    try {
+        const ids: unknown = JSON.parse(text);
+        return Array.isArray(ids) ? ids.map(String).filter(Boolean) : [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Drag controller for the "Bookmarked Queries" tree view: a query dragged into
+ * an editor inserts its SQL, a query dropped onto a tag folder gets that tag.
+ */
 export class SavedQueryDragController implements vscode.TreeDragAndDropController<SavedQueryTreeNode> {
-    readonly dropMimeTypes: string[] = [];
+    readonly dropMimeTypes: string[] = [SAVED_QUERY_DRAG_MIME];
     readonly dragMimeTypes: string[] = [SAVED_QUERY_DRAG_MIME];
+
+    constructor(private readonly store?: SavedQueryStore) {}
 
     handleDrag(
         source: readonly SavedQueryTreeNode[],
@@ -24,6 +52,40 @@ export class SavedQueryDragController implements vscode.TreeDragAndDropControlle
             return;
         }
         dataTransfer.set(SAVED_QUERY_DRAG_MIME, new vscode.DataTransferItem(JSON.stringify(ids)));
+    }
+
+    async handleDrop(
+        target: SavedQueryTreeNode | undefined,
+        dataTransfer: vscode.DataTransfer,
+        _token: vscode.CancellationToken
+    ): Promise<void> {
+        const plan = planTagDrop(target);
+        const item = dataTransfer.get(SAVED_QUERY_DRAG_MIME);
+        if (!plan || !item || !this.store) {
+            return;
+        }
+        const ids = parseDraggedIds(await item.asString());
+        if (ids.length === 0) {
+            return;
+        }
+        if (plan.action === 'add') {
+            await this.store.addTag(ids, plan.tag);
+            return;
+        }
+        const tagged = ids.filter(id => (this.store?.get(id)?.tags ?? []).length > 0);
+        if (tagged.length === 0) {
+            return;
+        }
+        const answer = await vscode.window.showWarningMessage(
+            tagged.length === 1
+                ? `Remove all tags from "${this.store.get(tagged[0])?.name}"?`
+                : `Remove all tags from ${tagged.length} bookmarked queries?`,
+            { modal: true },
+            'Remove Tags'
+        );
+        if (answer === 'Remove Tags') {
+            await this.store.removeTag(tagged);
+        }
     }
 }
 

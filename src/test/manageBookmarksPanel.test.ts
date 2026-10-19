@@ -369,3 +369,64 @@ test('editing a query reports its id back to the caller once', async (t) => {
 
     assert.deepEqual(panel.recorded.saved, ['a'], 'the callback must not fire for later, unrelated edits');
 });
+
+// ===== Tags (3.3.0) =====
+
+test('the panel shows a Tags column, a bulk tag button and a tag field in the dialog', (t) => {
+    const panel = openPanel(t, [query('a', 'global')]);
+    for (const marker of ['<th>Tags</th>', 'id="editTagsSel"', 'id="editTags"', 'id="editTagInput"', 'list="tagSuggestions"']) {
+        assert.ok(panel.html.includes(marker), `the panel is missing ${marker}`);
+    }
+});
+
+test('the webview receives every query\'s tags and the tags in use for suggestions', async (t) => {
+    const panel = openPanel(t, [{ ...query('a', 'global'), tags: ['Sales'] }, { ...query('b', 'global'), tags: ['Ops', 'sales'] }]);
+    await panel.send({ command: 'ready' });
+
+    const loaded = panel.posted.find(m => m.command === 'queriesLoaded')!;
+    assert.deepEqual((loaded.queries as Array<Record<string, unknown>>).map(q => q.tags), [['Sales'], ['Ops', 'sales']]);
+    assert.deepEqual(loaded.allTags, ['Ops', 'Sales']);
+});
+
+test('saving the dialog stores the tidied tags', async (t) => {
+    const panel = openPanel(t, [query('a', 'global')]);
+    await panel.send({
+        command: 'updateQuery',
+        id: 'a',
+        updates: { name: 'A', scope: 'global', parameters: [], tags: [' Reports / Monthly ', 'Sales', 'sales'] }
+    });
+
+    assert.deepEqual(panel.recorded.updates[0].patch.tags, ['Reports/Monthly', 'Sales']);
+});
+
+test('a new bookmark is stored with the tags given in the dialog', async (t) => {
+    const panel = openPanel(t, [], false, { draft: { name: 'Orders', sql: 'SELECT 1' } });
+    await panel.send({ command: 'ready' });
+    await panel.send({ command: 'createQuery', updates: { name: 'Orders', sql: 'SELECT 1', scope: 'global', tags: ['Sales'] } });
+
+    assert.deepEqual(panel.recorded.adds[0].query.tags, ['Sales']);
+});
+
+test('the bulk tag button opens the tag picker for the selected queries', async (t) => {
+    const panel = openPanel(t, [query('a', 'global'), query('b', 'global')]);
+    const original = vscodeStub.window.createQuickPick;
+    let title = '';
+    vscodeStub.window.createQuickPick = () => {
+        let hide: (() => void) | undefined;
+        const noop = () => ({ dispose() {} });
+        return {
+            set title(v: string) { title = v; },
+            items: [], selectedItems: [], value: '',
+            onDidChangeValue: noop, onDidChangeSelection: noop, onDidAccept: noop,
+            onDidHide: (cb: () => void) => { hide = cb; return { dispose() {} }; },
+            show() { hide?.(); }, hide() {}, dispose() {}
+        };
+    };
+    try {
+        await panel.send({ command: 'editTags', ids: ['a', 'b'] });
+    } finally {
+        vscodeStub.window.createQuickPick = original;
+    }
+    assert.equal(title, 'Tags of 2 bookmarked queries');
+    assert.deepEqual(panel.recorded.updates, [], 'cancelling the picker changes nothing');
+});

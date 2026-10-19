@@ -6,7 +6,12 @@ import {
     describeSavedQuery,
     describeParameters,
     savedQueryContextValue,
-    SavedQueryTreeNode
+    childTagFolders,
+    queriesInTagFolder,
+    countInTagFolder,
+    untaggedQueries,
+    tagFolderLabel,
+    UNTAGGED_LABEL
 } from '../savedQueryExplorer';
 import { SavedQuery, SavedQueryStore } from '../savedQueryStore';
 import * as vscode from 'vscode';
@@ -22,7 +27,8 @@ function makeQuery(over: Partial<SavedQuery> = {}): SavedQuery {
         scope: over.scope,
         schema: over.schema,
         table: over.table,
-        lastUsed: over.lastUsed
+        lastUsed: over.lastUsed,
+        tags: over.tags
     };
 }
 
@@ -73,38 +79,110 @@ test('savedQueryContextValue treats a query without scope as personal', () => {
     assert.equal(savedQueryContextValue(makeQuery({ scope: undefined })), 'savedQuery.global');
 });
 
-// ===== getChildren =====
+// ===== getChildren: tag folders (3.3.0) =====
 
-test('getChildren returns a flat list when only one scope is used', () => {
+test('getChildren lists the tag folders, then "Untagged" for queries without a tag', () => {
     const { store } = createFakeStore([
-        makeQuery({ id: 'a', scope: 'global' }),
-        makeQuery({ id: 'b', scope: 'global' })
+        makeQuery({ id: 'a', tags: ['Sales'] }),
+        makeQuery({ id: 'b', tags: ['Finance', 'Sales'] }),
+        makeQuery({ id: 'c' })
     ]);
-    const nodes = new SavedQueryExplorerProvider(store).getChildren();
-    assert.deepEqual(nodes.map(n => n.type), ['query', 'query']);
-});
-
-test('getChildren groups by scope when both scopes are used', () => {
-    const { store } = createFakeStore([
-        makeQuery({ id: 'a', scope: 'workspace' }),
-        makeQuery({ id: 'b', scope: 'global' })
-    ]);
-    const nodes = new SavedQueryExplorerProvider(store).getChildren() as SavedQueryTreeNode[];
-    assert.deepEqual(nodes, [
-        { type: 'group', scope: 'workspace' },
-        { type: 'group', scope: 'global' }
+    assert.deepEqual(new SavedQueryExplorerProvider(store).getChildren(), [
+        { type: 'tag', path: 'Finance' },
+        { type: 'tag', path: 'Sales' },
+        { type: 'untagged' }
     ]);
 });
 
-test('getChildren of a group returns only that scope', () => {
+test('getChildren omits "Untagged" when every query carries a tag', () => {
+    const { store } = createFakeStore([makeQuery({ id: 'a', tags: ['Sales'] })]);
+    assert.deepEqual(new SavedQueryExplorerProvider(store).getChildren(), [{ type: 'tag', path: 'Sales' }]);
+});
+
+test('getChildren shows only "Untagged" while no query is tagged', () => {
+    const { store } = createFakeStore([makeQuery({ id: 'a' }), makeQuery({ id: 'b' })]);
+    const provider = new SavedQueryExplorerProvider(store);
+    assert.deepEqual(provider.getChildren(), [{ type: 'untagged' }]);
+    assert.equal(
+        provider.getTreeItem({ type: 'untagged' }).collapsibleState,
+        vscode.TreeItemCollapsibleState.Expanded,
+        'the only folder starts open'
+    );
+});
+
+test('a query with several tags appears in each of their folders', () => {
     const { store } = createFakeStore([
-        makeQuery({ id: 'a', scope: 'workspace' }),
-        makeQuery({ id: 'b', scope: 'global' })
+        makeQuery({ id: 'a', name: 'Orders', tags: ['Sales', 'Daily'] }),
+        makeQuery({ id: 'b', name: 'Invoices', tags: ['Sales'] })
     ]);
     const provider = new SavedQueryExplorerProvider(store);
-    const nodes = provider.getChildren({ type: 'group', scope: 'global' });
-    assert.equal(nodes.length, 1);
-    assert.equal(nodes[0].type === 'query' && nodes[0].query.id, 'b');
+    const ids = (path: string) => provider.getChildren({ type: 'tag', path })
+        .map(n => n.type === 'query' ? n.query.id : n.type);
+    assert.deepEqual(ids('Sales'), ['b', 'a'], 'sorted by name');
+    assert.deepEqual(ids('Daily'), ['a']);
+});
+
+test('the "Untagged" folder lists the queries without a tag', () => {
+    const { store } = createFakeStore([makeQuery({ id: 'a', tags: ['Sales'] }), makeQuery({ id: 'b' })]);
+    const nodes = new SavedQueryExplorerProvider(store).getChildren({ type: 'untagged' });
+    assert.deepEqual(nodes.map(n => n.type === 'query' && n.query.id), ['b']);
+    assert.equal(nodes[0].type === 'query' && nodes[0].parent, '');
+});
+
+test('a slash in a tag nests folders, and a folder lists its subfolders before its queries', () => {
+    const { store } = createFakeStore([
+        makeQuery({ id: 'm', tags: ['Reports/Monthly'] }),
+        makeQuery({ id: 'r', tags: ['Reports'] }),
+        makeQuery({ id: 'y', tags: ['Reports/Yearly/Q1'] })
+    ]);
+    const provider = new SavedQueryExplorerProvider(store);
+    assert.deepEqual(provider.getChildren(), [{ type: 'tag', path: 'Reports' }]);
+    const inReports = provider.getChildren({ type: 'tag', path: 'Reports' });
+    assert.deepEqual(inReports.map(n => n.type === 'tag' ? n.path : n.type === 'query' ? n.query.id : n.type),
+        ['Reports/Monthly', 'Reports/Yearly', 'r']);
+    assert.deepEqual(provider.getChildren({ type: 'tag', path: 'Reports/Yearly' }), [{ type: 'tag', path: 'Reports/Yearly/Q1' }]);
+});
+
+test('tag folders match case-insensitively and keep the first spelling', () => {
+    const queries = [makeQuery({ id: 'a', tags: ['Sales'] }), makeQuery({ id: 'b', tags: ['sales'] })];
+    assert.deepEqual(childTagFolders(queries, ''), ['Sales']);
+    assert.deepEqual(queriesInTagFolder(queries, 'SALES').map(q => q.id), ['a', 'b']);
+});
+
+test('countInTagFolder counts the queries of a folder and its subfolders once each', () => {
+    const queries = [
+        makeQuery({ id: 'a', tags: ['Reports', 'Reports/Monthly'] }),
+        makeQuery({ id: 'b', tags: ['Reports/Monthly'] }),
+        makeQuery({ id: 'c', tags: ['ReportsOld'] })
+    ];
+    assert.equal(countInTagFolder(queries, 'Reports'), 2);
+    assert.equal(countInTagFolder(queries, 'Reports/Monthly'), 2);
+    assert.equal(untaggedQueries(queries).length, 0);
+});
+
+test('getTreeItem labels a nested tag folder with its last level and the query count', () => {
+    const { store } = createFakeStore([makeQuery({ id: 'a', tags: ['Reports/Monthly'] })]);
+    const item = new SavedQueryExplorerProvider(store).getTreeItem({ type: 'tag', path: 'Reports/Monthly' });
+    assert.equal(item.label, 'Monthly');
+    assert.equal(tagFolderLabel('Reports/Monthly'), 'Monthly');
+    assert.equal(item.description, '1');
+    assert.equal(item.contextValue, 'savedQueryTag');
+    assert.equal(item.collapsibleState, vscode.TreeItemCollapsibleState.Collapsed);
+});
+
+test('the scope is named next to a query only while both scopes are in use', () => {
+    const mixed = createFakeStore([
+        makeQuery({ id: 'a', scope: 'workspace', parameters: [{ name: 'day', kind: 'text' }] }),
+        makeQuery({ id: 'b', scope: 'global' })
+    ]);
+    const provider = new SavedQueryExplorerProvider(mixed.store);
+    const [a, b] = provider.getChildren({ type: 'untagged' });
+    assert.equal(provider.getTreeItem(a).description, 'Workspace · :day');
+    assert.equal(provider.getTreeItem(b).description, 'Personal');
+
+    const single = createFakeStore([makeQuery({ id: 'a', scope: 'global' })]);
+    const only = new SavedQueryExplorerProvider(single.store);
+    assert.equal(only.getTreeItem(only.getChildren({ type: 'untagged' })[0]).description, '');
 });
 
 test('getChildren of a query node has no children', () => {
@@ -140,7 +218,7 @@ test('getTreeItem marks a workspace query so only its move stays available', () 
     assert.equal(item.contextValue, 'savedQuery.workspace');
 });
 
-test('getTreeItem names the scope in the tooltip', () => {
+test('getTreeItem names the scope and the tags in the tooltip', () => {
     const { store } = createFakeStore([]);
     const provider = new SavedQueryExplorerProvider(store);
     assert.equal(
@@ -148,19 +226,17 @@ test('getTreeItem names the scope in the tooltip', () => {
         'Workspace\nSELECT 1'
     );
     assert.equal(
-        provider.getTreeItem({ type: 'query', query: makeQuery({ sql: 'SELECT 1' }) }).tooltip,
-        'Personal\nSELECT 1'
+        provider.getTreeItem({ type: 'query', query: makeQuery({ sql: 'SELECT 1', tags: ['A', 'B/C'] }) }).tooltip,
+        'Personal\nTags: A, B/C\nSELECT 1'
     );
 });
 
-test('getTreeItem marks a group with its scope', () => {
-    const { store } = createFakeStore([]);
-    const provider = new SavedQueryExplorerProvider(store);
-    assert.equal(
-        provider.getTreeItem({ type: 'group', scope: 'workspace' }).contextValue,
-        'savedQueryGroup:workspace'
-    );
-    assert.equal(provider.getTreeItem({ type: 'group', scope: 'global' }).label, 'Personal');
+test('getTreeItem marks the "Untagged" folder for its own context', () => {
+    const { store } = createFakeStore([makeQuery({ id: 'a', tags: ['X'] }), makeQuery({ id: 'b' })]);
+    const item = new SavedQueryExplorerProvider(store).getTreeItem({ type: 'untagged' });
+    assert.equal(item.label, UNTAGGED_LABEL);
+    assert.equal(item.contextValue, 'savedQueryUntagged');
+    assert.equal(item.collapsibleState, vscode.TreeItemCollapsibleState.Collapsed);
 });
 
 // ===== change propagation =====
@@ -184,7 +260,24 @@ test('the move commands are bound to the opposite scope in package.json', () => 
     const whenOf = (command: string) => items.find(i => i.command === command)?.when;
     assert.match(whenOf('postgresQueryBuilder.moveSavedQueryToWorkspace'), /viewItem == savedQuery\.global/);
     assert.match(whenOf('postgresQueryBuilder.moveSavedQueryToGlobal'), /viewItem == savedQuery\.workspace/);
-    for (const command of ['runSavedQuery', 'renameSavedQuery', 'deleteSavedQuery']) {
+    for (const command of ['runSavedQuery', 'editSavedQuery', 'renameSavedQuery', 'deleteSavedQuery']) {
         assert.match(whenOf(`postgresQueryBuilder.${command}`), /savedQuery\\\./, command);
     }
+});
+
+test('the context menu edits a bookmark, tags included, through the bookmark dialog', () => {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '../../../package.json'), 'utf8'));
+    const command = pkg.contributes.commands.find((c: { command: string }) => c.command === 'postgresQueryBuilder.editSavedQuery');
+    assert.equal(command?.title, 'Edit Bookmarked Query...');
+    const items: Array<{ command: string; group: string }> = pkg.contributes.menus['view/item/context'];
+    assert.equal(items.find(i => i.command === 'postgresQueryBuilder.editSavedQuery')?.group, '1_modify@0', 'listed first');
+    assert.ok(
+        !JSON.stringify(pkg.contributes).includes('editSavedQueryTags'),
+        'tags must not get a context menu entry of their own'
+    );
+    const source = readFileSync(join(__dirname, '../../../src/extension.ts'), 'utf8');
+    assert.match(
+        source,
+        /registerCommand\('postgresQueryBuilder\.editSavedQuery',[\s\S]{0,200}?ManageBookmarksPanel\.show\(savedQueryStore, \{ id: query\.id \}\)/
+    );
 });

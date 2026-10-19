@@ -183,6 +183,12 @@
         "category": "PostgreSQL Query Booster"
       },
       {
+        "command": "postgresQueryBuilder.editSavedQuery",
+        "title": "Edit Bookmarked Query...",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(edit)"
+      },
+      {
         "command": "postgresQueryBuilder.duplicateSavedQuery",
         "title": "Duplicate Bookmarked Query",
         "category": "PostgreSQL Query Booster"
@@ -274,6 +280,11 @@
           "command": "postgresQueryBuilder.runSavedQuery",
           "when": "view == postgresSavedQueries && viewItem =~ /^savedQuery\\./",
           "group": "inline"
+        },
+        {
+          "command": "postgresQueryBuilder.editSavedQuery",
+          "when": "view == postgresSavedQueries && viewItem =~ /^savedQuery\\./",
+          "group": "1_modify@0"
         },
         {
           "command": "postgresQueryBuilder.renameSavedQuery",

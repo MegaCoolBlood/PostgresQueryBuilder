@@ -14,7 +14,13 @@ import {
     sortSavedQueries,
     serializeWorkspaceQuery,
     SavedQuery,
-    SavedQueryParameter
+    SavedQueryParameter,
+    normalizeTag,
+    normalizeTags,
+    compareTags,
+    collectTags,
+    withTag,
+    withoutTag
 } from '../savedQueryStore';
 
 function createMockContext() {
@@ -355,4 +361,72 @@ test('malformed stored entries are ignored when reading', () => {
     const all: SavedQuery[] = store.getAll();
     assert.equal(all.length, 1);
     assert.equal(all[0].name, 'ok');
+});
+
+// ===== Tags (3.3.0) =====
+
+test('normalizeTag trims levels, collapses whitespace and drops empty levels', () => {
+    assert.equal(normalizeTag('  Reports  /  Monthly / '), 'Reports/Monthly');
+    assert.equal(normalizeTag('Two   words'), 'Two words');
+    assert.equal(normalizeTag(' / '), '');
+    assert.equal(normalizeTag(42), '');
+});
+
+test('normalizeTags dedupes case-insensitively, keeps the first spelling and sorts', () => {
+    assert.deepEqual(normalizeTags(['sales', 'Reports/Monthly', 'Sales', '', 'Reports']), ['Reports', 'Reports/Monthly', 'sales']);
+    assert.deepEqual(normalizeTags('b, a ,,A'), ['a', 'b']);
+    assert.deepEqual(normalizeTags(undefined), []);
+});
+
+test('compareTags sorts a folder before its subfolders', () => {
+    assert.deepEqual(['A B', 'A/B', 'A'].sort(compareTags), ['A', 'A/B', 'A B']);
+});
+
+test('collectTags gathers every tag in use once', () => {
+    assert.deepEqual(collectTags([
+        { id: '1', name: 'a', sql: 'x', parameters: [], tags: ['Sales'] },
+        { id: '2', name: 'b', sql: 'x', parameters: [], tags: ['sales', 'Ops'] },
+        { id: '3', name: 'c', sql: 'x', parameters: [] }
+    ]), ['Ops', 'Sales']);
+});
+
+test('withTag and withoutTag add and remove one tag case-insensitively', () => {
+    assert.deepEqual(withTag(['A'], 'b'), ['A', 'b']);
+    assert.deepEqual(withTag(['A'], 'a'), ['A']);
+    assert.deepEqual(withTag(undefined, 'x'), ['x']);
+    assert.deepEqual(withoutTag(['A', 'B'], 'a'), ['B']);
+    assert.deepEqual(withoutTag(undefined, 'a'), []);
+});
+
+test('normalizeSavedQuery keeps a clean tag list and omits an empty one', () => {
+    const tagged = normalizeSavedQuery({ id: '1', name: 'q', sql: 'SELECT 1', tags: [' Sales ', 'sales', 7] });
+    assert.deepEqual(tagged?.tags, ['Sales']);
+    const untagged = normalizeSavedQuery({ id: '1', name: 'q', sql: 'SELECT 1', tags: [] });
+    assert.equal(untagged && 'tags' in untagged, false);
+});
+
+test('add and update store normalized tags and drop the field once it is empty', async () => {
+    const store = new SavedQueryStore(createMockContext());
+    const created = await store.add({ name: 'q', sql: 'SELECT 1', parameters: [], tags: ['b', ' a '] });
+    assert.deepEqual(store.get(created.id)?.tags, ['a', 'b']);
+    await store.update(created.id, { tags: ['Reports / Monthly'] });
+    assert.deepEqual(store.get(created.id)?.tags, ['Reports/Monthly']);
+    await store.update(created.id, { name: 'renamed' });
+    assert.deepEqual(store.get(created.id)?.tags, ['Reports/Monthly'], 'a patch without tags keeps them');
+    await store.update(created.id, { tags: [] });
+    assert.equal('tags' in (store.get(created.id) as object), false);
+});
+
+test('addTag and removeTag change the tags of several queries at once', async () => {
+    const store = new SavedQueryStore(createMockContext());
+    const a = await store.add({ name: 'a', sql: 'SELECT 1', parameters: [], tags: ['Old'] });
+    const b = await store.add({ name: 'b', sql: 'SELECT 2', parameters: [] });
+    await store.addTag([a.id, b.id], 'Sales');
+    assert.deepEqual(store.get(a.id)?.tags, ['Old', 'Sales']);
+    assert.deepEqual(store.get(b.id)?.tags, ['Sales']);
+    await store.removeTag([a.id, b.id], 'sales');
+    assert.deepEqual(store.get(a.id)?.tags, ['Old']);
+    assert.equal(store.get(b.id)?.tags, undefined);
+    await store.removeTag([a.id]);
+    assert.equal(store.get(a.id)?.tags, undefined, 'without a tag every tag is removed');
 });

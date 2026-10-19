@@ -1,8 +1,9 @@
 import * as vscode from 'vscode';
-import { SavedQueryStore, SavedQueryParameter, SavedQueryScope, mergeParameters } from './savedQueryStore';
+import { SavedQueryStore, SavedQueryParameter, SavedQueryScope, mergeParameters, normalizeTags, collectTags } from './savedQueryStore';
 import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
 import { icon } from './webviewAssets';
 import { getErrorMessage } from './logger';
+import { editSavedQueryTags } from './savedQueryTags';
 
 const PARAMETER_KINDS = ['text', 'number', 'identifier', 'raw'];
 
@@ -123,12 +124,20 @@ export class ManageBookmarksPanel {
                         }
                         break;
                     }
+                    case 'editTags': {
+                        const ids: string[] = Array.isArray(msg.ids) ? msg.ids.map(String) : [];
+                        await editSavedQueryTags(this.store, ids);
+                        break;
+                    }
                     case 'updateQuery': {
                         const id: string = msg.id;
                         const updates = msg.updates || {};
                         const scope: SavedQueryScope = updates.scope === 'workspace' ? 'workspace' : 'global';
                         const parameters = toParameters(updates.parameters);
-                        const patch: { name?: string; sql?: string; parameters: SavedQueryParameter[] } = { parameters };
+                        const patch: { name?: string; sql?: string; parameters: SavedQueryParameter[]; tags?: string[] } = { parameters };
+                        if (updates.tags !== undefined) {
+                            patch.tags = normalizeTags(updates.tags);
+                        }
                         const sql = typeof updates.sql === 'string' ? updates.sql.trim() : '';
                         if (sql && sql !== this.store.get(id)?.sql) {
                             patch.sql = sql;
@@ -161,7 +170,8 @@ export class ManageBookmarksPanel {
                             sql,
                             parameters: mergeParameters(sql, toParameters(updates.parameters)),
                             schema: this.draftScope.schema,
-                            table: this.draftScope.table
+                            table: this.draftScope.table,
+                            tags: normalizeTags(updates.tags)
                         }, scope);
                         if (this.store.get(created.id)?.scope !== scope) {
                             vscode.window.showWarningMessage(
@@ -237,19 +247,21 @@ export class ManageBookmarksPanel {
     }
 
     private refresh(): void {
-        const queries = this.store.getAll().map(q => ({
+        const all = this.store.getAll();
+        const queries = all.map(q => ({
             id: q.id,
             name: q.name,
             scope: q.scope,
             schema: q.schema,
             table: q.table,
+            tags: q.tags ?? [],
             parameters: Array.isArray(q.parameters) ? q.parameters : [],
             sql: q.sql,
             preview: q.sql.replace(/\s+/g, ' ').trim()
         }));
         const fileUri = this.store.getWorkspaceFileUri();
         const filePath = fileUri ? vscode.workspace.asRelativePath(fileUri) : '';
-        this.panel.webview.postMessage({ command: 'queriesLoaded', queries, filePath });
+        this.panel.webview.postMessage({ command: 'queriesLoaded', queries, filePath, allTags: collectTags(all) });
         this.flushDialog();
     }
 
@@ -298,14 +310,19 @@ export class ManageBookmarksPanel {
         .param-name { font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; }
         .dlg textarea { width: 100%; min-height: 140px; resize: vertical; }
         .legend-row { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-1); }
-        .legend-row span { font-size: var(--fs-xs); color: var(--c-muted); }`;
+        .legend-row span { font-size: var(--fs-xs); color: var(--c-muted); }
+        /* Tags: chips in the table and in the dialog's tag field */
+        .tag-chip { display: inline-flex; align-items: center; gap: 2px; margin: 0 var(--sp-1) 2px 0; }
+        .tag-chip .tag-remove { padding: 0; border: none; background: none; color: inherit; cursor: pointer; line-height: 1; }
+        .tag-field { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1); }
+        .tag-field input[type="text"] { flex: 1 1 140px; width: auto; min-width: 120px; }`;
         const body = `
     <h2>Bookmarked Queries</h2>
     <div class="hint">Manage where a query is stored and what its placeholders mean. Select entries and change their scope to share them with the team (Workspace) or keep them private (Personal). The statement itself is edited with "Edit Bookmarked Query SQL".</div>
     <div class="file-info" id="fileInfo"></div>
 
     <div class="toolbar">
-        <input type="text" id="filter" placeholder="Filter: name, table, placeholder..." />
+        <input type="text" id="filter" placeholder="Filter: name, tag, table, placeholder..." />
         <button class="btn btn-sm" id="selectAll">Select all</button>
         <button class="btn btn-sm" id="selectNone">Clear</button>
         <button class="btn btn-sm" id="invert">Invert</button>
@@ -316,6 +333,7 @@ export class ManageBookmarksPanel {
     <div class="toolbar">
         <button class="btn btn-primary" id="moveWorkspace" title="Move the selected queries to the workspace file (will be committed to git)">${icon('goto')}To Workspace</button>
         <button class="btn" id="movePersonal" title="Move the selected queries to your personal store (not shared)">${icon('goto')}To Personal</button>
+        <button class="btn" id="editTagsSel" title="Add or remove tags of the selected queries">${icon('tag')}Edit Tags</button>
         <button class="btn btn-danger" id="deleteSel" title="Delete the selected queries">${icon('trash')}Delete</button>
         <button class="btn push-right" id="openFile" title="Open the workspace file the shared queries live in">${icon('edit')}Open workspace file</button>
     </div>
@@ -326,6 +344,7 @@ export class ManageBookmarksPanel {
                 <th style="width:24px;"><input type="checkbox" id="headerCheckbox" /></th>
                 <th>Scope</th>
                 <th>Name</th>
+                <th>Tags</th>
                 <th>Source</th>
                 <th>Placeholders</th>
                 <th style="width:60px;"></th>
@@ -347,7 +366,12 @@ export class ManageBookmarksPanel {
                     <legend>Query</legend>
                     <div class="dlg-grid">
                         <label for="editName">Name</label><input type="text" id="editName" />
+                        <label for="editTagInput">Tags</label>
+                        <div class="tag-field" id="editTags">
+                            <input type="text" id="editTagInput" list="tagSuggestions" placeholder="Add a tag, Enter to confirm (use / to nest)" />
+                        </div>
                     </div>
+                    <datalist id="tagSuggestions"></datalist>
                     <div class="dlg-row">
                         <input type="checkbox" id="editShare" />
                         <label for="editShare" title="Store this query in the workspace file so it can be committed to git">Share with workspace (commit to git)</label>
@@ -389,6 +413,15 @@ export class ManageBookmarksPanel {
         let queries = [];
         let filtered = [];
         let selected = new Set();
+        let allTags = [];
+
+        function tagChips(tags, removable) {
+            return (tags || []).map(t =>
+                '<span class="badge tag-chip" data-tag="' + escapeHtml(t) + '">' + escapeHtml(t)
+                + (removable ? '<button class="tag-remove" title="Remove this tag">\\u00d7</button>' : '')
+                + '</span>'
+            ).join('');
+        }
 
         const tbody = document.getElementById('tbody');
         const emptyMsg = document.getElementById('emptyMsg');
@@ -408,6 +441,7 @@ export class ManageBookmarksPanel {
             const q = filterInput.value.trim().toLowerCase();
             filtered = q ? queries.filter(item => {
                 const hay = [item.name, item.schema || '', item.table || '']
+                    .concat(item.tags || [])
                     .concat(item.parameters.map(p => p.name + ' ' + (p.label || '')))
                     .join(' ').toLowerCase();
                 return hay.includes(q);
@@ -433,6 +467,7 @@ export class ManageBookmarksPanel {
                         + '<td><input type="checkbox" class="row-cb"' + (isSel ? ' checked' : '') + ' /></td>'
                         + '<td>' + scopeBadge + '</td>'
                         + '<td>' + escapeHtml(item.name) + '<div class="sub mono">' + escapeHtml(item.preview.slice(0, 80)) + '</div></td>'
+                        + '<td>' + ((item.tags || []).length ? tagChips(item.tags, false) : '<span class="muted">—</span>') + '</td>'
                         + '<td class="mono">' + source + '</td>'
                         + '<td>' + params + '</td>'
                         + '<td><button class="btn btn-sm edit-btn" title="Edit this query">${icon('edit')}Edit</button></td>'
@@ -451,6 +486,7 @@ export class ManageBookmarksPanel {
             const hasSel = selected.size > 0;
             document.getElementById('moveWorkspace').disabled = !hasSel;
             document.getElementById('movePersonal').disabled = !hasSel;
+            document.getElementById('editTagsSel').disabled = !hasSel;
             document.getElementById('deleteSel').disabled = !hasSel;
         }
 
@@ -525,6 +561,11 @@ export class ManageBookmarksPanel {
             if (!confirm('Delete ' + ids.length + ' quer' + (ids.length === 1 ? 'y' : 'ies') + '? This cannot be undone.')) return;
             vscode.postMessage({ command: 'delete', ids });
         });
+        document.getElementById('editTagsSel').addEventListener('click', () => {
+            const ids = selectedIds();
+            if (!ids.length) return;
+            vscode.postMessage({ command: 'editTags', ids });
+        });
         document.getElementById('openFile').addEventListener('click', () => {
             vscode.postMessage({ command: 'openFile' });
         });
@@ -546,8 +587,54 @@ export class ManageBookmarksPanel {
                 name: draft.name || '',
                 sql: draft.sql || '',
                 scope: draft.scope === 'workspace' ? 'workspace' : 'global',
-                parameters: draft.parameters || []
+                parameters: draft.parameters || [],
+                tags: draft.tags || []
             }, true);
+        }
+
+        // ===== Tag field of the dialog =====
+        let dialogTags = [];
+        const editTags = document.getElementById('editTags');
+        const editTagInput = document.getElementById('editTagInput');
+
+        // Same tidying as the host: trimmed levels, no empty ones, single spaces.
+        function cleanTag(raw) {
+            return String(raw || '').split('/').map(p => p.replace(/\\s+/g, ' ').trim()).filter(Boolean).join('/');
+        }
+
+        function renderDialogTags() {
+            editTags.querySelectorAll('.tag-chip').forEach(chip => chip.remove());
+            editTagInput.insertAdjacentHTML('beforebegin', tagChips(dialogTags, true));
+        }
+
+        function addDialogTags(text) {
+            String(text || '').split(',').map(cleanTag).filter(Boolean).forEach(tag => {
+                if (!dialogTags.some(t => t.toLowerCase() === tag.toLowerCase())) dialogTags.push(tag);
+            });
+            renderDialogTags();
+        }
+
+        editTagInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ',') {
+                e.preventDefault();
+                addDialogTags(editTagInput.value);
+                editTagInput.value = '';
+            } else if (e.key === 'Backspace' && editTagInput.value === '' && dialogTags.length) {
+                dialogTags.pop();
+                renderDialogTags();
+            }
+        });
+        editTags.addEventListener('click', (e) => {
+            const btn = e.target.closest('.tag-remove');
+            if (!btn) { editTagInput.focus(); return; }
+            const tag = btn.closest('.tag-chip').getAttribute('data-tag');
+            dialogTags = dialogTags.filter(t => t !== tag);
+            renderDialogTags();
+        });
+
+        function fillTagSuggestions() {
+            document.getElementById('tagSuggestions').innerHTML =
+                allTags.map(t => '<option value="' + escapeHtml(t) + '"></option>').join('');
         }
 
         function openDialog(item, isNew) {
@@ -557,6 +644,9 @@ export class ManageBookmarksPanel {
             editInEditorBtn.style.display = isNew ? 'none' : '';
             document.getElementById('editName').value = item.name || '';
             document.getElementById('editShare').checked = item.scope === 'workspace';
+            dialogTags = (item.tags || []).slice();
+            editTagInput.value = '';
+            renderDialogTags();
             document.getElementById('editSql').value = item.sql;
             editParams.innerHTML = '';
             item.parameters.forEach(p => addParamRow(p));
@@ -620,10 +710,14 @@ export class ManageBookmarksPanel {
                 alert('The statement must not be empty.');
                 return;
             }
+            // A tag still typed in the field counts, even without pressing Enter.
+            addDialogTags(editTagInput.value);
+            editTagInput.value = '';
             const updates = {
                 name,
                 sql,
                 parameters: gatherParameters(),
+                tags: dialogTags.slice(),
                 scope: document.getElementById('editShare').checked ? 'workspace' : 'global'
             };
             vscode.postMessage(editingId
@@ -636,6 +730,8 @@ export class ManageBookmarksPanel {
             const msg = e.data;
             if (msg.command === 'queriesLoaded') {
                 queries = msg.queries || [];
+                allTags = msg.allTags || [];
+                fillTagSuggestions();
                 const existing = new Set(queries.map(item => item.id));
                 selected = new Set(Array.from(selected).filter(id => existing.has(id)));
                 if (msg.filePath) {

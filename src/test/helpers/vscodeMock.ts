@@ -129,7 +129,8 @@ const vscodeStub = {
         showInputBox: (_options?: any): Promise<any> => Promise.resolve(undefined),
         showQuickPick: (_items?: any, _options?: any): Promise<any> => Promise.resolve(undefined),
         createWebviewPanel: (..._args: any[]): any => undefined,
-        createTerminal: (_options?: any): any => ({ show() {}, dispose() {} })
+        createTerminal: (_options?: any): any => ({ show() {}, dispose() {} }),
+        createQuickPick: (): any => undefined
     },
     // The namespace object must exist before a module under test copies it via
     // `import * as vscode`; tests replace the member, never the namespace.
