@@ -2905,3 +2905,63 @@ test('coerceFormatOptions defaults requireSchemaQualifier to an empty list', () 
     assert.deepEqual(coerceFormatOptions({ requireSchemaQualifier: 'table' }).requireSchemaQualifier, []);
 });
 
+
+// --- Keyword-spelled names after a `.` --------------------------------------
+
+const qualifiedBody = (body: string): string =>
+    'CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$\nBEGIN\n' + body + '\nEND;\n$$;\n';
+
+test('a qualified call whose name is a keyword (ty.NEW) wraps its arguments like any call', () => {
+    const src = qualifiedBody([
+        '-- Create SED row',
+        "v_row := ty_ole_sed_cico.NEW ('SIPORT_IMP',  -- name",
+        "LPAD(r.mtd_id::TEXT, 10, '0'),  -- counter",
+        'NULL::INTEGER,  -- pernr',
+        "CASE WHEN r.mtd_gueltig = 'J' THEN '30' ELSE '60' END,  -- status",
+        'r.mtd_abs_from, r.mtd_abs_to, r.mtd_id  -- To connect with Lumpsums',
+        ');'
+    ].join('\n'));
+    const res = formatSqlChecked(src);
+    assert.ok(res.ok, res.reason);
+    const expected = [
+        '  -- Create SED row',
+        '  v_row := ty_ole_sed_cico.NEW(',
+        "    'SIPORT_IMP',  -- name",
+        "    LPAD(r.mtd_id::TEXT, 10, '0'),  -- counter",
+        '    NULL::INTEGER,  -- pernr',
+        "    CASE WHEN r.mtd_gueltig = 'J' THEN '30' ELSE '60' END,  -- status",
+        '    r.mtd_abs_from,',
+        '    r.mtd_abs_to,',
+        '    r.mtd_id  -- To connect with Lumpsums',
+        '  );'
+    ].join('\n');
+    assert.ok(res.text.includes(expected), res.text);
+    assert.equal(formatSql(res.text), res.text, 'idempotent');
+});
+
+test('a keyword-spelled name after a dot keeps its identifier case', () => {
+    const out = formatSql(qualifiedBody('v_row := t.new(a, b);\nv_x := r.type || x.end;'));
+    assert.ok(out.includes('  v_row := t.new(a, b);'), out);
+    assert.ok(out.includes('  v_x := r.type || x.end;'), out);
+    const upper = formatSql(qualifiedBody('v_row := t.new(a, b);'), { identifierCase: 'upper' });
+    assert.ok(upper.includes('  V_ROW := T.NEW(A, B);'), upper);
+});
+
+test('a keyword-spelled name after a dot (t.select, x.end) does not start a new clause or block', () => {
+    const out = formatSql(qualifiedBody("v_row := t.select('a',  -- name\nb  -- x\n);\nv_x := t.end + 1;"));
+    assert.ok(out.includes("  v_row := t.select(\n    'a',  -- name\n    b  -- x\n  );"), out);
+    assert.ok(out.includes('  v_x := t.end + 1;'), out);
+    assert.equal(formatSql(out), out, 'idempotent');
+});
+
+test('keyword-spelled column names in a SELECT list stay identifiers', () => {
+    const out = formatSql('select r.new, r.type, x.end from t r join u x on x.id = r.id;');
+    assert.ok(out.includes('r.new,'), out);
+    assert.ok(out.includes('r.type,'), out);
+    assert.ok(out.includes('x.end'), out);
+});
+
+test('an integer FOR range (1..n) is not treated as a qualified name', () => {
+    const out = formatSql(qualifiedBody('FOR i IN 1..v_max LOOP\nNULL;\nEND LOOP;'));
+    assert.ok(out.includes('  FOR i IN 1..v_max LOOP\n    NULL;\n  END LOOP;'), out);
+});

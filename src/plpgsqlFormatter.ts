@@ -707,8 +707,14 @@ function dollarBodyIsCode(body: string): boolean {
     return mw ? SQL_STATEMENT_STARTERS.has(mw[1].toLowerCase()) : false;
 }
 
+/**
+ * `name` is never produced by `tokenize()`: `markQualifiedNames()` turns a
+ * keyword-spelled word that follows a `.` into it, so the formatter treats it as
+ * the identifier it is (like a quoted identifier) while the safety net, which
+ * tokenizes on its own, still sees a case-insensitive word.
+ */
 type TokType =
-    | 'word' | 'quotedIdent' | 'string' | 'dollar' | 'number'
+    | 'word' | 'quotedIdent' | 'name' | 'string' | 'dollar' | 'number'
     | 'param' | 'lineComment' | 'blockComment' | 'punct' | 'operator'
     | 'directive';
 
@@ -952,6 +958,26 @@ function tokenize(input: string): Tok[] {
         nl = 0; i++;
     }
     return toks;
+}
+
+/**
+ * After a `.` PostgreSQL only accepts a name — `alias.end`, `ty_rec.new(...)`,
+ * `schema.select` — so a word there that is spelled like a keyword is retyped
+ * as `name`. A `..` range (`FOR i IN 1..n`) is not a qualification and data
+ * type names keep their own casing rule.
+ */
+function markQualifiedNames(toks: Tok[]): Tok[] {
+    return toks.map((t, i) => {
+        if (t.type !== 'word' || i < 2 || t.nlBefore > 0) return t;
+        const dot = toks[i - 1];
+        if (dot.type !== 'punct' || dot.text !== '.' || dot.nlBefore > 0) return t;
+        const owner = toks[i - 2];
+        if (owner.type !== 'word' && owner.type !== 'quotedIdent' && owner.type !== 'name'
+            && owner.text !== ')' && owner.text !== ']') return t;
+        const w = t.text.toLowerCase();
+        if (!KEYWORDS.has(w) || DATATYPES.has(w)) return t;
+        return { ...t, type: 'name' };
+    });
 }
 
 /** Parenthesis depth for each token (a `)` reports the post-close depth). */
@@ -1748,6 +1774,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     const trailingNewline = /\n\s*$/.test(input);
     const typeAliases = buildTypePhraseAliases(normalizeDataTypeAliasTable(opt.dataTypeAliases as Record<string, unknown>));
     let toks = opt.normalizeDataTypes ? normalizeTypePhrases(tokenize(input), typeAliases) : tokenize(input);
+    toks = markQualifiedNames(toks);
     if (opt.replaceDashesInBlockComments) {
         toks = toks.map(t => t.type === 'blockComment' ? { ...t, text: replaceBlockCommentDashes(t.text) } : t);
     }
@@ -1774,7 +1801,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             while (j >= 0 && (toks[j].type === 'lineComment' || toks[j].type === 'blockComment')) j--;
             if (j < 0) return null;
             const tk = toks[j];
-            if (tk.type !== 'word' && tk.type !== 'quotedIdent') return null;
+            if (tk.type !== 'word' && tk.type !== 'quotedIdent' && tk.type !== 'name') return null;
             return { text: tk.text.replace(/^"(.*)"$/s, '$1').toLowerCase(), prev: j - 1 };
         };
         const fn = nameAt(open - 1);
@@ -2015,7 +2042,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 else if (ps && ps.type === 'word' && ps.text.toLowerCase() === 'in') { kind = 'call'; isInList = true; }
                 else if (ps && ps.type === 'word' && ps.text.toLowerCase() === 'row') kind = 'call';
                 else if (ps && ps.type === 'word' && DATATYPES.has(ps.text.toLowerCase())) kind = 'typemod';
-                else if (ps && ((ps.type === 'word' && !KEYWORDS.has(ps.text.toLowerCase())) || ps.type === 'quotedIdent' || ps.type === 'param' || ps.text === ')' || ps.text === ']')) kind = 'call';
+                else if (ps && ((ps.type === 'word' && !KEYWORDS.has(ps.text.toLowerCase())) || ps.type === 'quotedIdent' || ps.type === 'name' || ps.type === 'param' || ps.text === ')' || ps.text === ']')) kind = 'call';
                 else kind = 'group';
             }
             let localP = 0, localB = 0, args = 0, hasTok = false, srcMulti = false;
@@ -2517,7 +2544,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             s === '+' || s === '-' || s === '*' || s === '/' || s === '||';
         const endsOperand = (tk: Tok | null): boolean => {
             if (!tk) return false;
-            if (tk.type === 'number' || tk.type === 'string' || tk.type === 'quotedIdent' || tk.type === 'param') return true;
+            if (tk.type === 'number' || tk.type === 'string' || tk.type === 'quotedIdent' || tk.type === 'name' || tk.type === 'param') return true;
             if (tk.text === ')' || tk.text === ']') return true;
             if (tk.type === 'word') {
                 const w = tk.text.toLowerCase();
@@ -2528,7 +2555,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         };
         const startsOperand = (tk: Tok | null): boolean => {
             if (!tk) return false;
-            if (tk.type === 'number' || tk.type === 'string' || tk.type === 'quotedIdent' || tk.type === 'param') return true;
+            if (tk.type === 'number' || tk.type === 'string' || tk.type === 'quotedIdent' || tk.type === 'name' || tk.type === 'param') return true;
             if (tk.text === '(') return true;
             if (tk.type === 'word') {
                 const w = tk.text.toLowerCase();
@@ -2855,6 +2882,12 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             } else {
                 emit(t.text, { text: t.text, isKeyword: false, type: 'dollar' });
             }
+            continue;
+        }
+
+        if (t.type === 'name') {
+            const rendered = applyCase(t.text, opt.identifierCase);
+            emit(rendered, { text: rendered, isKeyword: false, type: 'word' });
             continue;
         }
 
@@ -3535,6 +3568,9 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                     ? applyCase(tk.text, opt.keywordCase)
                     : applyCase(tk.text, opt.identifierCase);
             emit(rendered, { text: rendered, isKeyword: cat !== 'ident', type: 'word' });
+        } else if (tk.type === 'name') {
+            const rendered = applyCase(tk.text, opt.identifierCase);
+            emit(rendered, { text: rendered, isKeyword: false, type: 'word' });
         } else {
             emit(tk.text, { text: tk.text, isKeyword: false, type: tk.type });
         }
