@@ -7,6 +7,8 @@ const {
     tokenizeSql,
     extractTableReferences,
     completionContext,
+    relationAliasFollows,
+    relationAlias,
     resolveQualifier,
     resolveRelation,
     relationInsertText,
@@ -164,6 +166,61 @@ test('completionContext treats a comma outside FROM as an expression list', () =
     assert.equal(completionContext('SELECT a, ').kind, 'any');
     assert.equal(completionContext('SELECT * FROM t WHERE x IN (1, ').kind, 'any');
     assert.equal(completionContext('SELECT * FROM t ORDER BY a, ').kind, 'any');
+});
+
+test('completionContext names the keyword a table follows', () => {
+    assert.equal(completionContext('SELECT * FROM ').keyword, 'FROM');
+    assert.equal(completionContext('SELECT * FROM a LEFT JOIN or').keyword, 'JOIN');
+    assert.equal(completionContext('SELECT * FROM a, (SELECT 1) b, ').keyword, 'FROM');
+    assert.equal(completionContext('SELECT * FROM ONLY ').keyword, 'FROM');
+    assert.equal(completionContext('SELECT * FROM a JOIN LATERAL ').keyword, 'JOIN');
+    assert.equal(completionContext('UPDATE ').keyword, 'UPDATE');
+    assert.equal(completionContext('INSERT INTO ').keyword, 'INTO');
+    assert.equal(completionContext('TRUNCATE TABLE ').keyword, 'TABLE');
+    assert.equal(completionContext('SELECT * FROM sales.').keyword, 'FROM', 'a schema where a table belongs');
+    assert.equal(completionContext('SELECT * FROM a JOIN sales.inv').keyword, 'JOIN');
+    assert.equal(completionContext('SELECT o.').keyword, undefined, 'a column qualifier is no table');
+});
+
+// ===== table alias on completion =====
+
+test('relationAliasFollows sees an alias, AS, a dot or a parenthesis after the table', () => {
+    assert.equal(relationAliasFollows(' o WHERE o.id = 1'), true);
+    assert.equal(relationAliasFollows('ers AS o'), true, 'the rest of the word under the cursor is skipped');
+    assert.equal(relationAliasFollows(' "Ord"'), true);
+    assert.equal(relationAliasFollows('.x'), true);
+    assert.equal(relationAliasFollows('(1, 2)'), true);
+    assert.equal(relationAliasFollows(' /* c */ o'), true);
+});
+
+test('relationAliasFollows sees no alias before a clause keyword, a comma or the end', () => {
+    for (const after of ['', ' ', 'ers', ' WHERE x = 1', '\nJOIN b ON true', ', b', ')', ';', ' ON true', ' LIMIT 5', ' -- note\nWHERE']) {
+        assert.equal(relationAliasFollows(after), false, JSON.stringify(after));
+    }
+});
+
+test('relationAlias numbers an alias the statement already uses and quotes where needed', () => {
+    const rel = { schema: 'public', name: 'orders', alias: 'ord' };
+    assert.equal(relationAlias(rel, [], '', quote), 'ord');
+    assert.equal(relationAlias(rel, [{ schema: null, table: 'customers', alias: 'ord' }], '', quote), 'ord2');
+    assert.equal(relationAlias(rel, [{ schema: null, table: 'ord', alias: null }], '', quote), 'ord2');
+    assert.equal(relationAlias(rel, [{ schema: null, table: 'ord', alias: null }], 'ord', quote), 'ord', 'the word being typed is no table yet');
+    assert.equal(relationAlias({ ...rel, alias: 'Ord' }, [], '', quote), '"Ord"');
+    assert.equal(relationAlias({ ...rel, alias: undefined }, [], '', quote), null);
+    assert.equal(relationAlias({ ...rel, alias: 'ORDERS' }, [], '', quote), null, 'no alias that repeats the table name');
+});
+
+test('buildSuggestions writes the alias only with the option, and only after FROM or JOIN', () => {
+    const catalog = { ...CATALOG, relations: [{ schema: 'public', name: 'orders', kind: 'table', alias: 'o' }] };
+    const insert = (ctx: any, addTableAlias: boolean) => buildSuggestions(ctx, {
+        catalog, refs: [], columnsOf: () => undefined, keywords: [], functions: [], quoteIdent: quote, addTableAlias
+    }).find((i: any) => i.label === 'orders').insertText;
+    assert.equal(insert({ kind: 'relation', keyword: 'FROM', prefix: '' }, true), 'orders o');
+    assert.equal(insert({ kind: 'relation', keyword: 'JOIN', prefix: '' }, true), 'orders o');
+    assert.equal(insert({ kind: 'relation', keyword: 'FROM', prefix: '' }, false), 'orders');
+    assert.equal(insert({ kind: 'relation', keyword: 'UPDATE', prefix: '' }, true), 'orders');
+    assert.equal(insert({ kind: 'relation', keyword: 'INTO', prefix: '' }, true), 'orders');
+    assert.equal(insert({ kind: 'member', path: ['public'], keyword: 'FROM', prefix: '' }, true), 'orders o');
 });
 
 // ===== resolving names =====

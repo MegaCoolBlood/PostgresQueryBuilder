@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { buildRelationListQuery } from './queryRunner';
+import { deriveQualifier } from './statementBuilder';
 import { POSTGRES_RESERVED_KEYWORDS } from './reservedKeywords';
 import { Logger } from './logger';
 
@@ -17,7 +18,8 @@ import { Logger } from './logger';
 /** What the autocomplete knows about the active connection. */
 export interface CompletionCatalog {
     schemas: string[];
-    relations: Array<{ schema: string; name: string; kind: string }>;
+    /** `alias`: what the autocomplete writes after the table, when it differs from its name. */
+    relations: Array<{ schema: string; name: string; kind: string; alias?: string }>;
     searchPath: string[];
 }
 
@@ -37,6 +39,7 @@ export interface CompletionContext {
     kind: 'none' | 'member' | 'relation' | 'any';
     path?: string[];
     prefix?: string;
+    keyword?: string | null;
 }
 
 /** One suggestion as built by the shared helpers. */
@@ -62,6 +65,7 @@ export interface SqlCompletionApi {
     tokenizeSql(text: string): SqlToken[];
     extractTableReferences(text: string): TableReference[];
     completionContext(textBefore: string): CompletionContext;
+    relationAliasFollows(textAfter: string): boolean;
     tablesNeedingColumns(ctx: CompletionContext, refs: TableReference[], catalog: CompletionCatalog): Array<{ schema: string; table: string }>;
     buildSuggestions(ctx: CompletionContext, data: {
         catalog: CompletionCatalog;
@@ -70,6 +74,7 @@ export interface SqlCompletionApi {
         keywords: string[];
         functions: string[];
         quoteIdent: (name: string) => string;
+        addTableAlias?: boolean;
     }): CompletionSuggestion[];
     completionKeywords(grammar: { keywords?: string[]; operators?: string[] }): string[];
 }
@@ -117,23 +122,63 @@ export interface CatalogSource {
     queryMetadata(sql: string, params?: unknown[]): Promise<Array<Record<string, unknown>>>;
 }
 
+/** The alias the user chose for a table when dragging it into an editor, if any. */
+export type SavedAliasLookup = (schema: string, table: string) => string | undefined;
+
+/** First column (in table order) of every user relation, for its default alias. */
+const FIRST_COLUMN_QUERY =
+    `SELECT DISTINCT ON (a.attrelid) n.nspname AS table_schema, c.relname AS table_name, a.attname AS first_column
+     FROM pg_catalog.pg_attribute a
+     JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+       AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'
+     ORDER BY a.attrelid, a.attnum`;
+
+/**
+ * The alias of a table, chosen like everywhere else in the extension (dragging
+ * a table into an editor, the Data Viewer's default query): the alias saved for
+ * the table, else the part of its first column before the underscore
+ * (`mtd_id` → `mtd`). Undefined when that rule ends up at the table name itself.
+ */
+export function completionTableAlias(schema: string, table: string, firstColumn: string | null, savedAlias?: SavedAliasLookup): string | undefined {
+    const alias = savedAlias?.(schema, table) || deriveQualifier(firstColumn, table);
+    return alias && alias.toLowerCase() !== table.toLowerCase() ? alias : undefined;
+}
+
 /** Schemas, relations and search_path of the active connection; empty when not connected. */
-export async function loadCompletionCatalog(source: CatalogSource): Promise<CompletionCatalog> {
+export async function loadCompletionCatalog(source: CatalogSource, savedAlias?: SavedAliasLookup): Promise<CompletionCatalog> {
     if (!source.isConnected()) {
         return { schemas: [], relations: [], searchPath: [] };
     }
-    const [relations, schemas, searchPath] = await Promise.all([
+    const [relations, schemas, searchPath, firstColumns] = await Promise.all([
         source.queryMetadata(buildRelationListQuery()),
         source.queryMetadata(
             `SELECT nspname FROM pg_catalog.pg_namespace
              WHERE nspname NOT IN ('pg_catalog', 'information_schema') AND nspname NOT LIKE 'pg\\_%'
              ORDER BY nspname`
         ),
-        source.queryMetadata('SELECT unnest(current_schemas(false)) AS schema_name')
+        source.queryMetadata('SELECT unnest(current_schemas(false)) AS schema_name'),
+        // Only the aliases depend on it, so a failure costs no suggestions.
+        source.queryMetadata(FIRST_COLUMN_QUERY).catch((err: unknown) => {
+            Logger.error('loadCompletionCatalog.firstColumns', err);
+            return [] as Array<Record<string, unknown>>;
+        })
     ]);
+    const firstColumnOf = new Map<string, string>();
+    for (const r of firstColumns) {
+        firstColumnOf.set(`${r.table_schema}.${r.table_name}`, String(r.first_column));
+    }
     return {
         schemas: schemas.map((r) => String(r.nspname)),
-        relations: relations.map((r) => ({ schema: String(r.table_schema), name: String(r.table_name), kind: String(r.rel_kind) })),
+        relations: relations.map((r) => {
+            const schema = String(r.table_schema);
+            const name = String(r.table_name);
+            const alias = completionTableAlias(schema, name, firstColumnOf.get(`${schema}.${name}`) ?? null, savedAlias);
+            return alias
+                ? { schema, name, kind: String(r.rel_kind), alias }
+                : { schema, name, kind: String(r.rel_kind) };
+        }),
         searchPath: searchPath.map((r) => String(r.schema_name))
     };
 }
@@ -166,12 +211,18 @@ export class CompletionCatalogCache {
     private catalog: CompletionCatalog | null = null;
     private catalogAt = 0;
     private readonly columns = new Map<string, CompletionColumn[]>();
+    private readonly ttlMs: number;
+    private readonly now: () => number;
+    private readonly savedAlias?: SavedAliasLookup;
 
     constructor(
         private readonly source: CatalogSource,
-        private readonly ttlMs = 60000,
-        private readonly now: () => number = Date.now
-    ) {}
+        options: { ttlMs?: number; now?: () => number; savedAlias?: SavedAliasLookup } = {}
+    ) {
+        this.ttlMs = options.ttlMs ?? 60000;
+        this.now = options.now ?? Date.now;
+        this.savedAlias = options.savedAlias;
+    }
 
     clear(): void {
         this.catalog = null;
@@ -188,7 +239,7 @@ export class CompletionCatalogCache {
             return this.catalog;
         }
         try {
-            this.catalog = await loadCompletionCatalog(this.source);
+            this.catalog = await loadCompletionCatalog(this.source, this.savedAlias);
             this.catalogAt = this.now();
             // Columns may have changed together with the relations.
             this.columns.clear();
@@ -273,7 +324,9 @@ export function completionScope(api: SqlCompletionApi, text: string, offset: num
 /**
  * The suggestions for the cursor at `offset` in a SQL file — the same items the
  * Data Viewer's query bar offers for that statement. Null when nothing should
- * be suggested (inside a comment, a string or a quoted name).
+ * be suggested (inside a comment, a string or a quoted name). With
+ * `addTableAlias`, a table completed after FROM or JOIN brings its alias along,
+ * unless the statement already has one there.
  */
 export async function sqlFileSuggestions(
     api: SqlCompletionApi,
@@ -281,7 +334,8 @@ export async function sqlFileSuggestions(
     words: SqlWords,
     text: string,
     offset: number,
-    quoteIdent: (name: string) => string
+    quoteIdent: (name: string) => string,
+    addTableAlias = false
 ): Promise<CompletionSuggestion[] | null> {
     const scope = completionScope(api, text, offset);
     if (!scope) return null;
@@ -296,7 +350,8 @@ export async function sqlFileSuggestions(
         columnsOf: (schema, table) => cache.columnsOf(schema, table),
         keywords: words.keywords,
         functions: words.functions,
-        quoteIdent
+        quoteIdent,
+        addTableAlias: addTableAlias && !api.relationAliasFollows(scope.statement.slice(scope.before.length))
     });
 }
 
@@ -333,7 +388,8 @@ export class SqlFileCompletionProvider implements vscode.CompletionItemProvider 
         const items = await sqlFileSuggestions(
             this.api, this.cache, this.words,
             document.getText(), document.offsetAt(position),
-            (name) => quoteCompletionIdentifier(name, alwaysQuote)
+            (name) => quoteCompletionIdentifier(name, alwaysQuote),
+            config.get<boolean>('completion.tableAlias', true)
         );
         if (!items || token.isCancellationRequested) return undefined;
 

@@ -227,6 +227,11 @@ fields wherever it comes from.
   Without a connection only keywords and functions are offered. Turn it off
   with `postgresQueryBuilder.completion.enable` if another SQL extension
   already completes your files.
+- A table completed after `FROM` or `JOIN` — in SQL files and in the query bar
+  — is written together with its alias (`mitarbeiter_tag mtd`): the alias
+  chosen for it when dragging it into an editor, otherwise the part of its
+  first column before the underscore, numbered if the statement already uses
+  it. `postgresQueryBuilder.completion.tableAlias` turns this off.
 
 Every statement that changes data — from the grid, the query bar or the SQL
 editor — is recorded in the **Modify History** view with its table and its
@@ -344,6 +349,7 @@ duplicating, deleting and moving between the personal and the workspace scope.
 | `postgresQueryBuilder.alwaysQualifySchema` | `false` | Always write the schema into generated `SELECT`s |
 | `postgresQueryBuilder.alwaysQuote` | `false` | Always quote identifiers in generated `SELECT`s |
 | `postgresQueryBuilder.completion.enable` | `true` | Autocomplete tables, columns, functions and keywords in SQL files |
+| `postgresQueryBuilder.completion.tableAlias` | `true` | Write the alias after a table completed after `FROM` or `JOIN` |
 | `postgresQueryBuilder.duplicateRowResetDefaults` | `volatile` | Which columns a duplicated row leaves to their database default |
 | `postgresQueryBuilder.savedQueriesFile` | `postgres-query-builder.queries.json` | Where shared bookmarked queries are kept |
 | `postgresQueryBuilder.customMappingsFile` | `postgres-query-builder.mappings.json` | Where shared column mappings are kept |

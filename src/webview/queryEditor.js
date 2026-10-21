@@ -212,8 +212,10 @@
     // What the cursor at the end of `textBefore` is completing:
     //   { kind: 'none' }               inside a comment, string or quoted name
     //   { kind: 'member', path }       after `x.` / `schema.table.`
-    //   { kind: 'relation' }           where a table name belongs (FROM, JOIN, …)
+    //   { kind: 'relation', keyword }  where a table name belongs (FROM, JOIN, …)
     //   { kind: 'any' }                anywhere else
+    // `keyword` names what the table follows (FROM, JOIN, UPDATE, INTO, TABLE);
+    // a member context carries it only when `schema.` stands where a table belongs.
     function completionContext(textBefore) {
         const all = tokenizeSql(textBefore);
         const last = all[all.length - 1];
@@ -236,24 +238,74 @@
                 path.unshift(identName(sig[k - 1]));
                 k -= 2;
             }
-            return path.length ? { kind: 'member', path, prefix } : { kind: 'none' };
+            if (!path.length) return { kind: 'none' };
+            const keyword = relationKeyword(sig, k);
+            return keyword ? { kind: 'member', path, prefix, keyword } : { kind: 'member', path, prefix };
         }
         const prev = sig[sig.length - 1];
         if (prev && (RELATION_KEYWORDS.has(upperWord(prev)) || ['ONLY', 'LATERAL', 'TABLE'].includes(upperWord(prev)))) {
-            return { kind: 'relation', prefix };
+            return { kind: 'relation', prefix, keyword: relationKeyword(sig, sig.length - 1) };
         }
-        if (prev && prev.text === ',') {
-            let depth = 0;
-            for (let k = sig.length - 2; k >= 0; k--) {
-                const tok = sig[k];
-                if (tok.text === ')') depth++;
-                else if (tok.text === '(') { if (depth === 0) break; depth--; }
-                else if (depth === 0 && CLAUSE_WORDS.has(upperWord(tok))) {
-                    return upperWord(tok) === 'FROM' ? { kind: 'relation', prefix } : { kind: 'any', prefix };
-                }
-            }
+        if (prev && prev.text === ',' && relationKeyword(sig, sig.length - 1) === 'FROM') {
+            return { kind: 'relation', prefix, keyword: 'FROM' };
         }
         return { kind: 'any', prefix };
+    }
+
+    // The keyword a table name after sig[k] follows — FROM, JOIN, UPDATE, INTO
+    // or TABLE, looking past ONLY / LATERAL; a comma in a FROM list counts as
+    // FROM. Null when sig[k] does not introduce a table.
+    function relationKeyword(sig, k) {
+        while (k >= 0 && (upperWord(sig[k]) === 'ONLY' || upperWord(sig[k]) === 'LATERAL')) k--;
+        const tok = sig[k];
+        if (!tok) return null;
+        const word = upperWord(tok);
+        if (RELATION_KEYWORDS.has(word) || word === 'TABLE') return word;
+        if (tok.text !== ',') return null;
+        let depth = 0;
+        for (let j = k - 1; j >= 0; j--) {
+            const t = sig[j];
+            if (t.text === ')') depth++;
+            else if (t.text === '(') { if (depth === 0) return null; depth--; }
+            else if (depth === 0 && CLAUSE_WORDS.has(upperWord(t))) return upperWord(t) === 'FROM' ? 'FROM' : null;
+        }
+        return null;
+    }
+
+    // Whether the table name being completed is already followed by an alias
+    // (or continues as `name.` / `name(`), judged from the text after the
+    // cursor. The rest of the word under the cursor is replaced, so it is skipped.
+    function relationAliasFollows(textAfter) {
+        const tokens = tokenizeSql(textAfter);
+        const rest = tokens[0] && tokens[0].type === 'word' ? tokens.slice(1) : tokens;
+        const next = significantTokens(rest)[0];
+        if (!next) return false;
+        if (next.text === '.' || next.text === '(' || next.type === 'qident') return true;
+        if (next.type !== 'word') return false;
+        return upperWord(next) === 'AS' || !ALIAS_STOP_WORDS.has(upperWord(next));
+    }
+
+    // Keywords after which a completed table also gets its alias.
+    const ALIAS_KEYWORDS = new Set(['FROM', 'JOIN']);
+
+    // The alias written after a completed table: the relation's alias from the
+    // catalog (`rel.alias`), numbered (`o2`, `o3`) while the statement already
+    // uses that name. Null without an alias. `prefix` is the word being typed,
+    // which the statement's references still list as a table of its own.
+    function relationAlias(rel, refs, prefix, quoteIdent) {
+        const base = rel && rel.alias ? String(rel.alias) : '';
+        if (!base || base.toLowerCase() === String(rel.name).toLowerCase()) return null;
+        const typed = String(prefix || '').toLowerCase();
+        const used = new Set();
+        let skippedTyped = false;
+        for (let i = refs.length - 1; i >= 0; i--) {
+            const r = refs[i];
+            if (!skippedTyped && typed && !r.alias && r.table === typed) { skippedTyped = true; continue; }
+            used.add(String(r.alias || r.table).toLowerCase());
+        }
+        let alias = base;
+        for (let n = 2; used.has(alias.toLowerCase()); n++) alias = base + n;
+        return quoteIdent(alias);
     }
 
     // ===== Resolving names against the catalog ==============================
@@ -323,17 +375,23 @@
 
     // The suggestions for a completion context, ordered by sortText: columns,
     // then tables/aliases, then functions, then keywords. `columnsOf(schema,
-    // table)` returns the loaded columns ([{ name, type }]) or undefined.
+    // table)` returns the loaded columns ([{ name, type }]) or undefined. With
+    // `addTableAlias`, a table completed after FROM or JOIN is inserted together
+    // with its alias (`orders o`).
     function buildSuggestions(ctx, data) {
         const { catalog, refs, columnsOf, quoteIdent } = data;
         const items = [];
-        const relationItem = (rel, insertText, sortGroup) => ({
-            label: rel.name,
-            kind: rel.kind === 'table' || rel.kind === 'foreign' ? 'table' : 'view',
-            insertText,
-            detail: `${rel.schema} · ${RELATION_KIND_LABEL[rel.kind] || rel.kind}`,
-            sortText: sortGroup + rel.name.toLowerCase()
-        });
+        const aliasAllowed = !!data.addTableAlias && ALIAS_KEYWORDS.has(ctx.keyword);
+        const relationItem = (rel, insertText, sortGroup) => {
+            const alias = aliasAllowed ? relationAlias(rel, refs, ctx.prefix, quoteIdent) : null;
+            return {
+                label: rel.name,
+                kind: rel.kind === 'table' || rel.kind === 'foreign' ? 'table' : 'view',
+                insertText: alias ? `${insertText} ${alias}` : insertText,
+                detail: `${rel.schema} · ${RELATION_KIND_LABEL[rel.kind] || rel.kind}`,
+                sortText: sortGroup + rel.name.toLowerCase()
+            };
+        };
         const columnItems = (rel, source, sortGroup) => (columnsOf(rel.schema, rel.table) || []).map((c, i) => ({
             label: c.name,
             kind: 'column',
@@ -528,6 +586,8 @@
         tokenizeSql,
         extractTableReferences,
         completionContext,
+        relationAliasFollows,
+        relationAlias,
         resolveQualifier,
         resolveRelation,
         relationInsertText,
@@ -562,6 +622,8 @@
         const post = options.postMessage || (() => {});
         const discreteEdit = options.onDiscreteEdit || (() => {});
         const quoteIdent = options.quoteIdent || defaultQuote;
+        // Read on every completion, so the setting can arrive after attaching.
+        const addTableAlias = options.addTableAlias || (() => false);
         const pending = new Map();
         let seq = 0;
         let editor = null;
@@ -679,13 +741,19 @@
                     const cat = await getCatalog();
                     const refs = extractTableReferences(model.getValue());
                     await loadColumns(tablesNeedingColumns(ctx, refs, cat));
+                    const lastLine = model.getLineCount();
+                    const after = model.getValueInRange({
+                        startLineNumber: position.lineNumber, startColumn: position.column,
+                        endLineNumber: lastLine, endColumn: model.getLineMaxColumn(lastLine)
+                    });
                     const items = buildSuggestions(ctx, {
                         catalog: cat,
                         refs,
                         columnsOf: (schema, table) => columns.get(`${schema}.${table}`),
                         keywords,
                         functions,
-                        quoteIdent
+                        quoteIdent,
+                        addTableAlias: !!addTableAlias() && !relationAliasFollows(after)
                     });
                     const word = model.getWordUntilPosition(position);
                     const range = {

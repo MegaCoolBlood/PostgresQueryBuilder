@@ -2713,6 +2713,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let table = '';
     let tableReference = '';
     let alwaysQuote = false;
+    // Whether the query bar's autocomplete writes the alias after a completed table.
+    let completionTableAlias = true;
     let thousandSeparator = ' ';
     // When on, the default table query qualifies every column with a table
     // alias; `tableAlias` holds the alias persisted for this table, or '' to let
@@ -3182,7 +3184,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             onUndo: undoEdit,
             onRedo: redoEdit,
             onDiscreteEdit: () => { queryTypingRun = false; },
-            quoteIdent: formatIdentifier
+            quoteIdent: formatIdentifier,
+            addTableAlias: () => completionTableAlias
         })
         : null;
 
@@ -4459,6 +4462,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         table = msg.table || '';
         tableReference = msg.tableReference || '';
         alwaysQuote = Boolean(msg.alwaysQuote);
+        completionTableAlias = msg.completionTableAlias !== false;
         qualifyColumnsWithAlias = Boolean(msg.qualifyColumnsWithAlias);
         tableAlias = typeof msg.tableAlias === 'string' ? msg.tableAlias : '';
         newMappingDefaultWorkspace = Boolean(msg.newMappingDefaultWorkspace);

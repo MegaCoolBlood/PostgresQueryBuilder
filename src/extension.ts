@@ -389,7 +389,9 @@ export function activate(context: vscode.ExtensionContext) {
         // query bar, built by the same helpers.
         try {
             const completionApi = loadSqlCompletionApi(context.extensionPath);
-            const completionCache = new CompletionCatalogCache(connectionManager);
+            const completionCache = new CompletionCatalogCache(connectionManager, {
+                savedAlias: (schema, table) => qualifierStore.get(schema, table)
+            });
             const completionProvider = new SqlFileCompletionProvider(
                 completionApi, completionCache, loadSqlWords(context.extensionPath, completionApi)
             );

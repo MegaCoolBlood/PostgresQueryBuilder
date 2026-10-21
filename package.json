@@ -396,6 +396,11 @@
           "default": true,
           "markdownDescription": "Autocomplete in SQL files: tables, views, columns with their types, aliases, schemas, built-in functions and keywords of the active connection — the same suggestions as the query bar of the Data Viewer. Turn it off if another SQL extension already completes your files."
         },
+        "postgresQueryBuilder.completion.tableAlias": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When the autocomplete completes a table after `FROM` or `JOIN` — in SQL files and in the query bar of the Data Viewer — write its alias after it (`orders o`). The alias is the one chosen for the table when dragging it into an editor, otherwise the part of its first column before the underscore (`mtd_id` → `mtd`), numbered if the statement already uses it. No alias is written where the table already has one, or where the rule would only repeat the table name."
+        },
         "postgresQueryBuilder.qualifyColumnsWithAlias": {
           "type": "boolean",
           "default": false,

@@ -1191,6 +1191,49 @@ test('data viewer: the SQL editor module is injected before the grid script that
     assert.ok(html.includes('window.QUERY_EDITOR_ASSETS = null;'));
 });
 
+test('query editor: the catalog carries the alias each table is completed with', async () => {
+    const { panel, send, globalStateStore } = await openCustomQueryPanel(undefined, {
+        connection: {
+            isConnected: () => true,
+            queryMetadata: async (sql: string) => {
+                if (sql.includes('first_column')) {
+                    return [
+                        { table_schema: 'public', table_name: 'mitarbeiter_tag', first_column: 'mtd_id' },
+                        { table_schema: 'public', table_name: 'orders', first_column: 'ord_id' },
+                        { table_schema: 'public', table_name: 'users', first_column: 'id' }
+                    ];
+                }
+                if (sql.includes('pg_namespace')) return [{ nspname: 'public' }];
+                if (sql.includes('current_schemas')) return [{ schema_name: 'public' }];
+                return ['mitarbeiter_tag', 'orders', 'users'].map((t) => ({ table_schema: 'public', table_name: t, rel_kind: 'table' }));
+            }
+        }
+    });
+    // The alias chosen when dragging the table into an editor wins.
+    globalStateStore.tableQualifiers = { 'public.orders': 'o' };
+    await send({ command: 'queryEditorRequest', requestId: 8, kind: 'catalog' });
+    const reply = panel.posted.find((m: any) => m.command === 'queryEditorResponse');
+    assert.deepEqual(reply.result.relations, [
+        { schema: 'public', name: 'mitarbeiter_tag', kind: 'table', alias: 'mtd' },
+        { schema: 'public', name: 'orders', kind: 'table', alias: 'o' },
+        { schema: 'public', name: 'users', kind: 'table' }
+    ]);
+});
+
+test('query editor: the panel is told whether completed tables get their alias', async () => {
+    const { panel } = await openCustomQueryPanel();
+    assert.equal(panel.posted.find((m: any) => m.command === 'init').completionTableAlias, true, 'on by default');
+
+    const original = vscodeStub.workspace.getConfiguration;
+    vscodeStub.workspace.getConfiguration = () => ({ get: <T>(key: string, def?: T) => (key === 'completion.tableAlias' ? false : def) as T });
+    try {
+        const off = await openCustomQueryPanel();
+        assert.equal(off.panel.posted.find((m: any) => m.command === 'init').completionTableAlias, false);
+    } finally {
+        vscodeStub.workspace.getConfiguration = original;
+    }
+});
+
 test('query editor: the catalog lists schemas, relations and the search_path of the connection', async () => {
     const { panel, send } = await openCustomQueryPanel(undefined, {
         connection: {

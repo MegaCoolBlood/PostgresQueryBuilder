@@ -10,6 +10,8 @@ import {
     loadSqlCompletionApi,
     loadSqlWords,
     quoteCompletionIdentifier,
+    completionTableAlias,
+    loadCompletionCatalog,
     SqlFileCompletionProvider,
     type CatalogSource,
     type SqlWords
@@ -35,6 +37,13 @@ function fakeSource(options: { connected?: boolean; fail?: boolean } = {}) {
         queryMetadata: async (sql: string, params?: unknown[]) => {
             queries.push(sql);
             if (options.fail) throw new Error('connection lost');
+            if (sql.includes('first_column')) {
+                return [
+                    { table_schema: 'public', table_name: 'orders', first_column: 'ord_id' },
+                    { table_schema: 'public', table_name: 'customers', first_column: 'id' },
+                    { table_schema: 'sales', table_name: 'invoices', first_column: 'inv_total' }
+                ];
+            }
             if (sql.includes('pg_namespace') && sql.includes('nspname NOT IN')) {
                 return [{ nspname: 'public' }, { nspname: 'sales' }];
             }
@@ -55,10 +64,16 @@ function fakeSource(options: { connected?: boolean; fail?: boolean } = {}) {
 }
 
 /** Suggestions at the `|` in `marked`. */
-async function suggest(marked: string, cache = new CompletionCatalogCache(fakeSource().source)) {
+async function suggest(marked: string, cache = new CompletionCatalogCache(fakeSource().source), addTableAlias = false) {
     const offset = marked.indexOf('|');
     const text = marked.slice(0, offset) + marked.slice(offset + 1);
-    return sqlFileSuggestions(api, cache, WORDS, text, offset, quote);
+    return sqlFileSuggestions(api, cache, WORDS, text, offset, quote, addTableAlias);
+}
+
+/** The text a table suggestion inserts at the `|`, with the table alias option on. */
+async function insertedTable(marked: string, table: string, cache?: CompletionCatalogCache) {
+    const items = await suggest(marked, cache, true);
+    return items!.find((i) => i.label === table)!.insertText;
 }
 
 const labels = (items: any[] | null, kind?: string) =>
@@ -178,23 +193,107 @@ test('sqlFileSuggestions offers keywords and functions without a connection, and
     assert.deepEqual(queries, []);
 });
 
+// ===== Table alias on completion =====
+
+test('a table completed after FROM brings the alias of its first column', async () => {
+    assert.equal(await insertedTable('SELECT * FROM |', 'orders'), 'orders ord');
+    assert.equal(await insertedTable('SELECT * FROM |', 'invoices'), 'sales.invoices inv', 'after a qualified name too');
+});
+
+test('a table completed after JOIN or a comma in the FROM list brings its alias', async () => {
+    assert.equal(await insertedTable('SELECT * FROM customers c JOIN |', 'orders'), 'orders ord');
+    assert.equal(await insertedTable('SELECT * FROM customers c LEFT OUTER JOIN |', 'orders'), 'orders ord');
+    assert.equal(await insertedTable('SELECT * FROM customers c, |', 'orders'), 'orders ord');
+    assert.equal(await insertedTable('SELECT * FROM ONLY |', 'orders'), 'orders ord');
+});
+
+test('a table completed after its schema brings its alias', async () => {
+    assert.equal(await insertedTable('SELECT * FROM sales.|', 'invoices'), 'invoices inv');
+});
+
+test('the half-typed table name does not count as a name the statement already uses', async () => {
+    assert.equal(await insertedTable('SELECT * FROM ord|', 'orders'), 'orders ord');
+});
+
+test('an alias the statement already uses is numbered', async () => {
+    assert.equal(await insertedTable('SELECT * FROM orders ord JOIN |', 'orders'), 'orders ord2');
+    assert.equal(await insertedTable('SELECT * FROM orders ord JOIN orders ord2 ON true JOIN |', 'orders'), 'orders ord3');
+    assert.equal(await insertedTable('SELECT * FROM ord JOIN |', 'orders'), 'orders ord2', 'a table named like the alias counts too');
+});
+
+test('no alias where the table already has one or is followed by a dot or a parenthesis', async () => {
+    assert.equal(await insertedTable('SELECT * FROM ord| o WHERE o.id = 1', 'orders'), 'orders');
+    assert.equal(await insertedTable('SELECT * FROM ord| AS o', 'orders'), 'orders');
+    assert.equal(await insertedTable('SELECT * FROM ord|.x', 'orders'), 'orders');
+    assert.equal(await insertedTable('SELECT * FROM ord|\nWHERE id = 1', 'orders'), 'orders ord', 'a clause keyword is no alias');
+    assert.equal(await insertedTable('SELECT * FROM ord|ers JOIN customers c ON true', 'orders'), 'orders ord', 'the rest of the word is replaced');
+});
+
+test('no alias outside FROM and JOIN', async () => {
+    assert.equal(await insertedTable('UPDATE |', 'orders'), 'orders');
+    assert.equal(await insertedTable('INSERT INTO |', 'orders'), 'orders');
+    assert.equal(await insertedTable('TRUNCATE TABLE |', 'orders'), 'orders');
+});
+
+test('no alias where it would only repeat the table name', async () => {
+    assert.equal(await insertedTable('SELECT * FROM |', 'customers'), 'customers');
+});
+
+test('no alias with the option turned off', async () => {
+    const items = await suggest('SELECT * FROM |');
+    assert.equal(items!.find((i) => i.label === 'orders')!.insertText, 'orders');
+});
+
+test('the alias saved for a table when dragging it into an editor wins', async () => {
+    const cache = new CompletionCatalogCache(fakeSource().source, {
+        savedAlias: (schema, table) => (schema === 'public' && table === 'customers' ? 'kd' : undefined)
+    });
+    assert.equal(await insertedTable('SELECT * FROM |', 'customers', cache), 'customers kd');
+    assert.equal(await insertedTable('SELECT * FROM |', 'orders', cache), 'orders ord');
+});
+
+test('an alias inside a function body is numbered against that statement only', async () => {
+    const text = 'SELECT * FROM orders ord;\nCREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$\nBEGIN\n  PERFORM 1 FROM |;\nEND;\n$$;';
+    assert.equal(await insertedTable(text, 'orders'), 'orders ord');
+});
+
+test('completionTableAlias follows the alias rule of the rest of the extension', () => {
+    assert.equal(completionTableAlias('public', 'mitarbeiter_tag', 'mtd_id'), 'mtd');
+    assert.equal(completionTableAlias('public', 'users', 'id'), undefined, 'the rule would only repeat the table name');
+    assert.equal(completionTableAlias('public', 'users', null), undefined);
+    assert.equal(completionTableAlias('public', 'users', 'id', () => 'u'), 'u');
+    assert.equal(completionTableAlias('public', 'users', 'usr_id', () => undefined), 'usr');
+});
+
+test('loadCompletionCatalog still lists the relations when their first columns cannot be read', async () => {
+    const { source } = fakeSource();
+    const failing: CatalogSource = {
+        isConnected: () => true,
+        queryMetadata: (sql, params) => (sql.includes('first_column') ? Promise.reject(new Error('denied')) : source.queryMetadata(sql, params))
+    };
+    const catalog = await loadCompletionCatalog(failing);
+    assert.deepEqual(catalog.relations.map((r) => [r.name, r.alias]), [
+        ['orders', undefined], ['customers', undefined], ['invoices', undefined]
+    ]);
+});
+
 // ===== CompletionCatalogCache =====
 
 test('CompletionCatalogCache keeps the catalog and columns for a minute', async () => {
     let now = 1000;
     const { source, queries } = fakeSource();
-    const cache = new CompletionCatalogCache(source, 60000, () => now);
+    const cache = new CompletionCatalogCache(source, { ttlMs: 60000, now: () => now });
     await cache.getCatalog();
     await cache.loadColumns([{ schema: 'public', table: 'orders' }]);
     await cache.loadColumns([{ schema: 'public', table: 'orders' }]);
     now += 59000;
     await cache.getCatalog();
-    assert.equal(queries.length, 4, 'three catalog queries and one column query');
+    assert.equal(queries.length, 5, 'four catalog queries and one column query');
     assert.deepEqual(cache.columnsOf('public', 'orders')!.map((c) => c.name), ['id', 'customer_id']);
 
     now += 2000;
     await cache.getCatalog();
-    assert.equal(queries.length, 7, 'the catalog is read again after a minute');
+    assert.equal(queries.length, 9, 'the catalog is read again after a minute');
     assert.equal(cache.columnsOf('public', 'orders'), undefined, 'and the columns with it');
 });
 
@@ -204,7 +303,7 @@ test('CompletionCatalogCache starts over when cleared, e.g. on a connection chan
     await cache.getCatalog();
     cache.clear();
     await cache.getCatalog();
-    assert.equal(queries.length, 6);
+    assert.equal(queries.length, 8);
 });
 
 test('CompletionCatalogCache drops what it knows as soon as the connection is gone, even without a change event', async () => {
@@ -223,7 +322,7 @@ test('CompletionCatalogCache drops what it knows as soon as the connection is go
     state.connected = true;
     const asked = queries.length;
     await cache.getCatalog();
-    assert.equal(queries.length, asked + 3);
+    assert.equal(queries.length, asked + 4);
     assert.equal(cache.columnsOf('public', 'orders'), undefined, 'the old columns were dropped');
 });
 
@@ -355,4 +454,11 @@ test('SqlFileCompletionProvider is silent when turned off, cancelled or inside a
     assert.equal(await provide('SELECT c.| FROM customers c', { 'completion.enable': false }), undefined);
     assert.equal(await provide('SELECT c.| FROM customers c', {}, true), undefined);
     assert.equal(await provide('-- SELECT c.| FROM customers c'), undefined);
+});
+
+test('SqlFileCompletionProvider writes the table alias by default and not when the setting is off', async () => {
+    const on = (await provide('SELECT * FROM ord|'))!;
+    assert.equal(on.find((i) => i.label === 'orders')!.insertText, 'orders ord');
+    const off = (await provide('SELECT * FROM ord|', { 'completion.tableAlias': false }))!;
+    assert.equal(off.find((i) => i.label === 'orders')!.insertText, 'orders');
 });

@@ -405,6 +405,7 @@ export class TableWebViewManager {
             title: `${schema}.${table}`,
             tableReference,
             alwaysQuote: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false),
+            completionTableAlias: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('completion.tableAlias', true),
             qualifyColumnsWithAlias,
             tableAlias,
             newMappingDefaultWorkspace: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('newMappingsToWorkspace', false),
@@ -452,6 +453,7 @@ export class TableWebViewManager {
             sql,
             tableReference: '',
             alwaysQuote: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('alwaysQuote', false),
+            completionTableAlias: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('completion.tableAlias', true),
             newMappingDefaultWorkspace: vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('newMappingsToWorkspace', false),
             thousandSeparator: vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('thousandSeparator', ' '),
             duplicateRowResetDefaults: vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('duplicateRowResetDefaults', 'volatile'),
@@ -1304,7 +1306,8 @@ export class TableWebViewManager {
         let result: unknown = null;
         try {
             if (message.kind === 'catalog') {
-                result = await loadCompletionCatalog(this.connectionManager);
+                const qualifiers = new QualifierStore(this.context.globalState);
+                result = await loadCompletionCatalog(this.connectionManager, (schema, table) => qualifiers.get(schema, table));
             } else if (message.kind === 'columns') {
                 result = await loadCompletionColumns(this.connectionManager, String(message.schema ?? ''), String(message.table ?? ''));
             } else if (message.kind === 'format') {
