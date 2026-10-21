@@ -10,6 +10,7 @@ const path = require('path');
 
 const production = process.argv.includes('--minify');
 const watch = process.argv.includes('--watch');
+const sea = process.argv.includes('--sea');
 
 // The SQL editor of the Data Viewer is Monaco, the editor VS Code is built on.
 // It is bundled once into dist/monaco/ (script, stylesheet, codicon font and the
@@ -173,7 +174,27 @@ async function main() {
             await ctx.rebuild();
             await ctx.dispose();
         }
+        if (sea) {
+            buildSea();
+        }
     }
+}
+
+/**
+ * Turn dist/cli.js into the standalone dist/pgformat.exe (see sea-config.json),
+ * a Node single executable for the platform of the running Node.js. The
+ * executable is started via process.execPath because `--build-sea` locates the
+ * Node binary from argv[0], which is a bare `node` when run through npm.
+ */
+function buildSea() {
+    const [major, minor] = process.versions.node.split('.').map(Number);
+    if (major < 25 || (major === 25 && minor < 5)) {
+        throw new Error(`[sea] building dist/pgformat.exe needs Node.js 25.5 or newer (running ${process.versions.node})`);
+    }
+    require('child_process').execFileSync(process.execPath, ['--build-sea', 'sea-config.json'], {
+        cwd: __dirname,
+        stdio: 'inherit'
+    });
 }
 
 main().catch((err) => {

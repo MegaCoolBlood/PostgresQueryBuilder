@@ -31,7 +31,10 @@ node_modules/**
 *.vsix
 
 # CLI standalone binaries are distributed separately and should not inflate the
-# VS Code extension package.
+# VS Code extension package. dist/pgformat.exe is a Node single executable built
+# from sea-config.json; pkg is not used for it because pkg appends its payload to
+# the exe, which makes Windows Defender scan the file on every launch.
+sea-config.json
 dist/pgformat.exe
 dist/pgformat.zip
 dist/binaries/**

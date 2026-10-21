@@ -46,6 +46,7 @@ A change is only visible in an installed VSIX after `npm run package` /
 | `npm run compile` / `watch` | esbuild dev build |
 | `npm run package` | minified bundle |
 | `npm run deploy` (`d`) | `vsce package` + CLI exe |
+| `npm run build-cli-exe` | `dist/pgformat.exe` as a Node single executable (`sea-config.json`, needs Node ≥ 25.5); not pkg, whose appended payload makes Windows Defender scan the exe on every launch |
 
 Run `npm test` after every source change.
 
