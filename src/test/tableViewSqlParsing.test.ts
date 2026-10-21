@@ -22,6 +22,7 @@ const {
     buildConstraintOrderBy,
     isFreshRowLoad,
     recordFieldReadonlyAttr,
+    isBackdropDismissClick,
     recordScrollTailHeight,
     cellEditorTargetState,
     buildConnectionBadge,
@@ -510,6 +511,27 @@ test('recordFieldReadonlyAttr marks fields readonly when the view is read-only',
 test('recordFieldReadonlyAttr marks fields readonly for rows pending deletion', () => {
     assert.equal(recordFieldReadonlyAttr(true, false), 'readonly');
     assert.equal(recordFieldReadonlyAttr(true, true), 'readonly');
+});
+
+test('isBackdropDismissClick closes a dialog when press and release are both on the backdrop', () => {
+    const overlay = { id: 'overlay' };
+    assert.equal(isBackdropDismissClick(overlay, overlay, overlay), true);
+});
+
+test('isBackdropDismissClick keeps the dialog open when a drag inside it is released over the backdrop', () => {
+    const overlay = { id: 'overlay' };
+    const textarea = { id: 'textarea' };
+    // Resizing a text box or selecting text and letting go outside the dialog.
+    assert.equal(isBackdropDismissClick(overlay, textarea, overlay), false);
+});
+
+test('isBackdropDismissClick ignores clicks inside the dialog and clicks without a recorded press', () => {
+    const overlay = { id: 'overlay' };
+    const button = { id: 'button' };
+    assert.equal(isBackdropDismissClick(overlay, overlay, button), false);
+    assert.equal(isBackdropDismissClick(overlay, button, button), false);
+    assert.equal(isBackdropDismissClick(overlay, null, overlay), false);
+    assert.equal(isBackdropDismissClick(null, null, null), false);
 });
 
 test('recordScrollTailHeight leaves room to scroll the last field up to where the first one starts', () => {

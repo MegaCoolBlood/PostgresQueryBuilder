@@ -1809,6 +1809,14 @@ function recordFieldReadonlyAttr(isDeleted, readOnly) {
     return (isDeleted || readOnly) ? 'readonly' : '';
 }
 
+// Whether a click on a dialog's backdrop should close the dialog. A press
+// inside the dialog that is released over the backdrop (resizing a text box,
+// selecting text) still fires a `click` on the backdrop, the nearest element
+// containing both ends, so it only counts when the press began there too.
+function isBackdropDismissClick(overlay, pressTarget, clickTarget) {
+    return !!overlay && pressTarget === overlay && clickTarget === overlay;
+}
+
 // Height of the empty space after the last field of the Single Record View, so
 // the body can scroll until the last field sits where the first one starts.
 // `clientHeight` includes the body's padding; a last field taller than the
@@ -6186,6 +6194,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         showErrorDialog(text);
     }
 
+    // Close a dialog when its backdrop is clicked, but not when a press that
+    // began inside the dialog (resizing a text box, selecting text) is released
+    // over the backdrop.
+    function closeOnBackdropClick(overlay, close) {
+        let pressTarget = null;
+        overlay.addEventListener('mousedown', (e) => { pressTarget = e.target; });
+        overlay.addEventListener('click', (e) => {
+            const dismiss = isBackdropDismissClick(overlay, pressTarget, e.target);
+            pressTarget = null;
+            if (dismiss) close();
+        });
+    }
+
     // Modal error dialog shown inside the Data Viewer so a failing query is not
     // only reported through the small VS Code notification.
     const errorDialogOverlay = document.getElementById('errorDialogOverlay');
@@ -6213,9 +6234,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     if (errorDialogClose) errorDialogClose.addEventListener('click', closeErrorDialog);
     if (errorDialogOk) errorDialogOk.addEventListener('click', closeErrorDialog);
-    if (errorDialogOverlay) errorDialogOverlay.addEventListener('click', (e) => {
-        if (e.target === errorDialogOverlay) closeErrorDialog();
-    });
+    if (errorDialogOverlay) closeOnBackdropClick(errorDialogOverlay, closeErrorDialog);
 
     // ===== Permanent Constraints Dialog Logic =====
     const constraintsBtn = document.getElementById('constraintsBtn');
@@ -7453,9 +7472,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     recordDialogPrev.addEventListener('click', () => navigateRecord(-1));
     recordDialogNext.addEventListener('click', () => navigateRecord(1));
 
-    recordDialogOverlay.addEventListener('click', (e) => {
-        if (e.target === recordDialogOverlay) closeRecordDialog();
-    });
+    closeOnBackdropClick(recordDialogOverlay, closeRecordDialog);
 
     document.addEventListener('keydown', (e) => {
         if (recordDialogOverlay.style.display !== 'flex') return;
@@ -7899,6 +7916,7 @@ if (typeof module !== 'undefined' && module.exports) {
         reorderSelectColumns,
         isFreshRowLoad,
         recordFieldReadonlyAttr,
+        isBackdropDismissClick,
         recordScrollTailHeight,
         cellEditorTargetState,
         buildConnectionBadge,
