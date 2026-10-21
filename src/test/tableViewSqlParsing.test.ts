@@ -23,6 +23,11 @@ const {
     isFreshRowLoad,
     recordFieldReadonlyAttr,
     isBackdropDismissClick,
+    AUTO_REFRESH_PRESETS,
+    autoRefreshOptions,
+    autoRefreshLoadPlan,
+    autoRefreshPauseReason,
+    editHistoryHasGridEdits,
     recordScrollTailHeight,
     cellEditorTargetState,
     buildConnectionBadge,
@@ -532,6 +537,73 @@ test('isBackdropDismissClick ignores clicks inside the dialog and clicks without
     assert.equal(isBackdropDismissClick(overlay, button, button), false);
     assert.equal(isBackdropDismissClick(overlay, null, overlay), false);
     assert.equal(isBackdropDismissClick(null, null, null), false);
+});
+
+// ===== Auto refresh =====
+
+test('autoRefreshOptions offers Off, the presets and a custom interval', () => {
+    const options = autoRefreshOptions(0);
+    assert.deepEqual(options.map((o: any) => o.value), [...AUTO_REFRESH_PRESETS.map(String), 'custom']);
+    assert.deepEqual(options.map((o: any) => o.label), [
+        'Off', 'Every 5 s', 'Every 10 s', 'Every 30 s', 'Every 1 min', 'Every 5 min', 'Custom interval'
+    ]);
+});
+
+test('autoRefreshOptions lists a custom interval in use in order of length', () => {
+    const options = autoRefreshOptions(90);
+    assert.deepEqual(options.map((o: any) => o.value), ['0', '5', '10', '30', '60', '90', '300', 'custom']);
+    assert.equal(options[5].label, 'Every 1 min 30 s');
+    assert.equal(autoRefreshOptions(30).length, AUTO_REFRESH_PRESETS.length + 1, 'a preset is not listed twice');
+});
+
+test('autoRefreshLoadPlan reloads at least one page of the last query', () => {
+    assert.deepEqual(
+        autoRefreshLoadPlan({ currentSql: 'SELECT * FROM t', loadedRows: 12, pageSize: 50 }),
+        { sql: 'SELECT * FROM t LIMIT 50 OFFSET 0', limit: 50 }
+    );
+});
+
+test('autoRefreshLoadPlan keeps the rows fetched with More', () => {
+    assert.deepEqual(
+        autoRefreshLoadPlan({ currentSql: 'SELECT * FROM t', loadedRows: 150, pageSize: 50 }),
+        { sql: 'SELECT * FROM t LIMIT 150 OFFSET 0', limit: 150 }
+    );
+});
+
+test('autoRefreshLoadPlan reloads every row after All', () => {
+    assert.deepEqual(
+        autoRefreshLoadPlan({ currentSql: 'SELECT * FROM t', loadedRows: 1234, allLoaded: true, pageSize: 50 }),
+        { sql: 'SELECT * FROM t', limit: null }
+    );
+});
+
+test('autoRefreshLoadPlan runs a query with its own LIMIT exactly as written', () => {
+    assert.deepEqual(
+        autoRefreshLoadPlan({ currentSql: 'SELECT * FROM t', userPaged: true, lastRawSql: 'SELECT * FROM t LIMIT 10', loadedRows: 10, pageSize: 50 }),
+        { sql: 'SELECT * FROM t LIMIT 10', limit: null }
+    );
+});
+
+test('autoRefreshPauseReason lets a due refresh run when nothing is in the way', () => {
+    assert.equal(autoRefreshPauseReason({ hasQuery: true, visible: true, pendingChanges: false, busy: false }), '');
+});
+
+test('autoRefreshPauseReason pauses for a hidden tab, unsaved edits and a busy grid', () => {
+    assert.equal(autoRefreshPauseReason({ hasQuery: false, visible: true }), 'noQuery');
+    assert.equal(autoRefreshPauseReason({ hasQuery: true, visible: false, pendingChanges: true, busy: true }), 'hidden');
+    assert.equal(autoRefreshPauseReason({ hasQuery: true, visible: true, pendingChanges: true, busy: true }), 'pendingChanges');
+    assert.equal(autoRefreshPauseReason({ hasQuery: true, visible: true, pendingChanges: false, busy: true }), 'busy');
+});
+
+test('editHistoryHasGridEdits tells grid edits from query-text changes', () => {
+    const clean = { modified: new Map(), deleted: new Set(), inserted: [], duplicated: [], invalid: new Map(), query: 'SELECT 1' };
+    assert.equal(editHistoryHasGridEdits([clean, { ...clean, query: 'SELECT 2' }]), false);
+    assert.equal(editHistoryHasGridEdits([clean, { ...clean, modified: new Map([['0:name', 'x']]) }]), true);
+    assert.equal(editHistoryHasGridEdits([{ ...clean, deleted: new Set([3]) }]), true);
+    assert.equal(editHistoryHasGridEdits([{ ...clean, inserted: [{ row: {}, anchor: null }] }]), true);
+    assert.equal(editHistoryHasGridEdits([{ ...clean, duplicated: [{ row: {}, anchor: 0 }] }]), true);
+    assert.equal(editHistoryHasGridEdits([]), false);
+    assert.equal(editHistoryHasGridEdits(undefined), false);
 });
 
 test('recordScrollTailHeight leaves room to scroll the last field up to where the first one starts', () => {

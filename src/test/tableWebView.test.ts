@@ -141,16 +141,18 @@ const EXTENSION_PATH = path.join(__dirname, '..', '..', '..');
 
 function createFakePanel() {
     const posted: any[] = [];
-    const state: { onMessage: (m: any) => any } = { onMessage: async () => {} };
+    const state: { onMessage: (m: any) => any; onViewState: () => any } = { onMessage: async () => {}, onViewState: () => {} };
     const panel = {
         posted,
         state,
+        visible: true,
         webview: {
             html: '',
             postMessage: (m: any) => { posted.push(m); return Promise.resolve(true); },
             onDidReceiveMessage: (cb: any) => { state.onMessage = cb; return { dispose() {} }; }
         },
         onDidDispose: (_cb: any) => ({ dispose() {} }),
+        onDidChangeViewState: (cb: any) => { state.onViewState = cb; return { dispose() {} }; },
         reveal() {}
     };
     return panel;
@@ -172,6 +174,7 @@ function createManager(overrides: { connection?: any; mappings?: any[] } = {}) {
     const connectionManager: any = {
         onConnectionChanged: () => ({ dispose() {} }),
         getActiveConnectionConfig: () => undefined,
+        isConnected: () => true,
         ensureConnected: async () => true,
         query: async () => ({ rows: [], fields: [] }),
         queryMetadata: async () => [],
@@ -1289,4 +1292,125 @@ test('formatQueryBarText leaves the text alone and says why when the formatter i
         vscodeStub.workspace.getConfiguration = originalConfig;
         vscodeStub.window.showInformationMessage = originalInfo;
     }
+});
+// ===== Auto refresh =====
+
+/** Connection stub that records every statement the panel runs against it. */
+function recordingConnection(options: { connected?: boolean; fail?: boolean } = {}) {
+    const ran: string[] = [];
+    let prompts = 0;
+    const connection = {
+        isConnected: () => options.connected !== false,
+        ensureConnected: async () => { prompts++; return true; },
+        query: async (sql: string) => {
+            ran.push(sql);
+            if (options.fail && !sql.includes('LIMIT 0')) throw new Error('relation "orders" does not exist');
+            return { rows: [{ n: 1 }], fields: [{ name: 'n', dataTypeID: 23 }] };
+        }
+    };
+    return { connection, ran, prompts: () => prompts };
+}
+
+test('auto refresh: a statement that changes data is refused and not run', async () => {
+    const { connection, ran } = recordingConnection();
+    const { panel, send } = await openCustomQueryPanel(undefined, { connection });
+    ran.length = 0;
+    await send({ command: 'loadRows', sql: "UPDATE orders SET state = 'x' RETURNING *", autoRefresh: true, autoRefreshId: 3 });
+    const stopped = panel.posted.find((m: any) => m.command === 'autoRefreshStopped');
+    assert.ok(stopped, 'expected the auto refresh to be refused');
+    assert.equal(stopped.autoRefreshId, 3);
+    assert.match(stopped.reason, /changes data/);
+    assert.deepEqual(ran, [], 'nothing may be executed');
+});
+
+test('auto refresh: an explicit LOCK TABLE is refused and not run', async () => {
+    const { connection, ran } = recordingConnection();
+    const { panel, send } = await openCustomQueryPanel(undefined, { connection });
+    ran.length = 0;
+    await send({ command: 'loadRows', sql: 'LOCK TABLE orders IN ACCESS EXCLUSIVE MODE', autoRefresh: true, autoRefreshId: 5 });
+    const stopped = panel.posted.find((m: any) => m.command === 'autoRefreshStopped');
+    assert.ok(stopped, 'expected the auto refresh to be refused');
+    assert.equal(stopped.autoRefreshId, 5);
+    assert.match(stopped.reason, /explicit lock/);
+    assert.deepEqual(ran, [], 'nothing may be executed');
+});
+
+test('auto refresh: without a connection it is skipped instead of asking for one', async () => {
+    const rec = recordingConnection({ connected: false });
+    const { panel, send } = await openCustomQueryPanel(undefined, { connection: rec.connection });
+    const promptsBefore = rec.prompts();
+    await send({ command: 'loadRows', sql: 'SELECT * FROM orders', autoRefresh: true, autoRefreshId: 4 });
+    const skipped = panel.posted.find((m: any) => m.command === 'autoRefreshSkipped');
+    assert.deepEqual(skipped, { command: 'autoRefreshSkipped', reason: 'notConnected', autoRefreshId: 4 });
+    assert.equal(rec.prompts(), promptsBefore, 'no connection prompt may appear');
+    assert.deepEqual(rec.ran, []);
+});
+
+test('auto refresh: the rows come back marked, without the early header or the relation metadata', async () => {
+    const opened = await openCustomQueryPanel(undefined, { connection: joinConnection() });
+    const sql = 'SELECT * FROM orders o JOIN customers c ON c.id = o.customer_id';
+    await opened.send({ command: 'loadRows', sql });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(opened.panel.posted.some((m: any) => m.command === 'foreignKeysLoaded'), 'a normal load delivers the metadata');
+    opened.panel.posted.length = 0;
+
+    await opened.send({ command: 'loadRows', sql: `${sql} LIMIT 50 OFFSET 0`, baseSql: sql, autoRefresh: true, autoRefreshId: 7 });
+    await new Promise(resolve => setImmediate(resolve));
+    const rows = opened.panel.posted.find((m: any) => m.command === 'rowsLoaded');
+    assert.ok(rows, 'expected the refreshed rows');
+    assert.equal(rows.autoRefresh, true);
+    assert.equal(rows.autoRefreshId, 7);
+    const commands = opened.panel.posted.map((m: any) => m.command);
+    assert.ok(!commands.includes('columnsLoaded'), `unexpected early header: ${commands.join(', ')}`);
+    assert.ok(!commands.includes('foreignKeysLoaded'), `unexpected metadata: ${commands.join(', ')}`);
+    assert.ok(!commands.includes('referencingTablesLoaded'), `unexpected metadata: ${commands.join(', ')}`);
+});
+
+test('auto refresh: a failing refresh names itself in the error', async () => {
+    const original = vscodeStub.window.showErrorMessage;
+    vscodeStub.window.showErrorMessage = () => Promise.resolve(undefined);
+    try {
+        const { connection } = recordingConnection({ fail: true });
+        const { panel, send } = await openCustomQueryPanel(undefined, { connection });
+        await send({ command: 'loadRows', sql: 'SELECT * FROM orders', autoRefresh: true, autoRefreshId: 9 });
+        const error = panel.posted.find((m: any) => m.command === 'error');
+        assert.ok(error, 'expected an error');
+        assert.equal(error.autoRefreshId, 9);
+
+        await send({ command: 'loadRows', sql: 'SELECT * FROM orders' });
+        const manual = panel.posted.filter((m: any) => m.command === 'error').pop();
+        assert.equal(manual.autoRefreshId, undefined, 'a manual run is not an auto refresh');
+    } finally {
+        vscodeStub.window.showErrorMessage = original;
+    }
+});
+
+test('auto refresh: a custom interval is asked for and answered in seconds', async () => {
+    const original = vscodeStub.window.showInputBox;
+    const asked: any[] = [];
+    try {
+        vscodeStub.window.showInputBox = (options: any) => { asked.push(options); return Promise.resolve('1m 30s'); };
+        const { panel, send } = await openCustomQueryPanel();
+        await send({ command: 'chooseAutoRefreshInterval', current: 45 });
+        assert.equal(asked[0].value, '45 s', 'the interval in use is offered for editing');
+        assert.equal(asked[0].validateInput('soon'), 'Enter a duration such as 45, 45s, 2m or 1h 30m.');
+        assert.deepEqual(panel.posted.find((m: any) => m.command === 'autoRefreshIntervalChosen'), { command: 'autoRefreshIntervalChosen', seconds: 90 });
+
+        vscodeStub.window.showInputBox = () => Promise.resolve(undefined);
+        await send({ command: 'chooseAutoRefreshInterval', current: 0 });
+        const cancelled = panel.posted.filter((m: any) => m.command === 'autoRefreshIntervalChosen').pop();
+        assert.equal(cancelled.seconds, null, 'cancelling keeps the interval');
+    } finally {
+        vscodeStub.window.showInputBox = original;
+    }
+});
+
+test('auto refresh: the panel is told when it is hidden or shown again', async () => {
+    const { panel } = await openCustomQueryPanel();
+    panel.visible = false;
+    panel.state.onViewState();
+    panel.visible = true;
+    panel.state.onViewState();
+    const states = panel.posted.filter((m: any) => m.command === 'viewStateChanged').map((m: any) => m.visible);
+    assert.deepEqual(states, [false, true]);
 });

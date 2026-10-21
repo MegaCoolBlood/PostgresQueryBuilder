@@ -1817,6 +1817,84 @@ function isBackdropDismissClick(overlay, pressTarget, clickTarget) {
     return !!overlay && pressTarget === overlay && clickTarget === overlay;
 }
 
+// --- Auto refresh ------------------------------------------------------------
+// Preset intervals (seconds) of the toolbar's auto refresh control; 0 is off.
+const AUTO_REFRESH_PRESETS = [0, 1, 5, 10, 30, 60, 300];
+
+// `45 s`, `2 min`, `1 min 30 s`, `1 h 30 min`. Same rule as
+// formatAutoRefreshInterval in src/autoRefresh.ts, which parses it back.
+function formatAutoRefreshInterval(seconds) {
+    const total = Math.max(0, Math.round(Number(seconds) || 0));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const parts = [];
+    if (h) parts.push(h + ' h');
+    if (m) parts.push(m + ' min');
+    if (s || parts.length === 0) parts.push(s + ' s');
+    return parts.join(' ');
+}
+
+// Entries of the auto refresh drop-down: Off, the presets, a custom interval in
+// use (in order of length) and the entry that asks for a new one.
+function autoRefreshOptions(currentSeconds) {
+    const current = Math.max(0, Math.round(Number(currentSeconds) || 0));
+    const values = AUTO_REFRESH_PRESETS.slice();
+    if (current > 0 && values.indexOf(current) < 0) {
+        values.push(current);
+        values.sort((a, b) => a - b);
+    }
+    const options = values.map(v => ({
+        value: String(v),
+        label: v === 0 ? 'Off' : 'Every ' + formatAutoRefreshInterval(v)
+    }));
+    options.push({ value: 'custom', label: 'Custom interval' });
+    return options;
+}
+
+// What an auto refresh runs: the last executed query again, with as many rows
+// as are loaded now (at least one page), so neither the scroll position nor
+// rows fetched with "More" / "All" are lost. A query with its own LIMIT runs
+// exactly as written. `limit` is null when the result is not paged.
+function autoRefreshLoadPlan(state) {
+    const s = state || {};
+    const pageSize = Math.max(1, Number(s.pageSize) || 50);
+    if (s.userPaged) return { sql: String(s.lastRawSql || ''), limit: null };
+    const base = String(s.currentSql || '');
+    if (s.allLoaded) return { sql: base, limit: null };
+    const limit = Math.max(pageSize, Math.round(Number(s.loadedRows) || 0));
+    return { sql: base + ' LIMIT ' + limit + ' OFFSET 0', limit };
+}
+
+// Why a due auto refresh does not run now: '' when it may run. 'busy' covers
+// short-lived states (a query running, a dialog or cell editor open, a drag);
+// the tick is retried shortly after instead of waiting for the next interval.
+function autoRefreshPauseReason(state) {
+    const s = state || {};
+    if (!s.hasQuery) return 'noQuery';
+    if (s.visible === false) return 'hidden';
+    if (s.pendingChanges) return 'pendingChanges';
+    if (s.busy) return 'busy';
+    return '';
+}
+
+// Status shown next to the auto refresh control for a lasting pause.
+const AUTO_REFRESH_PAUSE_LABELS = {
+    hidden: 'Paused while the tab is hidden',
+    pendingChanges: 'Paused until changes are saved or discarded',
+    notConnected: 'Paused: not connected'
+};
+
+// Whether any undo step holds a grid edit. Those are keyed by row index and must
+// not survive a refresh that replaced the rows; query-text steps may.
+function editHistoryHasGridEdits(history) {
+    const size = v => (v instanceof Map || v instanceof Set) ? v.size : (Array.isArray(v) ? v.length : 0);
+    return (history || []).some(snap => !!snap && (
+        size(snap.modified) > 0 || size(snap.deleted) > 0 ||
+        size(snap.inserted) > 0 || size(snap.duplicated) > 0
+    ));
+}
+
 // Height of the empty space after the last field of the Single Record View, so
 // the body can scroll until the last field sits where the first one starts.
 // `clientHeight` includes the body's padding; a last field taller than the
@@ -2673,6 +2751,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let currentSql = '';           // SQL without trailing LIMIT/OFFSET clause
     let userPaged = false;         // true when the user wrote an explicit LIMIT/OFFSET
     let appendPending = false;
+    // The query text last run and whether its exact row count was requested,
+    // so auto refresh can repeat exactly that run.
+    let lastRunRawSql = '';
+    let lastRunWantTotal = false;
+    // Every fresh load gets a number; an auto refresh sends its number along and
+    // the host echoes it, so an answer overtaken by a newer load is recognised.
+    let loadCounter = 0;
+    let latestLoadId = 0;
+    // The auto refresh request on its way ({ id, limit }), or null.
+    let autoRefreshInFlight = null;
     let moreAvailable = false;
     // Set when the user pressed "Load All": the next result has fetched every
     // remaining row, so pagination buttons stay disabled even though the
@@ -2994,7 +3082,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     // The overlay only veils the rows: it starts below the pinned header and
     // filter rows so a filter can still be typed while the data is on its way.
+    let dataLoadingActive = false;
     function setDataLoading(active) {
+        dataLoadingActive = !!active;
         dataLoading.classList.toggle('hidden', !active);
         if (!dataLoadingOverlay) return;
         if (active) {
@@ -4266,6 +4356,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 handleColumnsLoaded(msg);
                 break;
             case 'totalCountLoaded':
+                if (msg.autoRefreshId && msg.autoRefreshId !== latestLoadId) break;
                 totalCount = msg.totalCount;
                 updateRowCount();
                 break;
@@ -4325,7 +4416,33 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 }
                 break;
             case 'error':
+                if (msg.autoRefreshId) {
+                    // A failing auto refresh is reported once, then switched off.
+                    if (!isAutoRefreshAnswer(msg)) break;
+                    stopAutoRefresh('Stopped because the query failed');
+                }
                 showError(msg.text);
+                break;
+            case 'autoRefreshStopped':
+                if (isAutoRefreshAnswer(msg)) stopAutoRefresh(msg.reason || 'Stopped');
+                break;
+            case 'autoRefreshSkipped':
+                if (isAutoRefreshAnswer(msg)) {
+                    autoRefreshInFlight = null;
+                    setAutoRefreshBusyIndicator(false);
+                    setAutoRefreshStatus(AUTO_REFRESH_PAUSE_LABELS[msg.reason] || '');
+                    scheduleAutoRefresh();
+                }
+                break;
+            case 'autoRefreshIntervalChosen':
+                if (typeof msg.seconds === 'number' && msg.seconds > 0) {
+                    setAutoRefreshInterval(msg.seconds);
+                } else {
+                    renderAutoRefreshSelect();
+                }
+                break;
+            case 'viewStateChanged':
+                panelVisible = msg.visible !== false;
                 break;
             case 'validationResult':
                 handleValidationResult(msg);
@@ -4443,6 +4560,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function handleRowsLoaded(msg) {
         const incoming = msg.rows || [];
         const isAppend = !!msg.append;
+        // An auto refresh answer the user has since replaced with a run of
+        // their own is dropped, so it cannot overwrite the newer result.
+        if (msg.autoRefresh && !isAutoRefreshAnswer(msg)) return;
+        const auto = !!msg.autoRefresh && !isAppend;
+        const autoLimit = auto ? autoRefreshInFlight.limit : null;
+        const viewState = auto ? captureGridViewState() : null;
+        const keepHistory = auto && !editHistoryHasGridEdits(editHistory);
+        const previousTotal = totalCount;
+        if (auto) {
+            autoRefreshInFlight = null;
+            currentOffset = 0;
+        }
         appendPending = false;
         if (isFreshRowLoad(currentOffset, isAppend)) {
             allRows = incoming;
@@ -4458,7 +4587,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             applyCapabilities(msg.capabilities);
             adoptSourceTable(msg);
             // Without an explicit count the total is unknown until requested.
-            totalCount = null;
+            // An auto refresh keeps the last count until the new one arrives.
+            totalCount = auto ? previousTotal : null;
         }
         if (typeof msg.connectionName === 'string') {
             lastUsedConnection = msg.connectionName;
@@ -4470,15 +4600,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             tableName.textContent = `${schema}.${table}`;
         }
         // A full last batch means there may be more rows to page through.
-        moreAvailable = !userPaged && !allLoaded && incoming.length >= PAGE_SIZE;
+        moreAvailable = !userPaged && !allLoaded && incoming.length >= (autoLimit || PAGE_SIZE);
         lastQueryDurationMs = (typeof msg.durationMs === 'number') ? msg.durationMs : null;
+        if (viewState && viewState.selectedRowIdx !== null && viewState.selectedRowIdx < allRows.length) {
+            selectedRowIdx = viewState.selectedRowIdx;
+        }
         setDataLoading(false);
         updateRowCount();
         renderTable();
         // A fresh result is the new baseline: per-row-index snapshots from the
         // previous rows no longer map, so the undo history starts over here.
-        if (isFreshRowLoad(currentOffset, isAppend)) {
+        // An auto refresh keeps a history that holds only query-text changes.
+        if (isFreshRowLoad(currentOffset, isAppend) && !keepHistory) {
             resetEditHistory();
+        }
+        if (auto) {
+            // "More" continues after the rows the refresh brought back.
+            if (autoLimit) currentOffset = Math.max(0, autoLimit - PAGE_SIZE);
+            restoreGridViewState(viewState);
+            autoRefreshSucceeded();
+        } else if (!isAppend) {
+            // The interval counts from the latest fresh result.
+            scheduleAutoRefresh();
         }
     }
 
@@ -4626,6 +4769,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         allLoaded = false;
         moreAvailable = false;
         const sql = userPaged ? raw : (currentSql + ' LIMIT ' + PAGE_SIZE + ' OFFSET 0');
+        const wantTotal = !userPaged && isDefaultQueryText(raw);
+        lastRunRawSql = raw;
+        lastRunWantTotal = wantTotal;
+        // A run started by the user supersedes an auto refresh still on its way.
+        autoRefreshInFlight = null;
+        latestLoadId = ++loadCounter;
         setDataLoading(true);
         // An exact row count is cheap and expected for the plain table view, but
         // can be very expensive for an arbitrary query — there it is only
@@ -4635,7 +4784,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             sql,
             baseSql: currentSql,
             append: false,
-            wantTotal: !userPaged && isDefaultQueryText(raw)
+            wantTotal
         });
     }
 
@@ -6064,6 +6213,207 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function postLoadRows(sql, append) {
         setDataLoading(true);
         vscode.postMessage({ command: 'loadRows', sql, baseSql: currentSql, append: !!append });
+    }
+
+    // ===== Auto refresh ========================================================
+    // Re-runs the last executed query every `autoRefreshSeconds`. The interval
+    // counts from the latest fresh result; a tick that finds the grid busy or
+    // edited is retried shortly after instead of interrupting the user.
+    const autoRefreshControl = document.getElementById('autoRefreshControl');
+    const autoRefreshSelect = document.getElementById('autoRefreshSelect');
+    const autoRefreshStatus = document.getElementById('autoRefreshStatus');
+    const gridScroller = document.getElementById('tableWrapper');
+    const AUTO_REFRESH_RETRY_MS = 1000;
+    let autoRefreshSeconds = 0;
+    let autoRefreshTimer = null;
+    let panelVisible = true;
+    let lastAutoRefreshAt = null;
+    // True while a mouse button is held anywhere in the panel (cell or column
+    // drag, column resize, a text selection): a refresh would cut it off.
+    let pointerHeld = false;
+
+    document.addEventListener('mousedown', () => { pointerHeld = true; }, true);
+    document.addEventListener('mouseup', () => { pointerHeld = false; }, true);
+    document.addEventListener('mousemove', (e) => { if (e.buttons === 0) pointerHeld = false; }, true);
+    document.addEventListener('dragend', () => { pointerHeld = false; }, true);
+    document.addEventListener('drop', () => { pointerHeld = false; }, true);
+    window.addEventListener('blur', () => { pointerHeld = false; });
+
+    function isAutoRefreshAnswer(msg) {
+        return !!autoRefreshInFlight && msg.autoRefreshId === autoRefreshInFlight.id && msg.autoRefreshId === latestLoadId;
+    }
+
+    function hasPendingGridChanges() {
+        return modifiedCells.size + deletedRows.size + insertedRows.length + duplicatedRows.length > 0;
+    }
+
+    function isVisible(el) {
+        return !!el && getComputedStyle(el).display !== 'none';
+    }
+
+    function isAutoRefreshBusy() {
+        if (dataLoadingActive || appendPending || autoRefreshInFlight) return true;
+        if (pointerHeld || rangeDragging || fillDragging || multiEditBounds || dragSourceCol !== null) return true;
+        if (isVisible(contextMenu) || isVisible(queryHistoryPanel)) return true;
+        const overlays = document.querySelectorAll('.sql-dialog-overlay, .dlg-overlay');
+        for (const el of overlays) {
+            if (isVisible(el)) return true;
+        }
+        // Typing in a cell editor or a column filter: re-rendering would drop it.
+        const active = document.activeElement;
+        const tableArea = gridScroller ? gridScroller.parentElement : null;
+        return !!(active && tableArea && tableArea.contains(active)
+            && (active.matches('input, textarea, select') || active.isContentEditable));
+    }
+
+    function renderAutoRefreshSelect() {
+        if (!autoRefreshSelect) return;
+        autoRefreshSelect.innerHTML = autoRefreshOptions(autoRefreshSeconds)
+            .map(o => '<option value="' + escapeAttr(o.value) + '">' + escapeHtml(o.label) + '</option>')
+            .join('');
+        autoRefreshSelect.value = String(autoRefreshSeconds);
+        autoRefreshControl.classList.toggle('is-active', autoRefreshSeconds > 0);
+        updateAutoRefreshTitle();
+    }
+
+    function updateAutoRefreshTitle() {
+        if (!autoRefreshControl) return;
+        let title = autoRefreshSeconds > 0
+            ? 'Auto refresh: the query runs again every ' + formatAutoRefreshInterval(autoRefreshSeconds)
+            : 'Auto refresh: run the query again at a fixed interval';
+        if (autoRefreshSeconds > 0 && lastAutoRefreshAt) {
+            title += '\nLast refreshed at ' + lastAutoRefreshAt.toLocaleTimeString();
+        }
+        autoRefreshControl.title = title;
+    }
+
+    function setAutoRefreshStatus(text) {
+        if (!autoRefreshStatus) return;
+        autoRefreshStatus.textContent = text || '';
+        autoRefreshStatus.title = text || '';
+        autoRefreshStatus.classList.toggle('hidden', !text);
+    }
+
+    function setAutoRefreshBusyIndicator(active) {
+        if (autoRefreshControl) autoRefreshControl.classList.toggle('is-refreshing', !!active);
+    }
+
+    function scheduleAutoRefresh(delayMs) {
+        if (autoRefreshTimer) {
+            clearTimeout(autoRefreshTimer);
+            autoRefreshTimer = null;
+        }
+        if (!autoRefreshSeconds) return;
+        autoRefreshTimer = setTimeout(autoRefreshTick, delayMs != null ? delayMs : autoRefreshSeconds * 1000);
+    }
+
+    function setAutoRefreshInterval(seconds) {
+        autoRefreshSeconds = Math.max(0, Math.round(Number(seconds) || 0));
+        if (!autoRefreshSeconds) {
+            autoRefreshInFlight = null;
+            setAutoRefreshBusyIndicator(false);
+        }
+        lastAutoRefreshAt = null;
+        renderAutoRefreshSelect();
+        setAutoRefreshStatus('');
+        scheduleAutoRefresh();
+    }
+
+    function stopAutoRefresh(status) {
+        setAutoRefreshInterval(0);
+        setAutoRefreshStatus(status);
+    }
+
+    function autoRefreshTick() {
+        autoRefreshTimer = null;
+        const reason = autoRefreshPauseReason({
+            hasQuery: !!(userPaged ? lastRunRawSql : currentSql),
+            visible: panelVisible,
+            pendingChanges: hasPendingGridChanges(),
+            busy: isAutoRefreshBusy()
+        });
+        if (reason === 'noQuery') {
+            scheduleAutoRefresh();
+            return;
+        }
+        if (reason) {
+            if (AUTO_REFRESH_PAUSE_LABELS[reason]) setAutoRefreshStatus(AUTO_REFRESH_PAUSE_LABELS[reason]);
+            scheduleAutoRefresh(AUTO_REFRESH_RETRY_MS);
+            return;
+        }
+        runAutoRefresh();
+    }
+
+    function runAutoRefresh() {
+        const plan = autoRefreshLoadPlan({
+            currentSql, userPaged, lastRawSql: lastRunRawSql,
+            loadedRows: allRows.length, allLoaded, pageSize: PAGE_SIZE
+        });
+        if (!plan.sql.trim()) {
+            scheduleAutoRefresh();
+            return;
+        }
+        latestLoadId = ++loadCounter;
+        autoRefreshInFlight = { id: latestLoadId, limit: plan.limit };
+        setAutoRefreshBusyIndicator(true);
+        vscode.postMessage({
+            command: 'loadRows',
+            sql: plan.sql,
+            baseSql: currentSql,
+            append: false,
+            // Keep a known row count up to date.
+            wantTotal: lastRunWantTotal || totalCount !== null,
+            autoRefresh: true,
+            autoRefreshId: latestLoadId
+        });
+    }
+
+    function autoRefreshSucceeded() {
+        lastAutoRefreshAt = new Date();
+        setAutoRefreshBusyIndicator(false);
+        setAutoRefreshStatus('');
+        updateAutoRefreshTitle();
+        scheduleAutoRefresh();
+    }
+
+    // Keep the place the user was looking at across an auto refresh.
+    function captureGridViewState() {
+        return {
+            scrollTop: gridScroller ? gridScroller.scrollTop : 0,
+            scrollLeft: gridScroller ? gridScroller.scrollLeft : 0,
+            selectedRowIdx,
+            anchor: rangeAnchor ? { r: rangeAnchor.r, c: rangeAnchor.c } : null,
+            focus: rangeFocus ? { r: rangeFocus.r, c: rangeFocus.c } : null
+        };
+    }
+
+    function restoreGridViewState(state) {
+        if (!state) return;
+        if (gridScroller) {
+            gridScroller.scrollTop = state.scrollTop;
+            gridScroller.scrollLeft = state.scrollLeft;
+        }
+        const rowCount = tableBody.rows.length;
+        if (state.anchor && state.focus && Math.max(state.anchor.r, state.focus.r) < rowCount) {
+            rangeAnchor = state.anchor;
+            rangeFocus = state.focus;
+            applyCellRangeHighlight();
+        }
+    }
+
+    if (autoRefreshSelect) {
+        autoRefreshSelect.addEventListener('change', () => {
+            const value = autoRefreshSelect.value;
+            if (value === 'custom') {
+                // Keep showing the interval in use until the host answers.
+                autoRefreshSelect.value = String(autoRefreshSeconds);
+                vscode.postMessage({ command: 'chooseAutoRefreshInterval', current: autoRefreshSeconds });
+                return;
+            }
+            setAutoRefreshInterval(Number(value));
+        });
+        renderAutoRefreshSelect();
+        setAutoRefreshStatus('');
     }
 
     function updateChangeIndicator() {
@@ -7917,6 +8267,12 @@ if (typeof module !== 'undefined' && module.exports) {
         isFreshRowLoad,
         recordFieldReadonlyAttr,
         isBackdropDismissClick,
+        AUTO_REFRESH_PRESETS,
+        formatAutoRefreshInterval,
+        autoRefreshOptions,
+        autoRefreshLoadPlan,
+        autoRefreshPauseReason,
+        editHistoryHasGridEdits,
         recordScrollTailHeight,
         cellEditorTargetState,
         buildConnectionBadge,

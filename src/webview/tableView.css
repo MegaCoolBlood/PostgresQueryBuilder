@@ -229,6 +229,40 @@ body {
     user-select: none;
 }
 
+/* Auto refresh: interval drop-down with its icon. The icon takes the accent
+   colour while a refresh is scheduled and turns while one is running. */
+.auto-refresh {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    color: var(--c-muted);
+}
+
+.auto-refresh.is-active {
+    color: var(--c-accent);
+}
+
+.auto-refresh.is-refreshing .ico {
+    animation: spin 0.8s linear infinite;
+}
+
+.auto-refresh select {
+    color: var(--vscode-dropdown-foreground);
+}
+
+.auto-refresh-status {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-xs);
+    color: var(--c-warning);
+}
+
+.auto-refresh-status.hidden {
+    display: none;
+}
+
 .connection-info:hover {
     color: var(--c-fg);
     border-color: var(--c-accent);

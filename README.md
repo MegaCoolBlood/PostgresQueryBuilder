@@ -86,6 +86,15 @@ the time the query took. **Load More** fetches the next 50, **Load All** the
 rest. Column headers carry the name and the data type, and the comment of a
 column as a tooltip.
 
+**Auto refresh**, the drop-down with the circular-arrow icon at the right of the
+toolbar, runs the query again every 5 s, 10 s, 30 s, 1 min, 5 min or at a
+custom interval (`45s`, `2m`, `1h 30m`). It reloads as many rows as are shown
+and keeps the scroll position and selection. It pauses while there are unsaved
+edits, while the tab is hidden and while you are typing in a cell or a dialog
+is open, and it switches itself off for a statement that writes data or takes
+locks (`FOR UPDATE`, `LOCK TABLE`, advisory locks). It is off whenever a Data
+Viewer opens.
+
 ### Finding rows
 
 - **Sort** by clicking a column header, click again to reverse.

@@ -16,6 +16,7 @@ import { getFormatOptions, isFormatterEnabled } from './formatSettings';
 import type { ViewCapabilities, TableEditPlan } from './resultSource';
 import { resultColumnAliases } from './resultSource';
 import { addHiddenKeyColumns, isHiddenKeyColumn, planHiddenKeyColumns, type HiddenKeyColumn } from './hiddenKeyColumns';
+import { autoRefreshIntervalError, autoRefreshRefusal, formatAutoRefreshInterval, parseAutoRefreshInterval } from './autoRefresh';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -335,6 +336,12 @@ export class TableWebViewManager {
         });
         panel.onDidDispose(() => connSub.dispose());
 
+        // Auto refresh pauses while the panel is not visible.
+        const viewStateSub = panel.onDidChangeViewState(() => {
+            this.post(session, { command: 'viewStateChanged', visible: panel.visible });
+        });
+        panel.onDidDispose(() => viewStateSub.dispose());
+
         panel.webview.onDidReceiveMessage(async (message) => {
             const handler = this.messageHandlers[message.command];
             if (!handler) {
@@ -346,8 +353,12 @@ export class TableWebViewManager {
                 await handler.call(this, { session, message, queryRunner });
             } catch (err: unknown) {
                 // Always release the loading state, otherwise the grid keeps
-                // showing a spinner for a query that already failed.
-                this.post(session, { command: 'error', text: getErrorMessage(err) });
+                // showing a spinner for a query that already failed. A failed
+                // auto refresh is named so the panel can switch it off.
+                const autoRefreshId = message.command === 'loadRows' && message.autoRefresh && !message.append
+                    ? message.autoRefreshId
+                    : undefined;
+                this.post(session, { command: 'error', text: getErrorMessage(err), autoRefreshId });
                 vscode.window.showErrorMessage(`Query error: ${getErrorMessage(err)}`);
             }
         });
@@ -489,8 +500,22 @@ export class TableWebViewManager {
         validateValue: this.handleValidateValue,
         openCellInEditor: this.handleOpenCellInEditor,
         openGeneratedStatement: this.handleOpenGeneratedStatement,
-        queryEditorRequest: this.handleQueryEditorRequest
+        queryEditorRequest: this.handleQueryEditorRequest,
+        chooseAutoRefreshInterval: this.handleChooseAutoRefreshInterval
     };
+
+    /** Ask for a custom auto refresh interval and answer with the seconds, or null when cancelled. */
+    private async handleChooseAutoRefreshInterval(ctx: MessageContext): Promise<void> {
+        const current = Number(ctx.message.current) || 0;
+        const text = await vscode.window.showInputBox({
+            title: 'Auto Refresh Interval',
+            prompt: 'How often the Data Viewer re-runs its query, for example 45s, 2m or 1h 30m',
+            value: current > 0 ? formatAutoRefreshInterval(current) : '',
+            validateInput: autoRefreshIntervalError
+        });
+        const seconds = text === undefined || autoRefreshIntervalError(text) ? null : parseAutoRefreshInterval(text);
+        this.post(ctx.session, { command: 'autoRefreshIntervalChosen', seconds });
+    }
 
     /**
      * Run the SQL currently shown in a panel and push rows, columns and the
@@ -502,10 +527,25 @@ export class TableWebViewManager {
         const sql: string = message.sql;
         const baseSql: string = message.baseSql || sql;
         const append = !!message.append;
+        // A timed re-run of the panel's query: it must never prompt, never
+        // repeat a statement that writes, and never re-render more than the rows.
+        const autoRefresh = !!message.autoRefresh && !append;
+        const autoRefreshId = autoRefresh ? message.autoRefreshId : undefined;
 
         if (!sql || !sql.trim()) {
             this.post(session, { command: 'loadingFinished' });
             return;
+        }
+        if (autoRefresh) {
+            const refusal = autoRefreshRefusal(sql);
+            if (refusal) {
+                this.post(session, { command: 'autoRefreshStopped', reason: refusal, autoRefreshId });
+                return;
+            }
+            if (!this.connectionManager.isConnected()) {
+                this.post(session, { command: 'autoRefreshSkipped', reason: 'notConnected', autoRefreshId });
+                return;
+            }
         }
         if (!await this.connectionManager.ensureConnected()) {
             this.post(session, { command: 'loadingFinished' });
@@ -513,7 +553,7 @@ export class TableWebViewManager {
         }
 
         // Render columns + filter row immediately while the full query runs.
-        let capabilities = append ? undefined : await this.tryPostEarlyColumns(session, baseSql);
+        let capabilities = append ? undefined : await this.tryPostEarlyColumns(session, baseSql, !autoRefresh);
 
         // Key columns the query leaves out are selected silently, so a change
         // is written back by the key instead of by all displayed values.
@@ -564,6 +604,8 @@ export class TableWebViewManager {
             columns,
             capabilities,
             append,
+            autoRefresh,
+            autoRefreshId,
             connectionName: this.getConnectionName(),
             durationMs,
             ...tableInfo
@@ -575,14 +617,18 @@ export class TableWebViewManager {
 
         if (message.wantTotal) {
             const totalCount = await queryRunner.getQueryRowCount(baseSql);
-            this.post(session, { command: 'totalCountLoaded', totalCount });
+            this.post(session, { command: 'totalCountLoaded', totalCount, autoRefreshId });
         }
 
         // Deliver the relation metadata of every source table as it resolves,
         // so foreign-key navigation and mappings work for ad-hoc queries too.
+        // An auto refresh re-runs the same query, whose metadata is already
+        // there; posting it again would re-render the grid several times.
         if (capabilities) {
             session.sourceTables = capabilities.tables;
-            this.loadRelationMetadata(session, capabilities, queryRunner);
+            if (!autoRefresh) {
+                this.loadRelationMetadata(session, capabilities, queryRunner);
+            }
         }
 
         const pendingFilter = this.pendingFilters.get(session.id);
@@ -959,7 +1005,7 @@ export class TableWebViewManager {
      * derived from the probe, or `undefined` when the query cannot be probed
      * (non-SELECT, multiple statements, ...).
      */
-    private async tryPostEarlyColumns(session: PanelSession, sql: string): Promise<ViewCapabilities | undefined> {
+    private async tryPostEarlyColumns(session: PanelSession, sql: string, post = true): Promise<ViewCapabilities | undefined> {
         try {
             const statements = splitSqlStatements(sql).map((s) => s.trim()).filter((s) => s.length > 0);
             if (statements.length !== 1) {
@@ -980,7 +1026,9 @@ export class TableWebViewManager {
             session.columns = columns;
             const queryRunner = new QueryRunner(this.connectionManager);
             const capabilities = await queryRunner.resolveEditPlan(fields, statements[0]);
-            this.post(session, { command: 'columnsLoaded', columns, capabilities });
+            if (post) {
+                this.post(session, { command: 'columnsLoaded', columns, capabilities });
+            }
             return capabilities;
         } catch {
             // Ignore probe failures (non-SELECT, multi-statement, invalid wrap,
