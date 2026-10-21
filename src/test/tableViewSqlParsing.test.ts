@@ -22,6 +22,7 @@ const {
     buildConstraintOrderBy,
     isFreshRowLoad,
     recordFieldReadonlyAttr,
+    recordScrollTailHeight,
     cellEditorTargetState,
     buildConnectionBadge,
     canApplyQueryFilters,
@@ -509,6 +510,34 @@ test('recordFieldReadonlyAttr marks fields readonly when the view is read-only',
 test('recordFieldReadonlyAttr marks fields readonly for rows pending deletion', () => {
     assert.equal(recordFieldReadonlyAttr(true, false), 'readonly');
     assert.equal(recordFieldReadonlyAttr(true, true), 'readonly');
+});
+
+test('recordScrollTailHeight leaves room to scroll the last field up to where the first one starts', () => {
+    // 600px body with 8px padding top and bottom, last field 60px tall.
+    assert.equal(recordScrollTailHeight(600, 8, 8, 60), 524);
+});
+
+test('recordScrollTailHeight lets the last field reach the top: max scrollTop equals its offset', () => {
+    const clientHeight = 500, padTop = 8, padBottom = 8, rowHeights = [40, 40, 120, 52];
+    const tail = recordScrollTailHeight(clientHeight, padTop, padBottom, rowHeights[rowHeights.length - 1]);
+    const rowsTotal = rowHeights.reduce((a, b) => a + b, 0);
+    const scrollHeight = padTop + rowsTotal + tail + padBottom;
+    const lastRowOffset = rowsTotal - rowHeights[rowHeights.length - 1];
+    assert.equal(scrollHeight - clientHeight, lastRowOffset);
+});
+
+test('recordScrollTailHeight adds no space when the last field fills the visible area', () => {
+    assert.equal(recordScrollTailHeight(300, 8, 8, 284), 0);
+    assert.equal(recordScrollTailHeight(300, 8, 8, 500), 0);
+});
+
+test('recordScrollTailHeight adds no space while the dialog is hidden or measures are missing', () => {
+    assert.equal(recordScrollTailHeight(0, 8, 8, 40), 0);
+    assert.equal(recordScrollTailHeight(400, NaN, NaN, undefined), 400);
+});
+
+test('recordScrollTailHeight returns whole pixels', () => {
+    assert.equal(recordScrollTailHeight(600.6, 8, 8, 60.2), 524);
 });
 
 // ===== 2.1.5: clickable connection badge =====

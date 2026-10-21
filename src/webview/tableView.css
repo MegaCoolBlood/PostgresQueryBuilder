@@ -1192,8 +1192,15 @@ textarea.sql-dialog-content {
     border-bottom: 1px solid var(--c-border);
 }
 
-.record-row:last-child {
+.record-row:last-child,
+.record-row:has(+ .record-scroll-tail) {
     border-bottom: none;
+}
+
+/* Empty space after the last field, sized by updateRecordScrollTail() so the
+   last field can be scrolled up to the top of the dialog. */
+.record-scroll-tail {
+    pointer-events: none;
 }
 
 .record-row.record-row-modified {

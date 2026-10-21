@@ -1809,6 +1809,15 @@ function recordFieldReadonlyAttr(isDeleted, readOnly) {
     return (isDeleted || readOnly) ? 'readonly' : '';
 }
 
+// Height of the empty space after the last field of the Single Record View, so
+// the body can scroll until the last field sits where the first one starts.
+// `clientHeight` includes the body's padding; a last field taller than the
+// visible area needs no extra space.
+function recordScrollTailHeight(clientHeight, paddingTop, paddingBottom, lastRowHeight) {
+    const visible = (Number(clientHeight) || 0) - (Number(paddingTop) || 0) - (Number(paddingBottom) || 0);
+    return Math.max(0, Math.floor(visible - (Number(lastRowHeight) || 0)));
+}
+
 // What to do with a value that comes back from an editor tab a cell was opened
 // in. The result may arrive long after the tab was opened, so the target cell
 // can have disappeared (data reloaded, column removed) or have become
@@ -7075,12 +7084,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         recordTextareaHeights = {};
         renderRecordDialog();
         recordDialogOverlay.style.display = 'flex';
+        // The body had no size while the dialog was hidden.
+        updateRecordScrollTail();
     }
 
     function closeRecordDialog() {
         recordDialogOverlay.style.display = 'none';
         recordDialogRowIdx = -1;
         recordTextareaHeights = {};
+        if (recordScrollTailObserver) recordScrollTailObserver.disconnect();
     }
 
     function getDisplayedRowIndices() {
@@ -7125,13 +7137,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         recordDialogBody.innerHTML = buildRecordRowsHtml(idx, isDeleted, rowData);
 
+        // Reapply user-resized heights so a re-render keeps the layout stable.
+        applyRecordTextareaHeights();
+
+        // Size the trailing space before restoring the scroll position, so a
+        // position near the end is not clamped by a still-empty spacer.
+        updateRecordScrollTail();
+        observeRecordScrollTail();
+
         // Restore the scroll position captured at the start of this render.
         // We do this synchronously (innerHTML assignment is synchronous and
         // the body has a fixed height, so the scroll range is already valid).
         recordDialogBody.scrollTop = savedScrollTop;
-
-        // Reapply user-resized heights so a re-render keeps the layout stable.
-        applyRecordTextareaHeights();
 
         const parts = [];
         if (isDeleted) parts.push('row marked for deletion (read-only)');
@@ -7230,7 +7247,40 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             '</div>';
         });
 
+        if (html) html += '<div class="record-scroll-tail" aria-hidden="true"></div>';
         return html;
+    }
+
+    // Size the spacer after the last field so the last field can be scrolled up
+    // to the top of the dialog, however short it is.
+    function updateRecordScrollTail() {
+        const tail = recordDialogBody.querySelector('.record-scroll-tail');
+        const rows = recordDialogBody.querySelectorAll('.record-row');
+        if (!tail || rows.length === 0) return;
+        const style = getComputedStyle(recordDialogBody);
+        const height = recordScrollTailHeight(
+            recordDialogBody.clientHeight,
+            parseFloat(style.paddingTop),
+            parseFloat(style.paddingBottom),
+            rows[rows.length - 1].getBoundingClientRect().height
+        );
+        tail.style.height = height + 'px';
+    }
+
+    // The visible height changes with the window, the last field's height when
+    // its textarea is resized or grows while typing.
+    const recordScrollTailObserver = typeof ResizeObserver === 'function'
+        ? new ResizeObserver(() => {
+            if (recordDialogRowIdx >= 0) updateRecordScrollTail();
+        })
+        : null;
+
+    function observeRecordScrollTail() {
+        if (!recordScrollTailObserver) return;
+        recordScrollTailObserver.disconnect();
+        recordScrollTailObserver.observe(recordDialogBody);
+        const rows = recordDialogBody.querySelectorAll('.record-row');
+        if (rows.length > 0) recordScrollTailObserver.observe(rows[rows.length - 1]);
     }
 
     // Read the current textarea heights from the DOM into recordTextareaHeights,
@@ -7849,6 +7899,7 @@ if (typeof module !== 'undefined' && module.exports) {
         reorderSelectColumns,
         isFreshRowLoad,
         recordFieldReadonlyAttr,
+        recordScrollTailHeight,
         cellEditorTargetState,
         buildConnectionBadge,
         canApplyQueryFilters,

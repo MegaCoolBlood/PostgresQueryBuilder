@@ -2,6 +2,8 @@
 
 ## 3.3.2
 
+- **The Single Record View scrolls until the last field is at the top:** The list of fields ended with the last field at the bottom edge of the dialog, so the last fields of a record could never be brought up to eye level, and reading or editing them meant working at the very bottom of the window. The view now leaves room below the last field, so it can be scrolled until the last field sits at the top of the dialog, just where the first field starts. The space adapts to the window size and to the height of the last field, including when its text box is resized or grows while typing, and a last field that is taller than the dialog adds no extra space.
+
 - **A name after a dot is no longer mistaken for a keyword:** The formatter treated the part after a `.` as a keyword whenever it happened to be spelled like one, although PostgreSQL only accepts a name there. A call such as `v_row := ty_rec.NEW ('A',  -- name` with one argument per line was therefore not recognised as a function call: its arguments stayed at the indentation of the statement and the closing `)` was not aligned. A column such as `r.new` or `r.type` was upper-cased like a keyword, and `t.select(…)` or `x.end` could even break the line after the dot. Such names are now formatted like any other identifier: the call wraps with one indented argument per line and the `)` on its own line, the name keeps the identifier case (the case it was written in, by default), and the line no longer breaks after the dot. A `..` range such as `FOR i IN 1..v_max` and schema-qualified data types such as `pg_catalog.int4` are not affected.
 
 ## 3.3.1
