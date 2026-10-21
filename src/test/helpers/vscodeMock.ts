@@ -55,6 +55,28 @@ class DocumentDropEdit {
     constructor(public insertText: any) {}
 }
 
+const CompletionItemKind = { Text: 0, Function: 2, Field: 4, Variable: 5, Class: 6, Interface: 7, Module: 8, Keyword: 13 };
+
+class CompletionItem {
+    insertText?: any;
+    detail?: string;
+    sortText?: string;
+    range?: any;
+    constructor(public label: string, public kind?: number) {}
+}
+
+class SnippetString {
+    constructor(public value: string) {}
+}
+
+class Position {
+    constructor(public line: number, public character: number) {}
+}
+
+class Range {
+    constructor(public start: Position, public end: Position) {}
+}
+
 /** Listeners registered for the document events the stub can replay. */
 const documentListeners = {
     save: [] as Array<(doc: any) => void>,
@@ -92,6 +114,11 @@ const vscodeStub = {
     TreeItem,
     DataTransferItem,
     DocumentDropEdit,
+    CompletionItemKind,
+    CompletionItem,
+    SnippetString,
+    Position,
+    Range,
     TreeItemCollapsibleState,
     workspace: {
         workspaceFolders: undefined as any,

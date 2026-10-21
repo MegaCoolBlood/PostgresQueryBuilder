@@ -391,6 +391,11 @@
           "default": false,
           "description": "Always quote identifiers in generated SELECT statements"
         },
+        "postgresQueryBuilder.completion.enable": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Autocomplete in SQL files: tables, views, columns with their types, aliases, schemas, built-in functions and keywords of the active connection — the same suggestions as the query bar of the Data Viewer. Turn it off if another SQL extension already completes your files."
+        },
         "postgresQueryBuilder.qualifyColumnsWithAlias": {
           "type": "boolean",
           "default": false,

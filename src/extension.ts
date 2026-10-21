@@ -23,6 +23,7 @@ import { formatOptionsToRepoConfig } from './repoFormatConfig';
 import { getFormatOptions, isFormatterEnabled } from './formatSettings';
 import { DoubleClickGate } from './doubleClick';
 import { PsqlConsole } from './psqlConsole';
+import { CompletionCatalogCache, SqlFileCompletionProvider, loadSqlCompletionApi, loadSqlWords } from './sqlCompletion';
 
 /**
  * Surface the non-blocking warnings an enabled formatter check produced. The
@@ -56,7 +57,7 @@ const tableClicks = new DoubleClickGate();
 /** Detects the double click that opens a bookmarked query in the Data Viewer. */
 const savedQueryClicks = new DoubleClickGate();
 
-/** Language IDs the PL/pgSQL formatter applies to. */
+/** Language IDs the PL/pgSQL formatter and the SQL autocomplete apply to. */
 const FORMATTER_LANGUAGES = ['sql', 'postgres', 'pgsql'];
 
 /**
@@ -382,6 +383,22 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.languages.registerDocumentFormattingEditProvider(lang, formattingProvider),
                 vscode.languages.registerDocumentRangeFormattingEditProvider(lang, formattingProvider)
             );
+        }
+
+        // Autocomplete in SQL files: the same suggestions as the Data Viewer's
+        // query bar, built by the same helpers.
+        try {
+            const completionApi = loadSqlCompletionApi(context.extensionPath);
+            const completionCache = new CompletionCatalogCache(connectionManager);
+            const completionProvider = new SqlFileCompletionProvider(
+                completionApi, completionCache, loadSqlWords(context.extensionPath, completionApi)
+            );
+            context.subscriptions.push(connectionManager.onConnectionChanged(() => completionCache.clear()));
+            for (const lang of FORMATTER_LANGUAGES) {
+                context.subscriptions.push(vscode.languages.registerCompletionItemProvider(lang, completionProvider, '.'));
+            }
+        } catch (err: unknown) {
+            outputChannel.appendLine(`[completion] ${getErrorStack(err)}`);
         }
 
         // Optional format-on-save, controlled by our own setting (default off).

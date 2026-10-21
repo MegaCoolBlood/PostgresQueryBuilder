@@ -37,6 +37,11 @@ bundle is missing — the textarea then stays the editor).
 - Completion logic is pure and exported (`extractTableReferences`,
   `completionContext`, `buildSuggestions`, …); test it in
   [src/test/queryEditor.test.ts](../../../src/test/queryEditor.test.ts).
+- **The same helpers serve SQL files.** [src/sqlCompletion.ts](../../../src/sqlCompletion.ts)
+  `require()`s `queryEditor.js` from the extension folder at runtime, so keep
+  them free of DOM access and keep their signatures (typed there as
+  `SqlCompletionApi`). The catalog queries live there too and back both the
+  query bar's `catalog` / `columns` requests and the file autocomplete.
 
 Follow [STYLEGUIDE.md](../../../STYLEGUIDE.md) for anything visual — no literal
 colours, no raw `z-index`, `.btn` classes, `icon()` for glyphs.

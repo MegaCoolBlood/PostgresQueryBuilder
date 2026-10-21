@@ -52,7 +52,8 @@ const MONACO_ENTRY = [
     `import '${MONACO_ESM}/base/browser/ui/codicons/codicon/codicon-modifiers.css';`,
     ...MONACO_CONTRIBS.map(c => `import '${MONACO_ESM}/editor/contrib/${c}.js';`),
     `import '${MONACO_ESM}/languages/definitions/pgsql/register.js';`,
-    // The keyword and built-in function lists of the grammar feed the autocomplete.
+    // The keyword and built-in function lists of the grammar feed the autocomplete
+    // (and, through dist/monaco/pgsql-words.json, the one of SQL files).
     `export { language as pgsqlLanguage } from '${MONACO_ESM}/languages/definitions/pgsql/pgsql.js';`
 ].join('\n');
 
@@ -89,6 +90,47 @@ async function buildMonaco() {
     console.log('[monaco] built dist/monaco/');
 }
 
+/**
+ * Write the keyword and built-in function lists of Monaco's PostgreSQL grammar
+ * to dist/monaco/pgsql-words.json. The autocomplete of SQL files runs in the
+ * extension host, which cannot load the Monaco bundle, and reads them from
+ * there — so it offers the same words as the query bar of the Data Viewer.
+ */
+async function buildPgsqlWords() {
+    const grammarFile = `${MONACO_ESM}/languages/definitions/pgsql/pgsql.js`;
+    if (!fs.existsSync(grammarFile)) {
+        return;
+    }
+    // Built in memory only; the named output makes outputFiles hold exactly this file.
+    const outfile = path.join(MONACO_OUT, 'pgsql-grammar.cjs');
+    const result = await esbuild.build({
+        entryPoints: [grammarFile], bundle: true, format: 'cjs', platform: 'node',
+        write: false, outfile, logLevel: 'warning'
+    });
+    const output = (result.outputFiles || []).find((f) => f.path === outfile);
+    if (!output) {
+        throw new Error('[monaco] bundling the PostgreSQL grammar produced no output');
+    }
+    const mod = { exports: {} };
+    new Function('module', 'exports', output.text)(mod, mod.exports);
+    const { language } = mod.exports;
+    if (!language) {
+        throw new Error('[monaco] the PostgreSQL grammar exports no `language`');
+    }
+    const json = JSON.stringify({
+        keywords: language.keywords || [],
+        operators: language.operators || [],
+        builtinFunctions: language.builtinFunctions || []
+    });
+    const out = path.join(MONACO_OUT, 'pgsql-words.json');
+    if (fs.existsSync(out) && fs.readFileSync(out, 'utf8') === json) {
+        return;
+    }
+    fs.mkdirSync(MONACO_OUT, { recursive: true });
+    fs.writeFileSync(out, json);
+    console.log('[monaco] wrote dist/monaco/pgsql-words.json');
+}
+
 const commonOptions = {
     bundle: true,
     format: 'cjs',
@@ -105,6 +147,7 @@ const commonOptions = {
 
 async function main() {
     await buildMonaco();
+    await buildPgsqlWords();
 
     const entries = [
         { entryPoints: ['src/extension.ts'], outfile: 'dist/extension.js' },

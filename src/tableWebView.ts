@@ -17,6 +17,7 @@ import type { ViewCapabilities, TableEditPlan } from './resultSource';
 import { resultColumnAliases } from './resultSource';
 import { addHiddenKeyColumns, isHiddenKeyColumn, planHiddenKeyColumns, type HiddenKeyColumn } from './hiddenKeyColumns';
 import { autoRefreshIntervalError, autoRefreshRefusal, formatAutoRefreshInterval, parseAutoRefreshInterval } from './autoRefresh';
+import { loadCompletionCatalog, loadCompletionColumns } from './sqlCompletion';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -160,13 +161,6 @@ export function buildCellEditorFileName(table: string, column: string, dataType:
         return cleaned || fallback;
     };
     return `${safe(table, 'result')}.${safe(column, 'value')}.${cellEditorFileExtension(dataType)}`;
-}
-
-/** What the SQL editor's autocomplete knows about the active connection. */
-export interface CompletionCatalog {
-    schemas: string[];
-    relations: Array<{ schema: string; name: string; kind: string }>;
-    searchPath: string[];
 }
 
 /** Webview URIs of the Monaco bundle the query bar loads. */
@@ -1310,9 +1304,9 @@ export class TableWebViewManager {
         let result: unknown = null;
         try {
             if (message.kind === 'catalog') {
-                result = await this.loadCompletionCatalog();
+                result = await loadCompletionCatalog(this.connectionManager);
             } else if (message.kind === 'columns') {
-                result = await this.loadCompletionColumns(String(message.schema ?? ''), String(message.table ?? ''));
+                result = await loadCompletionColumns(this.connectionManager, String(message.schema ?? ''), String(message.table ?? ''));
             } else if (message.kind === 'format') {
                 result = formatQueryBarText(String(message.sql ?? ''));
             }
@@ -1320,43 +1314,6 @@ export class TableWebViewManager {
             Logger.error('TableWebViewManager.handleQueryEditorRequest', err);
         }
         this.post(session, { command: 'queryEditorResponse', requestId: message.requestId, result });
-    }
-
-    /** Schemas, relations and search_path of the active connection; empty when not connected. */
-    private async loadCompletionCatalog(): Promise<CompletionCatalog> {
-        if (!this.connectionManager.isConnected()) {
-            return { schemas: [], relations: [], searchPath: [] };
-        }
-        const [relations, schemas, searchPath] = await Promise.all([
-            this.connectionManager.queryMetadata(buildRelationListQuery()),
-            this.connectionManager.queryMetadata(
-                `SELECT nspname FROM pg_catalog.pg_namespace
-                 WHERE nspname NOT IN ('pg_catalog', 'information_schema') AND nspname NOT LIKE 'pg\\_%'
-                 ORDER BY nspname`
-            ),
-            this.connectionManager.queryMetadata('SELECT unnest(current_schemas(false)) AS schema_name')
-        ]);
-        return {
-            schemas: schemas.map((r) => String(r.nspname)),
-            relations: relations.map((r) => ({ schema: String(r.table_schema), name: String(r.table_name), kind: String(r.rel_kind) })),
-            searchPath: searchPath.map((r) => String(r.schema_name))
-        };
-    }
-
-    private async loadCompletionColumns(schema: string, table: string): Promise<Array<{ name: string; type: string }>> {
-        if (!this.connectionManager.isConnected() || !schema || !table) {
-            return [];
-        }
-        const rows = await this.connectionManager.queryMetadata(
-            `SELECT a.attname AS column_name, pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type
-             FROM pg_catalog.pg_attribute a
-             JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
-             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-             WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped
-             ORDER BY a.attnum`,
-            [schema, table]
-        );
-        return rows.map((r) => ({ name: String(r.column_name), type: String(r.data_type) }));
     }
 
     private async handleBrowseExportLocation(ctx: MessageContext): Promise<void> {

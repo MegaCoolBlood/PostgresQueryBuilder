@@ -12,7 +12,9 @@
  * textarea simply stays.
  *
  * The top-level helpers are pure and exported for the tests; the DOM part only
- * runs inside the webview.
+ * runs inside the webview. The extension host loads the same helpers for the
+ * autocomplete of SQL files (src/sqlCompletion.ts), so they must stay free of
+ * DOM access and keep their signatures.
  */
 (function () {
     'use strict';
@@ -499,6 +501,29 @@
         return Math.max(min, Math.min(max, h));
     }
 
+    // The blob URL Monaco's workers start from. A webview cannot start a worker
+    // from its resource URL directly, so a tiny script that imports the real one
+    // is wrapped in a blob. The URL is created once, on first use, and shared by
+    // every worker Monaco starts; `release()` revokes it (when the page goes).
+    function createWorkerUrlProvider(workerScriptUrl, urlApi) {
+        let url = null;
+        return {
+            get() {
+                if (url === null) {
+                    const source = `importScripts(${JSON.stringify(workerScriptUrl)});`;
+                    url = urlApi.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+                }
+                return url;
+            },
+            release() {
+                if (url !== null) {
+                    urlApi.revokeObjectURL(url);
+                    url = null;
+                }
+            }
+        };
+    }
+
     const api = {
         tokenizeSql,
         extractTableReferences,
@@ -512,7 +537,8 @@
         cssColorToHex,
         monacoBaseTheme,
         themeColorsFrom,
-        editorHeight
+        editorHeight,
+        createWorkerUrlProvider
     };
 
     if (typeof module !== 'undefined' && module.exports) {
@@ -775,13 +801,11 @@
         function loadMonaco(assets) {
             return new Promise(resolve => {
                 if (!assets || !assets.script) { resolve(null); return; }
+                const workerUrl = createWorkerUrlProvider(assets.worker, URL);
+                window.addEventListener('pagehide', () => workerUrl.release());
                 window.MonacoEnvironment = {
-                    // The worker script is loaded through a blob, since a webview
-                    // cannot start a worker from its resource URL directly.
                     getWorker(_moduleId, label) {
-                        const source = `importScripts(${JSON.stringify(assets.worker)});`;
-                        const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-                        return new Worker(url, { name: label });
+                        return new Worker(workerUrl.get(), { name: label });
                     }
                 };
                 const link = document.createElement('link');

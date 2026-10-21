@@ -16,8 +16,53 @@ const {
     cssColorToHex,
     monacoBaseTheme,
     themeColorsFrom,
-    editorHeight
+    editorHeight,
+    createWorkerUrlProvider
 } = editor;
+
+// ===== createWorkerUrlProvider =====
+
+/** Stand-in for the browser's URL.createObjectURL / revokeObjectURL. */
+function fakeUrlApi() {
+    const created: Blob[] = [];
+    const revoked: string[] = [];
+    return {
+        created,
+        revoked,
+        createObjectURL: (blob: Blob) => { created.push(blob); return `blob:vscode-webview/${created.length}`; },
+        revokeObjectURL: (url: string) => { revoked.push(url); }
+    };
+}
+
+test('createWorkerUrlProvider creates one blob URL and shares it between all workers', () => {
+    const urls = fakeUrlApi();
+    const provider = createWorkerUrlProvider('https://file.vscode-resource/dist/monaco/editor.worker.js', urls);
+    assert.equal(urls.created.length, 0, 'nothing is created before a worker is needed');
+    const first = provider.get();
+    const second = provider.get();
+    assert.equal(first, second);
+    assert.equal(urls.created.length, 1, 'starting more workers creates no further blob URLs');
+});
+
+test('createWorkerUrlProvider wraps the worker script in an importScripts call', async () => {
+    const urls = fakeUrlApi();
+    createWorkerUrlProvider('https://x/editor "worker".js', urls).get();
+    assert.equal(await urls.created[0].text(), 'importScripts("https://x/editor \\"worker\\".js");');
+    assert.equal(urls.created[0].type, 'text/javascript');
+});
+
+test('createWorkerUrlProvider revokes its URL once on release and creates a fresh one if needed again', () => {
+    const urls = fakeUrlApi();
+    const provider = createWorkerUrlProvider('w.js', urls);
+    provider.release();
+    assert.deepEqual(urls.revoked, [], 'nothing to revoke before first use');
+    const url = provider.get();
+    provider.release();
+    provider.release();
+    assert.deepEqual(urls.revoked, [url], 'revoked exactly once');
+    assert.notEqual(provider.get(), url);
+    assert.equal(urls.created.length, 2);
+});
 
 const CATALOG = {
     schemas: ['public', 'sales', 'Archive'],

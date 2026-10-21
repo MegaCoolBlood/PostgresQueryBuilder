@@ -545,14 +545,14 @@ test('autoRefreshOptions offers Off, the presets and a custom interval', () => {
     const options = autoRefreshOptions(0);
     assert.deepEqual(options.map((o: any) => o.value), [...AUTO_REFRESH_PRESETS.map(String), 'custom']);
     assert.deepEqual(options.map((o: any) => o.label), [
-        'Off', 'Every 5 s', 'Every 10 s', 'Every 30 s', 'Every 1 min', 'Every 5 min', 'Custom interval'
+        'Off', 'Every 1 s', 'Every 5 s', 'Every 10 s', 'Every 30 s', 'Every 1 min', 'Every 5 min', 'Custom interval'
     ]);
 });
 
 test('autoRefreshOptions lists a custom interval in use in order of length', () => {
     const options = autoRefreshOptions(90);
-    assert.deepEqual(options.map((o: any) => o.value), ['0', '5', '10', '30', '60', '90', '300', 'custom']);
-    assert.equal(options[5].label, 'Every 1 min 30 s');
+    assert.deepEqual(options.map((o: any) => o.value), ['0', '1', '5', '10', '30', '60', '90', '300', 'custom']);
+    assert.equal(options[6].label, 'Every 1 min 30 s');
     assert.equal(autoRefreshOptions(30).length, AUTO_REFRESH_PRESETS.length + 1, 'a preset is not listed twice');
 });
 

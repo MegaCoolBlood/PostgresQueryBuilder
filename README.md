@@ -87,7 +87,7 @@ rest. Column headers carry the name and the data type, and the comment of a
 column as a tooltip.
 
 **Auto refresh**, the drop-down with the circular-arrow icon at the right of the
-toolbar, runs the query again every 5 s, 10 s, 30 s, 1 min, 5 min or at a
+toolbar, runs the query again every 1 s, 5 s, 10 s, 30 s, 1 min, 5 min or at a
 custom interval (`45s`, `2m`, `1h 30m`). It reloads as many rows as are shown
 and keeps the scroll position and selection. It pauses while there are unsaved
 edits, while the tab is hidden and while you are typing in a cell or a dialog
@@ -218,6 +218,15 @@ fields wherever it comes from.
   recognised and asked for — column names that merely look like variables are
   not.
 - **Bookmark Query** stores the statement under the cursor.
+- **Autocomplete** in SQL files offers the same suggestions as the Data
+  Viewer's query bar, for the statement the cursor is in — also inside a
+  PL/pgSQL function body or a `DO` block: the columns of the tables in that
+  statement with their types (after `o.` only those of the table aliased `o`),
+  tables and views of the connection where a table name belongs (after `sales.`
+  those of that schema), and PostgreSQL's keywords and built-in functions.
+  Without a connection only keywords and functions are offered. Turn it off
+  with `postgresQueryBuilder.completion.enable` if another SQL extension
+  already completes your files.
 
 Every statement that changes data — from the grid, the query bar or the SQL
 editor — is recorded in the **Modify History** view with its table and its
@@ -319,7 +328,7 @@ duplicating, deleting and moving between the personal and the workspace scope.
 | `Alt+←` / `Alt+→` | Single record view | Previous / next row |
 | `Esc` | Dialogs | Close |
 | `Shift+Alt+F` | SQL files, query bar | Format |
-| `Ctrl+Space` | Query bar | Show the autocomplete suggestions |
+| `Ctrl+Space` | SQL files, query bar | Show the autocomplete suggestions |
 
 ---
 
@@ -334,6 +343,7 @@ duplicating, deleting and moving between the personal and the workspace scope.
 | `postgresQueryBuilder.thousandSeparator` | space | Separator numbers are displayed with |
 | `postgresQueryBuilder.alwaysQualifySchema` | `false` | Always write the schema into generated `SELECT`s |
 | `postgresQueryBuilder.alwaysQuote` | `false` | Always quote identifiers in generated `SELECT`s |
+| `postgresQueryBuilder.completion.enable` | `true` | Autocomplete tables, columns, functions and keywords in SQL files |
 | `postgresQueryBuilder.duplicateRowResetDefaults` | `volatile` | Which columns a duplicated row leaves to their database default |
 | `postgresQueryBuilder.savedQueriesFile` | `postgres-query-builder.queries.json` | Where shared bookmarked queries are kept |
 | `postgresQueryBuilder.customMappingsFile` | `postgres-query-builder.mappings.json` | Where shared column mappings are kept |
