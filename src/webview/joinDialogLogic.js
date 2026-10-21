@@ -200,6 +200,26 @@ function literalToCustomCondition(literal) {
     };
 }
 
+/**
+ * State of a table's "Save alias" button. An alias edited in the dialog is
+ * used for the statement only; saving makes it the table's alias from then on.
+ * Nothing to save while the field is empty or still holds the saved alias.
+ */
+function aliasSaveState(alias, savedAlias, tableName) {
+    const a = String(alias == null ? '' : alias).trim();
+    if (!a) {
+        return { canSave: false, title: 'Enter an alias to save it for ' + tableName };
+    }
+    if (a === savedAlias) {
+        return { canSave: false, title: '"' + a + '" is the saved alias of ' + tableName };
+    }
+    return {
+        canSave: true,
+        title: 'Save "' + a + '" as the alias of ' + tableName +
+            ' (otherwise it applies to this statement only) and use it from now on when the table is dragged into an editor, joined or completed after FROM / JOIN'
+    };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         uniqueAlias,
@@ -210,6 +230,7 @@ if (typeof module !== 'undefined' && module.exports) {
         formatOperand,
         formatCustomCondition,
         formatSqlLiteral,
-        literalToCustomCondition
+        literalToCustomCondition,
+        aliasSaveState
     };
 }

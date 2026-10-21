@@ -8,7 +8,7 @@ import { SavedQueryStore, SavedQueryParameter } from './savedQueryStore';
 import { ManageBookmarksPanel } from './manageBookmarksPanel';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
 import { buildRelatedTableJoin, deriveQualifier, type RelatedJoinCondition } from './statementBuilder';
-import { QualifierStore } from './tableStatementDrop';
+import { QualifierStore, onDidChangeTableAliases } from './tableStatementDrop';
 import { getErrorMessage, Logger } from './logger';
 import { getIconSprite, getSharedStyles } from './webviewAssets';
 import { formatSqlChecked } from './plpgsqlFormatter';
@@ -256,6 +256,16 @@ export class TableWebViewManager {
         context.subscriptions.push(
             vscode.workspace.onDidSaveTextDocument((doc) => this.pushCellEditorValue(doc)),
             vscode.workspace.onDidCloseTextDocument((doc) => this.releaseCellEditor(doc))
+        );
+
+        // A saved table alias changes what the query bar's autocomplete writes
+        // after a table, so every open panel drops the catalog it has cached.
+        context.subscriptions.push(
+            onDidChangeTableAliases(() => {
+                for (const session of this.sessions.values()) {
+                    this.post(session, { command: 'completionCatalogChanged' });
+                }
+            })
         );
     }
 

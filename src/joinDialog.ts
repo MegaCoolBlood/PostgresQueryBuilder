@@ -4,6 +4,7 @@ import * as path from 'path';
 import { buildJoinSelect, JoinClause, JoinTableSpec, JoinType } from './statementBuilder';
 import { getNonce, buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
 import { icon } from './webviewAssets';
+import { getErrorMessage } from './logger';
 
 /**
  * Source of the shared join-dialog helper logic, inlined into the webview
@@ -21,6 +22,8 @@ export interface JoinDialogTable {
     table: string;
     tableReference: string;
     alias: string;
+    /** The alias stored for the table, if any; "Save alias" is offered when the edited one differs. */
+    savedAlias?: string;
     /** Already-quoted column identifiers. */
     columns: string[];
 }
@@ -65,26 +68,26 @@ export interface JoinDialogAddPayload {
 interface ConfirmPayload {
     tables: JoinTableSpec[];
     joins: JoinClause[];
-    aliasMap: Array<{ schema: string; table: string; alias: string }>;
 }
 
 export interface JoinDialogResult {
     sql: string;
-    /** Final alias chosen for each table, to be persisted by the caller. */
-    aliases: Array<{ schema: string; table: string; alias: string }>;
 }
 
 /**
  * Show a modal-like webview that lets the user reorder tables, edit aliases
  * and adjust join conditions before inserting a multi-table JOIN SELECT.
- * Resolves with the final SQL and chosen aliases, or `undefined` if cancelled.
+ * Resolves with the final SQL, or `undefined` if cancelled. An alias edited in
+ * the dialog is used for this statement only; `onSaveAlias` stores it for the
+ * table when the user presses that row's "Save alias" button.
  */
 export function showJoinDialog(
     tables: JoinDialogTable[],
     fkEdges: JoinDialogFkEdge[],
     initialJoins: JoinClause[],
     onAddTables?: () => Promise<JoinDialogAddPayload | undefined>,
-    onRemoveTable?: (schema: string, table: string) => void
+    onRemoveTable?: (schema: string, table: string) => void,
+    onSaveAlias?: (schema: string, table: string, alias: string) => Promise<void>
 ): Promise<JoinDialogResult | undefined> {
     return new Promise<JoinDialogResult | undefined>(resolve => {
         const panel = vscode.window.createWebviewPanel(
@@ -101,7 +104,7 @@ export function showJoinDialog(
                 const payload = msg.payload as ConfirmPayload;
                 const sql = buildJoinSelect(payload.tables, payload.joins);
                 settled = true;
-                resolve({ sql, aliases: payload.aliasMap });
+                resolve({ sql });
                 panel.dispose();
             } else if (msg?.command === 'cancel') {
                 settled = true;
@@ -117,6 +120,17 @@ export function showJoinDialog(
                 }
             } else if (msg?.command === 'tableRemoved') {
                 onRemoveTable?.(msg.schema, msg.table);
+            } else if (msg?.command === 'saveAlias') {
+                const alias = String(msg.alias ?? '').trim();
+                if (!onSaveAlias || !alias) {
+                    return;
+                }
+                try {
+                    await onSaveAlias(msg.schema, msg.table, alias);
+                    panel.webview.postMessage({ command: 'aliasSaved', schema: msg.schema, table: msg.table, alias });
+                } catch (err: unknown) {
+                    vscode.window.showErrorMessage(`Saving the alias failed: ${getErrorMessage(err)}`);
+                }
             }
         });
 
@@ -186,7 +200,7 @@ function getHtml(
     }`;
     const body = `
     <h2>Build JOIN SELECT</h2>
-    <div class="hint">Reorder tables, rename aliases and adjust join conditions. Joins were pre-filled from existing primary/foreign keys where possible. Use “+ Add fixed condition” to add extra ON predicates such as <code>CURRENT_TIMESTAMP BETWEEN t.valid_from AND t.valid_to</code> or <code>t.type = 'TGB'</code>.</div>
+    <div class="hint">Reorder tables, rename aliases and adjust join conditions. A renamed alias applies to this statement only — the save button next to it keeps it as the table's alias from then on. Joins were pre-filled from existing primary/foreign keys where possible. Use “+ Add fixed condition” to add extra ON predicates such as <code>CURRENT_TIMESTAMP BETWEEN t.valid_from AND t.valid_to</code> or <code>t.type = 'TGB'</code>.</div>
 
     <div class="section-title">Tables (order)</div>
     <div id="tables"></div>
@@ -214,6 +228,11 @@ function getHtml(
     let order = data.tables.map((_, i) => i);
     // aliases keyed by original index
     let aliases = data.tables.map(t => t.alias);
+    // Alias stored for each schema.table; an alias edited here applies to this
+    // statement only until its "Save alias" button is pressed.
+    const savedAliases = {};
+    const tableKey = t => t.schema + '.' + t.table;
+    data.tables.forEach(t => { if (t.savedAlias) savedAliases[tableKey(t)] = t.savedAlias; });
     // joins keyed by original index -> { type, conditions: [{leftOrig,leftColumn,rightColumn}] }
     // where leftOrig is the ORIGINAL index of the partner (earlier) table, so
     // the relationship survives reordering and renaming.
@@ -353,6 +372,32 @@ function getHtml(
 
     function setAlias(origIdx, value) {
         aliases[origIdx] = value.trim() || aliases[origIdx];
+    }
+
+    function saveAliasButton(origIdx) {
+        const t = data.tables[origIdx];
+        const state = aliasSaveState(aliases[origIdx], savedAliases[tableKey(t)], t.schema + '.' + t.table);
+        return '<button class="btn btn-sm btn-icon" data-savealias="' + origIdx + '" title="' + escapeHtml(state.title) + '"' +
+            (state.canSave ? '' : ' disabled') + '>${icon('save')}</button>';
+    }
+
+    function updateSaveAliasButton(origIdx, typed) {
+        const btn = document.querySelector('[data-savealias="' + origIdx + '"]');
+        if (!btn) return;
+        const t = data.tables[origIdx];
+        const state = aliasSaveState(typed, savedAliases[tableKey(t)], t.schema + '.' + t.table);
+        btn.disabled = !state.canSave;
+        btn.title = state.title;
+    }
+
+    // Take over what is typed in the row's alias field and store it for the table.
+    function saveAlias(origIdx) {
+        const input = document.querySelector('[data-alias="' + origIdx + '"]');
+        if (input) setAlias(origIdx, input.value);
+        const t = data.tables[origIdx];
+        if (!aliasSaveState(aliases[origIdx], savedAliases[tableKey(t)], '').canSave) return;
+        vscode.postMessage({ command: 'saveAlias', schema: t.schema, table: t.table, alias: aliases[origIdx] });
+        render();
     }
 
     // Remove the table at the given display position from the join. Its own join
@@ -513,6 +558,7 @@ function getHtml(
                 '<span class="badge">' + (pos === 0 ? 'FROM' : 'JOIN') + '</span>' +
                 '<span class="name">' + escapeHtml(t.schema + '.' + t.table) + '</span>' +
                 ' as <input class="alias" data-alias="' + oi + '" value="' + escapeHtml(aliases[oi]) + '">' +
+                saveAliasButton(oi) +
                 '<button class="btn btn-ghost btn-icon remove-table" data-remove="' + pos + '" title="Remove table from join" ' +
                 (order.length <= 1 ? 'disabled' : '') + '>${icon('close')}</button>';
             tablesEl.appendChild(row);
@@ -594,7 +640,19 @@ function getHtml(
         document.querySelectorAll('[data-remove]').forEach(b => b.onclick = () => removeTable(+b.dataset.remove));
         bindDragAndDrop();
         document.querySelectorAll('[data-alias]').forEach(inp => {
+            // The save button follows the typing; the statement is rebuilt on change.
+            inp.oninput = () => updateSaveAliasButton(+inp.dataset.alias, inp.value);
             inp.onchange = () => { setAlias(+inp.dataset.alias, inp.value); render(); };
+        });
+        document.querySelectorAll('[data-savealias]').forEach(btn => {
+            // Acting on mousedown keeps the click from being lost: leaving the
+            // alias field would otherwise re-render the row under the pointer.
+            btn.onmousedown = e => {
+                if (e.button !== 0 || btn.disabled) return;
+                e.preventDefault();
+                saveAlias(+btn.dataset.savealias);
+            };
+            btn.onclick = e => { if (e.detail === 0) saveAlias(+btn.dataset.savealias); };
         });
         document.querySelectorAll('[data-jtype]').forEach(sel => {
             sel.onchange = () => {
@@ -780,6 +838,7 @@ function getHtml(
             const alias = uniqueAlias(nt.alias || nt.table, order.map(oi => aliases[oi]));
             const origIdx = data.tables.length;
             data.tables.push(nt);
+            if (nt.savedAlias && !savedAliases[tableKey(nt)]) savedAliases[tableKey(nt)] = nt.savedAlias;
             aliases.push(alias);
             order.push(origIdx);
             computeAutoJoin(origIdx);
@@ -801,6 +860,10 @@ function getHtml(
     window.addEventListener('message', ev => {
         const m = ev.data;
         if (m && m.command === 'addTables') addTables(m.payload);
+        if (m && m.command === 'aliasSaved') {
+            savedAliases[m.schema + '.' + m.table] = m.alias;
+            render();
+        }
     });
 
     document.getElementById('confirm').onclick = () => {
@@ -833,12 +896,7 @@ function getHtml(
                     .filter(s => s && s.length > 0)
             });
         }
-        const aliasMap = order.map(oi => ({
-            schema: data.tables[oi].schema,
-            table: data.tables[oi].table,
-            alias: aliases[oi]
-        }));
-        vscode.postMessage({ command: 'confirm', payload: { tables, joins: joinsArr, aliasMap } });
+        vscode.postMessage({ command: 'confirm', payload: { tables, joins: joinsArr } });
     };
     document.getElementById('cancel').onclick = () => vscode.postMessage({ command: 'cancel' });
 

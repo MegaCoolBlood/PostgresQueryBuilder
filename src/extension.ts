@@ -15,7 +15,7 @@ import { SavedQueryDragController, SavedQueryDropProvider } from './savedQueryDr
 import { ManageMappingsPanel } from './manageMappingsPanel';
 import { ManageBookmarksPanel } from './manageBookmarksPanel';
 import { QueryRunner } from './queryRunner';
-import { TableDragAndDropController, TableStatementDropProvider, QualifierStore } from './tableStatementDrop';
+import { TableDragAndDropController, TableStatementDropProvider, QualifierStore, onDidChangeTableAliases } from './tableStatementDrop';
 import { ViewDataFromSelect } from './viewDataFromSelect';
 import { Logger, getErrorMessage, getErrorStack } from './logger';
 import { formatSqlChecked } from './plpgsqlFormatter';
@@ -395,7 +395,11 @@ export function activate(context: vscode.ExtensionContext) {
             const completionProvider = new SqlFileCompletionProvider(
                 completionApi, completionCache, loadSqlWords(context.extensionPath, completionApi)
             );
-            context.subscriptions.push(connectionManager.onConnectionChanged(() => completionCache.clear()));
+            context.subscriptions.push(
+                connectionManager.onConnectionChanged(() => completionCache.clear()),
+                // A saved table alias is offered at once, not only once the cache expires.
+                onDidChangeTableAliases(() => completionCache.clear())
+            );
             for (const lang of FORMATTER_LANGUAGES) {
                 context.subscriptions.push(vscode.languages.registerCompletionItemProvider(lang, completionProvider, '.'));
             }

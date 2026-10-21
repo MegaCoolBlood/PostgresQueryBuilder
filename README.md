@@ -167,7 +167,10 @@ The join builder assembles a query across several tables: add the tables,
 reorder them by dragging, name their aliases, choose `INNER`, `LEFT`, `RIGHT`,
 `FULL` or `CROSS`, and take the join condition from the foreign keys that
 already exist between them. Further conditions and self-joins are possible, the
-SQL is shown while you build it, and the result opens as an ordinary grid.
+SQL is shown while you build it, and the result opens as an ordinary grid. A
+renamed alias applies to that statement only; the save button next to it keeps
+it as the table's alias, used from then on when the table is dragged into an
+editor, joined or completed after `FROM` / `JOIN`.
 
 ### Export
 
@@ -229,9 +232,10 @@ fields wherever it comes from.
   already completes your files.
 - A table completed after `FROM` or `JOIN` — in SQL files and in the query bar
   — is written together with its alias (`mitarbeiter_tag mtd`): the alias
-  chosen for it when dragging it into an editor, otherwise the part of its
-  first column before the underscore, numbered if the statement already uses
-  it. `postgresQueryBuilder.completion.tableAlias` turns this off.
+  saved for it (when dragging it into an editor or with the join builder's save
+  button), otherwise the part of its first column before the underscore,
+  numbered if the statement already uses it. A newly saved alias is offered
+  right away. `postgresQueryBuilder.completion.tableAlias` turns this off.
 
 Every statement that changes data — from the grid, the query bar or the SQL
 editor — is recorded in the **Modify History** view with its table and its

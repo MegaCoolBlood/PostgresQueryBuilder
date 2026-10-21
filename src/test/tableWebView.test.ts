@@ -7,6 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { buildCustomResultColumns, buildColumnProbeSql, buildCellEditorFileName, cellEditorFileExtension, TableWebViewManager, queryEditorAssets, formatQueryBarText } from '../tableWebView';
 import { QueryRunner } from '../queryRunner';
+import { QualifierStore } from '../tableStatementDrop';
 import { ManageBookmarksPanel } from '../manageBookmarksPanel';
 import { getIconSprite, getSharedStyles } from '../webviewAssets';
 import { formatSqlChecked } from '../plpgsqlFormatter';
@@ -1189,6 +1190,16 @@ test('data viewer: the SQL editor module is injected before the grid script that
     assert.ok(html.indexOf(editorJs) < html.indexOf(gridJs), 'the editor module must come first');
     // The stub webview cannot map resource URIs, so the panel falls back to the text box.
     assert.ok(html.includes('window.QUERY_EDITOR_ASSETS = null;'));
+});
+
+test('query editor: a saved table alias makes every open panel drop its cached catalog', async () => {
+    const { panel, globalStateStore } = await openCustomQueryPanel();
+    const memento: any = {
+        get: (key: string, def?: any) => (key in globalStateStore ? globalStateStore[key] : def),
+        update: (key: string, value: any) => { globalStateStore[key] = value; return Promise.resolve(); }
+    };
+    await new QualifierStore(memento).set('public', 'orders', 'o');
+    assert.ok(panel.posted.some((m: any) => m.command === 'completionCatalogChanged'));
 });
 
 test('query editor: the catalog carries the alias each table is completed with', async () => {

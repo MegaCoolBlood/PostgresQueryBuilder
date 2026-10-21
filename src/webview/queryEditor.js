@@ -649,7 +649,7 @@
                 const resolve = pending.get(msg.requestId);
                 pending.delete(msg.requestId);
                 resolve(msg.result);
-            } else if (msg.command === 'connectionChanged') {
+            } else if (msg.command === 'connectionChanged' || msg.command === 'completionCatalogChanged') {
                 catalog = null;
                 columns.clear();
             }

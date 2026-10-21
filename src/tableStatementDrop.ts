@@ -50,6 +50,13 @@ const STATEMENT_KINDS: Array<{ kind: StatementKind; label: string }> = [
 const DEFAULT_KIND: StatementKind = 'select';
 
 /**
+ * Fires whenever a table alias is saved, by any {@link QualifierStore}: the
+ * autocomplete drops what it cached, so the new alias is offered at once.
+ */
+const tableAliasesChanged = new vscode.EventEmitter<{ schema: string; table: string }>();
+export const onDidChangeTableAliases = tableAliasesChanged.event;
+
+/**
  * Persists the chosen alias/qualifier per table so it is reused on subsequent
  * drops of the same table.
  */
@@ -67,6 +74,7 @@ export class QualifierStore {
         const map = { ...this.memento.get<Record<string, string>>(QualifierStore.KEY, {}) };
         map[`${schema}.${table}`] = qualifier;
         await this.memento.update(QualifierStore.KEY, map);
+        tableAliasesChanged.fire({ schema, table });
     }
 }
 
@@ -283,6 +291,7 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
             tableReference: t.tableReference,
             alias: this.qualifierStore.get(t.schema, t.table)
                 ?? deriveQualifier(t.firstColumnRaw, t.table),
+            savedAlias: this.qualifierStore.get(t.schema, t.table),
             columns: t.columns
         }));
 
@@ -388,6 +397,7 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
                     tableReference: td.tableReference,
                     alias: this.qualifierStore.get(td.schema, td.table)
                         ?? deriveQualifier(td.firstColumnRaw, td.table),
+                    savedAlias: this.qualifierStore.get(td.schema, td.table),
                     columns: td.columns
                 };
             });
@@ -422,15 +432,14 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
             }
         };
 
-        const result = await showJoinDialog(dialogTables, fkEdges, initialJoins, onAddTables, onRemoveTable);
+        // An alias changed in the dialog applies to this statement only; it is
+        // kept for the table only when its "Save alias" button is pressed.
+        const onSaveAlias = (schema: string, table: string, alias: string): Promise<void> =>
+            this.qualifierStore.set(schema, table, alias);
+
+        const result = await showJoinDialog(dialogTables, fkEdges, initialJoins, onAddTables, onRemoveTable, onSaveAlias);
         if (!result) {
             return undefined;
-        }
-        // Remember the chosen alias for each table so it is reused next time.
-        for (const a of result.aliases) {
-            if (a.alias && a.alias.trim()) {
-                await this.qualifierStore.set(a.schema, a.table, a.alias.trim());
-            }
         }
         return result.sql;
     }

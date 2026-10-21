@@ -11,10 +11,31 @@ const {
     formatOperand,
     formatCustomCondition,
     formatSqlLiteral,
-    literalToCustomCondition
+    literalToCustomCondition,
+    aliasSaveState
 } = require(
     path.join(__dirname, '../../../src/webview/joinDialogLogic.js')
 );
+
+// ===== aliasSaveState =====
+
+test('aliasSaveState offers saving an alias that differs from the saved one', () => {
+    const state = aliasSaveState('mt', 'mtd', 'public.mitarbeiter_tag');
+    assert.equal(state.canSave, true);
+    assert.match(state.title, /Save "mt" as the alias of public\.mitarbeiter_tag/);
+    assert.match(state.title, /this statement only/);
+    assert.equal(aliasSaveState('  mt ', undefined, 'public.t').canSave, true, 'a table without a saved alias');
+});
+
+test('aliasSaveState has nothing to save for the saved alias or an empty field', () => {
+    const same = aliasSaveState(' mtd ', 'mtd', 'public.mitarbeiter_tag');
+    assert.equal(same.canSave, false);
+    assert.equal(same.title, '"mtd" is the saved alias of public.mitarbeiter_tag');
+    const empty = aliasSaveState('   ', 'mtd', 'public.mitarbeiter_tag');
+    assert.equal(empty.canSave, false);
+    assert.equal(empty.title, 'Enter an alias to save it for public.mitarbeiter_tag');
+    assert.equal(aliasSaveState(null, undefined, 'public.t').canSave, false);
+});
 
 // ===== uniqueAlias =====
 
