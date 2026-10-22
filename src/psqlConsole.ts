@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { ConnectionConfig, ConnectionManager } from './connectionManager';
+import { ConnectionConfig, ConnectionManager, effectiveSslMode } from './connectionManager';
 import { Logger, getErrorMessage } from './logger';
 
 /** Shown to the server as `application_name`, so the session is recognisable in `pg_stat_activity`. */
@@ -21,7 +21,8 @@ export function escapePgOption(value: string): string {
  * password travels as `PGPASSWORD`, so it never appears on the command line or
  * in the terminal; a `search_path` override of the active connection is applied
  * through `PGOPTIONS` so the console resolves names like the rest of the
- * extension does.
+ * extension does. The connection's SSL mode is passed on as `PGSSLMODE`, so
+ * psql never sends the password over a connection the extension would refuse.
  */
 export function buildPsqlEnvironment(
     config: ConnectionConfig,
@@ -40,6 +41,18 @@ export function buildPsqlEnvironment(
     }
     if (searchPath && searchPath.trim() !== '') {
         env.PGOPTIONS = `-c search_path=${escapePgOption(searchPath.trim())}`;
+    }
+    // Without an sslMode the connection keeps the old behaviour, which is
+    // libpq's own default (`prefer`), so nothing is set then.
+    if (config.sslMode !== undefined) {
+        const sslMode = effectiveSslMode(config);
+        env.PGSSLMODE = sslMode;
+        if (sslMode === 'verify-full') {
+            // `system` (libpq 16+) means the operating system's trusted CAs, as
+            // the extension uses; an older psql cannot read it and refuses to
+            // connect rather than skipping the check.
+            env.PGSSLROOTCERT = config.caFile && config.caFile.trim() !== '' ? config.caFile.trim() : 'system';
+        }
     }
     return env;
 }
@@ -202,7 +215,7 @@ export class PsqlConsole {
 
         let password: string | undefined;
         try {
-            password = await this.connectionManager.getStoredPassword(config.name);
+            password = await this.connectionManager.getStoredPassword(config);
         } catch (err: unknown) {
             Logger.error('PsqlConsole.open', err);
             vscode.window.showWarningMessage(`The stored password could not be read, psql will ask for it: ${getErrorMessage(err)}`);

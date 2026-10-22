@@ -358,3 +358,30 @@ test('the placeholders named by the style guide exist in the data viewer templat
         assert.ok(html.includes(placeholder), `${placeholder} is documented but absent from tableView.html`);
     }
 });
+
+// ===== Blocked browser dialogs and inline handlers =====
+
+test('no webview code calls confirm(), alert() or prompt(), which the webview sandbox blocks', () => {
+    const files = [
+        ...fs.readdirSync(WEBVIEW).filter(f => f.endsWith('.js')).map(f => path.join(WEBVIEW, f)),
+        ...fs.readdirSync(SRC).filter(f => f.endsWith('.ts')).map(f => path.join(SRC, f))
+    ];
+    const call = /(?:^|[^\w.$])(?:window\.)?(confirm|alert|prompt)\s*\(/;
+    const offenders: string[] = [];
+    for (const file of files) {
+        fs.readFileSync(file, 'utf8').split(/\r?\n/).forEach((line, i) => {
+            const code = line.replace(/\/\/.*$/, '');
+            if (/^\s*\*/.test(code)) return;
+            if (call.test(code)) offenders.push(`${path.relative(ROOT, file)}:${i + 1}: ${line.trim()}`);
+        });
+    }
+    assert.deepEqual(offenders, [], 'ask on the host with a modal showWarningMessage instead');
+});
+
+test('the data viewer has no inline event handlers, which its CSP blocks', () => {
+    for (const file of ['tableView.html', 'tableView.js']) {
+        const src = fs.readFileSync(path.join(WEBVIEW, file), 'utf8');
+        const inline = src.match(/\son[a-z]+=\\?["']/g) || [];
+        assert.deepEqual(inline, [], `${file} uses inline handlers; use data-* attributes and delegation`);
+    }
+});

@@ -6,6 +6,7 @@ import {
     buildEditPlan,
     chooseIdentity,
     disambiguateColumnNames,
+    hasEqualityOperator,
     identityWarning,
     isWritableRelkind,
     resolveFieldSources,
@@ -80,8 +81,8 @@ test('resolveFieldSources maps aliased fields back to their table column', () =>
     const attributes = { '100:1': 'id', '100:2': 'name' };
 
     assert.deepEqual(resolveFieldSources(fields, relations, attributes), [
-        { name: 'user_id', tableOid: 100, schema: 'public', table: 'users', sourceColumn: 'id' },
-        { name: 'user_name', tableOid: 100, schema: 'public', table: 'users', sourceColumn: 'name' }
+        { name: 'user_id', tableOid: 100, schema: 'public', table: 'users', sourceColumn: 'id', dataTypeID: 23 },
+        { name: 'user_name', tableOid: 100, schema: 'public', table: 'users', sourceColumn: 'name', dataTypeID: 25 }
     ]);
 });
 
@@ -130,6 +131,48 @@ test('chooseIdentity reports "none" when the table has no column in the result',
 test('chooseIdentity requires the complete composite key', () => {
     const columns = [src('ts', 100, 'log'), src('msg', 100, 'log')];
     assert.equal(chooseIdentity(['ts', 'level'], columns).strategy, 'row');
+});
+
+// ===== row identity: columns without an equality operator =====
+
+test('chooseIdentity leaves json, xml and geometric columns out of a row identity', () => {
+    const columns = [
+        { ...src('id', 100, 'log'), dataTypeID: 23 },
+        { ...src('payload', 100, 'log'), dataTypeID: 114 },
+        { ...src('doc', 100, 'log'), dataTypeID: 142 },
+        { ...src('pos', 100, 'log'), dataTypeID: 600 },
+        { ...src('tags', 100, 'log'), dataTypeID: 199 },
+        { ...src('meta', 100, 'log'), dataTypeID: 3802 }
+    ];
+    const result = chooseIdentity([], columns);
+
+    assert.equal(result.strategy, 'row');
+    // jsonb has an equality operator and stays.
+    assert.deepEqual(result.identityColumns.map(c => c.sourceColumn), ['id', 'meta']);
+});
+
+test('chooseIdentity keeps a row identity empty rather than matching arbitrary rows', () => {
+    const columns = [{ ...src('payload', 100, 'log'), dataTypeID: 114 }];
+    const result = chooseIdentity([], columns);
+
+    assert.equal(result.strategy, 'row');
+    assert.deepEqual(result.identityColumns, []);
+});
+
+test('identityWarning explains a table whose rows cannot be matched at all', () => {
+    const caps = buildEditPlan([{ ...src('payload', 100, 'log'), dataTypeID: 114 }], {});
+
+    assert.match(caps.warning ?? '', /cannot be updated or deleted at all/);
+    assert.equal(caps.canInsert, true);
+});
+
+test('hasEqualityOperator rejects json, xml and geometric types including arrays', () => {
+    for (const t of ['json', '_json', 'xml', 'point', 'line', 'lseg', 'box', 'path', 'polygon', 'circle', '_box']) {
+        assert.equal(hasEqualityOperator(t), false, t);
+    }
+    for (const t of ['jsonb', 'int4', 'text', 'timestamptz', '_int4', undefined]) {
+        assert.equal(hasEqualityOperator(t), true, String(t));
+    }
 });
 
 // ===== 2.2.2: capabilities =====

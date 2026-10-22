@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
 import * as dns from 'dns';
+import * as fs from 'fs';
+import * as net from 'net';
+import * as path from 'path';
 import { promisify } from 'util';
 import { Pool, PoolConfig, QueryArrayResult, QueryResult, QueryResultRow, types as pgTypes } from 'pg';
 import { createHash } from 'crypto';
@@ -20,6 +23,48 @@ pgTypes.setTypeParser(1114, (val: string) => val);
 // timezone east of UTC (`2024-01-31` → `2024-01-30T23:00:00.000Z`). Keep the raw
 // `YYYY-MM-DD` instead; the Excel export turns it back into a real date cell.
 pgTypes.setTypeParser(1082, (val: string) => val);
+// PostgreSQL OID 1184 = TIMESTAMP WITH TIME ZONE. A JS Date drops the
+// microseconds and is rendered in the local timezone, so exports and edits
+// would write back a different value than the stored one — and a row matched
+// by all of its values would no longer be found. Keep the server's text.
+pgTypes.setTypeParser(1184, (val: string) => val);
+// The array forms of the three types above (timestamp[] 1115, date[] 1182,
+// timestamptz[] 1185) would otherwise be parsed element-wise into Dates with
+// the same problems; parse them like text[] so every element stays raw text.
+// The pg typings only list scalar OIDs, hence the widened signatures.
+const getTextParser = pgTypes.getTypeParser as unknown as (oid: number, format: 'text') => (val: string) => unknown;
+const setTextParser = pgTypes.setTypeParser as unknown as (oid: number, parser: (val: string) => unknown) => void;
+const parseTextArray = getTextParser(1009, 'text');
+setTextParser(1115, parseTextArray);
+setTextParser(1182, parseTextArray);
+setTextParser(1185, parseTextArray);
+// interval (1186), point (600) and circle (718) are parsed into JS objects
+// (`{days: 1, hours: 2}`, `{x, y}`, `{x, y, radius}`) whose JSON is neither
+// readable in the grid nor valid input when written back or exported. Keep the
+// server's text for them and their arrays (1187, 1017, 719) as well.
+const keepText = (val: string) => val;
+setTextParser(1186, keepText);
+setTextParser(600, keepText);
+setTextParser(718, keepText);
+setTextParser(1187, parseTextArray);
+setTextParser(1017, parseTextArray);
+setTextParser(719, parseTextArray);
+
+/**
+ * How a saved connection uses TLS:
+ * - `disable`     — never use TLS.
+ * - `prefer`      — try TLS without verifying the certificate and fall back to
+ *                   an unencrypted connection when the server has no TLS. This
+ *                   is what every connection did before `sslMode` existed, so a
+ *                   saved connection without the field keeps behaving this way.
+ * - `require`     — TLS is mandatory, the certificate is not verified.
+ * - `verify-full` — TLS is mandatory and the certificate chain and host name
+ *                   are verified (against `caFile` when given, otherwise the
+ *                   system's trusted CAs). Default for new connections.
+ */
+export type SslMode = 'disable' | 'prefer' | 'require' | 'verify-full';
+
+export const SSL_MODES: ReadonlyArray<SslMode> = ['disable', 'prefer', 'require', 'verify-full'];
 
 export interface ConnectionConfig {
     name: string;
@@ -28,7 +73,133 @@ export interface ConnectionConfig {
     database: string;
     user: string;
     schemas?: string[];
+    /** TLS mode; missing means `prefer` (the behaviour before this setting existed). */
+    sslMode?: SslMode;
+    /** PEM file with the CA certificate(s) used by `verify-full`. */
+    caFile?: string;
 }
+
+/** The `sslMode` as written, normalised; '' when it is missing. */
+function rawSslMode(config: Pick<ConnectionConfig, 'sslMode'>): string {
+    return String(config.sslMode ?? '').trim().toLowerCase();
+}
+
+/**
+ * The SSL mode of a saved connection. A missing value means `prefer`, the
+ * behaviour before the setting existed. An unknown value (a typo, or a libpq
+ * mode such as `verify-ca` that is not offered) fails closed as `verify-full`
+ * rather than silently weakening the connection; {@link sslModeError} reports it.
+ */
+export function effectiveSslMode(config: Pick<ConnectionConfig, 'sslMode'>): SslMode {
+    const mode = rawSslMode(config);
+    if (mode === '') return 'prefer';
+    return SSL_MODES.includes(mode as SslMode) ? mode as SslMode : 'verify-full';
+}
+
+/** Why the `sslMode` of a saved connection cannot be used, or null. */
+export function sslModeError(config: Pick<ConnectionConfig, 'name' | 'sslMode'>): string | null {
+    const mode = rawSslMode(config);
+    if (mode === '' || SSL_MODES.includes(mode as SslMode)) return null;
+    return `Unknown SSL mode "${String(config.sslMode)}" in connection "${config.name}". Use one of: ${SSL_MODES.join(', ')}.`;
+}
+
+/**
+ * The `ssl` option handed to `pg` for a connection. `servername` is the host
+ * name the user entered: the pool connects to the pre-resolved IP address, so
+ * without it the certificate could not be matched against the host name.
+ */
+export function buildSslOptions(
+    mode: SslMode,
+    host: string,
+    ca?: string
+): PoolConfig['ssl'] {
+    switch (mode) {
+        case 'disable':
+            return false;
+        case 'verify-full': {
+            const options: { rejectUnauthorized: true; servername?: string; ca?: string } = { rejectUnauthorized: true };
+            if (host && net.isIP(host) === 0) options.servername = host;
+            if (ca) options.ca = ca;
+            return options;
+        }
+        case 'require':
+        case 'prefer':
+        default:
+            return { rejectUnauthorized: false };
+    }
+}
+
+/** Only `prefer` may silently fall back to an unencrypted connection. */
+export function allowsPlainFallback(mode: SslMode): boolean {
+    return mode === 'prefer';
+}
+
+/**
+ * The target a stored password belongs to. A password is only ever sent to the
+ * host, port, database and user it was saved for, so a connection that keeps
+ * its name but now points somewhere else cannot obtain it.
+ */
+export function connectionFingerprint(config: Pick<ConnectionConfig, 'host' | 'port' | 'database' | 'user'>): string {
+    return JSON.stringify([String(config.host ?? '').trim().toLowerCase(), Number(config.port), String(config.database ?? ''), String(config.user ?? '')]);
+}
+
+/**
+ * Decide whether a stored password may be used for `target`.
+ *
+ * Secrets saved before passwords were bound to their target have no recorded
+ * fingerprint. Such a legacy secret is trusted for the connection it is saved
+ * under (`legacyOwner`, the saved settings entry) on its first use and then
+ * bound to it ("trust on first use"), so existing users are not asked again.
+ * Since `savedConnections` is an application-scoped setting a workspace cannot
+ * inject a look-alike entry to capture that first use.
+ */
+export function decideStoredPassword(
+    storedPassword: string | undefined,
+    recordedFingerprint: string | undefined,
+    target: Pick<ConnectionConfig, 'host' | 'port' | 'database' | 'user'>,
+    legacyOwner: Pick<ConnectionConfig, 'host' | 'port' | 'database' | 'user'> = target
+): { password: string | undefined; bindFingerprint: string | undefined } {
+    if (storedPassword === undefined) {
+        return { password: undefined, bindFingerprint: undefined };
+    }
+    const expected = connectionFingerprint(target);
+    if (recordedFingerprint === undefined || recordedFingerprint === '') {
+        const owner = connectionFingerprint(legacyOwner);
+        return {
+            password: owner === expected ? storedPassword : undefined,
+            bindFingerprint: owner
+        };
+    }
+    return {
+        password: recordedFingerprint === expected ? storedPassword : undefined,
+        bindFingerprint: undefined
+    };
+}
+
+const PASSWORD_KEY_PREFIX = 'pgqb_password_';
+// Deliberately not under PASSWORD_KEY_PREFIX: a connection named `target_x`
+// must not collide with the binding of a connection named `x`.
+const PASSWORD_BINDING_KEY_PREFIX = 'pgqb_target_';
+
+/**
+ * Settings a workspace may no longer set: a repository could otherwise point a
+ * saved connection name at its own server (and receive the stored password)
+ * or run any program as `psql`.
+ */
+export const USER_ONLY_SETTINGS: ReadonlyArray<string> = [
+    'postgresQueryBuilder.savedConnections',
+    'postgresQueryBuilder.psqlPath'
+];
+
+/** The {@link USER_ONLY_SETTINGS} that a workspace settings file's text sets. */
+export function findUserOnlySettings(settingsText: string): string[] {
+    return USER_ONLY_SETTINGS.filter((key) => new RegExp(`"${key.replace(/\./g, '\\.')}"\\s*:`).test(settingsText));
+}
+
+const IGNORED_SETTINGS_NOTICE_KEY = 'pgqb_ignoredWorkspaceSettingsNotice';
+
+/** Creates the connection pool; replaceable so tests can simulate a server. */
+export type PoolFactory = (config: PoolConfig) => Pool;
 
 export class ConnectionManager {
     private pool: Pool | null = null;
@@ -48,8 +219,45 @@ export class ConnectionManager {
      *  rebuilt when the search_path override changes. */
     private currentPoolConfig: PoolConfig | null = null;
 
-    constructor(context: vscode.ExtensionContext) {
+    private readonly poolFactory: PoolFactory;
+
+    constructor(context: vscode.ExtensionContext, poolFactory: PoolFactory = (config) => new Pool(config)) {
         this.context = context;
+        this.poolFactory = poolFactory;
+    }
+
+    /**
+     * Tell the user once per workspace when its settings still hold
+     * connections or a psql path: those are now read from user settings only,
+     * so they would otherwise just disappear without a word.
+     */
+    async warnAboutIgnoredWorkspaceSettings(): Promise<void> {
+        const state = this.context.workspaceState;
+        if (!state || state.get<boolean>(IGNORED_SETTINGS_NOTICE_KEY)) return;
+        const files: string[] = (vscode.workspace.workspaceFolders ?? [])
+            .map((folder) => path.join(folder.uri.fsPath, '.vscode', 'settings.json'));
+        const workspaceFile = vscode.workspace.workspaceFile;
+        if (workspaceFile && workspaceFile.scheme === 'file') files.push(workspaceFile.fsPath);
+        const found = new Set<string>();
+        for (const file of files) {
+            try {
+                findUserOnlySettings(await fs.promises.readFile(file, 'utf8')).forEach((key) => found.add(key));
+            } catch {
+                // No settings file in this folder.
+            }
+        }
+        if (found.size === 0) return;
+        await state.update(IGNORED_SETTINGS_NOTICE_KEY, true);
+        const open = 'Open Workspace Settings';
+        const answer = await vscode.window.showWarningMessage(
+            `This workspace sets ${[...found].join(' and ')}. These settings are now read from your user settings only, `
+            + 'so a repository cannot redirect your stored passwords or run another program as psql. '
+            + 'Add your connections again with "New Connection" or in your user settings.',
+            open
+        );
+        if (answer === open) {
+            await vscode.commands.executeCommand('workbench.action.openWorkspaceSettingsFile');
+        }
     }
 
     /**
@@ -70,9 +278,8 @@ export class ConnectionManager {
      * (no SQL injection, no manual quoting). Because queries are serialized per
      * client, the override runs before any query issued on that client.
      */
-    private createPool(poolConfig: PoolConfig): Pool {
-        const pool = new Pool(poolConfig);
-        const override = this.searchPathOverride;
+    private createPool(poolConfig: PoolConfig, override: string | null = this.searchPathOverride): Pool {
+        const pool = this.poolFactory(poolConfig);
         if (override) {
             pool.on('connect', (client) => {
                 client.query("SELECT set_config('search_path', $1, false)", [override])
@@ -125,9 +332,33 @@ export class ConnectionManager {
         return this.activeConfig;
     }
 
-    /** The password stored in SecretStorage for a saved connection, if any. */
-    async getStoredPassword(name: string): Promise<string | undefined> {
-        return this.context.secrets.get(`pgqb_password_${name}`);
+    /**
+     * The password stored in SecretStorage for a saved connection, but only
+     * when it was saved for the same host, port, database and user as `config`;
+     * otherwise `undefined`, so the caller asks for it again. `legacyOwner` is
+     * the saved entry a secret without a recorded target belongs to (see
+     * {@link decideStoredPassword}); it defaults to `config`.
+     */
+    async getStoredPassword(config: ConnectionConfig, legacyOwner: ConnectionConfig = config): Promise<string | undefined> {
+        const name = legacyOwner.name;
+        const stored = await this.context.secrets.get(PASSWORD_KEY_PREFIX + name);
+        if (stored === undefined) return undefined;
+        const recorded = await this.context.secrets.get(PASSWORD_BINDING_KEY_PREFIX + name);
+        const decision = decideStoredPassword(stored, recorded, config, legacyOwner);
+        if (decision.bindFingerprint !== undefined) {
+            await this.context.secrets.store(PASSWORD_BINDING_KEY_PREFIX + name, decision.bindFingerprint);
+            Logger.log('connection', `Bound the stored password of "${name}" to its host, port, database and user`);
+        }
+        if (decision.password === undefined) {
+            Logger.log('connection', `The stored password of "${name}" was saved for a different host, port, database or user; not using it`);
+        }
+        return decision.password;
+    }
+
+    /** Store a password together with the target it is valid for. */
+    private async storePassword(config: ConnectionConfig, password: string): Promise<void> {
+        await this.context.secrets.store(PASSWORD_KEY_PREFIX + config.name, password);
+        await this.context.secrets.store(PASSWORD_BINDING_KEY_PREFIX + config.name, connectionFingerprint(config));
     }
 
     /** The `search_path` override of the active connection, or `null` for the server default. */
@@ -155,8 +386,18 @@ export class ConnectionManager {
         panel.webview.html = this.getConnectionFormHtml(panel.webview);
 
         const prefill = existingConfig
-            ? { ...existingConfig, port: String(existingConfig.port), schemas: (existingConfig.schemas || []).join(', '), title: `Edit: ${existingConfig.name}` }
-            : { name: 'My Database', host: defaultHost, port: String(defaultPort), database: defaultDatabase, user: 'postgres', schemas: '', title: 'New Connection' };
+            ? {
+                ...existingConfig,
+                port: String(existingConfig.port),
+                schemas: (existingConfig.schemas || []).join(', '),
+                sslMode: effectiveSslMode(existingConfig),
+                caFile: existingConfig.caFile ?? '',
+                title: `Edit: ${existingConfig.name}`
+            }
+            : {
+                name: 'My Database', host: defaultHost, port: String(defaultPort), database: defaultDatabase,
+                user: 'postgres', schemas: '', sslMode: 'verify-full' as SslMode, caFile: '', title: 'New Connection'
+            };
 
         // Send prefill after webview is ready
         setTimeout(() => panel.webview.postMessage({ type: 'prefill', ...prefill }), 100);
@@ -178,16 +419,36 @@ export class ConnectionManager {
                         port: msg.port,
                         database: msg.database,
                         user: msg.user,
-                        schemas: schemas
+                        schemas: schemas,
+                        sslMode: SSL_MODES.includes(msg.sslMode) ? msg.sslMode : 'verify-full'
                     };
+                    const caFile = typeof msg.caFile === 'string' ? msg.caFile.trim() : '';
+                    if (caFile) {
+                        connConfig.caFile = caFile;
+                    }
                     // When editing an existing connection and the password field is left
                     // empty, reuse the previously stored password instead of overwriting
-                    // it with an empty value.
+                    // it with an empty value — but only while host, port, database and
+                    // user still match what that password was saved for.
+                    let storedPasswordRejected = false;
                     const password = await ConnectionManager.resolvePassword(
                         msg.password,
                         existingConfig,
-                        (name) => this.context.secrets.get(`pgqb_password_${name}`)
+                        async (name) => {
+                            const stored = await this.getStoredPassword(connConfig, existingConfig);
+                            if (stored === undefined && await this.context.secrets.get(PASSWORD_KEY_PREFIX + name) !== undefined) {
+                                storedPasswordRejected = true;
+                            }
+                            return stored;
+                        }
                     );
+                    if (storedPasswordRejected) {
+                        panel.webview.postMessage({
+                            type: 'error',
+                            message: 'Host, port, database or user changed. Enter the password for the new target.'
+                        });
+                        return;
+                    }
                     try {
                         await this.connect(connConfig, password);
                         await this.saveConnection(connConfig, password);
@@ -207,7 +468,7 @@ export class ConnectionManager {
         h2 { margin-top: 0; font-size: var(--fs-lg); }
         .form-group { margin-bottom: var(--sp-3); }
         label { display: block; margin-bottom: var(--sp-1); font-weight: 500; }
-        input { width: 100%; max-width: 400px; }
+        input, select { width: 100%; max-width: 400px; }
         .button-row { margin-top: var(--sp-5); display: flex; gap: var(--sp-2); }
         .error {
             color: var(--c-danger);
@@ -245,6 +506,19 @@ export class ConnectionManager {
             <label for="schemas">Schemas (optional, comma-separated)</label>
             <input type="text" id="schemas" placeholder="public, myschema" />
         </div>
+        <div class="form-group">
+            <label for="sslMode">SSL</label>
+            <select id="sslMode">
+                <option value="verify-full">Verify certificate and host name</option>
+                <option value="require">Require SSL, do not verify the certificate</option>
+                <option value="prefer">Prefer SSL, fall back to unencrypted</option>
+                <option value="disable">Disable SSL</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="caFile">CA certificate file (optional, PEM)</label>
+            <input type="text" id="caFile" placeholder="Uses the system's trusted certificates when empty" />
+        </div>
         <div class="error" id="error"></div>
         <div class="button-row">
             <button type="submit" class="btn btn-primary">${icon('plug')}Connect</button>
@@ -263,6 +537,8 @@ export class ConnectionManager {
                 if (msg.database) document.getElementById('database').value = msg.database;
                 if (msg.user) document.getElementById('user').value = msg.user;
                 if (msg.schemas) document.getElementById('schemas').value = msg.schemas;
+                if (msg.sslMode) document.getElementById('sslMode').value = msg.sslMode;
+                if (msg.caFile) document.getElementById('caFile').value = msg.caFile;
                 if (msg.title) document.getElementById('title').textContent = msg.title;
             } else if (msg.type === 'error') {
                 const el = document.getElementById('error');
@@ -280,10 +556,12 @@ export class ConnectionManager {
             const user = document.getElementById('user').value.trim();
             const password = document.getElementById('password').value;
             const schemas = document.getElementById('schemas').value.trim();
+            const sslMode = document.getElementById('sslMode').value;
+            const caFile = document.getElementById('caFile').value.trim();
 
             if (!name || !host || !port || !database || !user) {
                 const el = document.getElementById('error');
-                el.textContent = 'All fields except password are required.';
+                el.textContent = 'Name, host, port, database and user are required.';
                 el.style.display = 'block';
                 return;
             }
@@ -291,7 +569,7 @@ export class ConnectionManager {
             document.getElementById('error').style.display = 'none';
             vscode.postMessage({
                 type: 'connect',
-                name, host, port: parseInt(port, 10), database, user, password, schemas
+                name, host, port: parseInt(port, 10), database, user, password, schemas, sslMode, caFile
             });
         });
 
@@ -350,7 +628,7 @@ export class ConnectionManager {
         const conn = savedConnections.find(c => c.name === selected.label);
         if (!conn) { return; }
 
-        const password = await this.context.secrets.get(`pgqb_password_${conn.name}`);
+        const password = await this.getStoredPassword(conn);
         if (password === undefined) {
             const pwd = await vscode.window.showInputBox({
                 prompt: `Password for ${conn.name}`,
@@ -359,7 +637,7 @@ export class ConnectionManager {
             if (pwd === undefined) { return; }
             try {
                 await this.connect(conn, pwd);
-                await this.context.secrets.store(`pgqb_password_${conn.name}`, pwd);
+                await this.storePassword(conn, pwd);
             } catch (err: unknown) {
                 vscode.window.showErrorMessage(`Connection failed: ${getErrorMessage(err)}`);
             }
@@ -372,14 +650,13 @@ export class ConnectionManager {
         }
     }
 
+    /**
+     * Open a connection pool for `config` and make it the active connection.
+     * The new pool is verified with a test connection first; only when that
+     * succeeds does it replace the current pool. A failed attempt therefore
+     * leaves the previous connection (if any) fully intact.
+     */
     private async connect(config: ConnectionConfig, password: string): Promise<void> {
-        if (this.pool) {
-            await this.pool.end();
-        }
-        this.clearMetadataCache();
-        // A new connection starts with the server's default search_path.
-        this.searchPathOverride = null;
-
         // Resolve hostname via OS resolver (respects hosts file)
         let resolvedHost = config.host;
         try {
@@ -389,13 +666,26 @@ export class ConnectionManager {
             // Fall back to original hostname if lookup fails
         }
 
-        console.log(`[PG] Connecting to ${resolvedHost}:${config.port} (resolved from ${config.host})`);
+        const sslModeProblem = sslModeError(config);
+        if (sslModeProblem) {
+            throw new Error(sslModeProblem);
+        }
+        const sslMode = effectiveSslMode(config);
         Logger.log(
             'connection',
             `Connecting to ${config.host}:${config.port} (resolved host ${resolvedHost}), ` +
-            `database "${config.database}", user "${config.user}"` +
+            `database "${config.database}", user "${config.user}", SSL ${sslMode}` +
             (config.schemas?.length ? `, display schemas [${config.schemas.join(', ')}]` : '')
         );
+
+        let ca: string | undefined;
+        if (sslMode === 'verify-full' && config.caFile) {
+            try {
+                ca = fs.readFileSync(config.caFile, 'utf8');
+            } catch (err: unknown) {
+                throw new Error(`Could not read the CA certificate file "${config.caFile}": ${getErrorMessage(err)}`);
+            }
+        }
 
         const poolConfig: PoolConfig = {
             host: resolvedHost,
@@ -403,33 +693,42 @@ export class ConnectionManager {
             database: config.database,
             user: config.user,
             password: password,
-            ssl: { rejectUnauthorized: false },
+            ssl: buildSslOptions(sslMode, config.host, ca),
             max: 10,
             connectionTimeoutMillis: 5000
         };
 
-        this.pool = this.createPool(poolConfig);
-
+        // A new connection starts with the server's default search_path.
+        let activePoolConfig = poolConfig;
+        let pool = this.createPool(activePoolConfig, null);
         try {
-            const client = await this.pool.connect();
-            client.release();
+            await this.verifyPool(pool);
         } catch (err: unknown) {
-            // If SSL is not supported, retry without SSL
-            const message = getErrorMessage(err);
-            if (message.includes('does not support SSL')) {
-                console.log(`[PG] SSL not supported, retrying without SSL`);
-                await this.pool.end();
-                delete poolConfig.ssl;
-                this.pool = this.createPool(poolConfig);
-                const client = await this.pool.connect();
-                client.release();
-            } else {
+            await this.endQuietly(pool);
+            if (!allowsPlainFallback(sslMode) || !getErrorMessage(err).includes('does not support SSL')) {
                 throw err;
+            }
+            Logger.log('connection', 'The server does not support SSL, retrying without SSL');
+            activePoolConfig = { ...poolConfig };
+            delete activePoolConfig.ssl;
+            pool = this.createPool(activePoolConfig, null);
+            try {
+                await this.verifyPool(pool);
+            } catch (retryErr: unknown) {
+                await this.endQuietly(pool);
+                throw retryErr;
             }
         }
 
+        const oldPool = this.pool;
+        this.pool = pool;
         this.activeConfig = config;
-        this.currentPoolConfig = poolConfig;
+        this.currentPoolConfig = activePoolConfig;
+        this.searchPathOverride = null;
+        this.clearMetadataCache();
+        if (oldPool) {
+            await this.endQuietly(oldPool);
+        }
         this._onConnectionChanged.fire();
 
         // Log the server's effective search_path so it is visible which schemas
@@ -440,6 +739,19 @@ export class ConnectionManager {
             Logger.log('connection', `Connected. Server search_path = ${searchPath ?? '(unknown)'}`);
         } catch (err) {
             Logger.error('connection', err);
+        }
+    }
+
+    private async verifyPool(pool: Pool): Promise<void> {
+        const client = await pool.connect();
+        client.release();
+    }
+
+    private async endQuietly(pool: Pool): Promise<void> {
+        try {
+            await pool.end();
+        } catch (err: unknown) {
+            Logger.error('ConnectionManager.endPool', err);
         }
     }
 
@@ -497,7 +809,7 @@ export class ConnectionManager {
     }
 
     private async saveConnection(connConfig: ConnectionConfig, password: string): Promise<void> {
-        await this.context.secrets.store(`pgqb_password_${connConfig.name}`, password);
+        await this.storePassword(connConfig, password);
 
         const config = vscode.workspace.getConfiguration('postgresQueryBuilder');
         const saved = config.get<ConnectionConfig[]>('savedConnections', []);
@@ -604,7 +916,8 @@ export class ConnectionManager {
         const saved = config.get<ConnectionConfig[]>('savedConnections', []);
         const filtered = saved.filter(c => c.name !== selected.label);
         await config.update('savedConnections', filtered, vscode.ConfigurationTarget.Global);
-        await this.context.secrets.delete(`pgqb_password_${selected.label}`);
+        await this.context.secrets.delete(PASSWORD_KEY_PREFIX + selected.label);
+        await this.context.secrets.delete(PASSWORD_BINDING_KEY_PREFIX + selected.label);
         vscode.window.showInformationMessage(`Connection "${selected.label}" deleted.`);
     }
 

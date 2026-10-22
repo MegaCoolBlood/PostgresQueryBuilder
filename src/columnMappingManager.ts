@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getErrorMessage } from './logger';
+import { Logger, getErrorMessage } from './logger';
 
 export interface MappingCondition {
     column: string;
@@ -58,6 +58,26 @@ interface WorkspaceMappingsFile {
 /** The comparison operators a mapping condition may use. */
 export const MAPPING_CONDITION_OPERATORS: ReadonlySet<string> =
     new Set(['=', '!=', '<>', '>', '<', '>=', '<=', 'LIKE', 'ILIKE']);
+
+/**
+ * The well-formed conditions of a mapping read from storage. The workspace
+ * mappings file is committed to git and therefore untrusted: a condition must
+ * name a column, use one of {@link MAPPING_CONDITION_OPERATORS} and compare
+ * with a plain value, anything else is dropped.
+ */
+export function normalizeMappingConditions(raw: unknown): MappingCondition[] {
+    if (!Array.isArray(raw)) return [];
+    const result: MappingCondition[] = [];
+    for (const c of raw) {
+        if (!c || typeof c !== 'object') continue;
+        const { column, operator, value } = c as Record<string, unknown>;
+        const op = typeof operator === 'string' ? operator.trim().toUpperCase() : '';
+        if (typeof column !== 'string' || column.trim() === '' || !MAPPING_CONDITION_OPERATORS.has(op)) continue;
+        if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') continue;
+        result.push({ column, operator: op, value: String(value) });
+    }
+    return result;
+}
 
 const DEFAULT_WORKSPACE_FILE = 'postgres-query-builder.mappings.json';
 const FILE_VERSION = 1;
@@ -378,6 +398,11 @@ export class ColumnMappingManager {
     }
 
     private normalizeIncoming(m: CustomColumnMapping): CustomColumnMapping {
+        const conditions = normalizeMappingConditions(m.conditions);
+        if (Array.isArray(m.conditions) && conditions.length !== m.conditions.length) {
+            Logger.log('ColumnMappingManager.normalizeIncoming',
+                `Ignored ${m.conditions.length - conditions.length} malformed condition(s) of mapping "${m.label || m.id || m.sourceColumn}".`);
+        }
         const normalized: CustomColumnMapping = {
             id: m.id || this.generateId(),
             sourceSchema: m.sourceSchema,
@@ -386,7 +411,7 @@ export class ColumnMappingManager {
             targetSchema: m.targetSchema,
             targetTable: m.targetTable,
             targetColumn: m.targetColumn,
-            conditions: Array.isArray(m.conditions) ? m.conditions : [],
+            conditions,
             isDefault: !!m.isDefault,
             label: m.label
         };
@@ -438,6 +463,7 @@ export class ColumnMappingManager {
             switch (cond.operator) {
                 case '=': return strVal === cond.value;
                 case '!=': return strVal !== cond.value;
+                case '<>': return strVal !== cond.value;
                 case '>': return strVal > cond.value;
                 case '<': return strVal < cond.value;
                 case '>=': return strVal >= cond.value;

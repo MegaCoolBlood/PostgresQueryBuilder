@@ -260,3 +260,210 @@ test('buildErrorDialogState stringifies non-string error values', () => {
     assert.deepEqual(buildErrorDialogState(42), { visible: true, message: '42' });
 });
 
+
+// ===== numeric sorting (bigint / numeric arrive as strings) =====
+
+const {
+    compareNumericText,
+    toNumericLiteral,
+    sanitizeThousandSeparator,
+    parseCellKey,
+    formatMappingConditions,
+    exportQuerySql,
+    isStaleLoadAnswer,
+    rowFingerprint,
+    resolveCellEditorRow,
+    planClipboardPaste,
+    normalizeNumericInput,
+    formatNumberDisplay
+} = require(path.join(__dirname, '../../../src/webview/tableView.js'));
+
+test('compareCellValues orders numeric strings of a numeric column by value', () => {
+    const values = ['100', '20', '3', '-5', '1000000000000', null, '-20.5', '0.25'];
+    const sorted = [...values].sort((a, b) => compareCellValues(a, b, 'asc', true));
+    assert.deepEqual(sorted, ['-20.5', '-5', '0.25', '3', '20', '100', '1000000000000', null]);
+    const desc = [...values].sort((a, b) => compareCellValues(a, b, 'desc', true));
+    assert.deepEqual(desc, ['1000000000000', '100', '20', '3', '0.25', '-5', '-20.5', null]);
+});
+
+test('compareNumericText is exact beyond 2^53 and across scales', () => {
+    assert.ok(compareNumericText('9007199254740993', '9007199254740992') > 0);
+    assert.equal(compareNumericText('1.50', '1.5'), 0);
+    assert.equal(compareNumericText('-0', '0'), 0);
+    assert.ok(compareNumericText('-1.25', '-1.2') < 0);
+    assert.ok(compareNumericText('NaN', '5') > 0, 'NaN sorts above every number');
+});
+
+// ===== numeric filter literals =====
+
+test('buildFilterClause keeps the digits of a bigint filter value', () => {
+    assert.equal(buildFilterClause('"id"', '9007199254740993', 'numeric', false, '=', SEP), '"id" = 9007199254740993');
+    assert.equal(
+        buildFilterClause('"id"', { from: '9007199254740993', to: '' }, 'numeric', false, '=', SEP),
+        '"id" >= 9007199254740993'
+    );
+});
+
+test('toNumericLiteral accepts plain numbers and rejects anything else', () => {
+    assert.equal(toNumericLiteral('1e400'), '1e400');
+    assert.equal(toNumericLiteral('-12.5'), '-12.5');
+    assert.equal(toNumericLiteral('Infinity'), null);
+    assert.equal(toNumericLiteral('1; DROP TABLE x'), null);
+    assert.equal(buildFilterClause('"c"', 'Infinity', 'numeric', false, '=', SEP), null);
+});
+
+test('rowValueMatchesFilter compares bigint strings exactly', () => {
+    assert.equal(rowValueMatchesFilter('9007199254740993', '9007199254740992', 'numeric', 'gt', SEP), true);
+    assert.equal(rowValueMatchesFilter('5', 'abc', 'numeric', 'gt', SEP), true, 'an invalid filter does not constrain');
+});
+
+// ===== thousand separator =====
+
+test('sanitizeThousandSeparator drops a separator that clashes with the decimal comma', () => {
+    assert.equal(sanitizeThousandSeparator(','), '');
+    assert.equal(sanitizeThousandSeparator('1'), '');
+    assert.equal(sanitizeThousandSeparator('.'), '.');
+    assert.equal(sanitizeThousandSeparator(' '), ' ');
+});
+
+test('a numeric value survives display and re-entry with every allowed separator', () => {
+    for (const sep of [' ', '\u00a0', '.', "'", '', sanitizeThousandSeparator(',')]) {
+        for (const value of ['0.5', '1234.5', '-9999999.99', '42']) {
+            const shown = formatNumberDisplay(value, sep);
+            assert.equal(normalizeNumericInput(shown, sep), value, `separator ${JSON.stringify(sep)}: ${value} -> ${shown}`);
+        }
+    }
+});
+
+// ===== cell keys =====
+
+test('parseCellKey keeps a column name that contains a colon', () => {
+    assert.deepEqual(parseCellKey('3:price:eur'), { rowIdx: 3, colName: 'price:eur' });
+    assert.deepEqual(parseCellKey('0:id'), { rowIdx: 0, colName: 'id' });
+});
+
+// ===== mapping conditions =====
+
+test('formatMappingConditions summarises conditions as plain text', () => {
+    assert.equal(
+        formatMappingConditions([{ column: 'kind', operator: '=', value: 'a' }, { column: 'n', operator: '>', value: 2 }]),
+        "kind = 'a', n > '2'"
+    );
+    assert.equal(formatMappingConditions(undefined), '');
+});
+
+test('the mapping list escapes condition values from the workspace file', () => {
+    const fs = require('node:fs');
+    const src: string = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    assert.ok(src.includes('escapeHtml(formatMappingConditions(mapping.conditions))'));
+    assert.ok(!/\$\{c\.value\}/.test(src), 'a condition value must never be interpolated raw');
+});
+
+// ===== export =====
+
+test('exportQuerySql exports the executed query, not unsaved query bar text', () => {
+    assert.equal(exportQuerySql('SELECT * FROM t', 'SELECT * FROM t', false), 'SELECT * FROM t');
+    assert.equal(exportQuerySql('SELECT * FROM t LIMIT 100', 'SELECT * FROM t', true), 'SELECT * FROM t LIMIT 100');
+    assert.equal(exportQuerySql('', '', false), '');
+});
+
+// ===== load ids =====
+
+test('isStaleLoadAnswer drops answers to a replaced load only', () => {
+    assert.equal(isStaleLoadAnswer(3, 4), true);
+    assert.equal(isStaleLoadAnswer(4, 4), false);
+    assert.equal(isStaleLoadAnswer(undefined, 4), false);
+});
+
+// ===== cell editor write-back =====
+
+test('resolveCellEditorRow keeps the index while the row there is unchanged', () => {
+    const rows = [{ id: 1 }, { id: 2 }];
+    assert.equal(resolveCellEditorRow(rows, 1, { fingerprint: rowFingerprint(rows[1]) }), 1);
+});
+
+test('resolveCellEditorRow follows the record after a reload moved it', () => {
+    const before = [{ id: 1, v: 'a' }, { id: 2, v: 'b' }];
+    const token = { fingerprint: rowFingerprint(before[0]) };
+    const after = [{ id: 3, v: 'new' }, { id: 1, v: 'a' }, { id: 2, v: 'b' }];
+    assert.equal(resolveCellEditorRow(after, 0, token), 1);
+});
+
+test('resolveCellEditorRow never trusts a bare index that now holds another row (reopened panel)', () => {
+    const token = { fingerprint: rowFingerprint({ id: 2, v: 'b' }) };
+    const reopened = [{ id: 5, v: 'x' }, { id: 7, v: 'y' }, { id: 2, v: 'b' }];
+    assert.equal(resolveCellEditorRow(reopened, 1, token), 2);
+    assert.equal(resolveCellEditorRow([{ id: 5, v: 'x' }, { id: 7, v: 'y' }], 1, token), -1);
+});
+
+test('resolveCellEditorRow refuses a row that is gone, changed or ambiguous', () => {
+    const token = { fingerprint: rowFingerprint({ id: 1, v: 'a' }) };
+    assert.equal(resolveCellEditorRow([{ id: 1, v: 'changed' }], 0, token), -1);
+    assert.equal(resolveCellEditorRow([{ id: 2, v: 'b' }], 0, token), -1);
+    assert.equal(resolveCellEditorRow([{ id: 0, v: 'z' }, { id: 1, v: 'a' }, { v: 'a', id: 1 }], 0, token), -1);
+});
+
+// ===== paste into a sorted or filtered grid =====
+
+test('planClipboardPaste follows the displayed row order', () => {
+    // Grid sorted so that allRows 4, 0, 2 are shown in that order.
+    const plan = planClipboardPaste([['a'], ['b'], ['c']], 0, 0, [4, 0, 2], ['x'], () => true);
+    assert.deepEqual(plan.cellUpdates.map((u: any) => [u.rowIdx, u.value]), [[4, 'a'], [0, 'b'], [2, 'c']]);
+    assert.deepEqual(plan.newRows, []);
+});
+
+test('planClipboardPaste adds new rows only past the last displayed row', () => {
+    // Filtered: only allRows 1 and 3 are visible; the paste starts on row 3.
+    const plan = planClipboardPaste([['a'], ['b']], 1, 0, [1, 3], ['x'], () => true);
+    assert.deepEqual(plan.cellUpdates.map((u: any) => [u.rowIdx, u.value]), [[3, 'a']]);
+    assert.deepEqual(plan.newRows, [{ x: 'b' }]);
+});
+
+// ===== review follow-up: sort types, range filter, duplicated json =====
+
+const {
+    isNumericScalarType,
+    duplicateCellValue
+} = require(path.join(__dirname, '../../../src/webview/tableView.js'));
+
+test('isNumericScalarType sorts only plain number types by value', () => {
+    for (const t of ['int4', 'int8', 'bigint', 'numeric(10,2)', 'float8', 'double precision', 'smallint', 'real']) {
+        assert.equal(isNumericScalarType(t), true, t);
+    }
+    for (const t of ['_int4', 'integer[]', 'int4range', 'interval', 'point', 'money', 'text']) {
+        assert.equal(isNumericScalarType(t), false, t);
+    }
+});
+
+test('a money or range column sorts as text again instead of not at all', () => {
+    const values = ['[5,9)', '[1,3)', '[3,4)'];
+    const sorted = [...values].sort((a, b) => compareCellValues(a, b, 'asc', isNumericScalarType('int4range')));
+    assert.deepEqual(sorted, ['[1,3)', '[3,4)', '[5,9)']);
+});
+
+test('rowValueMatchesFilter compares a numeric range exactly beyond 2^53', () => {
+    const range = { from: '9007199254740993', to: '' };
+    assert.equal(rowValueMatchesFilter('9007199254740992', range, 'numeric', undefined, SEP), false);
+    assert.equal(rowValueMatchesFilter('9007199254740993', range, 'numeric', undefined, SEP), true);
+    assert.equal(rowValueMatchesFilter('5', { from: '1', to: '10' }, 'numeric', undefined, SEP), true);
+    assert.equal(rowValueMatchesFilter('11', { from: '1', to: '10' }, 'numeric', undefined, SEP), false);
+});
+
+test('rowValueMatchesFilter keeps NULL out of a numeric range and ignores an invalid bound', () => {
+    assert.equal(rowValueMatchesFilter(null, { from: '-1', to: '1' }, 'numeric', undefined, SEP), false);
+    assert.equal(rowValueMatchesFilter('5', { from: 'abc', to: '' }, 'numeric', undefined, SEP), true);
+});
+
+test('duplicateCellValue copies a json value as JSON text so a JSON string stays a string', () => {
+    assert.equal(duplicateCellValue('123', 'jsonb', false), '"123"');
+    assert.equal(duplicateCellValue('true', 'json', false), '"true"');
+    assert.equal(duplicateCellValue({ a: 1 }, 'jsonb', false), '{"a":1}');
+    assert.equal(duplicateCellValue(5, 'jsonb', false), '5');
+    assert.equal(duplicateCellValue(null, 'jsonb', false), null);
+});
+
+test('duplicateCellValue leaves edited json text and other columns alone', () => {
+    assert.equal(duplicateCellValue('{"b":2}', 'jsonb', true), '{"b":2}');
+    assert.equal(duplicateCellValue('abc', 'text', false), 'abc');
+    assert.equal(duplicateCellValue(7, 'int4', false), 7);
+});

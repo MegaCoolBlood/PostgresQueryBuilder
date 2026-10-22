@@ -307,6 +307,7 @@ export function activate(context: vscode.ExtensionContext) {
         );
 
         connectionManager = new ConnectionManager(context);
+        connectionManager.warnAboutIgnoredWorkspaceSettings().catch((err: unknown) => Logger.error('activate.warnAboutIgnoredWorkspaceSettings', err));
         tableExplorer = new TableExplorerProvider(connectionManager);
         modifyHistoryStore = new ModifyHistoryStore(context);
         columnMappingManager = new ColumnMappingManager(context);

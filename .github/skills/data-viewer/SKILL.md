@@ -62,7 +62,8 @@ posts `{ command: 'error' }` and shows an error message.
 Send to the webview only through `this.post(session, …)` — it checks
 `session.disposed`, so a late answer to a closed panel is not an error.
 
-`getWebviewContent()` (line ~929) substitutes four placeholders and always uses
+`getWebviewContent()` first applies the panel's CSP and script nonce
+(`applyDataViewerCsp`), then substitutes four placeholders and always uses
 the function form of `replace`, so `$&` inside injected SQL cannot expand:
 
 ```ts
@@ -97,9 +98,11 @@ of a TypeScript helper is accepted. Markup is built by string concatenation —
    template.
 2. **Style** — add only what is specific to this surface to `tableView.css`,
    using the tokens from `shared.css`.
-3. **Wire the event** — inside the DOM block. Prefer a `data-*` attribute plus
-   delegation; `window.fn = …` globals exist only for the legacy row-action
-   `onclick` buttons and should not grow.
+3. **Wire the event** — inside the DOM block, with a `data-*` attribute plus
+   delegation. The panel has a Content Security Policy, so an inline
+   `onclick="…"` never runs; the row-action buttons use `data-row-action` and
+   the `ROW_ACTIONS` table. `confirm()` / `alert()` / `prompt()` are blocked in
+   webviews too: confirm on the host with a modal `showWarningMessage`.
 4. **Ask the host** — `vscode.postMessage({ command: 'myThing', … })`.
 5. **Handle it** — add `myThing: this.handleMyThing` to `messageHandlers` and a
    `private async handleMyThing(ctx: MessageContext)`. Read `ctx.message`, use

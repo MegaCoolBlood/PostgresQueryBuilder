@@ -73,6 +73,22 @@ test('buildPsqlEnvironment sets no PGOPTIONS for the server default search_path'
     assert.equal('PGOPTIONS' in buildPsqlEnvironment(config, 'x', '   '), false);
 });
 
+test('buildPsqlEnvironment hands the SSL mode of the connection to psql', () => {
+    assert.equal(buildPsqlEnvironment({ ...config, sslMode: 'disable' }, 'x').PGSSLMODE, 'disable');
+    assert.equal(buildPsqlEnvironment({ ...config, sslMode: 'require' }, 'x').PGSSLMODE, 'require');
+    const legacy = buildPsqlEnvironment(config, 'x');
+    assert.equal('PGSSLMODE' in legacy, false, 'without sslMode psql keeps libpq\'s default prefer');
+});
+
+test('buildPsqlEnvironment verifies the certificate in psql like the extension does', () => {
+    const system = buildPsqlEnvironment({ ...config, sslMode: 'verify-full' }, 'x');
+    assert.equal(system.PGSSLMODE, 'verify-full');
+    assert.equal(system.PGSSLROOTCERT, 'system');
+    const own = buildPsqlEnvironment({ ...config, sslMode: 'verify-full', caFile: 'C:\\certs\\ca.pem' }, 'x');
+    assert.equal(own.PGSSLROOTCERT, 'C:\\certs\\ca.pem');
+    assert.equal(buildPsqlEnvironment({ ...config, sslMode: 'verify-ca' as any }, 'x').PGSSLMODE, 'verify-full', 'an unknown mode fails closed');
+});
+
 // ===== escapePgOption =====
 
 test('escapePgOption escapes whitespace and backslashes for libpq', () => {
@@ -180,7 +196,7 @@ function fakeConnectionManager(state: FakeConnection): ConnectionManager {
     return {
         ensureConnected: async () => state.connected,
         getActiveConnectionConfig: () => (state.connected ? config : null),
-        getStoredPassword: async (name: string) => { state.passwordLookups.push(name); return 's3cret'; },
+        getStoredPassword: async (cfg: ConnectionConfig) => { state.passwordLookups.push(cfg.name); return 's3cret'; },
         getSearchPathOverride: () => state.searchPath
     } as unknown as ConnectionManager;
 }
@@ -287,10 +303,16 @@ test('PsqlConsole explains a missing psql and offers to open the setting', async
 
 test('ConnectionManager reads the stored password of a connection from SecretStorage', async () => {
     const keys: string[] = [];
-    const context = { secrets: { get: async (key: string) => { keys.push(key); return 'pw'; } } };
+    const secrets: Record<string, string> = { 'pgqb_password_Prod DB': 'pw' };
+    const context = {
+        secrets: {
+            get: async (key: string) => { keys.push(key); return secrets[key]; },
+            store: async (key: string, value: string) => { secrets[key] = value; }
+        }
+    };
     const manager = new ConnectionManager(context as any);
-    assert.equal(await manager.getStoredPassword('Prod DB'), 'pw');
-    assert.deepEqual(keys, ['pgqb_password_Prod DB']);
+    assert.equal(await manager.getStoredPassword(config), 'pw');
+    assert.ok(keys.includes('pgqb_password_Prod DB'));
     assert.equal(manager.getSearchPathOverride(), null);
 });
 

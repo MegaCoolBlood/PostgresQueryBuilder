@@ -1492,3 +1492,42 @@ test('describePendingChanges blocks saving while a value is invalid', () => {
     assert.match(describePendingChanges({ modified: 3 }, 2).text, /2 invalid values$/);
 });
 
+
+test('buildCommitTargets updates a row of a single table even when its identity columns are all NULL', () => {
+    // No primary key: `payload` (json) cannot be compared, so only `label` identifies the row.
+    const label = { name: 'label', tableOid: 300, schema: 'public', table: 'notes', sourceColumn: 'label' };
+    const payload = { name: 'payload', tableOid: 300, schema: 'public', table: 'notes', sourceColumn: 'payload' };
+    const caps = {
+        canEdit: true, canInsert: true, canDelete: true, canConstrain: true, canMap: true,
+        schema: 'public', table: 'notes', identityStrategy: 'row',
+        tables: [{ tableOid: 300, schema: 'public', table: 'notes', identityStrategy: 'row', identityColumns: [label], columns: [label, payload] }],
+        columnSources: { label, payload },
+        editableColumns: ['label', 'payload'],
+        warning: null
+    };
+    const targets = buildCommitTargets(caps, [{ label: null, payload: { a: 1 } }], { updates: [[0, { label: 'x' }]] });
+
+    assert.deepEqual(targets[0].changes.inserts, []);
+    assert.deepEqual(targets[0].changes.updates, [{ primaryKey: { label: null }, changes: { label: 'x' } }]);
+    assert.equal(targets[0].missingRowInserts, undefined);
+});
+
+test('buildCommitTargets keeps updating a joined row whose displayed values are NULL but whose key is not', () => {
+    const rows = [{ user_id: 1, user_name: 'Alice', wert: null, __pqb_key_0: 9 }];
+    const targets = buildCommitTargets(outerJoinCaps(), rows, { updates: [[0, { wert: 'neu' }]] });
+
+    assert.deepEqual(targets[0].changes.updates, [{ primaryKey: { id: 9 }, changes: { value: 'neu' } }]);
+    assert.equal(targets[0].missingRowInserts, undefined);
+});
+
+test('buildCommitTargets does not take a joined row with a json value outside its identity for missing', () => {
+    const caps: any = outerJoinCaps();
+    const doc = { name: 'doc', tableOid: 200, schema: 'public', table: 'attributes', sourceColumn: 'doc' };
+    const value = caps.tables[1].columns[0];
+    caps.tables[1] = { ...caps.tables[1], identityStrategy: 'row', identityColumns: [value], columns: [value, doc] };
+    caps.columnSources.doc = doc;
+    const targets = buildCommitTargets(caps, [{ user_id: 1, user_name: 'Alice', wert: null, doc: { k: 1 } }], { updates: [[0, { wert: 'neu' }]] });
+
+    assert.deepEqual(targets[0].changes.inserts, []);
+    assert.deepEqual(targets[0].changes.updates, [{ primaryKey: { value: null }, changes: { value: 'neu' } }]);
+});

@@ -178,6 +178,41 @@ function normalizeNumericInput(value, thousandSeparator = DEFAULT_THOUSAND_SEPAR
     return str;
 }
 
+// The configured thousand separator, or '' when it would collide with the
+// decimal comma, a digit or a sign: with "," the value 0.5 is shown as "0,5"
+// and would read back as "05".
+function sanitizeThousandSeparator(sep) {
+    if (typeof sep !== 'string') return DEFAULT_THOUSAND_SEPARATOR;
+    return /[\d,+\-]/.test(sep) ? '' : sep;
+}
+
+// The SQL literal for a numeric filter value, or null when the text is not a
+// number. The digits are kept as typed, so a bigint above 2^53 is not rounded
+// as it would be by Number().
+function toNumericLiteral(text) {
+    if (text === null || text === undefined) return null;
+    const s = String(text).trim();
+    return /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(s) ? s : null;
+}
+
+// Split a modified-cell key "<rowIdx>:<column>" at the first colon only, so a
+// column name that itself contains ":" survives.
+function parseCellKey(key) {
+    const s = String(key);
+    const i = s.indexOf(':');
+    return { rowIdx: parseInt(i < 0 ? s : s.slice(0, i), 10), colName: i < 0 ? '' : s.slice(i + 1) };
+}
+
+// Plain-text summary of a custom mapping's conditions, e.g. "status = 'open'".
+// The caller escapes it: the conditions come from a workspace file.
+function formatMappingConditions(conditions) {
+    if (!Array.isArray(conditions)) return '';
+    return conditions
+        .filter(c => c && typeof c === 'object')
+        .map(c => `${String(c.column ?? '')} ${String(c.operator ?? '')} '${String(c.value ?? '')}'`)
+        .join(', ');
+}
+
 /**
  * Remove thousand separators from a displayed numeric string for copying,
  * while preserving the decimal separator exactly as shown (e.g. the German
@@ -261,23 +296,30 @@ function parseClipboardTable(text) {
 }
 
 /**
- * Work out where a clipboard matrix lands when pasted at (`startRowIdx`,
- * `startCol`) in Excel style: rows that fall on existing data rows become cell
- * overwrites, rows past the last loaded row become new rows. Columns are mapped
- * left to right from `startCol`; a value whose target column is missing or not
- * editable is skipped. Returns `{ cellUpdates, newRows }` where every
- * `cellUpdate` is `{ rowIdx, colName, value }` and every `newRow` a partial
- * `{ colName: value }` map.
+ * Work out where a clipboard matrix lands when pasted at display position
+ * `startPos`, column `startCol`, in Excel style. `rowOrder` lists the allRows
+ * indices in the order the grid shows them (after client-side sort and filter),
+ * so consecutive pasted rows land on the rows shown below each other; a plain
+ * row count means unsorted, unfiltered rows. Rows that fall on displayed rows
+ * become cell overwrites, rows past the last displayed row become new rows.
+ * Columns are mapped left to right from `startCol`; a value whose target column
+ * is missing or not editable is skipped. Returns `{ cellUpdates, newRows }`
+ * where every `cellUpdate` is `{ rowIdx, colName, value }` (rowIdx into
+ * allRows) and every `newRow` a partial `{ colName: value }` map.
  */
-function planClipboardPaste(matrix, startRowIdx, startCol, existingRowCount, columnNames, isColumnEditable) {
+function planClipboardPaste(matrix, startPos, startCol, rowOrder, columnNames, isColumnEditable) {
     const editable = typeof isColumnEditable === 'function' ? isColumnEditable : () => true;
     const cols = Array.isArray(columnNames) ? columnNames : [];
+    const order = Array.isArray(rowOrder)
+        ? rowOrder
+        : Array.from({ length: Math.max(0, Number(rowOrder) || 0) }, (_, i) => i);
     const cellUpdates = [];
     const newRows = [];
     (Array.isArray(matrix) ? matrix : []).forEach((rowValues, i) => {
-        const targetRowIdx = startRowIdx + i;
+        const pos = startPos + i;
         const values = Array.isArray(rowValues) ? rowValues : [];
-        if (targetRowIdx < existingRowCount) {
+        if (pos >= 0 && pos < order.length) {
+            const targetRowIdx = order[pos];
             values.forEach((value, j) => {
                 const colIdx = startCol + j;
                 if (colIdx < 0 || colIdx >= cols.length) { return; }
@@ -351,6 +393,28 @@ function seriesKindForType(dataType) {
     if (base.indexOf('timestamp') === 0) return 'timestamp';
     if (base === 'time' || base === 'timetz' || base.indexOf('time ') === 0) return 'time';
     return '';
+}
+
+// Whether a column holds plain numbers that sort by value (integers, numeric,
+// floats). Arrays, ranges, money, interval and geometric types do not, even
+// though their type names contain "int".
+function isNumericScalarType(dataType) {
+    return seriesKindForType(dataType) === 'number';
+}
+
+// The value a duplicated row starts with. The driver parses json/jsonb, so a
+// JSON string "123" arrives as the JS string 123 and would be saved as the
+// number 123; the copy therefore holds the JSON text of the value. An edited
+// cell already holds the JSON text the user typed.
+function duplicateCellValue(value, dataType, edited) {
+    if (edited || value === null || value === undefined) return value;
+    const t = String(dataType || '').trim().toLowerCase();
+    if (t !== 'json' && t !== 'jsonb') return value;
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return value;
+    }
 }
 
 // A plain decimal ('-12', '1.50', '.5') as a scaled BigInt, or null.
@@ -1418,10 +1482,8 @@ function buildFilterClause(fmtCol, val, filterType, isExact, operator, thousandS
         const fromRaw = val.from ? normalizeFilterInputValue(val.from, filterType, thousandSeparator) : '';
         const toRaw = val.to ? normalizeFilterInputValue(val.to, filterType, thousandSeparator) : '';
         if (filterType === 'numeric') {
-            const fromNum = fromRaw !== '' ? Number(fromRaw) : null;
-            const toNum = toRaw !== '' ? Number(toRaw) : null;
-            const from = fromNum !== null && !isNaN(fromNum) ? String(fromNum) : '';
-            const to = toNum !== null && !isNaN(toNum) ? String(toNum) : '';
+            const from = fromRaw !== '' ? (toNumericLiteral(fromRaw) || '') : '';
+            const to = toRaw !== '' ? (toNumericLiteral(toRaw) || '') : '';
             if (from && to) return `${fmtCol} BETWEEN ${from} AND ${to}`;
             if (from) return `${fmtCol} >= ${from}`;
             if (to) return `${fmtCol} <= ${to}`;
@@ -1436,8 +1498,8 @@ function buildFilterClause(fmtCol, val, filterType, isExact, operator, thousandS
     }
 
     if (filterType === 'numeric') {
-        const numericValue = Number(normalizeFilterInputValue(val, filterType, thousandSeparator));
-        if (isNaN(numericValue)) return null;
+        const numericValue = toNumericLiteral(normalizeFilterInputValue(val, filterType, thousandSeparator));
+        if (numericValue === null) return null;
         return `${fmtCol} ${operator} ${numericValue}`;
     }
 
@@ -1914,6 +1976,31 @@ function cellEditorTargetState(hasRow, hasColumn, isEditable) {
     return 'apply';
 }
 
+// A stable text form of all values of one loaded row.
+function rowFingerprint(row) {
+    if (!row || typeof row !== 'object') return '';
+    const keys = Object.keys(row).filter(k => k !== '_originalIndex').sort();
+    return JSON.stringify(keys.map(k => [k, row[k] === undefined ? null : row[k]]));
+}
+
+// The allRows index a value saved in a cell editor tab belongs to, or -1. The
+// row at the remembered index is used only while it still holds the values the
+// tab was opened from; otherwise (rows reloaded, panel reopened) the row is
+// looked up by its values, and a row that is gone, was changed or is no longer
+// unique yields -1 instead of a wrong row.
+function resolveCellEditorRow(rows, rowIdx, token) {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!token || typeof token !== 'object') return list[rowIdx] ? rowIdx : -1;
+    if (list[rowIdx] && rowFingerprint(list[rowIdx]) === token.fingerprint) return rowIdx;
+    let found = -1;
+    for (let i = 0; i < list.length; i++) {
+        if (rowFingerprint(list[i]) !== token.fingerprint) continue;
+        if (found !== -1) return -1;
+        found = i;
+    }
+    return found;
+}
+
 // True when WHERE clauses can be merged into the current view's query and the
 // query re-run. The query bar always holds the SQL that produced the current
 // result, so this only requires a non-empty query.
@@ -1971,14 +2058,14 @@ function rowValueMatchesFilter(cellVal, filterVal, filterType, mode, thousandSep
         const to = filterVal.to;
         if (!from && !to) return true;
         if (filterType === 'numeric') {
-            const fromNum = from ? Number(normalizeFilterInputValue(from, 'numeric', thousandSeparator)) : null;
-            const toNum = to ? Number(normalizeFilterInputValue(to, 'numeric', thousandSeparator)) : null;
-            if ((fromNum !== null && isNaN(fromNum)) || (toNum !== null && isNaN(toNum))) return true;
-            const cell = Number(cellVal);
-            if (isNaN(cell)) return false;
-            if (fromNum !== null && toNum !== null) return cell >= fromNum && cell <= toNum;
-            if (fromNum !== null) return cell >= fromNum;
-            return cell <= toNum;
+            const fromLit = from ? toNumericLiteral(normalizeFilterInputValue(from, 'numeric', thousandSeparator)) : null;
+            const toLit = to ? toNumericLiteral(normalizeFilterInputValue(to, 'numeric', thousandSeparator)) : null;
+            if ((from && fromLit === null) || (to && toLit === null)) return true;
+            if (cellVal === null || cellVal === undefined || cellVal === '' || isNaN(Number(cellVal))) return false;
+            // Compared digit by digit, so bigint values beyond 2^53 stay exact.
+            if (fromLit !== null && compareNumericText(cellVal, fromLit) < 0) return false;
+            if (toLit !== null && compareNumericText(cellVal, toLit) > 0) return false;
+            return true;
         }
         if (cellVal === null || cellVal === undefined) return false;
         const val = String(cellVal);
@@ -1989,16 +2076,24 @@ function rowValueMatchesFilter(cellVal, filterVal, filterType, mode, thousandSep
 
     if ((filterType === 'numeric' || filterType === 'date') && mode && mode !== 'equals') {
         if (cellVal === null || cellVal === undefined) return false;
-        const a = filterType === 'numeric' ? Number(cellVal) : String(cellVal);
         const normalizedFilterVal = normalizeFilterInputValue(filterVal, filterType, thousandSeparator);
-        const b = filterType === 'numeric' ? Number(normalizedFilterVal) : String(normalizedFilterVal);
+        let cmp;
+        if (filterType === 'numeric') {
+            if (toNumericLiteral(normalizedFilterVal) === null) return true;
+            if (isNaN(Number(cellVal))) return false;
+            cmp = compareNumericText(cellVal, normalizedFilterVal);
+        } else {
+            const a = String(cellVal);
+            const b = String(normalizedFilterVal);
+            cmp = a < b ? -1 : a > b ? 1 : 0;
+        }
         switch (mode) {
-            case 'not_equals': return a !== b;
-            case 'gt': return a > b;
-            case 'gte': return a >= b;
-            case 'lt': return a < b;
-            case 'lte': return a <= b;
-            default: return a === b;
+            case 'not_equals': return cmp !== 0;
+            case 'gt': return cmp > 0;
+            case 'gte': return cmp >= 0;
+            case 'lt': return cmp < 0;
+            case 'lte': return cmp <= 0;
+            default: return cmp === 0;
         }
     }
 
@@ -2006,16 +2101,73 @@ function rowValueMatchesFilter(cellVal, filterVal, filterType, mode, thousandSep
     return String(cellVal).toLowerCase().includes(String(filterVal).toLowerCase());
 }
 
+// True when an answer belongs to a load the panel has since replaced. Answers
+// without an id (from older hosts or other paths) are never treated as stale.
+function isStaleLoadAnswer(msgLoadId, latestLoadId) {
+    return typeof msgLoadId === 'number' && msgLoadId !== latestLoadId;
+}
+
+// The SQL an export runs: the last executed query (never unsaved query-bar
+// text). Without a user-written LIMIT that is the query minus the paging LIMIT
+// the grid appended; with one, the query exactly as run.
+function exportQuerySql(lastRunRawSql, currentBaseSql, userPaged) {
+    const raw = String(lastRunRawSql || '').trim();
+    if (!raw) return '';
+    return userPaged ? raw : String(currentBaseSql || raw).trim();
+}
+
 // Comparator for sorting two cell values. Nulls always sort last. `direction`
-// is 'asc' or 'desc'.
-function compareCellValues(valA, valB, direction) {
+// is 'asc' or 'desc'. `numeric` marks a numeric column: node-pg returns int8
+// and numeric as strings, which must not be ordered as text.
+function compareCellValues(valA, valB, direction, numeric) {
     if (valA === null) return 1;
     if (valB === null) return -1;
-    if (typeof valA === 'number' && typeof valB === 'number') {
-        return direction === 'asc' ? valA - valB : valB - valA;
+    if (numeric || (typeof valA === 'number' && typeof valB === 'number')) {
+        const cmp = compareNumericText(valA, valB);
+        return direction === 'asc' ? cmp : -cmp;
     }
     const cmp = String(valA).localeCompare(String(valB));
     return direction === 'asc' ? cmp : -cmp;
+}
+
+// Split a plain decimal ("-0012.340") into sign, integer digits and fraction
+// digits without leading/trailing zeros, or null for anything else (NaN,
+// Infinity, exponent notation).
+function parseDecimalText(value) {
+    if (typeof value === 'number' && !isFinite(value)) return null;
+    const m = /^\s*([+-]?)(\d*)(?:\.(\d*))?\s*$/.exec(String(value));
+    if (!m || (m[2] === '' && !m[3])) return null;
+    const int = m[2].replace(/^0+/, '');
+    const frac = (m[3] || '').replace(/0+$/, '');
+    return { neg: m[1] === '-' && (int !== '' || frac !== ''), int, frac };
+}
+
+// Exact numeric ordering of two values that may be numbers or numeric strings
+// of any length (bigint, numeric). Returns <0, 0 or >0. Values that are not
+// plain decimals fall back to Number(), and NaN sorts above every number as in
+// PostgreSQL.
+function compareNumericText(a, b) {
+    const pa = parseDecimalText(a);
+    const pb = parseDecimalText(b);
+    if (!pa || !pb) {
+        const na = Number(a);
+        const nb = Number(b);
+        if (isNaN(na) || isNaN(nb)) return (isNaN(na) ? 1 : 0) - (isNaN(nb) ? 1 : 0);
+        return na < nb ? -1 : na > nb ? 1 : 0;
+    }
+    if (pa.neg !== pb.neg) return pa.neg ? -1 : 1;
+    let mag;
+    if (pa.int.length !== pb.int.length) {
+        mag = pa.int.length < pb.int.length ? -1 : 1;
+    } else if (pa.int !== pb.int) {
+        mag = pa.int < pb.int ? -1 : 1;
+    } else {
+        const len = Math.max(pa.frac.length, pb.frac.length);
+        const fa = pa.frac.padEnd(len, '0');
+        const fb = pb.frac.padEnd(len, '0');
+        mag = fa < fb ? -1 : fa > fb ? 1 : 0;
+    }
+    return pa.neg ? -mag : mag;
 }
 
 // Normalize a raw edited cell value into the canonical string stored in the
@@ -2399,12 +2551,17 @@ function buildCommitTargets(caps, rows, edits) {
         return id;
     }
 
-    // An outer join that found no partner leaves every identity column empty:
-    // there is no row to update, so the change becomes a plain INSERT.
+    // An outer join that found no partner leaves every column of that table
+    // empty: there is no row to update, so the change becomes a plain INSERT.
+    // All displayed columns are checked, not only the identity, which leaves
+    // out json/xml/geometric columns; and a single-table result only ever
+    // shows real rows.
     function rowIsMissing(plan, row) {
-        const identity = plan.identityColumns || [];
-        if (!row || identity.length === 0) { return false; }
-        return identity.every(col => row[col.name] === null || row[col.name] === undefined);
+        if (!row || tables.length < 2) { return false; }
+        // The identity may be a hidden key column that `columns` does not list.
+        const cols = [...(plan.columns || []), ...(plan.identityColumns || [])];
+        if (cols.length === 0) { return false; }
+        return cols.every(col => row[col.name] === null || row[col.name] === undefined);
     }
 
     (edits.updates || []).forEach(([rowIdx, changed]) => {
@@ -4111,21 +4268,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return null;
     }
 
-    // Translate the anchor cell into a start position in allRows/columns index
-    // space. A cell of a loaded row overwrites from there; anything else (an
-    // insert row, or no anchor at all) appends after the last loaded row.
-    function pasteStartPosition(td) {
+    // Translate the anchor cell into a start position in display-order/columns
+    // index space. A cell of a displayed loaded row overwrites from there;
+    // anything else (an insert row, or no anchor at all) appends after the last
+    // displayed row.
+    function pasteStartPosition(td, rowOrder) {
         if (td) {
             const colName = td.getAttribute('data-col');
             const ci = columns.findIndex(c => c.name === colName);
             const startCol = ci >= 0 ? ci : 0;
             const rowAttr = td.getAttribute('data-row');
-            if (rowAttr !== null) {
-                return { startRowIdx: parseInt(rowAttr, 10), startCol };
-            }
-            return { startRowIdx: allRows.length, startCol };
+            const pos = rowAttr !== null ? rowOrder.indexOf(parseInt(rowAttr, 10)) : -1;
+            return { startPos: pos >= 0 ? pos : rowOrder.length, startCol };
         }
-        return { startRowIdx: allRows.length, startCol: 0 };
+        return { startPos: rowOrder.length, startCol: 0 };
     }
 
     // Normalize a pasted value for its column: numeric text is de-separated, and
@@ -4274,9 +4430,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!caps.canEdit && !caps.canInsert) { return; }
         e.preventDefault();
 
-        const { startRowIdx, startCol } = pasteStartPosition(pasteAnchorTd());
+        const rowOrder = displayedRows.map(r => r._originalIndex);
+        const { startPos, startCol } = pasteStartPosition(pasteAnchorTd(), rowOrder);
         const columnNames = columns.map(c => c.name);
-        const plan = planClipboardPaste(matrix, startRowIdx, startCol, allRows.length, columnNames, isColumnEditable);
+        const plan = planClipboardPaste(matrix, startPos, startCol, rowOrder, columnNames, isColumnEditable);
 
         const validationTargets = [];
         // Keys of every cell the paste wrote to, so the block can be re-selected.
@@ -4353,17 +4510,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 handleInit(msg);
                 break;
             case 'rowsLoaded':
+                if (isStaleLoadAnswer(msg.loadId, latestLoadId)) break;
                 handleRowsLoaded(msg);
                 break;
             case 'columnsLoaded':
+                if (isStaleLoadAnswer(msg.loadId, latestLoadId)) break;
                 handleColumnsLoaded(msg);
                 break;
             case 'totalCountLoaded':
                 if (msg.autoRefreshId && msg.autoRefreshId !== latestLoadId) break;
+                if (isStaleLoadAnswer(msg.loadId, latestLoadId)) break;
                 totalCount = msg.totalCount;
                 updateRowCount();
                 break;
             case 'loadingFinished':
+                if (isStaleLoadAnswer(msg.loadId, latestLoadId)) break;
                 setDataLoading(false);
                 break;
             case 'primaryKeysLoaded':
@@ -4419,6 +4580,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 }
                 break;
             case 'error':
+                // A failed load the user has since replaced is already reported
+                // by the host; it must not end the newer load's spinner.
+                if (isStaleLoadAnswer(msg.loadId, latestLoadId)) break;
                 if (msg.autoRefreshId) {
                     // A failing auto refresh is reported once, then switched off.
                     if (!isAutoRefreshAnswer(msg)) break;
@@ -4468,7 +4632,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         newMappingDefaultWorkspace = Boolean(msg.newMappingDefaultWorkspace);
         permanentConstraints = Array.isArray(msg.permanentConstraints) ? msg.permanentConstraints : [];
         permanentSorts = Array.isArray(msg.permanentSorts) ? msg.permanentSorts : [];
-        if (msg.thousandSeparator !== undefined) { thousandSeparator = msg.thousandSeparator; }
+        if (msg.thousandSeparator !== undefined) { thousandSeparator = sanitizeThousandSeparator(msg.thousandSeparator); }
         if (typeof msg.duplicateRowResetDefaults === 'string') { duplicateResetMode = msg.duplicateRowResetDefaults; }
         if (typeof msg.connectionName === 'string') {
             currentConnection = msg.connectionName;
@@ -4788,7 +4952,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             sql,
             baseSql: currentSql,
             append: false,
-            wantTotal
+            wantTotal,
+            loadId: latestLoadId
         });
     }
 
@@ -5599,7 +5764,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         if (sortState.column) {
-            rows.sort((a, b) => compareCellValues(a[sortState.column], b[sortState.column], sortState.direction));
+            const sortMeta = columns.find(c => c.name === sortState.column);
+            const numericSort = !!sortMeta && isNumericScalarType(sortMeta.fullType || sortMeta.dataType);
+            rows.sort((a, b) => compareCellValues(a[sortState.column], b[sortState.column], sortState.direction, numericSort));
         }
 
         return rows;
@@ -5648,7 +5815,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 const row = insertedRows[w.iIdx].row;
                 html += `<tr class="row-inserted" data-insert-index="${w.iIdx}">`;
                 html += `<td class="row-num-cell">${rowNum}</td>`;
-                html += `<td class="actions-cell"><button class="btn btn-danger btn-sm btn-icon" onclick="removeInsertedRow(${w.iIdx})" title="Remove this new row">${icon('close')}</button></td>`;
+                html += `<td class="actions-cell"><button class="btn btn-danger btn-sm btn-icon" data-row-action="removeInsertedRow" data-row-arg="${w.iIdx}" title="Remove this new row">${icon('close')}</button></td>`;
                 columns.forEach(col => {
                     const val = row[col.name] || '';
                     const invalid = invalidCells.get(`ins:${w.iIdx}:${col.name}`);
@@ -5660,7 +5827,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 const row = entry.row;
                 html += `<tr class="row-duplicated" data-dup-index="${w.dIdx}">`;
                 html += `<td class="row-num-cell">${rowNum}</td>`;
-                html += `<td class="actions-cell"><button class="btn btn-danger btn-sm btn-icon" onclick="removeDuplicatedRow(${w.dIdx})" title="Remove this duplicate">${icon('close')}</button></td>`;
+                html += `<td class="actions-cell"><button class="btn btn-danger btn-sm btn-icon" data-row-action="removeDuplicatedRow" data-row-arg="${w.dIdx}" title="Remove this duplicate">${icon('close')}</button></td>`;
                 columns.forEach(col => {
                     const atDefault = !!entry.defaults && entry.defaults.has(col.name);
                     const val = row[col.name] !== null && row[col.name] !== undefined ? cellToString(row[col.name]) : '';
@@ -5691,14 +5858,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             html += `<td class="row-num-cell">${rowNum}<div class="row-resize-handle" title="Drag to change row height"></div></td>`;
             html += `<td class="actions-cell">`;
             if (!caps.canDelete) {
-                html += `<button class="btn-view-record" onclick="openRecordDialog(${idx})" title="View full record">&#128065;</button>`;
+                html += `<button class="btn-view-record" data-row-action="openRecordDialog" data-row-arg="${idx}" title="View full record">&#128065;</button>`;
             } else if (!isDeleted) {
-                html += `<button class="btn-view-record" onclick="openRecordDialog(${idx})" title="View full record">&#128065;</button>`;
-                html += `<button class="btn btn-sm btn-icon" onclick="duplicateRow(${idx})" title="Duplicate row">${icon('copy')}</button>`;
-                html += `<button class="btn btn-danger btn-sm btn-icon" onclick="deleteRow(${idx})" title="Delete row">${icon('trash')}</button>`;
+                html += `<button class="btn-view-record" data-row-action="openRecordDialog" data-row-arg="${idx}" title="View full record">&#128065;</button>`;
+                html += `<button class="btn btn-sm btn-icon" data-row-action="duplicateRow" data-row-arg="${idx}" title="Duplicate row">${icon('copy')}</button>`;
+                html += `<button class="btn btn-danger btn-sm btn-icon" data-row-action="deleteRow" data-row-arg="${idx}" title="Delete row">${icon('trash')}</button>`;
             } else {
-                html += `<button class="btn-view-record" onclick="openRecordDialog(${idx})" title="View full record">&#128065;</button>`;
-                html += `<button class="btn btn-sm btn-icon" onclick="undeleteRow(${idx})" title="Restore row">${icon('undo')}</button>`;
+                html += `<button class="btn-view-record" data-row-action="openRecordDialog" data-row-arg="${idx}" title="View full record">&#128065;</button>`;
+                html += `<button class="btn btn-sm btn-icon" data-row-action="undeleteRow" data-row-arg="${idx}" title="Restore row">${icon('undo')}</button>`;
             }
             html += `</td>`;
 
@@ -5722,7 +5889,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     // Custom mapping overrides or supplements FK button
                     fkBtn = `<button class="fk-btn custom-fk-btn" data-ref-schema="${escapeAttr(defaultCustomMapping.targetSchema)}" data-ref-table="${escapeAttr(defaultCustomMapping.targetTable)}" data-ref-column="${escapeAttr(defaultCustomMapping.targetColumn)}" data-value="${escapeAttr(cellToString(currentVal))}" title="${escapeAttr(defaultCustomMapping.label || defaultCustomMapping.targetSchema + '.' + defaultCustomMapping.targetTable)}">&#8599;</button>`;
                 } else if (fk && currentVal !== null && currentVal !== undefined) {
-                    fkBtn = `<button class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(cellToString(currentVal))}" title="Open ${fk.refSchema}.${fk.refTable}">&#8599;</button>`;
+                    fkBtn = `<button class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(cellToString(currentVal))}" title="${escapeAttr('Open ' + fk.refSchema + '.' + fk.refTable)}">&#8599;</button>`;
                 }
                 const canEditCell = !isDeleted && isColumnEditable(col.name);
                 const spanClass = canEditCell ? 'cell-content editable-cell' : 'cell-content';
@@ -6145,7 +6312,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const source = {};
         columns.forEach(col => {
             const modKey = `${idx}:${col.name}`;
-            const value = modifiedCells.has(modKey) ? modifiedCells.get(modKey) : allRows[idx][col.name];
+            const edited = modifiedCells.has(modKey);
+            const value = duplicateCellValue(edited ? modifiedCells.get(modKey) : allRows[idx][col.name], col.dataType, edited);
             rowData[col.name] = value;
             source[col.name] = value;
         });
@@ -6174,6 +6342,24 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         updateRowCount();
         recordEditHistory();
     };
+
+    // The row action buttons carry `data-row-action` instead of inline
+    // onclick handlers, which the panel's Content Security Policy blocks.
+    const ROW_ACTIONS = {
+        openRecordDialog: (idx) => window.openRecordDialog(idx),
+        duplicateRow: (idx) => window.duplicateRow(idx),
+        deleteRow: (idx) => window.deleteRow(idx),
+        undeleteRow: (idx) => window.undeleteRow(idx),
+        removeInsertedRow: (idx) => window.removeInsertedRow(idx),
+        removeDuplicatedRow: (idx) => window.removeDuplicatedRow(idx)
+    };
+    tableBody.addEventListener('click', (e) => {
+        const btn = e.target && e.target.closest ? e.target.closest('[data-row-action]') : null;
+        if (!btn || !tableBody.contains(btn)) return;
+        const action = ROW_ACTIONS[btn.getAttribute('data-row-action')];
+        const arg = parseInt(btn.getAttribute('data-row-arg'), 10);
+        if (action && !isNaN(arg)) action(arg);
+    });
 
     function insertRow() {
         const newRow = {};
@@ -6215,8 +6401,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function postLoadRows(sql, append) {
+        // A page appended to the current result supersedes an auto refresh on
+        // its way, which would otherwise reset the offset under it.
+        if (autoRefreshInFlight) {
+            autoRefreshInFlight = null;
+            setAutoRefreshBusyIndicator(false);
+            scheduleAutoRefresh();
+        }
         setDataLoading(true);
-        vscode.postMessage({ command: 'loadRows', sql, baseSql: currentSql, append: !!append });
+        // The id of the result being extended: a page that arrives after a new
+        // query was started is dropped instead of being appended to it.
+        vscode.postMessage({ command: 'loadRows', sql, baseSql: currentSql, append: !!append, loadId: latestLoadId });
     }
 
     // ===== Auto refresh ========================================================
@@ -6368,7 +6563,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             // Keep a known row count up to date.
             wantTotal: lastRunWantTotal || totalCount !== null,
             autoRefresh: true,
-            autoRefreshId: latestLoadId
+            autoRefreshId: latestLoadId,
+            loadId: latestLoadId
         });
     }
 
@@ -6448,8 +6644,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // Build updates grouped by row
         const rowUpdates = new Map();
         for (const [key, value] of modifiedCells.entries()) {
-            const [rowIdxStr, colName] = key.split(':');
-            const rowIdx = parseInt(rowIdxStr);
+            const { rowIdx, colName } = parseCellKey(key);
             if (deletedRows.has(rowIdx)) continue; // Skip if row is also deleted
 
             if (!rowUpdates.has(rowIdx)) {
@@ -7146,12 +7341,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function executeExport() {
         const opts = gatherExportOptions();
         opts.saveLocation = exportSaveLocation.value.trim() || '';
-        // Send the current SQL query so backend can fetch ALL rows (not limited to page)
-        const currentSql = queryInput.value.trim();
+        // Export what the grid shows: the last executed query, not unsaved text
+        // in the query bar. Only the paging LIMIT the grid added is left out; a
+        // LIMIT the user wrote is kept.
+        const sql = exportQuerySql(lastRunRawSql, currentSql, userPaged);
+        if (opts.format === 'excel') { opts.excelSqlStatement = sql; }
         vscode.postMessage({
             command: 'exportData',
             options: opts,
-            sql: currentSql,
+            sql,
             schema: schema,
             table: table,
             columns: columns
@@ -7763,23 +7961,26 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             column: colName,
             dataType: colMeta ? (colMeta.dataType || '') : '',
             value: cellToString(value),
-            readOnly: !isColumnEditable(colName) || deletedRows.has(rowIdx)
+            readOnly: !isColumnEditable(colName) || deletedRows.has(rowIdx),
+            // Echoed back on save, so the value lands on the same record even
+            // when the rows were reloaded in between.
+            rowToken: { fingerprint: rowFingerprint(allRows[rowIdx]) }
         });
     }
 
     // A cell opened in an editor tab was saved: apply the text as a pending
     // change, exactly as if it had been typed into the cell.
     function handleCellEditorValue(msg) {
-        const idx = Number(msg.rowIdx);
+        const idx = resolveCellEditorRow(allRows, Number(msg.rowIdx), msg.rowToken);
         const state = cellEditorTargetState(
-            !!allRows[idx],
+            idx >= 0,
             columns.some(c => c.name === msg.column),
-            isColumnEditable(msg.column) && !deletedRows.has(idx)
+            idx >= 0 && isColumnEditable(msg.column) && !deletedRows.has(idx)
         );
         if (state === 'stale') {
             vscode.postMessage({
                 command: 'showError',
-                text: 'The edited cell is no longer part of the loaded result. Reload the data and open it again.'
+                text: 'The edited row is no longer part of the loaded result, or it was changed in the meantime. Open the cell again to edit it.'
             });
             return;
         }
@@ -8070,7 +8271,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function saveMappingFromDialog() {
         const data = gatherMappingFromDialog();
         if (!data.targetTable || !data.targetColumn) {
-            alert('Target table and column are required.');
+            // alert() is blocked inside VS Code webviews.
+            vscode.postMessage({ command: 'showError', text: 'Target table and column are required.' });
             return;
         }
         if (!data.targetSchema) {
@@ -8092,7 +8294,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function deleteCurrentMapping() {
         if (!editingMappingId) return;
-        if (!confirm('Delete this custom mapping?')) return;
+        // The host asks for confirmation: confirm() is blocked in webviews.
         vscode.postMessage({
             command: 'deleteCustomMapping',
             mappingId: editingMappingId
@@ -8134,8 +8336,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 badges += '<span class="mapping-badge">Default</span>';
             }
             if (mapping.conditions && mapping.conditions.length > 0) {
-                const condStr = mapping.conditions.map(c => `${c.column} ${c.operator} '${c.value}'`).join(', ');
-                badges += `<span class="mapping-badge">IF ${condStr}</span>`;
+                badges += `<span class="mapping-badge">IF ${escapeHtml(formatMappingConditions(mapping.conditions))}</span>`;
             }
             if (Array.isArray(mapping.additionalColumnPairs) && mapping.additionalColumnPairs.length > 0) {
                 const pairStr = mapping.additionalColumnPairs.map(p => `${p.sourceColumn} = ${p.targetColumn}`).join(' AND ');
@@ -8172,9 +8373,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         mappingsList.querySelectorAll('.mapping-delete-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const id = btn.closest('.mapping-item').getAttribute('data-mapping-id');
-                if (confirm('Delete this custom mapping?')) {
-                    vscode.postMessage({ command: 'deleteCustomMapping', mappingId: id });
-                }
+                vscode.postMessage({ command: 'deleteCustomMapping', mappingId: id });
             });
         });
     }
@@ -8183,6 +8382,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
+        isNumericScalarType,
+        duplicateCellValue,
+        isStaleLoadAnswer,
+        exportQuerySql,
+        sanitizeThousandSeparator,
+        toNumericLiteral,
+        parseCellKey,
+        formatMappingConditions,
+        compareNumericText,
         cellToString,
         normalizeNumericInput,
         formatNumberDisplay,
@@ -8279,6 +8487,8 @@ if (typeof module !== 'undefined' && module.exports) {
         editHistoryHasGridEdits,
         recordScrollTailHeight,
         cellEditorTargetState,
+        rowFingerprint,
+        resolveCellEditorRow,
         buildConnectionBadge,
         canApplyQueryFilters,
         canManageTableMetadata,

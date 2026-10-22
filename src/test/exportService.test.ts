@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { ExportService, ExportOptions, excelCellValue, EXCEL_DATE_FORMAT } from '../exportService';
+import { ExportService, ExportOptions, excelCellValue, excelNumberFormat, EXCEL_DATE_FORMAT, EXCEL_TIMESTAMP_FORMAT } from '../exportService';
 
 function createMockContext() {
     const store: Record<string, any> = {};
@@ -923,6 +923,198 @@ test('XML export with ampersand in value escapes correctly', async () => {
         });
         const content = fs.readFileSync(filePath, 'utf8');
         assert.ok(content.includes('Tom &amp; Jerry'));
+    } finally {
+        fs.unlinkSync(filePath);
+    }
+});
+
+// ===== parsed PostgreSQL values (json/jsonb, arrays, timestamptz, bytea) =====
+
+const typedColumns = [
+    { name: 'doc', dataType: 'jsonb' },
+    { name: 'tags', dataType: 'text[]' },
+    { name: 'grid', dataType: 'integer[]' },
+    { name: 'at', dataType: 'timestamp with time zone' },
+    { name: 'raw', dataType: 'bytea' },
+    { name: 'note', dataType: 'text' }
+];
+
+const typedRow = {
+    doc: { a: 1, b: ['x', null] },
+    tags: ['plain', 'a,b', 'say "hi"', '', null],
+    grid: [[1, 2], [3, 4]],
+    at: '2024-01-31 10:15:00.123456+01',
+    raw: Buffer.from([0xde, 0xad]),
+    note: null
+};
+
+test('CSV export writes json, arrays, timestamptz and bytea in their PostgreSQL text form', async () => {
+    const service = new ExportService(createMockContext());
+    const filePath = getTempFile('.csv');
+    try {
+        await service.exportData([typedRow], typedColumns, {
+            format: 'csv', filePath, csvSeparator: ';', csvIncludeHeaders: false, csvQuoteStrings: true, csvLineEnding: 'lf'
+        });
+        const content = fs.readFileSync(filePath, 'utf8');
+        assert.equal(
+            content,
+            '"{""a"":1,""b"":[""x"",null]}";'
+            + '"{plain,""a,b"",""say \\""hi\\"""","""",NULL}";'
+            + '{{1,2},{3,4}};'
+            + '2024-01-31 10:15:00.123456+01;'
+            + '\\xdead;'
+        );
+        assert.ok(!content.includes('[object Object]'));
+    } finally {
+        fs.unlinkSync(filePath);
+    }
+});
+
+test('XML export writes json and arrays in their PostgreSQL text form', async () => {
+    const service = new ExportService(createMockContext());
+    const filePath = getTempFile('.xml');
+    try {
+        await service.exportData([typedRow], typedColumns, { format: 'xml', filePath });
+        const content = fs.readFileSync(filePath, 'utf8');
+        assert.ok(content.includes('<doc>{&quot;a&quot;:1,&quot;b&quot;:[&quot;x&quot;,null]}</doc>'));
+        assert.ok(content.includes('<grid>{{1,2},{3,4}}</grid>'));
+        assert.ok(content.includes('<at>2024-01-31 10:15:00.123456+01</at>'));
+        assert.ok(content.includes('<raw>\\xdead</raw>'));
+        assert.ok(content.includes('<note></note>'));
+    } finally {
+        fs.unlinkSync(filePath);
+    }
+});
+
+test('INSERT export writes json, arrays, timestamptz, bytea and NULL as valid literals', async () => {
+    const service = new ExportService(createMockContext());
+    const filePath = getTempFile('.sql');
+    try {
+        await service.exportData([typedRow], typedColumns, { format: 'insert', filePath, insertTableName: 't' });
+        const content = fs.readFileSync(filePath, 'utf8');
+        assert.equal(
+            content,
+            'INSERT INTO t (doc, tags, grid, at, raw, note) VALUES ('
+            + `'{"a":1,"b":["x",null]}', `
+            + `'{plain,"a,b","say \\"hi\\"","",NULL}', `
+            + `'{{1,2},{3,4}}', `
+            + `'2024-01-31 10:15:00.123456+01', `
+            + `'\\xdead', `
+            + 'NULL);'
+        );
+    } finally {
+        fs.unlinkSync(filePath);
+    }
+});
+
+test('JSON export keeps json objects and arrays native and writes bytea as hex text', async () => {
+    const service = new ExportService(createMockContext());
+    const filePath = getTempFile('.json');
+    try {
+        await service.exportData([typedRow], typedColumns, { format: 'json', filePath, jsonPretty: false });
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        assert.deepEqual(parsed[0].doc, { a: 1, b: ['x', null] });
+        assert.deepEqual(parsed[0].grid, [[1, 2], [3, 4]]);
+        assert.equal(parsed[0].at, '2024-01-31 10:15:00.123456+01');
+        assert.equal(parsed[0].raw, '\\xdead');
+        assert.equal(parsed[0].note, null);
+    } finally {
+        fs.unlinkSync(filePath);
+    }
+});
+
+test('excelCellValue writes json objects and arrays as their text instead of an object', () => {
+    assert.equal(excelCellValue({ a: 1 }, 'jsonb'), '{"a":1}');
+    assert.equal(excelCellValue([1, 2], 'integer[]'), '{1,2}');
+    assert.equal(excelCellValue(Buffer.from([1]), 'bytea'), '\\x01');
+});
+
+// ===== json/jsonb arrays and scalars, interval, Excel timestamptz =====
+
+const jsonColumns = [
+    { name: 'list', dataType: 'jsonb' },
+    { name: 'word', dataType: 'jsonb' },
+    { name: 'num', dataType: 'json' },
+    { name: 'flag', dataType: 'jsonb' },
+    { name: 'docs', dataType: '_jsonb' }
+];
+// What the driver returns for '["a","b"]', '"abc"', '5', 'true' and '{"\"x\"","{\"k\":1}"}'.
+const jsonRow = { list: ['a', 'b'], word: 'abc', num: 5, flag: true, docs: ['x', { k: 1 }] };
+
+test('CSV export writes jsonb arrays and scalars as JSON, not as PostgreSQL arrays or bare text', async () => {
+    const service = new ExportService(createMockContext());
+    const filePath = getTempFile('.csv');
+    try {
+        await service.exportData([jsonRow], jsonColumns, {
+            format: 'csv', filePath, csvSeparator: ';', csvIncludeHeaders: false, csvQuoteStrings: true, csvLineEnding: 'lf'
+        });
+        assert.equal(
+            fs.readFileSync(filePath, 'utf8'),
+            '"[""a"",""b""]";"""abc""";5;true;"{""\\""x\\"""",""{\\""k\\"":1}""}"'
+        );
+    } finally {
+        fs.unlinkSync(filePath);
+    }
+});
+
+test('INSERT export quotes every json value as JSON text so the script loads again', async () => {
+    const service = new ExportService(createMockContext());
+    const filePath = getTempFile('.sql');
+    try {
+        await service.exportData([jsonRow], jsonColumns, { format: 'insert', filePath, insertTableName: 't' });
+        assert.equal(
+            fs.readFileSync(filePath, 'utf8'),
+            `INSERT INTO t (list, word, num, flag, docs) VALUES ('["a","b"]', '"abc"', '5', 'true', '{"\\"x\\"","{\\"k\\":1}"}');`
+        );
+    } finally {
+        fs.unlinkSync(filePath);
+    }
+});
+
+test('excelCellValue writes jsonb arrays and scalars as JSON text', () => {
+    assert.equal(excelCellValue(['a', 'b'], 'jsonb'), '["a","b"]');
+    assert.equal(excelCellValue('abc', 'jsonb'), '"abc"');
+    assert.equal(excelCellValue(5, 'json'), '5');
+});
+
+test('export text of a driver object uses its own PostgreSQL text form', async () => {
+    const interval = { days: 1, hours: 2, toPostgres: () => '2 hours 1 days' };
+    const service = new ExportService(createMockContext());
+    const filePath = getTempFile('.csv');
+    try {
+        await service.exportData([{ span: interval }], [{ name: 'span', dataType: 'interval' }], {
+            format: 'csv', filePath, csvIncludeHeaders: false
+        });
+        assert.equal(fs.readFileSync(filePath, 'utf8'), '2 hours 1 days');
+    } finally {
+        fs.unlinkSync(filePath);
+    }
+});
+
+test('excelCellValue turns timestamptz text into a date cell with the displayed wall-clock time', () => {
+    const v = excelCellValue('2024-01-31 10:15:00.123456+01', 'timestamptz');
+    assert.ok(v instanceof Date);
+    assert.equal((v as Date).toISOString(), '2024-01-31T10:15:00.123Z');
+    assert.equal(excelNumberFormat(v, 'timestamp with time zone'), EXCEL_TIMESTAMP_FORMAT);
+    assert.equal(excelCellValue('infinity', 'timestamptz'), 'infinity');
+    assert.equal(excelCellValue('2024-01-31 10:15:00+01 BC', 'timestamptz'), '2024-01-31 10:15:00+01 BC');
+});
+
+test('Excel export writes a timestamptz column as date cells with a timestamp format', async () => {
+    const service = new ExportService(createMockContext());
+    const filePath = getTempFile('.xlsx');
+    try {
+        await service.exportData(
+            [{ at: '2024-01-31 10:15:00+01' }],
+            [{ name: 'at', dataType: 'timestamptz' }],
+            { format: 'excel', filePath, excelIncludeHeaders: false, excelSheetName: 'Data', excelIncludeSqlSheet: false }
+        );
+        const ExcelJS = require('exceljs');
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.readFile(filePath);
+        const cell = workbook.getWorksheet('Data').getRow(1).getCell(1);
+        assert.ok(cell.value instanceof Date, 'expected a date cell, not text');
+        assert.equal(cell.numFmt, EXCEL_TIMESTAMP_FORMAT);
     } finally {
         fs.unlinkSync(filePath);
     }

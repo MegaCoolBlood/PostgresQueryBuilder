@@ -18,7 +18,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import * as fs from 'fs';
 import * as path from 'path';
 import { formatSqlChecked, FormatOptions, coerceFormatOptions } from '../src/plpgsqlFormatter';
-import { readRepoFormatConfig } from '../src/repoFormatConfig';
+import { readRepoFormatConfig, fileUriToFsPath } from '../src/repoFormatConfig';
 
 // Create a connection for the server, using Node's IPC as a transport.
 const connection = createConnection(ProposedFeatures.all);
@@ -46,11 +46,7 @@ connection.onInitialize((params: InitializeParams) => {
 
 	// Extract workspace folder from initialization params
 	if (params.workspaceFolders && params.workspaceFolders.length > 0) {
-		const folderUri = params.workspaceFolders[0].uri;
-		// Convert file:// URI to filesystem path
-		workspaceFolder = decodeURIComponent(
-			folderUri.replace(/^file:\/\//, '').replace(/^\d:/, (m) => m[0] + ':')
-		);
+		workspaceFolder = fileUriToFsPath(params.workspaceFolders[0].uri) ?? null;
 	}
 
 	const result: InitializeResult = {

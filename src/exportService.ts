@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { escapeSqlLiteral } from './sqlUtils';
+import { escapeSqlLiteral, isJsonColumnType, pgColumnValueToText } from './sqlUtils';
 
 export interface ExportOptions {
     format: 'insert' | 'csv' | 'json' | 'xml' | 'excel';
@@ -44,15 +44,49 @@ export type ExportRow = Record<string, unknown>;
 
 /** Display format given to the date cells of an Excel export. */
 export const EXCEL_DATE_FORMAT = 'yyyy-mm-dd';
+/** Display format given to the timestamp cells of an Excel export. */
+export const EXCEL_TIMESTAMP_FORMAT = 'yyyy-mm-dd hh:mm:ss';
+
+function isTimestamptzType(dataType: string): boolean {
+    const t = String(dataType || '').trim().toLowerCase();
+    return t === 'timestamptz' || t === 'timestamp with time zone';
+}
+
+/**
+ * The Date for a timestamptz text as the server sends it
+ * (`2024-05-01 10:30:00.123456+02`), or null for anything else (infinity, BC).
+ * The wall-clock time is kept and the offset dropped, so the cell shows the
+ * same time as the grid and the CSV export; Excel serials carry no timezone.
+ */
+function parseTimestampText(text: string): Date | null {
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:Z|[+-]\d{2}(?::?\d{2}){0,2})?$/.exec(text.trim());
+    if (!m) return null;
+    const ms = m[7] ? Number(m[7].slice(0, 3).padEnd(3, '0')) : 0;
+    const d = new Date(Date.UTC(2000, Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]), ms));
+    d.setUTCFullYear(Number(m[1]));
+    return d.getUTCMonth() === Number(m[2]) - 1 ? d : null;
+}
+
+/** The number format an Excel cell of this column needs, if any. */
+export function excelNumberFormat(value: unknown, dataType: string): string | undefined {
+    if (!(value instanceof Date)) return undefined;
+    if (String(dataType || '').trim().toLowerCase() === 'date') return EXCEL_DATE_FORMAT;
+    return isTimestamptzType(dataType) ? EXCEL_TIMESTAMP_FORMAT : undefined;
+}
 
 /**
  * The value an Excel cell receives. A `date` column arrives as the raw
  * `YYYY-MM-DD` text and is turned into a real Excel date; the Date is built at
  * UTC midnight because Excel serials carry no timezone, so a local-midnight Date
- * would land on the previous day east of UTC. Everything else is written as is.
+ * would land on the previous day east of UTC. timestamptz text becomes a date
+ * cell the same way (as it was while the driver still parsed it into a Date),
+ * json is written as JSON text, and everything else as is.
  */
 export function excelCellValue(value: unknown, dataType: string): unknown {
     if (value === null || value === undefined) return '';
+    if (isJsonColumnType(dataType)) return pgColumnValueToText(value, dataType) ?? '';
+    // Arrays, bytea and driver objects would not survive as a cell value.
+    if (typeof value === 'object' && !(value instanceof Date)) return pgColumnValueToText(value, dataType) ?? '';
     if (String(dataType || '').trim().toLowerCase() === 'date' && typeof value === 'string') {
         const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
         if (m) {
@@ -61,7 +95,36 @@ export function excelCellValue(value: unknown, dataType: string): unknown {
             if (d.getUTCMonth() === Number(m[2]) - 1) return d;
         }
     }
+    if (isTimestamptzType(dataType) && typeof value === 'string') {
+        return parseTimestampText(value) ?? value;
+    }
     return value;
+}
+
+/**
+ * A value as it appears in a JSON export. json/jsonb objects and arrays stay
+ * native JSON; only bytea, which JSON.stringify would turn into
+ * `{"type":"Buffer","data":[...]}`, is written as its `\x` hex text.
+ */
+export function jsonExportValue(value: unknown): unknown {
+    if (value === null || value === undefined) return null;
+    if (value instanceof Uint8Array) return pgColumnValueToText(value, undefined);
+    return value;
+}
+
+/**
+ * A value as a SQL literal for a generated INSERT script: NULL, a bare finite
+ * number, TRUE/FALSE, or the quoted PostgreSQL text form of everything else
+ * (arrays as array literals, bytea as `'\x...'`). A json/jsonb value is always
+ * quoted JSON text, whatever JS type the driver parsed it into.
+ */
+export function formatSqlLiteralValue(value: unknown, dataType?: string): string {
+    if (value === null || value === undefined) return 'NULL';
+    if (isJsonColumnType(dataType)) return escapeSqlLiteral(pgColumnValueToText(value, dataType) ?? '');
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    if (typeof value === 'bigint') return String(value);
+    if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+    return escapeSqlLiteral(pgColumnValueToText(value, dataType) ?? '');
 }
 
 export class ExportService {
@@ -125,9 +188,9 @@ export class ExportService {
 
         for (const row of rows) {
             const values = columns.map(col => {
-                const val = row[col.name];
-                if (val === null || val === undefined) return '';
-                return this.csvEscape(String(val), separator, quoteStrings);
+                const text = pgColumnValueToText(row[col.name], col.dataType);
+                if (text === null) return '';
+                return this.csvEscape(text, separator, quoteStrings);
             });
             lines.push(values.join(separator));
         }
@@ -147,7 +210,7 @@ export class ExportService {
 
         const data = rows.map(row => {
             const obj: Record<string, unknown> = {};
-            columns.forEach(col => { obj[col.name] = row[col.name] ?? null; });
+            columns.forEach(col => { obj[col.name] = jsonExportValue(row[col.name]); });
             return obj;
         });
 
@@ -165,8 +228,7 @@ export class ExportService {
         for (const row of rows) {
             xml += `  <${rowElement}>\n`;
             for (const col of columns) {
-                const val = row[col.name];
-                const escaped = this.xmlEscape(val === null || val === undefined ? '' : String(val));
+                const escaped = this.xmlEscape(pgColumnValueToText(row[col.name], col.dataType) ?? '');
                 const tagName = this.xmlSafeTag(col.name);
                 xml += `    <${tagName}>${escaped}</${tagName}>\n`;
             }
@@ -211,14 +273,14 @@ export class ExportService {
             for (let i = 0; i < rows.length; i += batchSize) {
                 const batch = rows.slice(i, i + batchSize);
                 const valuesList = batch.map(row => {
-                    const values = columns.map(col => this.formatSqlValue(row[col.name]));
+                    const values = columns.map(col => this.formatSqlValue(row[col.name], col.dataType));
                     return `(${values.join(', ')})`;
                 });
                 lines.push(`INSERT INTO ${tableName} (${colNames}) VALUES\n${valuesList.join(',\n')}${onConflict};\n`);
             }
         } else {
             for (const row of rows) {
-                const values = columns.map(col => this.formatSqlValue(row[col.name]));
+                const values = columns.map(col => this.formatSqlValue(row[col.name], col.dataType));
                 lines.push(`INSERT INTO ${tableName} (${colNames}) VALUES (${values.join(', ')})${onConflict};`);
             }
         }
@@ -259,11 +321,8 @@ export class ExportService {
         return '"' + name.replace(/"/g, '""') + '"';
     }
 
-    private formatSqlValue(value: unknown): string {
-        if (value === null || value === undefined) return 'NULL';
-        if (typeof value === 'number') return String(value);
-        if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
-        return escapeSqlLiteral(String(value));
+    private formatSqlValue(value: unknown, dataType?: string): string {
+        return formatSqlLiteralValue(value, dataType);
     }
 
     private async exportExcel(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
@@ -282,8 +341,9 @@ export class ExportService {
             const values = columns.map(col => excelCellValue(row[col.name], col.dataType));
             const added = worksheet.addRow(values);
             values.forEach((v, i) => {
-                if (v instanceof Date && String(columns[i].dataType || '').trim().toLowerCase() === 'date') {
-                    added.getCell(i + 1).numFmt = EXCEL_DATE_FORMAT;
+                const numFmt = excelNumberFormat(v, columns[i].dataType);
+                if (numFmt) {
+                    added.getCell(i + 1).numFmt = numFmt;
                 }
             });
         }

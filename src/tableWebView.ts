@@ -11,12 +11,13 @@ import { buildRelatedTableJoin, deriveQualifier, type RelatedJoinCondition } fro
 import { QualifierStore, onDidChangeTableAliases } from './tableStatementDrop';
 import { getErrorMessage, Logger } from './logger';
 import { getIconSprite, getSharedStyles } from './webviewAssets';
+import { getNonce } from './webviewUtils';
 import { formatSqlChecked } from './plpgsqlFormatter';
 import { getFormatOptions, isFormatterEnabled } from './formatSettings';
 import type { ViewCapabilities, TableEditPlan } from './resultSource';
 import { resultColumnAliases } from './resultSource';
 import { addHiddenKeyColumns, isHiddenKeyColumn, planHiddenKeyColumns, type HiddenKeyColumn } from './hiddenKeyColumns';
-import { autoRefreshIntervalError, autoRefreshRefusal, formatAutoRefreshInterval, parseAutoRefreshInterval } from './autoRefresh';
+import { autoRefreshIntervalError, autoRefreshRefusal, exportQueryRefusal, formatAutoRefreshInterval, parseAutoRefreshInterval } from './autoRefresh';
 import { loadCompletionCatalog, loadCompletionColumns } from './sqlCompletion';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -214,11 +215,44 @@ export function formatQueryBarText(sql: string): { ok: boolean; text: string } {
     return { ok: true, text: outcome.text.replace(/\s+$/, '') };
 }
 
+/**
+ * Content Security Policy of the Data Viewer. It renders database content, so
+ * script runs only from the nonce-bearing inline block and the extension's own
+ * resources (the Monaco bundle); Monaco additionally needs its stylesheet and
+ * codicon font from there and starts its workers from a `blob:` URL.
+ */
+export function buildDataViewerCsp(cspSource: string, nonce: string): string {
+    const src = cspSource ? ` ${cspSource}` : '';
+    return [
+        `default-src 'none'`,
+        `style-src${src} 'unsafe-inline'`,
+        `font-src${src} data:`,
+        `img-src${src} data:`,
+        `script-src 'nonce-${nonce}'${src}`,
+        `worker-src${src} blob:`
+    ].join('; ') + ';';
+}
+
+/**
+ * Put the CSP `<meta>` into the template's head and the nonce on its
+ * `<script>` tags. Must run before the placeholders are filled.
+ */
+export function applyDataViewerCsp(html: string, cspSource: string, nonce: string): string {
+    const meta = `<meta http-equiv="Content-Security-Policy" content="${buildDataViewerCsp(cspSource, nonce)}">`;
+    return html
+        .replace('</title>', () => `</title>\n    ${meta}`)
+        .replace(/<script>/g, () => `<script nonce="${nonce}">`);
+}
+
 /** One cell value currently open in an editor tab. */
 interface CellEditorLink {
     sessionId: string;
     rowIdx: number;
     column: string;
+    /** Opaque row identity from the webview, echoed back on save. */
+    rowToken?: unknown;
+    /** Set when the panel the cell came from was closed. */
+    orphaned?: boolean;
 }
 
 export class TableWebViewManager {
@@ -327,6 +361,12 @@ export class TableWebViewManager {
         panel.onDidDispose(() => {
             session.disposed = true;
             this.sessions.delete(id);
+            // A reopened panel reuses the id; an editor tab of the closed one
+            // must not write into it. The link stays so closing the tab still
+            // removes its scratch file.
+            for (const link of this.cellEditors.values()) {
+                if (link.sessionId === id) link.orphaned = true;
+            }
         });
 
         panel.webview.html = this.getWebviewContent(panel.webview);
@@ -362,7 +402,8 @@ export class TableWebViewManager {
                 const autoRefreshId = message.command === 'loadRows' && message.autoRefresh && !message.append
                     ? message.autoRefreshId
                     : undefined;
-                this.post(session, { command: 'error', text: getErrorMessage(err), autoRefreshId });
+                const loadId = message.command === 'loadRows' && typeof message.loadId === 'number' ? message.loadId : undefined;
+                this.post(session, { command: 'error', text: getErrorMessage(err), autoRefreshId, loadId });
                 vscode.window.showErrorMessage(`Query error: ${getErrorMessage(err)}`);
             }
         });
@@ -537,9 +578,12 @@ export class TableWebViewManager {
         // repeat a statement that writes, and never re-render more than the rows.
         const autoRefresh = !!message.autoRefresh && !append;
         const autoRefreshId = autoRefresh ? message.autoRefreshId : undefined;
+        // Echoed in every answer, so the panel can drop answers to a load it
+        // has since replaced: the host runs messages concurrently.
+        const loadId: number | undefined = typeof message.loadId === 'number' ? message.loadId : undefined;
 
         if (!sql || !sql.trim()) {
-            this.post(session, { command: 'loadingFinished' });
+            this.post(session, { command: 'loadingFinished', loadId });
             return;
         }
         if (autoRefresh) {
@@ -554,12 +598,12 @@ export class TableWebViewManager {
             }
         }
         if (!await this.connectionManager.ensureConnected()) {
-            this.post(session, { command: 'loadingFinished' });
+            this.post(session, { command: 'loadingFinished', loadId });
             return;
         }
 
         // Render columns + filter row immediately while the full query runs.
-        let capabilities = append ? undefined : await this.tryPostEarlyColumns(session, baseSql, !autoRefresh);
+        let capabilities = append ? undefined : await this.tryPostEarlyColumns(session, baseSql, !autoRefresh, loadId);
 
         // Key columns the query leaves out are selected silently, so a change
         // is written back by the key instead of by all displayed values.
@@ -612,6 +656,7 @@ export class TableWebViewManager {
             append,
             autoRefresh,
             autoRefreshId,
+            loadId,
             connectionName: this.getConnectionName(),
             durationMs,
             ...tableInfo
@@ -623,7 +668,7 @@ export class TableWebViewManager {
 
         if (message.wantTotal) {
             const totalCount = await queryRunner.getQueryRowCount(baseSql);
-            this.post(session, { command: 'totalCountLoaded', totalCount, autoRefreshId });
+            this.post(session, { command: 'totalCountLoaded', totalCount, autoRefreshId, loadId });
         }
 
         // Deliver the relation metadata of every source table as it resolves,
@@ -805,7 +850,11 @@ export class TableWebViewManager {
 
     private async handlePreviewSQL(ctx: MessageContext): Promise<void> {
         const { session, message, queryRunner } = ctx;
-        const sql = queryRunner.generateSQL(this.toCommitTargets(message));
+        const targets = this.toCommitTargets(message);
+        // A fresh QueryRunner knows no column types yet; without them a json
+        // value or a value-matched row would preview differently than it saves.
+        await queryRunner.preloadColumnTypes(targets);
+        const sql = queryRunner.generateSQL(targets);
         this.post(session, {
             command: 'sqlPreview',
             sql,
@@ -917,7 +966,7 @@ export class TableWebViewManager {
             vscode.window.setStatusBarMessage(`${column} cannot be edited here — changes are not written back.`, 6000);
             return;
         }
-        this.cellEditors.set(this.cellEditorKey(filePath), { sessionId: session.id, rowIdx, column });
+        this.cellEditors.set(this.cellEditorKey(filePath), { sessionId: session.id, rowIdx, column, rowToken: message.rowToken });
         vscode.window.setStatusBarMessage(`Save this file to write the value back into "${column}".`, 6000);
     }
 
@@ -933,15 +982,18 @@ export class TableWebViewManager {
         if (!link) {
             return;
         }
-        const session = this.sessions.get(link.sessionId);
+        const session = link.orphaned ? undefined : this.sessions.get(link.sessionId);
         if (!session) {
-            this.cellEditors.delete(this.cellEditorKey(doc.uri.fsPath));
+            // Kept, so closing the tab still removes the scratch file.
+            link.orphaned = true;
+            vscode.window.setStatusBarMessage(`The Data Viewer this value came from was closed; "${link.column}" was not written back.`, 6000);
             return;
         }
         this.post(session, {
             command: 'cellEditorValue',
             rowIdx: link.rowIdx,
             column: link.column,
+            rowToken: link.rowToken,
             value: doc.getText()
         });
     }
@@ -1011,7 +1063,7 @@ export class TableWebViewManager {
      * derived from the probe, or `undefined` when the query cannot be probed
      * (non-SELECT, multiple statements, ...).
      */
-    private async tryPostEarlyColumns(session: PanelSession, sql: string, post = true): Promise<ViewCapabilities | undefined> {
+    private async tryPostEarlyColumns(session: PanelSession, sql: string, post = true, loadId?: number): Promise<ViewCapabilities | undefined> {
         try {
             const statements = splitSqlStatements(sql).map((s) => s.trim()).filter((s) => s.length > 0);
             if (statements.length !== 1) {
@@ -1033,7 +1085,7 @@ export class TableWebViewManager {
             const queryRunner = new QueryRunner(this.connectionManager);
             const capabilities = await queryRunner.resolveEditPlan(fields, statements[0]);
             if (post) {
-                this.post(session, { command: 'columnsLoaded', columns, capabilities });
+                this.post(session, { command: 'columnsLoaded', columns, capabilities, loadId });
             }
             return capabilities;
         } catch {
@@ -1196,6 +1248,9 @@ export class TableWebViewManager {
     }
 
     private async handleDeleteCustomMapping(ctx: MessageContext): Promise<void> {
+        // Confirmed here because confirm() is blocked inside webviews.
+        const answer = await vscode.window.showWarningMessage('Delete this custom mapping?', { modal: true }, 'Delete');
+        if (answer !== 'Delete') return;
         await this.columnMappingManager.deleteMapping(ctx.message.mappingId);
     }
 
@@ -1370,6 +1425,14 @@ export class TableWebViewManager {
             vscode.window.showErrorMessage('Export failed: no query to export.');
             return;
         }
+        // The webview sends the query exactly as it should be exported (paging
+        // LIMIT already removed, a user-written LIMIT kept). It is run without
+        // being shown, so only a single read is allowed.
+        const refusal = message.sql ? exportQueryRefusal(message.sql) : null;
+        if (refusal) {
+            vscode.window.showErrorMessage(`Export failed: ${refusal}`);
+            return;
+        }
         const extensions: Record<string, string> = { csv: '.csv', json: '.json', xml: '.xml', insert: '.sql', excel: '.xlsx' };
         const ext = extensions[opts.format] || '';
         const filterMap: Record<string, { [key: string]: string[] }> = {
@@ -1395,11 +1458,11 @@ export class TableWebViewManager {
             // Fetch ALL rows from database (not limited by page size)
             let exportRows: any[];
             if (message.sql) {
-                // Strip any existing LIMIT/OFFSET from the query for full export
-                const sql = message.sql.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$/i, '');
-                const result = await queryRunner.executeSQL(sql);
+                if (!await this.connectionManager.ensureConnected()) return;
+                const result = await queryRunner.executeSQL(message.sql);
                 exportRows = result.rows;
             } else {
+                if (!await this.connectionManager.ensureConnected()) return;
                 // Fallback: fetch all from table
                 const totalCount = await queryRunner.getRowCount(schema, table);
                 exportRows = await queryRunner.fetchRows(schema, table, 0, totalCount);
@@ -1436,6 +1499,10 @@ export class TableWebViewManager {
         );
         // The SQL editor module comes first: tableView.js attaches it to the query box.
         const script = `window.QUERY_EDITOR_ASSETS = ${JSON.stringify(assets)};\n${editorJs}\n${js}`;
+
+        // The policy and nonce go in before the placeholders are filled, so a
+        // "<script>" inside the injected code can never pick up the nonce.
+        html = applyDataViewerCsp(html, webview.cspSource || '', getNonce());
 
         // Inject CSS and JS inline for simplicity. The replacement must be a
         // function: with a string replacement, `$'`/`$&` inside the script (e.g.

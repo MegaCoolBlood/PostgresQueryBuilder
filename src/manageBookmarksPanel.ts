@@ -4,8 +4,10 @@ import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
 import { icon } from './webviewAssets';
 import { getErrorMessage } from './logger';
 import { editSavedQueryTags } from './savedQueryTags';
+import { confirmBulkAction } from './bulkActionConfirmation';
 
 const PARAMETER_KINDS = ['text', 'number', 'identifier', 'raw'];
+const QUERY_NOUN = { singular: 'query', plural: 'queries' };
 
 /** Read a parameter list back from the webview's edit dialog. */
 export function toParameters(raw: unknown): SavedQueryParameter[] {
@@ -133,6 +135,7 @@ export class ManageBookmarksPanel {
                     case 'setScope': {
                         const ids: string[] = Array.isArray(msg.ids) ? msg.ids : [];
                         const scope: SavedQueryScope = msg.scope === 'workspace' ? 'workspace' : 'global';
+                        if (!await confirmBulkAction(scope === 'workspace' ? 'toWorkspace' : 'toPersonal', ids.length, QUERY_NOUN)) break;
                         let blocked = 0;
                         for (const id of ids) {
                             if (!await this.store.move(id, scope) && this.store.get(id)?.scope !== scope) {
@@ -148,6 +151,7 @@ export class ManageBookmarksPanel {
                     }
                     case 'delete': {
                         const ids: string[] = Array.isArray(msg.ids) ? msg.ids : [];
+                        if (!await confirmBulkAction('delete', ids.length, QUERY_NOUN)) break;
                         for (const id of ids) {
                             await this.store.delete(id);
                         }
@@ -351,7 +355,9 @@ export class ManageBookmarksPanel {
         .tag-suggest li { padding: 2px var(--sp-2); font-size: var(--fs-sm); cursor: pointer; }
         .tag-suggest li.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
         .tag-suggest li .muted { margin-left: var(--sp-1); }
-        .tag-hint { grid-column: 2; font-size: var(--fs-xs); color: var(--c-muted); }`;
+        .tag-hint { grid-column: 2; font-size: var(--fs-xs); color: var(--c-muted); }
+        /* Validation message of the dialog; webviews have no modal dialogs. */
+        .dlg-error { margin-right: auto; align-self: center; font-size: var(--fs-sm); color: var(--c-danger); }`;
         const body = `
     <h2>Bookmarked Queries</h2>
     <div class="hint">Manage where a query is stored and what its placeholders mean. Select entries and change their scope to share them with the team (Workspace) or keep them private (Personal). The statement itself is edited with "Edit Bookmarked Query SQL".</div>
@@ -435,6 +441,7 @@ export class ManageBookmarksPanel {
                 </fieldset>
             </div>
             <div class="dlg-footer">
+                <span class="dlg-error" id="editError" role="alert" hidden></span>
                 <button class="btn btn-primary" id="editSave">${icon('check')}<span id="editSaveLabel">Save</span></button>
                 <button class="btn" id="editCancel">Cancel</button>
             </div>
@@ -581,22 +588,20 @@ export class ManageBookmarksPanel {
 
         function selectedIds() { return Array.from(selected); }
 
+        // The host asks for confirmation: a webview has no modal dialogs.
         document.getElementById('moveWorkspace').addEventListener('click', () => {
             const ids = selectedIds();
             if (!ids.length) return;
-            if (!confirm('Move ' + ids.length + ' quer' + (ids.length === 1 ? 'y' : 'ies') + ' to the workspace file?\\nThey will be visible to everyone who clones this workspace once you commit the file.')) return;
             vscode.postMessage({ command: 'setScope', ids, scope: 'workspace' });
         });
         document.getElementById('movePersonal').addEventListener('click', () => {
             const ids = selectedIds();
             if (!ids.length) return;
-            if (!confirm('Move ' + ids.length + ' quer' + (ids.length === 1 ? 'y' : 'ies') + ' to your personal store?\\nThey will be removed from the workspace file (commit the change to share the removal).')) return;
             vscode.postMessage({ command: 'setScope', ids, scope: 'global' });
         });
         document.getElementById('deleteSel').addEventListener('click', () => {
             const ids = selectedIds();
             if (!ids.length) return;
-            if (!confirm('Delete ' + ids.length + ' quer' + (ids.length === 1 ? 'y' : 'ies') + '? This cannot be undone.')) return;
             vscode.postMessage({ command: 'delete', ids });
         });
         document.getElementById('editTagsSel').addEventListener('click', () => {
@@ -757,6 +762,7 @@ export class ManageBookmarksPanel {
             editParams.innerHTML = '';
             item.parameters.forEach(p => addParamRow(p));
             noParams.style.display = item.parameters.length ? 'none' : 'block';
+            clearDialogError();
             editOverlay.classList.add('open');
             document.getElementById('editName').focus();
         }
@@ -764,7 +770,25 @@ export class ManageBookmarksPanel {
         function closeEditDialog() {
             editOverlay.classList.remove('open');
             editingId = null;
+            clearDialogError();
         }
+
+        // ===== Validation message (webviews have no modal dialogs) =====
+        const editError = document.getElementById('editError');
+
+        function showDialogError(text, focusId) {
+            editError.textContent = text;
+            editError.hidden = false;
+            if (focusId) document.getElementById(focusId).focus();
+        }
+
+        function clearDialogError() {
+            editError.textContent = '';
+            editError.hidden = true;
+        }
+
+        document.getElementById('editName').addEventListener('input', clearDialogError);
+        document.getElementById('editSql').addEventListener('input', clearDialogError);
 
         function addParamRow(p) {
             const row = document.createElement('div');
@@ -808,12 +832,12 @@ export class ManageBookmarksPanel {
         document.getElementById('editSave').addEventListener('click', () => {
             const name = document.getElementById('editName').value.trim();
             if (!name) {
-                alert('The name must not be empty.');
+                showDialogError('The name must not be empty.', 'editName');
                 return;
             }
             const sql = document.getElementById('editSql').value.trim();
             if (!sql) {
-                alert('The statement must not be empty.');
+                showDialogError('The statement must not be empty.', 'editSql');
                 return;
             }
             // A tag still typed in the field counts, even without pressing Enter.

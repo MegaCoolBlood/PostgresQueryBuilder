@@ -368,11 +368,13 @@
         "postgresQueryBuilder.savedConnections": {
           "type": "array",
           "default": [],
-          "description": "Saved connection configurations (passwords stored in SecretStorage)"
+          "scope": "application",
+          "description": "Saved connection configurations (passwords stored in SecretStorage). Optional per connection: sslMode (disable, prefer, require, verify-full; prefer when missing) and caFile (PEM file used by verify-full)."
         },
         "postgresQueryBuilder.psqlPath": {
           "type": "string",
           "default": "",
+          "scope": "machine",
           "markdownDescription": "Path to the `psql` executable (or the folder containing it) used by **Open psql Console**. Leave empty to search `PATH` and, on Windows, the default `Program Files\\PostgreSQL\\<version>\\bin` folders (newest version first)."
         }
       }
@@ -409,7 +411,21 @@
         "postgresQueryBuilder.thousandSeparator": {
           "type": "string",
           "default": " ",
-          "description": "Thousand separator for displaying numbers (e.g. ' ' for 9 999 999,99)"
+          "enum": [
+            " ",
+            "\u00a0",
+            ".",
+            "'",
+            ""
+          ],
+          "enumDescriptions": [
+            "Space: 9 999 999,99",
+            "Non-breaking space: 9 999 999,99",
+            "Dot: 9.999.999,99",
+            "Apostrophe: 9'999'999,99",
+            "No separator: 9999999,99"
+          ],
+          "description": "Thousand separator for displaying numbers. The decimal mark is always a comma, so a comma cannot be used as thousand separator."
         },
         "postgresQueryBuilder.duplicateRowResetDefaults": {
           "type": "string",

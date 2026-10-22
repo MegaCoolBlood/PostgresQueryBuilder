@@ -3,6 +3,9 @@ import { ColumnMappingManager, CustomColumnMapping, MappingScope } from './colum
 import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
 import { icon } from './webviewAssets';
 import { getErrorMessage } from './logger';
+import { confirmBulkAction } from './bulkActionConfirmation';
+
+const MAPPING_NOUN = { singular: 'mapping', plural: 'mappings' };
 
 export class ManageMappingsPanel {
     public static readonly viewType = 'postgresManageMappings';
@@ -43,6 +46,7 @@ export class ManageMappingsPanel {
                     case 'setScope': {
                         const ids: string[] = Array.isArray(msg.ids) ? msg.ids : [];
                         const scope: MappingScope = msg.scope === 'workspace' ? 'workspace' : 'global';
+                        if (!await confirmBulkAction(scope === 'workspace' ? 'toWorkspace' : 'toPersonal', ids.length, MAPPING_NOUN)) break;
                         for (const id of ids) {
                             await this.manager.updateMapping(id, { scope });
                         }
@@ -50,6 +54,7 @@ export class ManageMappingsPanel {
                     }
                     case 'delete': {
                         const ids: string[] = Array.isArray(msg.ids) ? msg.ids : [];
+                        if (!await confirmBulkAction('delete', ids.length, MAPPING_NOUN)) break;
                         for (const id of ids) {
                             await this.manager.deleteMapping(id);
                         }
@@ -148,7 +153,9 @@ export class ManageMappingsPanel {
         .dlg-row { display: flex; gap: var(--sp-2); align-items: center; margin-top: var(--sp-2); }
         .dlg-row label { font-size: var(--fs-sm); }
         .cond-row { display: grid; grid-template-columns: minmax(160px, 2fr) 80px minmax(120px, 1fr) 28px; gap: var(--sp-1); margin-top: var(--sp-1); align-items: center; }
-        .mt-2 { margin-top: var(--sp-2); }`;
+        .mt-2 { margin-top: var(--sp-2); }
+        /* Validation message of the dialog; webviews have no modal dialogs. */
+        .dlg-error { margin-right: auto; align-self: center; font-size: var(--fs-sm); color: var(--c-danger); }`;
         const body = `
     <h2>Custom Column Mappings</h2>
     <div class="hint">Manage all mappings in one place. Select entries and change their scope to share them with the team (Workspace) or keep them private (Personal).</div>
@@ -233,6 +240,7 @@ export class ManageMappingsPanel {
                 </fieldset>
             </div>
             <div class="dlg-footer">
+                <span class="dlg-error" id="editError" role="alert" hidden></span>
                 <button class="btn btn-primary" id="editSave">${icon('check')}Save</button>
                 <button class="btn" id="editCancel">Cancel</button>
             </div>
@@ -359,22 +367,20 @@ export class ManageMappingsPanel {
 
         function selectedIds() { return Array.from(selected); }
 
+        // The host asks for confirmation: a webview has no modal dialogs.
         document.getElementById('moveWorkspace').addEventListener('click', () => {
             const ids = selectedIds();
             if (!ids.length) return;
-            if (!confirm('Move ' + ids.length + ' mapping(s) to the workspace file?\\nThey will be visible to everyone who clones this workspace once you commit the file.')) return;
             vscode.postMessage({ command: 'setScope', ids, scope: 'workspace' });
         });
         document.getElementById('movePersonal').addEventListener('click', () => {
             const ids = selectedIds();
             if (!ids.length) return;
-            if (!confirm('Move ' + ids.length + ' mapping(s) to your personal store?\\nThey will be removed from the workspace file (commit the change to share the removal).')) return;
             vscode.postMessage({ command: 'setScope', ids, scope: 'global' });
         });
         document.getElementById('deleteSel').addEventListener('click', () => {
             const ids = selectedIds();
             if (!ids.length) return;
-            if (!confirm('Delete ' + ids.length + ' mapping(s)? This cannot be undone.')) return;
             vscode.postMessage({ command: 'delete', ids });
         });
         document.getElementById('openFile').addEventListener('click', () => {
@@ -386,6 +392,14 @@ export class ManageMappingsPanel {
         let editingId = null;
         const editOverlay = document.getElementById('editOverlay');
         const editConditions = document.getElementById('editConditions');
+        const editError = document.getElementById('editError');
+
+        function clearEditError() {
+            editError.textContent = '';
+            editError.hidden = true;
+        }
+        ['editSrcSchema', 'editSrcTable', 'editSrcColumn', 'editTgtTable', 'editTgtColumn'].forEach(id =>
+            document.getElementById(id).addEventListener('input', clearEditError));
 
         function openEditDialog(id) {
             const m = mappings.find(x => x.id === id);
@@ -402,12 +416,14 @@ export class ManageMappingsPanel {
             document.getElementById('editShare').checked = m.scope === 'workspace';
             editConditions.innerHTML = '';
             (m.conditions || []).forEach(c => addCondRow(c));
+            clearEditError();
             editOverlay.classList.add('open');
         }
 
         function closeEditDialog() {
             editOverlay.classList.remove('open');
             editingId = null;
+            clearEditError();
         }
 
         function addCondRow(cond) {
@@ -459,7 +475,9 @@ export class ManageMappingsPanel {
                 scope: document.getElementById('editShare').checked ? 'workspace' : 'global'
             };
             if (!updates.sourceSchema || !updates.sourceTable || !updates.sourceColumn || !updates.targetTable || !updates.targetColumn) {
-                alert('Source schema/table/column and target table/column are required.');
+                // Webviews have no modal dialogs; the message stays in the dialog.
+                editError.textContent = 'Source schema/table/column and target table/column are required.';
+                editError.hidden = false;
                 return;
             }
             vscode.postMessage({ command: 'updateMapping', id: editingId, updates });

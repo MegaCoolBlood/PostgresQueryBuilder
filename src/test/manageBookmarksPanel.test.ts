@@ -1,5 +1,5 @@
 import './helpers/vscodeMock';
-import { vscodeStub } from './helpers/vscodeMock';
+import { vscodeStub, stubWarningMessage } from './helpers/vscodeMock';
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { ManageBookmarksPanel, toParameters, rankTagSuggestions } from '../manageBookmarksPanel';
@@ -263,25 +263,46 @@ test('the editor button hands the query to the command that opens an editor tab'
     assert.deepEqual(invoked, [['postgresQueryBuilder.editSavedQuerySql', 'a']]);
 });
 
-test('the bulk actions move and delete every selected query', async (t) => {
+test('the bulk actions move and delete every selected query once confirmed', async (t) => {
+    const asked = stubWarningMessage(t, items => items[0]);
     const panel = openPanel(t, [query('a', 'global'), query('b', 'global')]);
     await panel.send({ command: 'setScope', ids: ['a', 'b'], scope: 'workspace' });
     await panel.send({ command: 'delete', ids: ['a'] });
 
+    assert.deepEqual(asked.map(call => call[0]), ['Move 2 queries to the workspace file?', 'Delete 1 query?']);
     assert.deepEqual(panel.recorded.moves, [{ id: 'a', scope: 'workspace' }, { id: 'b', scope: 'workspace' }]);
     assert.deepEqual(panel.recorded.deletes, ['a']);
 });
 
+test('the bulk actions leave every query alone when the confirmation is cancelled', async (t) => {
+    const asked = stubWarningMessage(t, () => undefined);
+    const panel = openPanel(t, [query('a', 'workspace'), query('b', 'global')]);
+    await panel.send({ command: 'setScope', ids: ['a'], scope: 'global' });
+    await panel.send({ command: 'setScope', ids: ['b'], scope: 'workspace' });
+    await panel.send({ command: 'delete', ids: ['a', 'b'] });
+
+    assert.equal(asked.length, 3, 'a bulk action ran without asking');
+    assert.deepEqual(asked[0][1], { modal: true, detail: 'It will be removed from the workspace file (commit the change to share the removal).' });
+    assert.deepEqual(panel.recorded.moves, []);
+    assert.deepEqual(panel.recorded.deletes, []);
+});
+
+test('the panel asks on the host because a webview cannot show confirm() or alert()', (t) => {
+    const panel = openPanel(t, [query('a', 'global')]);
+
+    assert.doesNotMatch(panel.html, /\b(confirm|alert|prompt)\(/);
+    assert.ok(panel.html.includes('id="editError"'), 'the dialog has no place for its validation message');
+});
+
 test('the panel reports a query that could not be shared instead of failing silently', async (t) => {
-    const warnings: string[] = [];
-    const originalWarn = vscodeStub.window.showWarningMessage;
-    vscodeStub.window.showWarningMessage = (msg: string) => { warnings.push(msg); return Promise.resolve(undefined); };
-    t.after(() => { vscodeStub.window.showWarningMessage = originalWarn; });
+    // Confirm the move; the notice afterwards offers no button.
+    const calls = stubWarningMessage(t, items => items[0]);
 
     // A store that refuses the move leaves the query personal.
     const panel = openPanel(t, [query('a', 'global')], true);
     await panel.send({ command: 'setScope', ids: ['a'], scope: 'workspace' });
 
+    const warnings = calls.filter(call => call.length === 1).map(call => String(call[0]));
     assert.equal(warnings.length, 1, 'the blocked move was not reported');
     assert.match(warnings[0], /no workspace folder is open/);
 });

@@ -194,6 +194,26 @@ export function installVscodeMock(): void {
 
 export { vscodeStub };
 
+/**
+ * Answer `window.showWarningMessage` for the rest of one test: `answer` gets the
+ * offered items (everything after the message and options) and returns the
+ * one the "user" picks, or `undefined` for Cancel. Returns every call made.
+ */
+export function stubWarningMessage(
+    t: { after(fn: () => void): void },
+    answer: (items: string[]) => string | undefined
+): unknown[][] {
+    const calls: unknown[][] = [];
+    const original = vscodeStub.window.showWarningMessage;
+    vscodeStub.window.showWarningMessage = ((...args: unknown[]) => {
+        calls.push(args);
+        const items = args.slice(1).filter((a): a is string => typeof a === 'string');
+        return Promise.resolve(answer(items));
+    }) as typeof original;
+    t.after(() => { vscodeStub.window.showWarningMessage = original; });
+    return calls;
+}
+
 // Install on import so that `import './helpers/vscodeMock';` as the first import
 // of a test file patches the loader before any vscode-dependent module loads.
 installVscodeMock();

@@ -1,12 +1,14 @@
 import { ConnectionManager } from './connectionManager';
 import { Logger, getErrorMessage } from './logger';
-import { escapeSqlLiteral, splitSqlStatements } from './sqlUtils';
+import { escapeSqlLiteral, pgValueToText, splitSqlStatements } from './sqlUtils';
 import { POSTGRES_RESERVED_KEYWORDS } from './reservedKeywords';
 import {
     attributeKey,
     buildEditPlan,
     disambiguateColumnNames,
+    hasEqualityOperator,
     isWritableRelkind,
+    SPECIAL_TYPE_NAMES_BY_OID,
     resolveFieldSources,
     splitAliasedSources,
     type IdentityStrategy,
@@ -134,7 +136,49 @@ export interface CommitTarget {
      * DELETE must be proven to affect exactly one row.
      */
     identityStrategy?: IdentityStrategy;
+    /**
+     * Type name (`pg_type.typname`, e.g. `jsonb`, `_int4`) of each source
+     * column. Optional: when missing, the types are looked up (commit) or taken
+     * from what the last result of this table reported (SQL preview).
+     */
+    columnTypes?: Readonly<Record<string, string>>;
     changes: ChangeSet;
+}
+
+/** Whether `typeName` (a `pg_type.typname`) is `json` or `jsonb`. */
+export function isJsonTypeName(typeName: string | undefined): boolean {
+    const t = (typeName ?? '').trim().toLowerCase();
+    return t === 'json' || t === 'jsonb';
+}
+
+function isJsonText(text: string): boolean {
+    try {
+        JSON.parse(text);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * The value to send for a json/jsonb column. The `pg` driver parses json into
+ * JS values, and would send them back wrongly: an array becomes a PostgreSQL
+ * array literal `{...}` and a JSON string scalar `"abc"` arrives as bare `abc`,
+ * both rejected as invalid json. So the value is sent as JSON text:
+ *
+ * - `stored` values (the identity of a loaded row) are always the parsed
+ *   database value, so they are always `JSON.stringify`-ed.
+ * - `edit` values (SET / INSERT) are either text the user typed in the grid
+ *   (already JSON, validated against the column type before a commit) or a
+ *   value copied by "Duplicate Row", which the Data Viewer sends as JSON text
+ *   too. A string that parses as JSON is therefore taken as JSON text as is;
+ *   anything else (objects, arrays, numbers, booleans, and strings that are no
+ *   valid JSON) is `JSON.stringify`-ed.
+ */
+export function jsonColumnValue(value: unknown, origin: 'edit' | 'stored'): unknown {
+    if (value === null || value === undefined) return value;
+    if (origin === 'edit' && typeof value === 'string' && isJsonText(value)) return value;
+    return JSON.stringify(value);
 }
 
 export interface ForeignKeyInfo {
@@ -163,6 +207,8 @@ export class QueryRunner {
     private static vscodeModule: typeof import('vscode') | undefined;
     private connectionManager: ConnectionManager;
     private selectOptionsProvider: () => { alwaysQualifySchema: boolean; alwaysQuote: boolean };
+    /** Column type names per table (see {@link loadColumnTypes}), keyed by {@link tableKey}. */
+    private columnTypeMemory = new Map<string, Record<string, string>>();
 
     constructor(
         connectionManager: ConnectionManager,
@@ -345,9 +391,12 @@ export class QueryRunner {
         const rows = await this.connectionManager.queryMetadata(
             `SELECT a.attname
              FROM pg_index i
+             JOIN pg_class c ON c.oid = i.indrelid
+             JOIN pg_namespace n ON n.oid = c.relnamespace
              JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-             WHERE i.indrelid = '"${schema}"."${table}"'::regclass
-             AND i.indisprimary`,
+             WHERE n.nspname = $1 AND c.relname = $2 AND i.indisprimary
+             ORDER BY array_position(i.indkey::int2[], a.attnum)`,
+            [schema, table]
         );
         return rows.map((row) => row.attname);
     }
@@ -423,6 +472,12 @@ export class QueryRunner {
 
         const resolved = resolveFieldSources(fields, relations, attributes);
         const sources = sql ? splitAliasedSources(resolved, resultColumnQualifiers(sql)) : resolved;
+        for (const source of sources) {
+            if (source && source.dataTypeID) {
+                this.rememberColumnType(source.schema, source.table, source.sourceColumn,
+                    SPECIAL_TYPE_NAMES_BY_OID[source.dataTypeID] ?? '');
+            }
+        }
         const primaryKeys: Record<number, string[]> = {};
         for (const oid of oids) {
             if (!relations[oid] || readOnlyTables.has(oid)) { continue; }
@@ -541,12 +596,17 @@ export class QueryRunner {
         }
 
         const { alwaysQuote } = this.getSelectOptions();
+        const typesByTarget = new Map<CommitTarget, Readonly<Record<string, string>>>();
+        for (const target of targets) {
+            typesByTarget.set(target, target.columnTypes ?? await this.loadColumnTypes(target.schema, target.table));
+        }
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
 
             for (const target of targets) {
                 const { schema, table, changes } = target;
+                const types = typesByTarget.get(target) ?? {};
                 // A row identified by all of its values may match several rows,
                 // so such a statement must be proven to hit exactly one.
                 const verifyRowCount = target.identityStrategy === 'row';
@@ -559,25 +619,24 @@ export class QueryRunner {
 
                     for (const [col, val] of Object.entries(update.changes)) {
                         setClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
-                        values.push(val);
+                        values.push(QueryRunner.columnParam(val, types[col], 'edit'));
                         paramIndex++;
                     }
 
+                    const identity = QueryRunner.identityEntries(update.primaryKey, types, verifyRowCount);
                     const whereClauses: string[] = [];
-                    for (const [col, val] of Object.entries(update.primaryKey)) {
+                    for (const [col, val] of identity.entries) {
                         if (val === null || val === undefined) {
                             whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
                         } else {
                             whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
-                            values.push(val);
+                            values.push(QueryRunner.columnParam(val, types[col], 'stored'));
                             paramIndex++;
                         }
                     }
 
                     if (whereClauses.length === 0) {
-                        throw new Error(
-                            `Cannot UPDATE rows in ${schema}.${table}: no columns available to identify the row.`
-                        );
+                        throw new Error(QueryRunner.noIdentityMessage('UPDATE rows in', schema, table, identity.skipped));
                     }
 
                     const result = await client.query(
@@ -591,7 +650,7 @@ export class QueryRunner {
                     const columns = Object.keys(insert).filter(k => insert[k] !== null && insert[k] !== '');
                     if (columns.length === 0) { continue; }
 
-                    const values = columns.map(c => insert[c]);
+                    const values = columns.map(c => QueryRunner.columnParam(insert[c], types[c], 'edit'));
                     const placeholders = columns.map((_, i) => `$${i + 1}`);
 
                     await client.query(
@@ -605,20 +664,19 @@ export class QueryRunner {
                     const values: unknown[] = [];
                     let paramIndex = 1;
 
-                    for (const [col, val] of Object.entries(del)) {
+                    const identity = QueryRunner.identityEntries(del, types, verifyRowCount);
+                    for (const [col, val] of identity.entries) {
                         if (val === null || val === undefined) {
                             whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
                         } else {
                             whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = $${paramIndex}`);
-                            values.push(val);
+                            values.push(QueryRunner.columnParam(val, types[col], 'stored'));
                             paramIndex++;
                         }
                     }
 
                     if (whereClauses.length === 0) {
-                        throw new Error(
-                            `Cannot DELETE rows from ${schema}.${table}: no columns available to identify the row.`
-                        );
+                        throw new Error(QueryRunner.noIdentityMessage('DELETE rows from', schema, table, identity.skipped));
                     }
 
                     const result = await client.query(
@@ -635,6 +693,98 @@ export class QueryRunner {
             throw err;
         } finally {
             client.release();
+        }
+    }
+
+    /**
+     * A value as a query parameter for a column of `typeName`. json/jsonb
+     * values become JSON text (see {@link jsonColumnValue}); everything else is
+     * passed on for the `pg` driver to serialize.
+     */
+    static columnParam(value: unknown, typeName: string | undefined, origin: 'edit' | 'stored'): unknown {
+        return isJsonTypeName(typeName) ? jsonColumnValue(value, origin) : value;
+    }
+
+    /**
+     * The `column = value` pairs that identify a row. For a row identified by
+     * all of its values (`skipIncomparable`), columns whose type has no
+     * equality operator (json, xml, geometric types) are left out (`json = $1`
+     * fails outright) and reported in `skipped`.
+     */
+    static identityEntries(
+        identity: Record<string, unknown>,
+        types: Readonly<Record<string, string>>,
+        skipIncomparable: boolean
+    ): { entries: Array<[string, unknown]>; skipped: string[] } {
+        const entries: Array<[string, unknown]> = [];
+        const skipped: string[] = [];
+        for (const [col, val] of Object.entries(identity)) {
+            if (skipIncomparable && !hasEqualityOperator(types[col])) {
+                skipped.push(col);
+            } else {
+                entries.push([col, val]);
+            }
+        }
+        return { entries, skipped };
+    }
+
+    private static noIdentityMessage(action: string, schema: string, table: string, skipped: string[]): string {
+        const base = `Cannot ${action} ${schema}.${table}: no columns available to identify the row`;
+        if (skipped.length === 0) {
+            return base + '.';
+        }
+        return `${base}. The table has no primary key in this result, and ${skipped.join(', ')} cannot be `
+            + 'compared for equality (json, xml and geometric types cannot). Nothing was changed.';
+    }
+
+    /** Key of the column type memory for one table. */
+    private static tableKey(schema: string, table: string): string {
+        return JSON.stringify([schema, table]);
+    }
+
+    private rememberColumnType(schema: string, table: string, column: string, typeName: string): void {
+        const key = QueryRunner.tableKey(schema, table);
+        const types = this.columnTypeMemory.get(key) ?? {};
+        types[column] = typeName;
+        this.columnTypeMemory.set(key, types);
+    }
+
+    /**
+     * The type name (`pg_type.typname`; the base type for a domain, `_name`
+     * for an array) of every column of a table. Remembered for the SQL
+     * preview, which cannot wait for a lookup. A failed lookup is logged and
+     * falls back to what is already known.
+     */
+    private async loadColumnTypes(schema: string, table: string): Promise<Readonly<Record<string, string>>> {
+        const key = QueryRunner.tableKey(schema, table);
+        try {
+            const rows = await this.connectionManager.queryMetadata(
+                `SELECT column_name, data_type, udt_name
+                 FROM information_schema.columns
+                 WHERE table_schema = $1 AND table_name = $2`,
+                [schema, table]
+            );
+            if (rows.length > 0) {
+                const types: Record<string, string> = {};
+                for (const row of rows) {
+                    types[row.column_name] = String(row.udt_name || row.data_type || '');
+                }
+                this.columnTypeMemory.set(key, types);
+            }
+        } catch (err: unknown) {
+            Logger.error('QueryRunner.loadColumnTypes', err);
+        }
+        return this.columnTypeMemory.get(key) ?? {};
+    }
+
+    /**
+     * Look up the column types of every target that does not carry them, so
+     * {@link generateSQL} renders json values and the row identity exactly as
+     * {@link commitChanges} sends them.
+     */
+    async preloadColumnTypes(targets: ReadonlyArray<CommitTarget>): Promise<void> {
+        for (const target of targets) {
+            if (!target.columnTypes) await this.loadColumnTypes(target.schema, target.table);
         }
     }
 
@@ -674,26 +824,26 @@ export class QueryRunner {
         const { alwaysQuote } = this.getSelectOptions();
         const statements: string[] = [];
 
-        for (const { schema, table, changes } of targets) {
+        for (const target of targets) {
+            const { schema, table, changes } = target;
+            const types = target.columnTypes ?? this.columnTypeMemory.get(QueryRunner.tableKey(schema, table)) ?? {};
+            const skipIncomparable = target.identityStrategy === 'row';
             const tableRef = `${this.formatIdentifier(schema, alwaysQuote)}.${this.formatIdentifier(table, alwaysQuote)}`;
+            const whereFor = (identity: Record<string, unknown>): string => QueryRunner
+                .identityEntries(identity, types, skipIncomparable).entries
+                .map(([col, val]) => (val === null || val === undefined)
+                    ? `${this.formatIdentifier(col, alwaysQuote)} IS NULL`
+                    : `${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val, types[col], 'stored')}`)
+                .join(' AND ');
 
             for (const update of changes.updates) {
                 const setClauses: string[] = [];
                 for (const [col, val] of Object.entries(update.changes)) {
-                    setClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
-                }
-
-                const whereClauses: string[] = [];
-                for (const [col, val] of Object.entries(update.primaryKey)) {
-                    if (val === null || val === undefined) {
-                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
-                    } else {
-                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
-                    }
+                    setClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val, types[col], 'edit')}`);
                 }
 
                 statements.push(
-                    `UPDATE ${tableRef} SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')};`
+                    `UPDATE ${tableRef} SET ${setClauses.join(', ')} WHERE ${whereFor(update.primaryKey)};`
                 );
             }
 
@@ -701,23 +851,15 @@ export class QueryRunner {
                 const columns = Object.keys(insert).filter(k => insert[k] !== null && insert[k] !== '');
                 if (columns.length === 0) { continue; }
 
-                const values = columns.map(c => this.formatValue(insert[c]));
+                const values = columns.map(c => this.formatValue(insert[c], types[c], 'edit'));
                 statements.push(
                     `INSERT INTO ${tableRef} (${columns.map(c => this.formatIdentifier(c, alwaysQuote)).join(', ')}) VALUES (${values.join(', ')});`
                 );
             }
 
             for (const del of changes.deletes) {
-                const whereClauses: string[] = [];
-                for (const [col, val] of Object.entries(del)) {
-                    if (val === null || val === undefined) {
-                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} IS NULL`);
-                    } else {
-                        whereClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val)}`);
-                    }
-                }
                 statements.push(
-                    `DELETE FROM ${tableRef} WHERE ${whereClauses.join(' AND ')};`
+                    `DELETE FROM ${tableRef} WHERE ${whereFor(del)};`
                 );
             }
         }
@@ -725,17 +867,26 @@ export class QueryRunner {
         return statements.join('\n\n');
     }
 
-    private formatValue(val: unknown): string {
-        if (val === null || val === undefined) {
+    /**
+     * A value as a SQL literal for the generated script, matching what
+     * {@link commitChanges} sends as a parameter: json/jsonb as JSON text,
+     * arrays as a PostgreSQL array literal, Dates as ISO text, bytea as `\x?`.
+     */
+    private formatValue(val: unknown, typeName?: string, origin: 'edit' | 'stored' = 'edit'): string {
+        const value = QueryRunner.columnParam(val, typeName, origin);
+        if (value === null || value === undefined) {
             return 'NULL';
         }
-        if (typeof val === 'number') {
-            return String(val);
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return String(value);
         }
-        if (typeof val === 'boolean') {
-            return val ? 'TRUE' : 'FALSE';
+        if (typeof value === 'bigint') {
+            return String(value);
         }
-        return escapeSqlLiteral(String(val));
+        if (typeof value === 'boolean') {
+            return value ? 'TRUE' : 'FALSE';
+        }
+        return escapeSqlLiteral(pgValueToText(value) ?? '');
     }
 
     private getSelectOptions(): { alwaysQualifySchema: boolean; alwaysQuote: boolean } {

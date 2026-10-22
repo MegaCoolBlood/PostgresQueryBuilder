@@ -7,6 +7,7 @@ import {
     autoRefreshIntervalError,
     formatAutoRefreshInterval,
     autoRefreshRefusal,
+    exportQueryRefusal,
     AUTO_REFRESH_MIN_SECONDS,
     AUTO_REFRESH_MAX_SECONDS
 } from '../autoRefresh';
@@ -171,4 +172,20 @@ test('autoRefreshRefusal does not mistake a column or text named lock for a lock
 test('autoRefreshRefusal has nothing to refuse in an empty text', () => {
     assert.equal(autoRefreshRefusal(''), null);
     assert.equal(autoRefreshRefusal('  ;  '), null);
+});
+
+// ===== exportQueryRefusal =====
+
+test('exportQueryRefusal lets a single read through', () => {
+    assert.equal(exportQueryRefusal('SELECT * FROM orders WHERE id > 5'), null);
+    assert.equal(exportQueryRefusal('WITH x AS (SELECT 1) SELECT * FROM x;'), null);
+    assert.equal(exportQueryRefusal("SELECT 'update t set a = 1' AS txt"), null);
+});
+
+test('exportQueryRefusal refuses writes, locks, several statements and non-SELECTs', () => {
+    assert.match(exportQueryRefusal("UPDATE orders SET state = 'x'") || '', /only a SELECT/i);
+    assert.match(exportQueryRefusal('WITH d AS (DELETE FROM orders RETURNING *) SELECT * FROM d') || '', /changes data/);
+    assert.match(exportQueryRefusal('SELECT * FROM orders FOR UPDATE') || '', /lock/);
+    assert.match(exportQueryRefusal('SELECT 1; DELETE FROM orders') || '', /several statements/);
+    assert.match(exportQueryRefusal('   ') || '', /no query/);
 });

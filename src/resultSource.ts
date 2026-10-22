@@ -45,6 +45,8 @@ export interface ColumnSource {
     table: string;
     /** Real column name in the source table. */
     sourceColumn: string;
+    /** Type OID PostgreSQL reported for the result column, when known. */
+    dataTypeID?: number;
     /**
      * Table alias this column is selected through. Set only when the query
      * joins the same table in more than once.
@@ -201,14 +203,51 @@ export function resolveFieldSources(
         if (!relation || !sourceColumn) {
             return null;
         }
-        return {
+        const source: ColumnSource = {
             name: field.name,
             tableOid,
             schema: relation.schema,
             table: relation.table,
             sourceColumn
         };
+        if (field.dataTypeID) {
+            source.dataTypeID = field.dataTypeID;
+        }
+        return source;
     });
+}
+
+/**
+ * Names of the built-in types whose values need special treatment when rows
+ * are written back, keyed by type OID: json/jsonb parameters must be sent as
+ * JSON text, and the types listed in {@link NO_EQUALITY_TYPES} cannot identify
+ * a row. Array types use the `_name` spelling of `pg_type.typname`.
+ */
+export const SPECIAL_TYPE_NAMES_BY_OID: Readonly<Record<number, string>> = {
+    114: 'json', 199: '_json',
+    3802: 'jsonb', 3807: '_jsonb',
+    142: 'xml', 143: '_xml',
+    600: 'point', 1017: '_point',
+    601: 'lseg', 1018: '_lseg',
+    602: 'path', 1019: '_path',
+    603: 'box', 1020: '_box',
+    604: 'polygon', 1027: '_polygon',
+    628: 'line', 629: '_line',
+    718: 'circle', 719: '_circle'
+};
+
+/**
+ * Types without a usable equality operator: `json` and `xml` have none at all,
+ * the geometric types either have none or one that compares areas (`box`), so
+ * `col = $1` would fail or match the wrong rows. Arrays of them inherit this.
+ */
+export const NO_EQUALITY_TYPES: ReadonlySet<string> = new Set(
+    ['json', 'xml', 'point', 'lseg', 'path', 'box', 'polygon', 'line', 'circle'].flatMap((t) => [t, `_${t}`])
+);
+
+/** Whether a column of `typeName` (a `pg_type.typname`) can be matched with `=`. */
+export function hasEqualityOperator(typeName: string | undefined): boolean {
+    return !typeName || !NO_EQUALITY_TYPES.has(typeName.trim().toLowerCase());
 }
 
 /**
@@ -238,14 +277,17 @@ export function chooseIdentity(
         }
     }
     // Duplicate source columns (`SELECT id, id AS id2`) would repeat the same
-    // condition, so identify by each distinct source column once.
+    // condition, so identify by each distinct source column once. Columns that
+    // cannot be compared with `=` (json, xml, geometric types) are left out; if
+    // nothing is left, the identity stays empty and an UPDATE or DELETE is
+    // refused with an explanation instead of touching arbitrary rows.
     const seen = new Set<string>();
     const identityColumns = columns.filter((c) => {
         if (seen.has(c.sourceColumn)) {
             return false;
         }
         seen.add(c.sourceColumn);
-        return true;
+        return c.dataTypeID === undefined || hasEqualityOperator(SPECIAL_TYPE_NAMES_BY_OID[c.dataTypeID]);
     });
     return { strategy: 'row', identityColumns };
 }
@@ -269,9 +311,14 @@ export function identityWarning(tables: ReadonlyArray<TableEditPlan>): string | 
         return null;
     }
     const names = tableNames(weak);
+    const unmatched = weak.filter((t) => t.identityColumns.length === 0);
+    const unmatchedNote = unmatched.length === 0
+        ? ''
+        : ` Rows of ${tableNames(unmatched)} cannot be updated or deleted at all: none of their displayed columns `
+            + 'can be compared for equality (json, xml and geometric types cannot).';
     return `No primary key available for ${names}. Rows are matched by all of their displayed values — `
         + 'a change is rejected if it would not affect exactly one row. '
-        + 'Add the key columns to the query to edit safely.';
+        + 'Add the key columns to the query to edit safely.' + unmatchedNote;
 }
 
 /**

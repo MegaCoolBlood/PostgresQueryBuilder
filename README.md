@@ -55,10 +55,22 @@ under the category **PostgreSQL Query Booster**.
 | Username | yes | PostgreSQL user |
 | Password | no | Kept in the VS Code SecretStorage |
 | Schemas | no | Comma-separated list of the schemas to show; all if empty |
+| SSL | yes | *Verify certificate and host name* (default for new connections), *Require SSL, do not verify the certificate*, *Prefer SSL, fall back to unencrypted*, or *Disable SSL* |
+| CA certificate file | no | PEM file with the CA certificate(s) used to verify the server; the system's trusted certificates when empty |
 
-SSL is attempted first and falls back to an unencrypted connection when the
-server does not offer it. Hostnames are resolved by the operating system, so
-`/etc/hosts` applies.
+Connections saved before the SSL option existed keep their old behaviour,
+*Prefer SSL*: SSL is attempted first and falls back to an unencrypted
+connection when the server does not offer it. A local server without SSL needs
+*Prefer SSL* or *Disable SSL*. Hostnames are resolved by the operating system,
+so `/etc/hosts` applies.
+
+A stored password is only ever sent to the host, port, database and user it was
+saved for; when one of them changes, the password is asked for again.
+
+The psql console uses the connection's SSL mode too. With *Verify certificate
+and host name* and no CA certificate file it relies on the system's trusted
+certificates, which needs psql 16 or later; an older psql refuses to connect
+instead of skipping the check.
 
 Several connections can be saved and switched from the status bar item at the
 bottom left, which also shows which database you are currently looking at.
@@ -348,8 +360,8 @@ duplicating, deleting and moving between the personal and the workspace scope.
 | `postgresQueryBuilder.defaultHost` | `localhost` | Host a new connection form starts with |
 | `postgresQueryBuilder.defaultPort` | `5432` | Port a new connection form starts with |
 | `postgresQueryBuilder.defaultDatabase` | `postgres` | Database a new connection form starts with |
-| `postgresQueryBuilder.psqlPath` | empty | `psql` used by the console; empty searches `PATH` and the default install folders |
-| `postgresQueryBuilder.thousandSeparator` | space | Separator numbers are displayed with |
+| `postgresQueryBuilder.psqlPath` | empty | `psql` used by the console; empty searches `PATH` and the default install folders. User or machine setting only, never read from a workspace |
+| `postgresQueryBuilder.thousandSeparator` | space | Separator numbers are displayed with: space, non-breaking space, `.`, `'` or none. The decimal mark is always a comma, so a comma cannot be used |
 | `postgresQueryBuilder.alwaysQualifySchema` | `false` | Always write the schema into generated `SELECT`s |
 | `postgresQueryBuilder.alwaysQuote` | `false` | Always quote identifiers in generated `SELECT`s |
 | `postgresQueryBuilder.completion.enable` | `true` | Autocomplete tables, columns, functions and keywords in SQL files |

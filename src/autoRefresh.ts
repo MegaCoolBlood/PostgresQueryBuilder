@@ -141,3 +141,21 @@ export function autoRefreshRefusal(sql: string): string | null {
     }
     return null;
 }
+
+/**
+ * Why `sql` must not be run for a Data Viewer export, or null when it is a
+ * single plain read. An export runs the query once more without showing it, so
+ * it must never write, lock or run several statements.
+ */
+export function exportQueryRefusal(sql: string): string | null {
+    const statements = splitSqlStatements(String(sql ?? '')).map((s) => s.trim()).filter((s) => s.length > 0);
+    if (statements.length === 0) return 'There is no query to export.';
+    if (statements.length > 1) return 'The query holds several statements; only a single SELECT can be exported.';
+    if (!/^\s*(select|with|table|values)\b/.test(codeOnly(statements[0]).toLowerCase())) {
+        return 'Only a SELECT query can be exported.';
+    }
+    if (autoRefreshRefusal(statements[0])) {
+        return 'The query changes data or takes a lock, so it is not run for an export.';
+    }
+    return null;
+}

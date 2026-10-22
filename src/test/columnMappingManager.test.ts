@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ColumnMappingManager, CustomColumnMapping, normalizeWorkspaceRelativePath } from '../columnMappingManager';
+import { ColumnMappingManager, CustomColumnMapping, normalizeMappingConditions, normalizeWorkspaceRelativePath } from '../columnMappingManager';
 
 function createMockContext() {
     const store: Record<string, any> = {};
@@ -547,4 +547,25 @@ test('without a workspace folder a shared mapping is kept personal and reported'
     assert.equal(created.scope, 'global');
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /no workspace folder is open/i);
+});
+
+// ===== normalizeMappingConditions =====
+
+test('normalizeMappingConditions keeps well-formed conditions and normalises the operator', () => {
+    assert.deepEqual(
+        normalizeMappingConditions([{ column: 'kind', operator: 'like', value: 'a' }, { column: 'n', operator: '>=', value: 5 }]),
+        [{ column: 'kind', operator: 'LIKE', value: 'a' }, { column: 'n', operator: '>=', value: '5' }]
+    );
+});
+
+test('normalizeMappingConditions drops conditions a committed mappings file could abuse', () => {
+    assert.deepEqual(normalizeMappingConditions([
+        { column: 'a', operator: '; DROP TABLE x; --', value: '1' },
+        { column: '', operator: '=', value: '1' },
+        { column: 'b', operator: '=', value: { nested: true } },
+        null,
+        'kind = 1',
+        { column: 'ok', operator: '<>', value: 'x' }
+    ]), [{ column: 'ok', operator: '<>', value: 'x' }]);
+    assert.deepEqual(normalizeMappingConditions('not a list'), []);
 });

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
-import { buildCustomResultColumns, buildColumnProbeSql, buildCellEditorFileName, cellEditorFileExtension, TableWebViewManager, queryEditorAssets, formatQueryBarText } from '../tableWebView';
+import { buildCustomResultColumns, buildColumnProbeSql, buildCellEditorFileName, cellEditorFileExtension, TableWebViewManager, queryEditorAssets, formatQueryBarText, buildDataViewerCsp, applyDataViewerCsp } from '../tableWebView';
 import { QueryRunner } from '../queryRunner';
 import { QualifierStore } from '../tableStatementDrop';
 import { ManageBookmarksPanel } from '../manageBookmarksPanel';
@@ -142,7 +142,7 @@ const EXTENSION_PATH = path.join(__dirname, '..', '..', '..');
 
 function createFakePanel() {
     const posted: any[] = [];
-    const state: { onMessage: (m: any) => any; onViewState: () => any } = { onMessage: async () => {}, onViewState: () => {} };
+    const state: { onMessage: (m: any) => any; onViewState: () => any; onDispose: Array<() => void> } = { onMessage: async () => {}, onViewState: () => {}, onDispose: [] };
     const panel = {
         posted,
         state,
@@ -152,7 +152,7 @@ function createFakePanel() {
             postMessage: (m: any) => { posted.push(m); return Promise.resolve(true); },
             onDidReceiveMessage: (cb: any) => { state.onMessage = cb; return { dispose() {} }; }
         },
-        onDidDispose: (_cb: any) => ({ dispose() {} }),
+        onDidDispose: (cb: () => void) => { state.onDispose.push(cb); return { dispose() {} }; },
         onDidChangeViewState: (cb: any) => { state.onViewState = cb; return { dispose() {} }; },
         reveal() {}
     };
@@ -202,7 +202,9 @@ function createManager(overrides: { connection?: any; mappings?: any[] } = {}) {
     const columnMappingManager: any = {
         onDidChange: () => ({ dispose() {} }),
         getMappingsForTable: (schema: string, table: string) =>
-            (overrides.mappings || []).filter((m: any) => m.sourceSchema === schema && m.sourceTable === table)
+            (overrides.mappings || []).filter((m: any) => m.sourceSchema === schema && m.sourceTable === table),
+        deletedMappings: [] as string[],
+        deleteMapping(id: string) { this.deletedMappings.push(id); return Promise.resolve(); }
     };
     const permanentConstraintManager: any = { getConstraints: () => [], getSorts: () => [] };
     // Stand-in for SavedQueryStore: records what the panel asks it to persist.
@@ -231,12 +233,12 @@ function createManager(overrides: { connection?: any; mappings?: any[] } = {}) {
     const manager = new TableWebViewManager(
         context, connectionManager, columnMappingManager, permanentConstraintManager, undefined, savedQueryStore
     );
-    return { manager, globalStateStore, executed, savedQueryStore, storagePath };
+    return { manager, globalStateStore, executed, savedQueryStore, storagePath, columnMappingManager };
 }
 
 /** Open a query panel and return it together with its message callback. */
 async function openCustomQueryPanel(savedQuery?: any, overrides: { connection?: any; mappings?: any[] } = {}) {
-    const { manager, globalStateStore, executed, savedQueryStore, storagePath } = createManager(overrides);
+    const { manager, globalStateStore, executed, savedQueryStore, storagePath, columnMappingManager } = createManager(overrides);
     const panel = createFakePanel();
     const originalCreate = vscodeStub.window.createWebviewPanel;
     vscodeStub.window.createWebviewPanel = () => panel;
@@ -245,7 +247,7 @@ async function openCustomQueryPanel(savedQuery?: any, overrides: { connection?: 
     } finally {
         vscodeStub.window.createWebviewPanel = originalCreate;
     }
-    return { panel, send: (m: any) => panel.state.onMessage(m), globalStateStore, executed, savedQueryStore, storagePath };
+    return { panel, send: (m: any) => panel.state.onMessage(m), globalStateStore, executed, savedQueryStore, storagePath, columnMappingManager };
 }
 
 /** Record the dialog requests instead of opening the Bookmarked Queries panel. */
@@ -696,6 +698,30 @@ test('query panel: saving the opened file writes the value back into the cell', 
     assert.equal(msg.rowIdx, 2);
     assert.equal(msg.column, 'note');
     assert.equal(msg.value, 'edited in the editor');
+});
+
+test('query panel: the row token of an opened cell comes back unchanged on save', async () => {
+    const rowToken = { fingerprint: '[["id",7]]' };
+    const { panel, doc } = await openCellEditor({ rowToken });
+    fs.writeFileSync(doc.uri.fsPath, 'edited', 'utf8');
+    fireDidSaveTextDocument(doc);
+
+    const msg = panel.posted.filter((m: any) => m.command === 'cellEditorValue').pop();
+    assert.deepEqual(msg.rowToken, rowToken);
+});
+
+test('query panel: a cell editor tab of a closed panel writes nothing back but still cleans up', async () => {
+    const { panel, doc } = await openCellEditor();
+    panel.state.onDispose.forEach(cb => cb());
+    panel.posted.length = 0;
+
+    fs.writeFileSync(doc.uri.fsPath, 'too late', 'utf8');
+    fireDidSaveTextDocument(doc);
+    assert.equal(panel.posted.some((m: any) => m.command === 'cellEditorValue'), false);
+
+    fireDidCloseTextDocument(doc);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(fs.existsSync(doc.uri.fsPath), false, 'the scratch file must be gone');
 });
 
 test('query panel: a read-only cell is opened but never written back', async () => {
@@ -1467,4 +1493,103 @@ test('auto refresh: the panel is told when it is hidden or shown again', async (
     panel.state.onViewState();
     const states = panel.posted.filter((m: any) => m.command === 'viewStateChanged').map((m: any) => m.visible);
     assert.deepEqual(states, [false, true]);
+});
+// ===== Content Security Policy =====
+
+test('data viewer: the panel gets a nonce CSP and no inline event handlers', async () => {
+    const { panel } = await openCustomQueryPanel();
+    const html: string = panel.webview.html;
+    const meta = /<meta http-equiv="Content-Security-Policy" content="([^"]+)">/.exec(html);
+    assert.ok(meta, 'expected a CSP meta tag');
+    assert.match(meta[1], /default-src 'none'/);
+    const nonce = /script-src 'nonce-([A-Za-z0-9]+)'/.exec(meta[1]);
+    assert.ok(nonce, 'expected a script nonce');
+    const scripts = html.match(/<script\b[^>]*>/g) || [];
+    assert.ok(scripts.length > 0);
+    for (const tag of scripts) {
+        assert.ok(tag.includes(`nonce="${nonce[1]}"`), `script without nonce: ${tag}`);
+    }
+    assert.ok(!/\son(click|change|input|load|error|mouse\w+|key\w+)=["']/i.test(html), 'inline event handlers are blocked by the CSP');
+});
+
+test('buildDataViewerCsp allows the Monaco resources and blob workers', () => {
+    const csp = buildDataViewerCsp('https://res.example', 'abc');
+    assert.match(csp, /script-src 'nonce-abc' https:\/\/res\.example/);
+    assert.match(csp, /worker-src https:\/\/res\.example blob:/);
+    assert.match(csp, /font-src https:\/\/res\.example data:/);
+});
+
+test('applyDataViewerCsp leaves script text injected later untouched', () => {
+    const html = applyDataViewerCsp('<head><title>x</title></head><script>/* JS */</script>', '', 'n1');
+    assert.ok(html.includes('<script nonce="n1">/* JS */</script>'));
+    assert.ok(html.indexOf('Content-Security-Policy') > html.indexOf('</title>'));
+});
+
+// ===== Load ids =====
+
+test('data viewer: every answer to a load names the load it belongs to', async () => {
+    const { connection } = recordingConnection();
+    const { panel, send } = await openCustomQueryPanel(undefined, { connection });
+    panel.posted.length = 0;
+    await send({ command: 'loadRows', sql: 'SELECT * FROM orders LIMIT 50 OFFSET 0', baseSql: 'SELECT * FROM orders', wantTotal: true, loadId: 12 });
+    const answers = panel.posted.filter((m: any) => ['columnsLoaded', 'rowsLoaded', 'totalCountLoaded'].includes(m.command));
+    assert.ok(answers.some((m: any) => m.command === 'rowsLoaded'));
+    for (const m of answers) assert.equal(m.loadId, 12, `${m.command} without the load id`);
+});
+
+test('data viewer: a failing load names its load id in the error', async () => {
+    const original = vscodeStub.window.showErrorMessage;
+    vscodeStub.window.showErrorMessage = () => Promise.resolve(undefined);
+    try {
+        const { connection } = recordingConnection({ fail: true });
+        const { panel, send } = await openCustomQueryPanel(undefined, { connection });
+        await send({ command: 'loadRows', sql: 'SELECT * FROM orders', loadId: 4 });
+        const error = panel.posted.filter((m: any) => m.command === 'error').pop();
+        assert.equal(error.loadId, 4);
+    } finally {
+        vscodeStub.window.showErrorMessage = original;
+    }
+});
+
+// ===== Export =====
+
+test('data viewer: an export of a statement that writes is refused before anything runs', async () => {
+    const originalError = vscodeStub.window.showErrorMessage;
+    const originalSave = vscodeStub.window.showSaveDialog;
+    const errors: string[] = [];
+    let dialogs = 0;
+    vscodeStub.window.showErrorMessage = (msg: string) => { errors.push(msg); return Promise.resolve(undefined); };
+    vscodeStub.window.showSaveDialog = () => { dialogs++; return Promise.resolve(undefined); };
+    try {
+        const { connection, ran } = recordingConnection();
+        const { send } = await openCustomQueryPanel(undefined, { connection });
+        ran.length = 0;
+        await send({ command: 'exportData', sql: "UPDATE orders SET state = 'x'", options: { format: 'csv', filename: 'x.csv' }, columns: [] });
+        assert.deepEqual(ran, [], 'nothing may be executed');
+        assert.equal(dialogs, 0, 'no save dialog for a refused export');
+        assert.match(errors[0], /Export failed: .*SELECT/);
+    } finally {
+        vscodeStub.window.showErrorMessage = originalError;
+        vscodeStub.window.showSaveDialog = originalSave;
+    }
+});
+
+// ===== Custom mappings =====
+
+test('data viewer: deleting a custom mapping happens only after the modal confirmation', async () => {
+    const original = vscodeStub.window.showWarningMessage;
+    const asked: any[] = [];
+    try {
+        const { send, columnMappingManager } = await openCustomQueryPanel();
+        vscodeStub.window.showWarningMessage = (...args: any[]) => { asked.push(args); return Promise.resolve(undefined); };
+        await send({ command: 'deleteCustomMapping', mappingId: 'm1' });
+        assert.deepEqual(columnMappingManager.deletedMappings, [], 'cancelled: nothing deleted');
+        assert.deepEqual(asked[0][1], { modal: true });
+
+        vscodeStub.window.showWarningMessage = () => Promise.resolve('Delete' as any);
+        await send({ command: 'deleteCustomMapping', mappingId: 'm1' });
+        assert.deepEqual(columnMappingManager.deletedMappings, ['m1']);
+    } finally {
+        vscodeStub.window.showWarningMessage = original;
+    }
 });

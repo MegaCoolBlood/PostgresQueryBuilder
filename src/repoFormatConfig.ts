@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { Logger, getErrorMessage } from './logger';
 import { DEFAULT_ARGUMENT_GROUPS, FormatOptions } from './plpgsqlFormatter';
 
@@ -57,6 +58,24 @@ export function readFormatConfigFile(filePath: string): Record<string, unknown> 
  */
 export function readRepoFormatConfig(folderPath: string): Record<string, unknown> {
     return readFormatConfigFile(path.join(folderPath, REPO_FORMAT_CONFIG_FILENAME));
+}
+
+/**
+ * Convert a `file:` URI as sent by an LSP client into a file-system path of the
+ * current platform, decoding percent escapes such as the `%3A` VS Code writes
+ * for a drive-letter colon (`file:///c%3A/repo` → `c:\repo` on Windows).
+ *
+ * Returns `undefined` for any other scheme (`untitled:`, `vscode-vfs:` …) and
+ * for a URI that does not name an absolute path on this platform.
+ */
+export function fileUriToFsPath(uri: string): string | undefined {
+    if (typeof uri !== 'string' || !/^file:/i.test(uri)) return undefined;
+    try {
+        return fileURLToPath(uri);
+    } catch (err: unknown) {
+        Logger.log('repoFormatConfig', `Ignoring workspace URI ${uri}: ${getErrorMessage(err)}`);
+        return undefined;
+    }
 }
 
 /**

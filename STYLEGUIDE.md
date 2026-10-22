@@ -75,6 +75,14 @@ Always replace with a **function** (`html.replace(p, () => css)`), never a
 string — `$&` and `$'` inside the injected SQL/JS would otherwise expand and
 corrupt the document.
 
+Before the placeholders are filled, `applyDataViewerCsp` adds the panel's
+Content Security Policy and puts the nonce on its `<script>` tag. The policy
+additionally allows the extension's own resources (the Monaco bundle, its
+stylesheet and codicon font) and `blob:` workers, and nothing else. Inline
+event handlers (`onclick="…"`) are blocked by it: wire events with
+`addEventListener`, using a `data-*` attribute plus delegation for generated
+markup.
+
 Assets live in `src/webview/**` and are read from disk at runtime; they are
 deliberately not bundled, and `.vscodeignore` keeps them in the package.
 

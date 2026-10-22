@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { readFormatConfigFile, readRepoFormatConfig, formatOptionsToRepoConfig, REPO_FORMAT_CONFIG_FILENAME, resolveFormatConfigPath } from '../repoFormatConfig';
+import { pathToFileURL } from 'url';
+import { readFormatConfigFile, readRepoFormatConfig, formatOptionsToRepoConfig, REPO_FORMAT_CONFIG_FILENAME, resolveFormatConfigPath, fileUriToFsPath } from '../repoFormatConfig';
 import { coerceFormatOptions, DEFAULT_FORMAT_OPTIONS, formatSql, formatSqlChecked } from '../plpgsqlFormatter';
 
 function withTempDir(fn: (dir: string) => void): void {
@@ -339,4 +340,39 @@ test('resolveFormatConfigPath trims surrounding whitespace from configPath', () 
         resolveFormatConfigPath(path.join('root', 'ws'), '  sub/fmt.json  '),
         path.join('root', 'ws', 'sub', 'fmt.json')
     );
+});
+
+// ---------------------------------------------------------------------------
+// fileUriToFsPath (language server workspace folder)
+// ---------------------------------------------------------------------------
+
+const isWindows = process.platform === 'win32';
+
+test('fileUriToFsPath decodes the percent-encoded drive colon VS Code sends on Windows', () => {
+    // On POSIX the same URI is a valid absolute path whose first segment is "c:".
+    assert.equal(
+        fileUriToFsPath('file:///c%3A/repo/a.sql'),
+        isWindows ? 'c:\\repo\\a.sql' : '/c:/repo/a.sql'
+    );
+});
+
+test('fileUriToFsPath converts a POSIX file URI and decodes escaped characters', { skip: isWindows && 'a drive-less path is not absolute on Windows' }, () => {
+    assert.equal(fileUriToFsPath('file:///home/dev/my%20repo'), '/home/dev/my repo');
+});
+
+test('fileUriToFsPath returns undefined for a URI that is not a file URI', () => {
+    assert.equal(fileUriToFsPath('untitled:Untitled-1'), undefined);
+    assert.equal(fileUriToFsPath('vscode-vfs://github/owner/repo'), undefined);
+    assert.equal(fileUriToFsPath(''), undefined);
+});
+
+test('fileUriToFsPath lets the language server find .pgformat.json in a workspace folder', () => {
+    withTempDir(dir => {
+        fs.writeFileSync(path.join(dir, REPO_FORMAT_CONFIG_FILENAME), JSON.stringify({ keywordCase: 'lower' }));
+        // VS Code encodes the drive-letter colon; mirror that for the folder URI.
+        const uri = pathToFileURL(dir).href.replace(/^file:\/\/\/([a-zA-Z]):/, 'file:///$1%3A');
+        const folder = fileUriToFsPath(uri);
+        assert.ok(folder, `no path for ${uri}`);
+        assert.deepEqual(readRepoFormatConfig(folder), { keywordCase: 'lower' });
+    });
 });

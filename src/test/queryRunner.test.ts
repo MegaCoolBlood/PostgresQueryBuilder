@@ -1041,3 +1041,246 @@ test('resolveEditPlan marks a view as not editable', async () => {
     assert.equal(caps.canConstrain, true);
     assert.equal(caps.table, 'active_users');
 });
+
+// ===== getPrimaryKeys: names are parameters =====
+
+test('getPrimaryKeys passes schema and table as parameters, never inside the SQL', async () => {
+    const { runner, metadataCalls } = createRunner({
+        metadataHandler: () => [{ attname: 'a' }, { attname: 'b' }]
+    });
+
+    const keys = await runner.getPrimaryKeys('we"ird\'s', 'ta"ble');
+
+    assert.deepEqual(keys, ['a', 'b']);
+    assert.deepEqual(metadataCalls[0].params, ['we"ird\'s', 'ta"ble']);
+    assert.ok(!metadataCalls[0].sql.includes('we"ird'));
+    assert.ok(!metadataCalls[0].sql.includes('regclass'));
+    assert.match(metadataCalls[0].sql, /n\.nspname = \$1 AND c\.relname = \$2/);
+    assert.match(metadataCalls[0].sql, /ORDER BY array_position/);
+});
+
+// ===== json/jsonb values and incomparable columns when writing back =====
+
+/** information_schema rows for a table with json, jsonb and plain columns. */
+function jsonTableTypes(sql: string): any[] {
+    if (sql.includes('information_schema.columns')) {
+        return [
+            { column_name: 'id', data_type: 'integer', udt_name: 'int4' },
+            { column_name: 'msg', data_type: 'text', udt_name: 'text' },
+            { column_name: 'payload', data_type: 'json', udt_name: 'json' },
+            { column_name: 'meta', data_type: 'jsonb', udt_name: 'jsonb' },
+            { column_name: 'label', data_type: 'jsonb', udt_name: 'jsonb' },
+            { column_name: 'tags', data_type: 'ARRAY', udt_name: '_int4' }
+        ];
+    }
+    return [];
+}
+
+test('commitChanges sends the parsed jsonb values of a duplicated row as JSON text', async () => {
+    const client = createRecordingClient(1);
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        pool: { connect: async () => client },
+        metadataHandler: jsonTableTypes
+    });
+
+    await runner.commitChanges([{
+        schema: 'app',
+        table: 'log',
+        identityStrategy: 'pk',
+        changes: {
+            updates: [],
+            // A duplicated row carries what the driver parsed: an array, an
+            // object, a string scalar and a native int[] array.
+            inserts: [{ meta: [1, 'two'], payload: { a: 1 }, label: 'abc', tags: [1, 2], msg: 'x' }],
+            deletes: []
+        }
+    }]);
+
+    assert.equal(client.statements[1].sql, 'INSERT INTO app.log (meta, payload, label, tags, msg) VALUES ($1, $2, $3, $4, $5)');
+    assert.deepEqual(client.statements[1].params, ['[1,"two"]', '{"a":1}', '"abc"', [1, 2], 'x']);
+});
+
+test('commitChanges sends JSON text typed into a jsonb cell unchanged', async () => {
+    const client = createRecordingClient(1);
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        pool: { connect: async () => client },
+        metadataHandler: jsonTableTypes
+    });
+
+    await runner.commitChanges([{
+        schema: 'app',
+        table: 'log',
+        identityStrategy: 'pk',
+        changes: {
+            updates: [{ primaryKey: { id: 1 }, changes: { meta: '{"a": [1, 2]}', label: '"abc"' } }],
+            inserts: [],
+            deletes: []
+        }
+    }]);
+
+    assert.equal(client.statements[1].sql, 'UPDATE app.log SET meta = $1, label = $2 WHERE id = $3');
+    assert.deepEqual(client.statements[1].params, ['{"a": [1, 2]}', '"abc"', 1]);
+});
+
+test('commitChanges leaves a json column out of the row identity of a table without primary key', async () => {
+    const client = createRecordingClient(1);
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        pool: { connect: async () => client },
+        metadataHandler: jsonTableTypes
+    });
+
+    await runner.commitChanges([{
+        schema: 'app',
+        table: 'log',
+        identityStrategy: 'row',
+        changes: {
+            updates: [{
+                primaryKey: { msg: 'hi', payload: { a: 1 }, meta: ['x'], label: 'abc' },
+                changes: { msg: 'ho' }
+            }],
+            inserts: [],
+            deletes: [{ msg: 'bye', payload: { b: 2 }, meta: { k: 1 } }]
+        }
+    }]);
+
+    assert.deepEqual(client.statements.map(s => s.sql), [
+        'BEGIN',
+        'UPDATE app.log SET msg = $1 WHERE msg = $2 AND meta = $3 AND label = $4',
+        'DELETE FROM app.log WHERE msg = $1 AND meta = $2',
+        'COMMIT'
+    ]);
+    // Identity values are the parsed stored values, so they are always JSON-encoded.
+    assert.deepEqual(client.statements[1].params, ['ho', 'hi', '["x"]', '"abc"']);
+    assert.deepEqual(client.statements[2].params, ['bye', '{"k":1}']);
+});
+
+test('commitChanges refuses to update a row identified only by json columns', async () => {
+    const client = createRecordingClient(1);
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        pool: { connect: async () => client },
+        metadataHandler: jsonTableTypes
+    });
+
+    await assert.rejects(
+        () => runner.commitChanges([{
+            schema: 'app',
+            table: 'log',
+            identityStrategy: 'row',
+            changes: { updates: [{ primaryKey: { payload: { a: 1 } }, changes: { msg: 'ho' } }], inserts: [], deletes: [] }
+        }]),
+        /payload cannot be compared for equality/
+    );
+    assert.ok(!client.statements.some(s => s.sql.startsWith('UPDATE')));
+    assert.ok(client.statements.some(s => s.sql === 'ROLLBACK'));
+});
+
+test('commitChanges still commits when the column types cannot be looked up', async () => {
+    const client = createRecordingClient(1);
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        pool: { connect: async () => client },
+        metadataHandler: () => { throw new Error('catalog unavailable'); }
+    });
+
+    await runner.commitChanges([{
+        schema: 'public',
+        table: 'users',
+        identityStrategy: 'pk',
+        changes: { updates: [{ primaryKey: { id: 1 }, changes: { name: 'Alice' } }], inserts: [], deletes: [] }
+    }]);
+
+    assert.deepEqual(client.statements[1].params, ['Alice', 1]);
+});
+
+// ===== generateSQL: parsed values as SQL literals =====
+
+test('generateSQL renders objects as JSON, arrays as array literals, Dates as ISO text and bytea as hex', () => {
+    const { runner } = createRunner({ options: { alwaysQualifySchema: true, alwaysQuote: false } });
+
+    const sql = runner.generateSQL([{
+        schema: 'public',
+        table: 't',
+        changes: {
+            updates: [],
+            inserts: [{
+                obj: { a: "it's" },
+                arr: [1, 'a,b', null],
+                ts: new Date(Date.UTC(2024, 0, 31, 9, 15, 0, 123)),
+                raw: Buffer.from([0xde, 0xad])
+            }],
+            deletes: []
+        }
+    }]);
+
+    assert.equal(
+        sql,
+        `INSERT INTO public.t (obj, arr, ts, raw) VALUES ('{"a":"it''s"}', '{1,"a,b",NULL}', '2024-01-31T09:15:00.123Z', '\\xdead');`
+    );
+    assert.ok(!sql.includes('[object Object]'));
+});
+
+test('generateSQL applies the json rule and the row identity rule exactly like commitChanges', () => {
+    const { runner } = createRunner({ options: { alwaysQualifySchema: true, alwaysQuote: false } });
+
+    const sql = runner.generateSQL([{
+        schema: 'app',
+        table: 'log',
+        identityStrategy: 'row',
+        columnTypes: { msg: 'text', payload: 'json', meta: 'jsonb' },
+        changes: {
+            updates: [{ primaryKey: { msg: 'hi', payload: { a: 1 }, meta: ['x'] }, changes: { meta: '{"b": 2}' } }],
+            inserts: [{ meta: [1, 2], msg: 'new' }],
+            deletes: []
+        }
+    }]);
+
+    assert.equal(
+        sql,
+        `UPDATE app.log SET meta = '{"b": 2}' WHERE msg = 'hi' AND meta = '["x"]';\n\n`
+            + `INSERT INTO app.log (meta, msg) VALUES ('[1,2]', 'new');`
+    );
+});
+
+test('generateSQL uses the column types reported by the last result of a table', async () => {
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        metadataHandler: (sql: string) => {
+            if (sql.includes('pg_class')) {
+                return [{ oid: 100, nspname: 'app', relname: 'log', relkind: 'r' }];
+            }
+            if (sql.includes('pg_attribute')) {
+                return [{ attrelid: 100, attnum: 1, attname: 'meta' }];
+            }
+            return [];
+        }
+    });
+
+    await runner.resolveEditPlan([{ name: 'meta', dataTypeID: 3802, tableID: 100, columnID: 1 }]);
+    const sql = runner.generateSQL([{
+        schema: 'app',
+        table: 'log',
+        changes: { updates: [], inserts: [{ meta: [1, 2] }], deletes: [] }
+    }]);
+
+    assert.equal(sql, `INSERT INTO app.log (meta) VALUES ('[1,2]');`);
+});
+
+test('preloadColumnTypes lets a fresh runner preview a duplicated jsonb string as valid JSON', async () => {
+    const { runner } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        metadataHandler: jsonTableTypes
+    });
+    const targets = [{
+        schema: 'app',
+        table: 'log',
+        changes: { updates: [], inserts: [{ label: 'abc' }], deletes: [] }
+    }];
+
+    await runner.preloadColumnTypes(targets);
+
+    assert.equal(runner.generateSQL(targets), `INSERT INTO app.log (label) VALUES ('"abc"');`);
+});
