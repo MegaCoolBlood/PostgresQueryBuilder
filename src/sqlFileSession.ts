@@ -379,10 +379,11 @@ export class SqlFileSessions implements vscode.Disposable {
                     // server process is asked to cancel, afterwards nothing.
                     let cancelled = false;
                     let runningPid: number | null = null;
+                    let cancelRequest: Promise<void> | null = null;
                     token.onCancellationRequested(() => {
                         cancelled = true;
                         if (runningPid !== null) {
-                            void this.cancelBackend(runningPid);
+                            cancelRequest = this.cancelBackend(runningPid);
                         }
                     });
                     return session.run(async (client) => {
@@ -397,6 +398,12 @@ export class SqlFileSessions implements vscode.Disposable {
                         } finally {
                             runningPid = null;
                             client.removeListener('notice', collect);
+                            // The statement may end before a slow cancel request
+                            // reaches the server; the session's next statement
+                            // must not start until it has, or it gets cancelled.
+                            if (cancelRequest) {
+                                await cancelRequest;
+                            }
                         }
                     });
                 }

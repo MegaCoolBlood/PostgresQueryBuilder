@@ -254,7 +254,11 @@ function recordWindowCalls(t: { after(fn: () => void): void }, name: 'showInform
     return calls;
 }
 
-function createFileSessions(options: { onQuery?: (client: FakeClient, sql: string) => unknown; connected?: boolean } = {}) {
+function createFileSessions(options: {
+    onQuery?: (client: FakeClient, sql: string) => unknown;
+    connected?: boolean;
+    poolQuery?: (sql: string, params?: unknown[]) => Promise<any>;
+} = {}) {
     const clients: FakeClient[] = [];
     const manager = new DbSessionManager({
         openClient: async () => {
@@ -275,7 +279,10 @@ function createFileSessions(options: { onQuery?: (client: FakeClient, sql: strin
     const opened: Array<{ sql: string; title: string; ref: any }> = [];
     const connectionManager: any = {
         ensureConnected: async () => options.connected !== false,
-        query: async (sql: string, params?: unknown[]) => { poolQueries.push({ sql, params }); return { rows: [] }; }
+        query: async (sql: string, params?: unknown[]) => {
+            poolQueries.push({ sql, params });
+            return options.poolQuery ? options.poolQuery(sql, params) : { rows: [] };
+        }
     };
     const modifyHistoryStore: any = { addMany: (entries: Array<{ sql: string }>) => history.push(...entries) };
     const openQueryView = async (sql: string, title: string, ref: any) => { opened.push({ sql, title, ref }); };
@@ -474,6 +481,37 @@ test('cancelling a selection still waiting for its turn skips it and cancels not
     assert.deepEqual(poolQueries, [], 'the query of the Data Viewer was left alone');
     assert.deepEqual(clients[0].queries, ['SELECT pg_sleep(60)'], 'the cancelled selection never ran');
     assert.equal(infos[0][0], 'Execute Selection was cancelled before it started; nothing ran.');
+});
+
+test('the next statement of the session waits until a slow cancel request has been handled', async (t) => {
+    const control = controllableCancel(t);
+    recordWindowCalls(t, 'showInformationMessage');
+    let finishStatement: () => void = () => undefined;
+    let answerCancel: () => void = () => undefined;
+    const { fileSessions, manager, clients, poolQueries } = createFileSessions({
+        onQuery: (_client, sql) => (sql === DO_BLOCK ? new Promise((resolve) => { finishStatement = () => resolve(undefined); }) : undefined),
+        // The pool first has to open a connection for the cancel request.
+        poolQuery: () => new Promise((resolve) => { answerCancel = () => resolve({ rows: [] }); })
+    });
+    t.after(() => fileSessions.dispose());
+
+    const running = fileSessions.execute(selecting(FILE, DO_BLOCK) as any);
+    await tick();
+    control.cancel();
+    // A Data Viewer on the file's session queues its query behind the selection.
+    const { ref } = fileSessions.acquire(createDocument(FILE) as any);
+    const viewerQuery = manager.acquire(ref, 'panel:1').query('SELECT 1');
+    // The selection ends on its own before the cancel request reached the server.
+    finishStatement();
+    await tick();
+    await tick();
+    assert.deepEqual(clients[0].queries, [DO_BLOCK], 'the cancel request would hit the query of the Data Viewer');
+
+    answerCancel();
+    await running;
+    await viewerQuery;
+    assert.deepEqual(clients[0].queries, [DO_BLOCK, 'SELECT 1']);
+    assert.deepEqual(poolQueries, [{ sql: 'SELECT pg_cancel_backend($1)', params: [4711] }]);
 });
 
 test('the session of a file ends once no tab shows the file', async (t) => {
