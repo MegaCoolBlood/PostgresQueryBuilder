@@ -22,6 +22,9 @@ SQL before it is written.
   grid.
 - **Bookmark queries.** Keep a query for yourself or share it with your team
   through a file in `.vscode/`; placeholders are filled in every time it runs.
+- **Sessions that keep their state.** Every Data Viewer, and every SQL file,
+  runs on a database session of its own: run a `DO` block or `set_config(…)`
+  from the file, then look at the data it prepared with **View Data**.
 - **Export what you see.** CSV, Excel, JSON, XML or ready-made `INSERT`
   statements — always the complete result, not just the page you loaded.
 - **Format PL/pgSQL.** A formatter for `sql`, `plpgsql` and `pgsql` that never
@@ -106,6 +109,18 @@ edits, while the tab is hidden and while you are typing in a cell or a dialog
 is open, and it switches itself off for a statement that writes data or takes
 locks (`FOR UPDATE`, `LOCK TABLE`, advisory locks). It is off whenever a Data
 Viewer opens.
+
+**Every Data Viewer has its own database session.** Its queries run on one
+connection of their own, opened with the first query and closed with the tab, so
+what one query sets up — `SET`, `set_config(…, false)`, a temporary table —
+stays in place for *More*, *All*, the row count, *Auto refresh*, *Save* and
+*Export*. A table opened from it through a foreign key or as a related table
+shares the session, and a Data Viewer opened with **View Data** from a SQL file
+runs on the session of that file. The badge next to the connection says *Own
+session* or *Session: payroll.sql*; clicking it resets the session after asking.
+Switching the connection, disconnecting or changing the `search_path` closes
+every session, and the next query reconnects; if the server drops a session, a
+warning says that its settings are gone.
 
 ### Finding rows
 
@@ -232,6 +247,27 @@ fields wherever it comes from.
   opens it in the Data Viewer. PL/pgSQL variables inside the statement are
   recognised and asked for — column names that merely look like variables are
   not.
+- **Execute Statement** (`Ctrl+Alt+Enter`) runs the selection, or the statement
+  under the cursor — a whole `DO` block wherever the cursor sits in it — in a
+  database session that belongs to the file. It is meant for what returns no
+  rows worth a grid: a `DO` block, a `CALL`, `SET` or `set_config(…)`. **View
+  Data** in the same file runs on that session too, so a `SELECT` sees what the
+  `DO` block set up:
+
+  ```sql
+  DO $$
+  BEGIN
+      CALL payroll.set_params(DATE '2026-09-21', DATE '2026-10-20');
+  END $$;                                   -- Ctrl+Alt+Enter here …
+
+  SELECT * FROM payroll.v_wages;            -- … then View Data here
+  ```
+
+  The session lives until the file and every Data Viewer opened from it are
+  closed; **Reset Database Session** starts it afresh. `RAISE NOTICE`, `INFO`
+  and `WARNING` messages, and the details of a failed statement, appear in the
+  *PostgreSQL Messages* output; a syntax error puts the cursor where it is. A
+  running statement can be cancelled from its notification.
 - **Bookmark Query** stores the statement under the cursor.
 - **Autocomplete** in SQL files offers the same suggestions as the Data
   Viewer's query bar, for the statement the cursor is in — also inside a
@@ -326,6 +362,8 @@ Every command lives in the Command Palette (`Ctrl+Shift+P`) under the category
 | Open SQL Editor | Open the panel for ad-hoc SQL |
 | Open psql Console | Start `psql` for the active connection in a terminal |
 | View Data | Run the `SELECT` under the cursor in the Data Viewer |
+| Execute Statement | Run the selection or the statement under the cursor in the session of the SQL file |
+| Reset Database Session | Discard the session of the SQL file: settings, temporary tables, an open transaction |
 | Format PL/pgSQL | Format the current SQL file |
 | Export Formatter Settings to .pgformat.json | Write the current formatter settings into a file |
 | Bookmark Query... | Store the statement under the cursor |
@@ -345,6 +383,7 @@ duplicating, deleting and moving between the personal and the workspace scope.
 | Shortcut | Where | What it does |
 |----------|-------|--------------|
 | `Ctrl+Enter` | SQL editor, query bar | Run the query |
+| `Ctrl+Alt+Enter` | SQL files | Execute the selection or the statement under the cursor |
 | `Enter` | Filter inputs | Apply the column filter |
 | `Alt+←` / `Alt+→` | Single record view | Previous / next row |
 | `Esc` | Dialogs | Close |

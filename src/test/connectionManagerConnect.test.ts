@@ -14,6 +14,7 @@ import {
     decideStoredPassword,
     effectiveSslMode,
     findUserOnlySettings,
+    sessionClientConfig,
     sslModeError
 } from '../connectionManager';
 
@@ -50,7 +51,7 @@ function fakePoolFactory(failures: Array<Error | null> = []) {
     return { factory, pools };
 }
 
-function createManager(factory: (config: PoolConfig) => any, secrets: Record<string, string> = {}): ConnectionManager {
+function createManager(factory: (config: PoolConfig) => any, secrets: Record<string, string> = {}, sessionFactory?: (config: any) => any): ConnectionManager {
     const context: any = {
         secrets: {
             get: async (key: string) => secrets[key],
@@ -59,7 +60,7 @@ function createManager(factory: (config: PoolConfig) => any, secrets: Record<str
         },
         subscriptions: []
     };
-    return new ConnectionManager(context, factory);
+    return new ConnectionManager(context, factory, sessionFactory);
 }
 
 function connect(cm: ConnectionManager, config: ConnectionConfig, password = 'pw'): Promise<void> {
@@ -288,4 +289,106 @@ test('warnAboutIgnoredWorkspaceSettings warns once per workspace', async (t) => 
 
     assert.equal(calls.length, 1, 'only one notice per workspace');
     assert.match(String(calls[0][0]), /postgresQueryBuilder\.savedConnections/);
+});
+// ===== 3.4.0: the dedicated client of a database session =====
+
+/** A session client factory whose clients record what happens to them. */
+function fakeSessionClients(failConnect?: Error) {
+    const clients: any[] = [];
+    const factory = (config: any) => {
+        const client: any = {
+            config,
+            processID: 4242,
+            connected: false,
+            ended: false,
+            queries: [] as Array<{ sql: string; params?: unknown[] }>,
+            errorListeners: 0,
+            async connect() { if (failConnect) throw failConnect; this.connected = true; },
+            async query(sql: string, params?: unknown[]) { this.queries.push({ sql, params }); return { rows: [] }; },
+            async end() { this.ended = true; },
+            on(event: string) { if (event === 'error') this.errorListeners++; },
+            removeListener(event: string) { if (event === 'error') this.errorListeners--; }
+        };
+        clients.push(client);
+        return client;
+    };
+    return { factory, clients };
+}
+
+test('sessionClientConfig keeps the connection settings and drops the pool options', () => {
+    const config = sessionClientConfig({
+        host: 'db', port: 5432, database: 'app', user: 'alice', password: 'pw', ssl: false,
+        max: 10, idleTimeoutMillis: 1000, connectionTimeoutMillis: 5000
+    });
+    assert.deepEqual(config, {
+        host: 'db', port: 5432, database: 'app', user: 'alice', password: 'pw', ssl: false,
+        connectionTimeoutMillis: 5000, keepAlive: true, keepAliveInitialDelayMillis: 30000
+    });
+});
+
+test('a session client connects with the settings of the active connection', async () => {
+    const { factory } = fakePoolFactory();
+    const sessions = fakeSessionClients();
+    const cm = createManager(factory, {}, sessions.factory);
+    await connect(cm, prod);
+
+    const client = await cm.openSessionClient();
+
+    assert.equal(client, sessions.clients[0]);
+    assert.equal(sessions.clients[0].connected, true);
+    assert.equal(sessions.clients[0].config.database, 'app');
+    assert.equal(sessions.clients[0].config.user, 'alice');
+    assert.equal(sessions.clients[0].config.password, 'pw');
+    assert.equal(sessions.clients[0].config.max, undefined);
+    assert.deepEqual(sessions.clients[0].queries, []);
+    assert.equal(sessions.clients[0].errorListeners, 0, 'the temporary error listener is removed again');
+});
+
+test('a session client gets the search_path chosen for the connection', async () => {
+    const { factory } = fakePoolFactory();
+    const sessions = fakeSessionClients();
+    const cm = createManager(factory, {}, sessions.factory);
+    await connect(cm, prod);
+    await cm.setSearchPath('payroll, public');
+
+    await cm.openSessionClient();
+
+    assert.deepEqual(sessions.clients[0].queries, [
+        { sql: "SELECT set_config('search_path', $1, false)", params: ['payroll, public'] }
+    ]);
+});
+
+test('a session client that cannot connect is ended and the error passed on', async () => {
+    const { factory } = fakePoolFactory();
+    const sessions = fakeSessionClients(new Error('too many connections'));
+    const cm = createManager(factory, {}, sessions.factory);
+    await connect(cm, prod);
+
+    await assert.rejects(() => cm.openSessionClient(), /too many connections/);
+    assert.equal(sessions.clients[0].ended, true);
+});
+
+test('no session client is opened without a connection', async () => {
+    const sessions = fakeSessionClients();
+    const cm = createManager(fakePoolFactory().factory, {}, sessions.factory);
+
+    await assert.rejects(() => cm.openSessionClient(), /Not connected/);
+    assert.equal(sessions.clients.length, 0);
+});
+
+test('the connection generation moves on with every connect, search_path change and disconnect', async () => {
+    const { factory } = fakePoolFactory([null, new Error('timeout expired')]);
+    const cm = createManager(factory);
+    const seen = [cm.getConnectionGeneration()];
+
+    await connect(cm, prod);
+    seen.push(cm.getConnectionGeneration());
+    await assert.rejects(() => connect(cm, { ...prod, name: 'other' }), /timeout expired/);
+    assert.equal(cm.getConnectionGeneration(), seen[1], 'a failed connect changes nothing');
+    await cm.setSearchPath('public');
+    seen.push(cm.getConnectionGeneration());
+    await cm.disconnect();
+    seen.push(cm.getConnectionGeneration());
+
+    assert.deepEqual(seen, [0, 1, 2, 3]);
 });

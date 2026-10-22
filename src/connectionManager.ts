@@ -4,9 +4,10 @@ import * as fs from 'fs';
 import * as net from 'net';
 import * as path from 'path';
 import { promisify } from 'util';
-import { Pool, PoolConfig, QueryArrayResult, QueryResult, QueryResultRow, types as pgTypes } from 'pg';
+import { Client, ClientConfig, Pool, PoolConfig, QueryArrayResult, QueryResult, QueryResultRow, types as pgTypes } from 'pg';
 import { createHash } from 'crypto';
 import { Logger, getErrorMessage } from './logger';
+import type { SessionClient } from './dbSession';
 import { buildHtmlDocument } from './webviewUtils';
 import { icon } from './webviewAssets';
 
@@ -201,6 +202,33 @@ const IGNORED_SETTINGS_NOTICE_KEY = 'pgqb_ignoredWorkspaceSettingsNotice';
 /** Creates the connection pool; replaceable so tests can simulate a server. */
 export type PoolFactory = (config: PoolConfig) => Pool;
 
+/** A session client before it is connected. */
+export interface ConnectableSessionClient extends SessionClient {
+    connect(): Promise<unknown>;
+}
+
+/** Creates the dedicated client of a database session; replaceable for tests. */
+export type SessionClientFactory = (config: ClientConfig) => ConnectableSessionClient;
+
+/** Options only the pool understands; a single client is created without them. */
+const POOL_ONLY_OPTIONS = [
+    'max', 'min', 'idleTimeoutMillis', 'log', 'Promise', 'allowExitOnIdle',
+    'maxUses', 'maxLifetimeSeconds', 'Client', 'onConnect'
+] as const;
+
+/**
+ * The configuration of a session's own client: the pool's connection settings
+ * without the pool options. TCP keep-alive is on, so a connection that died
+ * while the session sat idle (a sleeping laptop, a dropped VPN) is noticed.
+ */
+export function sessionClientConfig(poolConfig: PoolConfig): ClientConfig {
+    const config: Record<string, unknown> = { ...poolConfig };
+    for (const key of POOL_ONLY_OPTIONS) {
+        delete config[key];
+    }
+    return { ...(config as ClientConfig), keepAlive: true, keepAliveInitialDelayMillis: 30000 };
+}
+
 export class ConnectionManager {
     private pool: Pool | null = null;
     private activeConfig: ConnectionConfig | null = null;
@@ -220,10 +248,53 @@ export class ConnectionManager {
     private currentPoolConfig: PoolConfig | null = null;
 
     private readonly poolFactory: PoolFactory;
+    private readonly sessionClientFactory: SessionClientFactory;
+    /** Counts the pools installed so far; a database session opened under another value is stale. */
+    private connectionGeneration = 0;
 
-    constructor(context: vscode.ExtensionContext, poolFactory: PoolFactory = (config) => new Pool(config)) {
+    constructor(
+        context: vscode.ExtensionContext,
+        poolFactory: PoolFactory = (config) => new Pool(config),
+        sessionClientFactory: SessionClientFactory = (config) => new Client(config) as unknown as ConnectableSessionClient
+    ) {
         this.context = context;
         this.poolFactory = poolFactory;
+        this.sessionClientFactory = sessionClientFactory;
+    }
+
+    /** Changes whenever the active connection is replaced, closed or gets another `search_path`. */
+    getConnectionGeneration(): number {
+        return this.connectionGeneration;
+    }
+
+    /**
+     * Open a dedicated client for a database session, outside the pool, with
+     * the settings of the active connection (including a `search_path`
+     * override). It belongs to the caller, who has to end it.
+     */
+    async openSessionClient(): Promise<ConnectableSessionClient> {
+        if (!this.currentPoolConfig) {
+            throw new Error('Not connected to a database');
+        }
+        const override = this.searchPathOverride;
+        const client = this.sessionClientFactory(sessionClientConfig(this.currentPoolConfig));
+        // An unhandled 'error' event would take the extension host down; the
+        // session attaches its own listener once the client is handed over.
+        const onEarlyError = (err: Error) => Logger.error('ConnectionManager.openSessionClient', err);
+        client.on('error', onEarlyError);
+        try {
+            await client.connect();
+            if (override) {
+                await client.query("SELECT set_config('search_path', $1, false)", [override]);
+            }
+        } catch (err: unknown) {
+            client.end().catch(() => undefined);
+            throw err;
+        } finally {
+            client.removeListener('error', onEarlyError);
+        }
+        Logger.log('session', `Opened a database session (backend PID ${client.processID ?? 'unknown'})`);
+        return client;
     }
 
     /**
@@ -722,6 +793,7 @@ export class ConnectionManager {
 
         const oldPool = this.pool;
         this.pool = pool;
+        this.connectionGeneration++;
         this.activeConfig = config;
         this.currentPoolConfig = activePoolConfig;
         this.searchPathOverride = null;
@@ -759,6 +831,7 @@ export class ConnectionManager {
         if (this.pool) {
             await this.pool.end();
             this.pool = null;
+            this.connectionGeneration++;
             this.activeConfig = null;
             this.currentPoolConfig = null;
             this.searchPathOverride = null;
@@ -788,6 +861,7 @@ export class ConnectionManager {
 
         const oldPool = this.pool;
         this.pool = this.createPool(this.currentPoolConfig);
+        this.connectionGeneration++;
         await oldPool.end();
         this.clearMetadataCache();
 

@@ -17,6 +17,8 @@ import { ManageBookmarksPanel } from './manageBookmarksPanel';
 import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore, onDidChangeTableAliases } from './tableStatementDrop';
 import { ViewDataFromSelect } from './viewDataFromSelect';
+import { DbSessionManager } from './dbSession';
+import { MESSAGES_CHANNEL_NAME, SqlFileSessions, formatServerMessage } from './sqlFileSession';
 import { Logger, getErrorMessage, getErrorStack } from './logger';
 import { formatSqlChecked } from './plpgsqlFormatter';
 import { formatOptionsToRepoConfig } from './repoFormatConfig';
@@ -49,6 +51,7 @@ let savedQueryStore: SavedQueryStore;
 let savedQueryExplorer: SavedQueryExplorerProvider;
 let savedQueryEditor: SavedQueryEditor;
 let viewDataFromSelect: ViewDataFromSelect;
+let sqlFileSessions: SqlFileSessions;
 let statusBarItem: vscode.StatusBarItem;
 let outputChannel: vscode.OutputChannel;
 
@@ -242,6 +245,22 @@ export function activate(context: vscode.ExtensionContext) {
                     vscode.window.showErrorMessage(`View Data failed: ${getErrorMessage(err)}`);
                 }
             }),
+            vscode.commands.registerCommand('postgresQueryBuilder.executeStatement', async () => {
+                try {
+                    await sqlFileSessions.execute(vscode.window.activeTextEditor);
+                } catch (err: unknown) {
+                    outputChannel.appendLine(`[executeStatement] ${getErrorStack(err)}`);
+                    vscode.window.showErrorMessage(`Execute Statement failed: ${getErrorMessage(err)}`);
+                }
+            }),
+            vscode.commands.registerCommand('postgresQueryBuilder.resetSqlFileSession', async () => {
+                try {
+                    await sqlFileSessions.reset(vscode.window.activeTextEditor);
+                } catch (err: unknown) {
+                    outputChannel.appendLine(`[resetSqlFileSession] ${getErrorStack(err)}`);
+                    vscode.window.showErrorMessage(`Reset Database Session failed: ${getErrorMessage(err)}`);
+                }
+            }),
             vscode.commands.registerCommand('postgresQueryBuilder.formatSql', async () => {
                 const editor = vscode.window.activeTextEditor;
                 if (!editor) {
@@ -315,9 +334,32 @@ export function activate(context: vscode.ExtensionContext) {
         savedQueryStore = new SavedQueryStore(context);
         savedQueryExplorer = new SavedQueryExplorerProvider(savedQueryStore);
         savedQueryEditor = new SavedQueryEditor(context, savedQueryStore);
-        tableWebViewManager = new TableWebViewManager(context, connectionManager, columnMappingManager, permanentConstraintManager, modifyHistoryStore, savedQueryStore);
+
+        // Every Data Viewer tab and every SQL file that runs statements gets a
+        // database session of its own, kept until the last tab using it closes.
+        const messagesChannel = vscode.window.createOutputChannel(MESSAGES_CHANNEL_NAME);
+        const dbSessions = new DbSessionManager({
+            openClient: () => connectionManager.openSessionClient(),
+            generation: () => connectionManager.getConnectionGeneration(),
+            onLost: (session, reason) => {
+                vscode.window.showWarningMessage(
+                    `The database session of "${session.label}" was lost (${reason}) and a new one was opened. `
+                    + 'Settings made with SET or set_config and temporary tables of the old session are gone.'
+                );
+            },
+            onNotice: (session, notice) => messagesChannel.appendLine(formatServerMessage(session.label, notice))
+        });
+        context.subscriptions.push(
+            messagesChannel,
+            { dispose: () => dbSessions.dispose() },
+            connectionManager.onConnectionChanged(() => dbSessions.disconnectAll())
+        );
+
+        tableWebViewManager = new TableWebViewManager(context, connectionManager, columnMappingManager, permanentConstraintManager, modifyHistoryStore, savedQueryStore, dbSessions);
         sqlEditorManager = new SqlEditorManager(context, connectionManager, modifyHistoryStore);
-        viewDataFromSelect = new ViewDataFromSelect(context, connectionManager, tableWebViewManager);
+        sqlFileSessions = new SqlFileSessions(dbSessions, connectionManager, messagesChannel, modifyHistoryStore);
+        context.subscriptions.push(sqlFileSessions);
+        viewDataFromSelect = new ViewDataFromSelect(context, connectionManager, tableWebViewManager, sqlFileSessions);
 
         statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
         statusBarItem.command = 'postgresQueryBuilder.selectConnection';

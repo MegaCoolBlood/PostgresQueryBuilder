@@ -31,6 +31,7 @@ const {
     recordScrollTailHeight,
     cellEditorTargetState,
     buildConnectionBadge,
+    buildSessionBadge,
     canApplyQueryFilters,
     canManageTableMetadata,
     defaultInsertTableName,
@@ -662,6 +663,34 @@ test('buildConnectionBadge falls back to the current connection when no load is 
     const badge = buildConnectionBadge('', 'prod');
     assert.equal(badge.text, '(none)');
     assert.equal(badge.warn, false);
+});
+
+// ===== 3.4.0: the database session of a Data Viewer =====
+
+test('buildSessionBadge names a session of its own and when it connects', () => {
+    const badge = buildSessionBadge({ label: 'public.orders', own: true, sharedWith: 0, open: false, pid: null });
+    assert.equal(badge.text, 'Own session');
+    assert.equal(badge.open, false);
+    assert.match(badge.title, /^Queries of this Data Viewer run on its own database session\. It connects with the next query\./);
+    assert.match(badge.title, /Click to reset the session\.$/);
+});
+
+test('buildSessionBadge names the SQL file whose session is shared and the server process', () => {
+    const badge = buildSessionBadge({ label: 'payroll.sql', own: false, sharedWith: 2, open: true, pid: 4711 });
+    assert.equal(badge.text, 'Session: payroll.sql');
+    assert.equal(badge.open, true);
+    assert.match(badge.title, /session of "payroll\.sql", shared with 2 other tabs\. Connected as server process 4711\./);
+    assert.match(badge.title, /SET or set_config stay until the session ends/);
+});
+
+test('buildSessionBadge speaks of one other tab in the singular', () => {
+    const badge = buildSessionBadge({ label: 'public.orders', own: true, sharedWith: 1, open: true, pid: null });
+    assert.match(badge.title, /own database session, shared with 1 other tab\. Connected\./);
+});
+
+test('buildSessionBadge shows nothing without a session', () => {
+    assert.equal(buildSessionBadge(null), null);
+    assert.equal(buildSessionBadge(undefined), null);
 });
 
 // ===== 2.1.5: filters can refine a custom query =====

@@ -2049,6 +2049,30 @@ function buildConnectionBadge(lastUsedConnection, currentConnection) {
     };
 }
 
+// Text and tooltip of the badge naming the database session a panel's queries
+// run on: its own, or the one of the SQL file or tab it was opened from.
+// Returns null when the host sent no session.
+function buildSessionBadge(info) {
+    if (!info || typeof info !== 'object') return null;
+    const label = String(info.label || '');
+    const own = Boolean(info.own) || !label;
+    const open = Boolean(info.open);
+    const sharedWith = Number(info.sharedWith) > 0 ? Math.floor(Number(info.sharedWith)) : 0;
+    const pid = Number.isInteger(info.pid) && info.pid > 0 ? info.pid : null;
+    const owner = own
+        ? 'Queries of this Data Viewer run on its own database session'
+        : `Queries of this Data Viewer run on the database session of "${label}"`;
+    const shared = sharedWith > 0 ? `, shared with ${sharedWith} other ${sharedWith === 1 ? 'tab' : 'tabs'}.` : '.';
+    const state = !open
+        ? 'It connects with the next query.'
+        : (pid !== null ? `Connected as server process ${pid}.` : 'Connected.');
+    return {
+        text: own ? 'Own session' : `Session: ${label}`,
+        title: `${owner}${shared} ${state} Settings made with SET or set_config stay until the session ends. Click to reset the session.`,
+        open
+    };
+}
+
 // Predicate for local (in-memory) row filtering. Returns true when `cellVal`
 // passes the given column filter. A filter that cannot constrain the data
 // (empty range, invalid number) matches every row.
@@ -3236,6 +3260,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const dataLoadingOverlay = document.getElementById('dataLoadingOverlay');
     const metaLoading = document.getElementById('metaLoading');
     const connectionInfo = document.getElementById('connectionInfo');
+    const sessionInfo = document.getElementById('sessionInfo');
     const sqlDialogConnection = document.getElementById('sqlDialogConnection');
     const sqlDialogWarning = document.getElementById('sqlDialogWarning');
 
@@ -3293,6 +3318,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     if (connectionInfo) {
         connectionInfo.addEventListener('click', () => {
             vscode.postMessage({ command: 'selectConnection' });
+        });
+    }
+    // Clicking the session badge offers to reset the session; the host asks
+    // for confirmation first.
+    if (sessionInfo) {
+        sessionInfo.addEventListener('click', () => {
+            vscode.postMessage({ command: 'resetSession' });
+        });
+        sessionInfo.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            e.stopPropagation();
+            vscode.postMessage({ command: 'resetSession' });
         });
     }
     // Recompute the sticky filter-row offset when the header may rewrap.
@@ -4617,6 +4655,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'connectionChanged':
                 currentConnection = msg.connectionName || '';
                 updateConnectionDisplay();
+                break;
+            case 'sessionInfo':
+                updateSessionDisplay(msg.session);
                 break;
         }
     });
@@ -6697,6 +6738,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         connectionInfo.title = badge.title;
     }
 
+    function updateSessionDisplay(info) {
+        if (!sessionInfo) return;
+        const badge = buildSessionBadge(info);
+        sessionInfo.classList.toggle('hidden', !badge);
+        if (!badge) return;
+        sessionInfo.textContent = badge.text;
+        sessionInfo.title = badge.title;
+        sessionInfo.setAttribute('aria-label', badge.title);
+        sessionInfo.classList.toggle('is-open', badge.open);
+    }
+
     function closeSqlDialog() {
         sqlDialogOverlay.style.display = 'none';
         pendingChanges = null;
@@ -8490,6 +8542,7 @@ if (typeof module !== 'undefined' && module.exports) {
         rowFingerprint,
         resolveCellEditorRow,
         buildConnectionBadge,
+        buildSessionBadge,
         canApplyQueryFilters,
         canManageTableMetadata,
         defaultInsertTableName,

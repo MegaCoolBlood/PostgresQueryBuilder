@@ -19,6 +19,8 @@ import { resultColumnAliases } from './resultSource';
 import { addHiddenKeyColumns, isHiddenKeyColumn, planHiddenKeyColumns, type HiddenKeyColumn } from './hiddenKeyColumns';
 import { autoRefreshIntervalError, autoRefreshRefusal, exportQueryRefusal, formatAutoRefreshInterval, parseAutoRefreshInterval } from './autoRefresh';
 import { loadCompletionCatalog, loadCompletionColumns } from './sqlCompletion';
+import type { DbSession, DbSessionManager, DbSessionRef } from './dbSession';
+import { resetSessionWithConfirmation } from './sqlFileSession';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -45,6 +47,12 @@ interface PanelSession {
     sourceTables: TableEditPlan[];
     /** Key columns selected silently for the current query, if any. */
     hiddenKeys: HiddenKeyColumn[];
+    /** How this panel holds its database session, unique per panel. */
+    holder: string;
+    /** The session its queries run on; absent when the manager has no sessions (tests). */
+    dbSession?: DbSession;
+    /** Handed to the tabs opened from this one, so they share its session. */
+    dbSessionRef?: DbSessionRef;
     disposed: boolean;
 }
 
@@ -266,11 +274,13 @@ export class TableWebViewManager {
     private savedQueryStore?: SavedQueryStore;
     private modifyHistoryStore?: ModifyHistoryStore;
     private querySessionCounter = 0;
+    private panelCounter = 0;
+    private dbSessions?: DbSessionManager;
     /** Cell values currently open in an editor tab, keyed by scratch file path. */
     private cellEditors: Map<string, CellEditorLink> = new Map();
     private cellEditorCounter = 0;
 
-    constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager, columnMappingManager: ColumnMappingManager, permanentConstraintManager: PermanentConstraintManager, modifyHistoryStore?: ModifyHistoryStore, savedQueryStore?: SavedQueryStore) {
+    constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager, columnMappingManager: ColumnMappingManager, permanentConstraintManager: PermanentConstraintManager, modifyHistoryStore?: ModifyHistoryStore, savedQueryStore?: SavedQueryStore, dbSessions?: DbSessionManager) {
         this.context = context;
         this.connectionManager = connectionManager;
         this.exportService = new ExportService(context);
@@ -278,6 +288,18 @@ export class TableWebViewManager {
         this.permanentConstraintManager = permanentConstraintManager;
         this.modifyHistoryStore = modifyHistoryStore;
         this.savedQueryStore = savedQueryStore;
+        this.dbSessions = dbSessions;
+
+        // Every panel on a session shows whether it is open and who shares it.
+        if (dbSessions) {
+            context.subscriptions.push(dbSessions.onDidChange((key) => {
+                for (const session of this.sessions.values()) {
+                    if (session.dbSession?.key === key) {
+                        this.postSessionInfo(session);
+                    }
+                }
+            }));
+        }
 
         // Push refreshed mappings to every open panel when the underlying store
         // changes (e.g. workspace file edit, import, scope move).
@@ -339,7 +361,8 @@ export class TableWebViewManager {
         schema: string,
         table: string,
         historyKey: string,
-        viewColumn: vscode.ViewColumn
+        viewColumn: vscode.ViewColumn,
+        sessionRef?: DbSessionRef
     ): PanelSession {
         const panel = vscode.window.createWebviewPanel(
             'postgresTableView',
@@ -355,12 +378,25 @@ export class TableWebViewManager {
             }
         );
 
-        const session: PanelSession = { id, panel, origin, schema, table, historyKey, columns: [], sourceTables: [], hiddenKeys: [], disposed: false };
+        const holder = `panel:${++this.panelCounter}`;
+        const session: PanelSession = { id, panel, origin, schema, table, historyKey, columns: [], sourceTables: [], hiddenKeys: [], holder, disposed: false };
         this.sessions.set(id, session);
+
+        // A panel opened on its own gets its own database session; one opened
+        // from a SQL file or from another panel shares that one's session.
+        const dbSessions = this.dbSessions;
+        if (dbSessions) {
+            const ref = sessionRef ?? { key: `tab:${this.panelCounter}`, label: title };
+            session.dbSessionRef = ref;
+            session.dbSession = dbSessions.acquire(ref, holder);
+        }
 
         panel.onDidDispose(() => {
             session.disposed = true;
             this.sessions.delete(id);
+            if (dbSessions && session.dbSessionRef) {
+                dbSessions.release(session.dbSessionRef.key, holder);
+            }
             // A reopened panel reuses the id; an editor tab of the closed one
             // must not write into it. The link stays so closing the tab still
             // removes its scratch file.
@@ -392,7 +428,7 @@ export class TableWebViewManager {
                 console.warn(`Data Viewer: unhandled webview message "${message.command}"`);
                 return;
             }
-            const queryRunner = new QueryRunner(this.connectionManager);
+            const queryRunner = new QueryRunner(this.connectionManager, undefined, session.dbSession);
             try {
                 await handler.call(this, { session, message, queryRunner });
             } catch (err: unknown) {
@@ -404,14 +440,48 @@ export class TableWebViewManager {
                     : undefined;
                 const loadId = message.command === 'loadRows' && typeof message.loadId === 'number' ? message.loadId : undefined;
                 this.post(session, { command: 'error', text: getErrorMessage(err), autoRefreshId, loadId });
-                vscode.window.showErrorMessage(`Query error: ${getErrorMessage(err)}`);
+                // Closing the panel ends its session and with it a running
+                // query; that is no error worth reporting.
+                if (!session.disposed) {
+                    vscode.window.showErrorMessage(`Query error: ${getErrorMessage(err)}`);
+                }
             }
         });
 
         return session;
     }
 
-    async openTableView(schema: string, table: string): Promise<void> {
+    /** Tell a panel which database session its queries run on. */
+    private postSessionInfo(session: PanelSession): void {
+        const db = session.dbSession;
+        if (!db || !this.dbSessions) {
+            return;
+        }
+        this.post(session, {
+            command: 'sessionInfo',
+            session: {
+                label: db.label,
+                own: db.owner === session.holder,
+                sharedWith: Math.max(0, this.dbSessions.holderCount(db.key) - 1),
+                open: db.isOpen,
+                pid: db.processId
+            }
+        });
+    }
+
+    private async handleResetSession(ctx: MessageContext): Promise<void> {
+        const db = ctx.session.dbSession;
+        if (!db || !this.dbSessions) {
+            return;
+        }
+        await resetSessionWithConfirmation(db, Math.max(0, this.dbSessions.holderCount(db.key) - 1));
+    }
+
+    /**
+     * @param sessionRef The database session to run on — that of the panel or
+     * SQL file it was opened from. Without one the panel gets its own.
+     */
+    async openTableView(schema: string, table: string, sessionRef?: DbSessionRef): Promise<void> {
         const id = `table:${schema}.${table}`;
 
         const existing = this.sessions.get(id);
@@ -436,7 +506,7 @@ export class TableWebViewManager {
         }
 
         const session = this.createSession(
-            id, `${schema}.${table}`, 'table', schema, table, `${schema}.${table}`, vscode.ViewColumn.One
+            id, `${schema}.${table}`, 'table', schema, table, `${schema}.${table}`, vscode.ViewColumn.One, sessionRef
         );
 
         const qualifyColumnsWithAlias = vscode.workspace.getConfiguration('postgresQueryBuilder')
@@ -466,6 +536,7 @@ export class TableWebViewManager {
             permanentConstraints: this.permanentConstraintManager.getConstraints(schema, table),
             permanentSorts: this.permanentConstraintManager.getSorts(schema, table)
         });
+        this.postSessionInfo(session);
     }
 
     /**
@@ -478,12 +549,15 @@ export class TableWebViewManager {
      * @param title A short label shown in the toolbar.
      * @param viewColumn Where to place the panel (defaults to a side-by-side split).
      * @param savedQuery A saved query whose `:name` placeholders the panel asks for before running.
+     * @param sessionRef The database session to run on — that of the SQL file
+     * or panel it was opened from. Without one the panel gets its own.
      */
     async openQueryView(
         sql: string,
         title: string,
         viewColumn: vscode.ViewColumn = vscode.ViewColumn.Beside,
-        savedQuery?: { id: string; parameters: SavedQueryParameter[]; values: Record<string, string> }
+        savedQuery?: { id: string; parameters: SavedQueryParameter[]; values: Record<string, string> },
+        sessionRef?: DbSessionRef
     ): Promise<void> {
         // Running the query needs a connection; without this the panel would
         // open and spin forever.
@@ -492,7 +566,7 @@ export class TableWebViewManager {
         }
 
         const id = `query:${++this.querySessionCounter}`;
-        const session = this.createSession(id, title, 'query', '', '', `query:${title}`, viewColumn);
+        const session = this.createSession(id, title, 'query', '', '', `query:${title}`, viewColumn, sessionRef);
         const parameters = savedQuery?.parameters ?? [];
 
         this.post(session, {
@@ -517,6 +591,7 @@ export class TableWebViewManager {
             // With placeholders the panel must collect values before it can run.
             awaitParameters: parameters.length > 0
         });
+        this.postSessionInfo(session);
     }
 
     /** Maps each webview message command to its handler method. */
@@ -548,7 +623,8 @@ export class TableWebViewManager {
         openCellInEditor: this.handleOpenCellInEditor,
         openGeneratedStatement: this.handleOpenGeneratedStatement,
         queryEditorRequest: this.handleQueryEditorRequest,
-        chooseAutoRefreshInterval: this.handleChooseAutoRefreshInterval
+        chooseAutoRefreshInterval: this.handleChooseAutoRefreshInterval,
+        resetSession: this.handleResetSession
     };
 
     /** Ask for a custom auto refresh interval and answer with the seconds, or null when cancelled. */
@@ -1125,7 +1201,7 @@ export class TableWebViewManager {
         const fkColumn = message.refColumn;
         const fkValue = message.value;
         const conditions = Array.isArray(message.conditions) ? message.conditions : [];
-        await this.openTableViewWithFilter(fkSchema, fkTable, fkColumn, fkValue, conditions);
+        await this.openTableViewWithFilter(fkSchema, fkTable, fkColumn, fkValue, conditions, ctx.session.dbSessionRef);
     }
 
     /**
@@ -1230,7 +1306,7 @@ export class TableWebViewManager {
             if (!sql) {
                 return;
             }
-            await this.openQueryView(sql, `${targetSchema}.${targetTable} × ${sourceTable}`);
+            await this.openQueryView(sql, `${targetSchema}.${targetTable} × ${sourceTable}`, undefined, undefined, ctx.session.dbSessionRef);
         } catch (err: unknown) {
             vscode.window.showErrorMessage(`Failed to open the related table: ${getErrorMessage(err)}`);
         }
@@ -1542,7 +1618,7 @@ export class TableWebViewManager {
         this.context.globalState.update(key, history);
     }
 
-    async openTableViewWithFilter(schema: string, table: string, column: string, value: any, conditions: any[] = []): Promise<void> {
+    async openTableViewWithFilter(schema: string, table: string, column: string, value: any, conditions: any[] = [], sessionRef?: DbSessionRef): Promise<void> {
         const id = `table:${schema}.${table}`;
         const existing = this.sessions.get(id);
 
@@ -1558,7 +1634,7 @@ export class TableWebViewManager {
         } else {
             // Panel will be created — store filter to send after the first load
             this.pendingFilters.set(id, { column, value: String(value), conditions: conditions || [] });
-            await this.openTableView(schema, table);
+            await this.openTableView(schema, table, sessionRef);
         }
     }
 }

@@ -18,6 +18,7 @@ import {
 } from './resultSource';
 import { resultColumnQualifiers, selectListQualifiers } from './hiddenKeyColumns';
 import type { QueryResultRow, FieldDef } from 'pg';
+import type { QueryExecutor, QueryFn } from './dbSession';
 
 /**
  * Table types from `information_schema.tables` that the extension treats as
@@ -207,21 +208,55 @@ export class QueryRunner {
     private static vscodeModule: typeof import('vscode') | undefined;
     private connectionManager: ConnectionManager;
     private selectOptionsProvider: () => { alwaysQualifySchema: boolean; alwaysQuote: boolean };
+    /**
+     * Runs the statements whose result depends on the session — the user's
+     * query, its row count, saving and export. Catalog lookups always use the
+     * pool, so they never wait behind a long query of the session.
+     */
+    private executor: QueryExecutor;
     /** Column type names per table (see {@link loadColumnTypes}), keyed by {@link tableKey}. */
     private columnTypeMemory = new Map<string, Record<string, string>>();
 
     constructor(
         connectionManager: ConnectionManager,
-        selectOptionsProvider?: () => { alwaysQualifySchema: boolean; alwaysQuote: boolean }
+        selectOptionsProvider?: () => { alwaysQualifySchema: boolean; alwaysQuote: boolean },
+        executor?: QueryExecutor
     ) {
         this.connectionManager = connectionManager;
         this.selectOptionsProvider = selectOptionsProvider ?? this.getDefaultSelectOptions;
+        this.executor = executor ?? this.poolExecutor();
+    }
+
+    /** Run every statement on whichever pooled connection is free. */
+    private poolExecutor(): QueryExecutor {
+        return {
+            query: (sql, params) => this.connectionManager.query(sql, params),
+            queryPositional: (sql, params) => this.connectionManager.queryPositional(sql, params),
+            transaction: async <T>(work: (query: QueryFn) => Promise<T>): Promise<T> => {
+                const pool = this.connectionManager.getPool();
+                if (!pool) {
+                    throw new Error('Not connected to database');
+                }
+                const client = await pool.connect();
+                try {
+                    await client.query('BEGIN');
+                    const result = await work((sql, params) => client.query(sql, params));
+                    await client.query('COMMIT');
+                    return result;
+                } catch (err) {
+                    await client.query('ROLLBACK');
+                    throw err;
+                } finally {
+                    client.release();
+                }
+            }
+        };
     }
 
     async fetchRows(schema: string, table: string, offset: number, limit: number, where?: string): Promise<QueryResultRow[]> {
         const tableReference = await this.getSelectTableReference(schema, table);
         const whereSql = where && where.trim() ? ` WHERE ${where.trim()}` : '';
-        const result = await this.connectionManager.query(
+        const result = await this.executor.query(
             `SELECT * FROM ${tableReference}${whereSql} LIMIT $1 OFFSET $2`,
             [limit, offset]
         );
@@ -231,7 +266,7 @@ export class QueryRunner {
     async getRowCount(schema: string, table: string, where?: string): Promise<number> {
         const tableReference = await this.getSelectTableReference(schema, table);
         const whereSql = where && where.trim() ? ` WHERE ${where.trim()}` : '';
-        const result = await this.connectionManager.query(
+        const result = await this.executor.query(
             `SELECT COUNT(*) as count FROM ${tableReference}${whereSql}`
         );
         return parseInt(result.rows[0].count, 10);
@@ -501,7 +536,7 @@ export class QueryRunner {
      */
     async getQueryRowCount(sql: string): Promise<number> {
         const trimmed = sql.trim().replace(/;\s*$/, '');
-        const result = await this.connectionManager.query(
+        const result = await this.executor.query(
             `SELECT COUNT(*) AS count FROM (${trimmed}) AS _pqb_count`
         );
         return parseInt(result.rows[0].count, 10);
@@ -570,40 +605,22 @@ export class QueryRunner {
         if (statements.length === 0) {
             throw new Error('There is no statement to execute.');
         }
-        const pool = this.connectionManager.getPool();
-        if (!pool) {
-            throw new Error('Not connected to database');
-        }
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
+        await this.executor.transaction(async (query) => {
             for (const statement of statements) {
-                await client.query(statement);
+                await query(statement);
             }
-            await client.query('COMMIT');
-        } catch (err) {
-            await client.query('ROLLBACK');
-            throw err;
-        } finally {
-            client.release();
-        }
+        });
     }
 
     async commitChanges(targets: ReadonlyArray<CommitTarget>): Promise<void> {
-        const pool = this.connectionManager.getPool();
-        if (!pool) {
-            throw new Error('Not connected to database');
-        }
-
         const { alwaysQuote } = this.getSelectOptions();
         const typesByTarget = new Map<CommitTarget, Readonly<Record<string, string>>>();
         for (const target of targets) {
             typesByTarget.set(target, target.columnTypes ?? await this.loadColumnTypes(target.schema, target.table));
         }
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
-
+        // Nothing but `query` may reach the database in here: on a session,
+        // another statement would wait for this transaction to finish.
+        await this.executor.transaction(async (query) => {
             for (const target of targets) {
                 const { schema, table, changes } = target;
                 const types = typesByTarget.get(target) ?? {};
@@ -639,7 +656,7 @@ export class QueryRunner {
                         throw new Error(QueryRunner.noIdentityMessage('UPDATE rows in', schema, table, identity.skipped));
                     }
 
-                    const result = await client.query(
+                    const result = await query(
                         `UPDATE ${tableRef} SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')}`,
                         values
                     );
@@ -653,7 +670,7 @@ export class QueryRunner {
                     const values = columns.map(c => QueryRunner.columnParam(insert[c], types[c], 'edit'));
                     const placeholders = columns.map((_, i) => `$${i + 1}`);
 
-                    await client.query(
+                    await query(
                         `INSERT INTO ${tableRef} (${columns.map(c => this.formatIdentifier(c, alwaysQuote)).join(', ')}) VALUES (${placeholders.join(', ')})`,
                         values
                     );
@@ -679,21 +696,14 @@ export class QueryRunner {
                         throw new Error(QueryRunner.noIdentityMessage('DELETE rows from', schema, table, identity.skipped));
                     }
 
-                    const result = await client.query(
+                    const result = await query(
                         `DELETE FROM ${tableRef} WHERE ${whereClauses.join(' AND ')}`,
                         values
                     );
                     this.assertSingleRow(verifyRowCount, result, 'DELETE', schema, table);
                 }
             }
-
-            await client.query('COMMIT');
-        } catch (err) {
-            await client.query('ROLLBACK');
-            throw err;
-        } finally {
-            client.release();
-        }
+        });
     }
 
     /**
@@ -809,7 +819,7 @@ export class QueryRunner {
     }
 
     async executeSQL(sql: string): Promise<{ rows: QueryResultRow[]; fields: FieldDef[]; rowCount: number }> {
-        const result = await this.connectionManager.queryPositional(sql);
+        const result = await this.executor.queryPositional(sql);
         const fields = uniqueFieldNames(result.fields || [], sql);
         const values: unknown[][] = (result.rows as unknown[][]) || [];
         const rows = values.map((rowValues) => {

@@ -218,7 +218,8 @@ body {
     text-decoration: underline dotted;
 }
 
-.connection-info {
+.connection-info,
+.session-info {
     color: var(--c-muted);
     font-size: var(--fs-sm);
     padding: 1px var(--sp-1);
@@ -227,6 +228,27 @@ body {
     background: var(--c-surface);
     cursor: pointer;
     user-select: none;
+}
+
+/* The database session the panel's queries run on. It reads in the normal
+   text colour while its connection is open; clicking it offers a reset. */
+.session-info {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.session-info.is-open {
+    color: var(--c-fg);
+}
+
+.session-info.hidden {
+    display: none;
+}
+
+.session-info:focus-visible {
+    outline: 1px solid var(--c-accent);
 }
 
 /* Auto refresh: interval drop-down with its icon. The icon takes the accent
@@ -263,7 +285,8 @@ body {
     display: none;
 }
 
-.connection-info:hover {
+.connection-info:hover,
+.session-info:hover {
     color: var(--c-fg);
     border-color: var(--c-accent);
     background: var(--c-hover);

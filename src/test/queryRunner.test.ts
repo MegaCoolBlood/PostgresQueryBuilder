@@ -10,7 +10,8 @@ function createRunner({
     queryHandler,
     positionalHandler,
     metadataHandler,
-    pool
+    pool,
+    executor
 }: {
     options?: SelectOptions;
     activeConnectionConfig?: any;
@@ -18,6 +19,7 @@ function createRunner({
     positionalHandler?: (sql: string, params?: any[]) => Promise<any> | any;
     metadataHandler?: (sql: string, params?: any[]) => Promise<any[]> | any[];
     pool?: any;
+    executor?: any;
 } = {}) {
     const queryCalls: Array<{ sql: string; params?: any[] }> = [];
     const metadataCalls: Array<{ sql: string; params?: any[] }> = [];
@@ -48,9 +50,48 @@ function createRunner({
         getActiveConnectionConfig: () => activeConnectionConfig
     };
 
-    const runner = new QueryRunner(connectionManager as any, () => options);
+    const runner = new QueryRunner(connectionManager as any, () => options, executor);
     return { runner, queryCalls, metadataCalls };
 }
+
+// ===== 3.4.0: the statements of a Data Viewer run on its session =====
+
+test('the query, its row count, saving and edited statements run on the given session, catalog lookups on the pool', async () => {
+    const sessionCalls: string[] = [];
+    const executor = {
+        query: async (sql: string) => { sessionCalls.push(sql); return { rows: [{ count: '7' }], fields: [], rowCount: 1 }; },
+        queryPositional: async (sql: string) => { sessionCalls.push(sql); return { rows: [[1]], fields: [{ name: 'n' }], rowCount: 1 }; },
+        transaction: async (work: (query: (sql: string, params?: unknown[]) => Promise<any>) => Promise<any>) => {
+            sessionCalls.push('BEGIN');
+            const result = await work(async (sql) => { sessionCalls.push(sql); return { rows: [], rowCount: 1 }; });
+            sessionCalls.push('COMMIT');
+            return result;
+        }
+    };
+    const { runner, queryCalls, metadataCalls } = createRunner({
+        options: { alwaysQualifySchema: true, alwaysQuote: false },
+        executor,
+        pool: { connect: async () => { throw new Error('the pool must not be used'); } }
+    });
+
+    assert.deepEqual((await runner.executeSQL('SELECT 1 AS n')).rows, [{ n: 1 }]);
+    assert.equal(await runner.getQueryRowCount('SELECT * FROM t'), 7);
+    await runner.executeStatements('UPDATE t SET a = 1; DELETE FROM t WHERE b = 2');
+    await runner.commitChanges([{
+        schema: 'public',
+        table: 'users',
+        changes: { updates: [{ primaryKey: { id: 1 }, changes: { name: 'Alice' } }], inserts: [], deletes: [] }
+    }]);
+
+    assert.deepEqual(sessionCalls, [
+        'SELECT 1 AS n',
+        'SELECT COUNT(*) AS count FROM (SELECT * FROM t) AS _pqb_count',
+        'BEGIN', 'UPDATE t SET a = 1', 'DELETE FROM t WHERE b = 2', 'COMMIT',
+        'BEGIN', 'UPDATE public.users SET name = $1 WHERE id = $2', 'COMMIT'
+    ]);
+    assert.deepEqual(queryCalls, [], 'nothing of the user ran on the pool');
+    assert.ok(metadataCalls.length > 0, 'the column types are still read from the catalog');
+});
 
 test('parseSearchPath splits a plain comma-separated search_path', () => {
     assert.deepEqual(

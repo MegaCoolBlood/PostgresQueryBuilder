@@ -2,7 +2,7 @@
   "name": "postgres-query-booster",
   "displayName": "PostgreSQL Query Booster",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "3.3.2",
+  "version": "3.4.0",
   "publisher": "sirlychee",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -147,6 +147,17 @@
       {
         "command": "postgresQueryBuilder.viewDataFromSelect",
         "title": "View Data",
+        "category": "PostgreSQL Query Booster"
+      },
+      {
+        "command": "postgresQueryBuilder.executeStatement",
+        "title": "Execute Statement",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(play)"
+      },
+      {
+        "command": "postgresQueryBuilder.resetSqlFileSession",
+        "title": "Reset Database Session",
         "category": "PostgreSQL Query Booster"
       },
       {
@@ -319,6 +330,11 @@
       ],
       "editor/context": [
         {
+          "command": "postgresQueryBuilder.executeStatement",
+          "when": "editorTextFocus && resourceLangId == sql",
+          "group": "navigation@8"
+        },
+        {
           "command": "postgresQueryBuilder.viewDataFromSelect",
           "when": "editorTextFocus && resourceLangId == sql",
           "group": "navigation@9"
@@ -329,12 +345,25 @@
           "group": "navigation@10"
         },
         {
+          "command": "postgresQueryBuilder.resetSqlFileSession",
+          "when": "editorTextFocus && resourceLangId == sql",
+          "group": "navigation@11"
+        },
+        {
           "command": "postgresQueryBuilder.formatSql",
           "when": "editorTextFocus && (resourceLangId == sql || resourceLangId == postgres || resourceLangId == pgsql)",
           "group": "1_modification@10"
         }
       ]
     },
+    "keybindings": [
+      {
+        "command": "postgresQueryBuilder.executeStatement",
+        "key": "ctrl+alt+enter",
+        "mac": "cmd+alt+enter",
+        "when": "editorTextFocus && editorLangId == sql"
+      }
+    ],
     "viewsWelcome": [
       {
         "view": "postgresTableExplorer",

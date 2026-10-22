@@ -77,10 +77,20 @@ class Range {
     constructor(public start: Position, public end: Position) {}
 }
 
+class Selection extends Range {
+    constructor(public anchor: Position, public active: Position) {
+        super(anchor, active);
+    }
+}
+
+const ProgressLocation = { SourceControl: 1, Window: 10, Notification: 15 };
+const TextEditorRevealType = { Default: 0, InCenter: 1, InCenterIfOutsideViewport: 2, AtTop: 3 };
+
 /** Listeners registered for the document events the stub can replay. */
 const documentListeners = {
     save: [] as Array<(doc: any) => void>,
-    close: [] as Array<(doc: any) => void>
+    close: [] as Array<(doc: any) => void>,
+    tabs: [] as Array<(event: any) => void>
 };
 
 function registerDocumentListener(bucket: Array<(doc: any) => void>, listener: (doc: any) => void) {
@@ -108,6 +118,13 @@ export function fireDidCloseTextDocument(doc: any): void {
     }
 }
 
+/** Let a test replay a change of the editor tabs; set `window.tabGroups.all` first. */
+export function fireDidChangeTabs(event: any = { opened: [], closed: [], changed: [] }): void {
+    for (const l of [...documentListeners.tabs]) {
+        l(event);
+    }
+}
+
 const vscodeStub = {
     EventEmitter,
     ThemeIcon,
@@ -119,6 +136,9 @@ const vscodeStub = {
     SnippetString,
     Position,
     Range,
+    Selection,
+    ProgressLocation,
+    TextEditorRevealType,
     TreeItemCollapsibleState,
     workspace: {
         workspaceFolders: undefined as any,
@@ -157,7 +177,15 @@ const vscodeStub = {
         showQuickPick: (_items?: any, _options?: any): Promise<any> => Promise.resolve(undefined),
         createWebviewPanel: (..._args: any[]): any => undefined,
         createTerminal: (_options?: any): any => ({ show() {}, dispose() {} }),
-        createQuickPick: (): any => undefined
+        createQuickPick: (): any => undefined,
+        withProgress: (_options: any, task: (progress: any, token: any) => any): Promise<any> => Promise.resolve(task(
+            { report() {} },
+            { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) }
+        )),
+        tabGroups: {
+            all: [] as any[],
+            onDidChangeTabs: (listener: any) => registerDocumentListener(documentListeners.tabs, listener)
+        }
     },
     // The namespace object must exist before a module under test copies it via
     // `import * as vscode`; tests replace the member, never the namespace.

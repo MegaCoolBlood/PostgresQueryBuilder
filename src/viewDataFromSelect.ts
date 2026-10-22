@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
 import { TableWebViewManager } from './tableWebView';
+import type { SqlFileSessions } from './sqlFileSession';
 import { extractSelect, extractTableNames, substituteVariables } from './selectStatementExtractor';
 import { buildHtmlDocument } from './webviewUtils';
 import { icon } from './webviewAssets';
@@ -11,13 +12,15 @@ const VARIABLE_CACHE_KEY = 'viewDataVariableCache';
  * Implements the "View Data" command: extract the SELECT statement around the
  * cursor (or the current selection) inside a PL/pgSQL procedure/function, ask
  * the user to fill in any variables via a modal, then open the result in the
- * data viewer in a side-by-side editor.
+ * data viewer in a side-by-side editor. The Data Viewer runs on the database
+ * session of the SQL file, so what "Execute Statement" set up there applies.
  */
 export class ViewDataFromSelect {
     constructor(
         private readonly context: vscode.ExtensionContext,
         private readonly connectionManager: ConnectionManager,
-        private readonly tableWebViewManager: TableWebViewManager
+        private readonly tableWebViewManager: TableWebViewManager,
+        private readonly fileSessions?: SqlFileSessions
     ) {}
 
     async run(editor: vscode.TextEditor | undefined): Promise<void> {
@@ -49,7 +52,9 @@ export class ViewDataFromSelect {
         const variables = await this.filterKnownColumns(extraction.sql, extraction.variables);
 
         if (variables.length === 0) {
-            await this.tableWebViewManager.openQueryView(extraction.sql, this.makeTitle(extraction.sql));
+            await this.tableWebViewManager.openQueryView(
+                extraction.sql, this.makeTitle(extraction.sql), vscode.ViewColumn.Beside, undefined, this.fileSessions?.acquire(doc).ref
+            );
             return;
         }
 
@@ -70,7 +75,9 @@ export class ViewDataFromSelect {
         await this.context.globalState.update(VARIABLE_CACHE_KEY, newCache);
 
         const finalSql = substituteVariables(extraction.sql, values);
-        await this.tableWebViewManager.openQueryView(finalSql, this.makeTitle(finalSql));
+        await this.tableWebViewManager.openQueryView(
+            finalSql, this.makeTitle(finalSql), vscode.ViewColumn.Beside, undefined, this.fileSessions?.acquire(doc).ref
+        );
     }
 
     /**

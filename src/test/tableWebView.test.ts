@@ -1,10 +1,12 @@
 import './helpers/vscodeMock';
-import { vscodeStub, fireDidSaveTextDocument, fireDidCloseTextDocument } from './helpers/vscodeMock';
+import { vscodeStub, fireDidSaveTextDocument, fireDidCloseTextDocument, stubWarningMessage } from './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
+import { EventEmitter } from 'node:events';
+import { DbSessionManager } from '../dbSession';
 import { buildCustomResultColumns, buildColumnProbeSql, buildCellEditorFileName, cellEditorFileExtension, TableWebViewManager, queryEditorAssets, formatQueryBarText, buildDataViewerCsp, applyDataViewerCsp } from '../tableWebView';
 import { QueryRunner } from '../queryRunner';
 import { QualifierStore } from '../tableStatementDrop';
@@ -159,7 +161,7 @@ function createFakePanel() {
     return panel;
 }
 
-function createManager(overrides: { connection?: any; mappings?: any[] } = {}) {
+function createManager(overrides: { connection?: any; mappings?: any[]; dbSessions?: DbSessionManager } = {}) {
     const globalStateStore: Record<string, any> = {};
     const executed: string[] = [];
     const storagePath = fs.mkdtempSync(path.join(os.tmpdir(), 'pqb-storage-'));
@@ -231,7 +233,7 @@ function createManager(overrides: { connection?: any; mappings?: any[] } = {}) {
         getParameterValues(id: string) { return this.values[id] || {}; }
     };
     const manager = new TableWebViewManager(
-        context, connectionManager, columnMappingManager, permanentConstraintManager, undefined, savedQueryStore
+        context, connectionManager, columnMappingManager, permanentConstraintManager, undefined, savedQueryStore, overrides.dbSessions
     );
     return { manager, globalStateStore, executed, savedQueryStore, storagePath, columnMappingManager };
 }
@@ -1592,4 +1594,153 @@ test('data viewer: deleting a custom mapping happens only after the modal confir
     } finally {
         vscodeStub.window.showWarningMessage = original;
     }
+});
+
+// ===== 3.4.0: a database session per Data Viewer =====
+
+/** A session manager whose connections record what they are asked to run. */
+function createSessionManager(answer?: (sql: string) => Promise<any>) {
+    const clients: any[] = [];
+    const dbSessions = new DbSessionManager({
+        openClient: async () => {
+            const client: any = new EventEmitter();
+            client.processID = 900 + clients.length;
+            client.queries = [] as string[];
+            client.ended = false;
+            client.query = async (config: any) => {
+                const sql = typeof config === 'string' ? config : config.text;
+                client.queries.push(sql);
+                if (answer) return answer(sql);
+                return { rows: [[1]], fields: [{ name: 'n', dataTypeID: 23 }], rowCount: 1 };
+            };
+            client.end = async () => { client.ended = true; client.emit('ended'); };
+            clients.push(client);
+            return client;
+        },
+        generation: () => 1
+    });
+    return { dbSessions, clients };
+}
+
+/** Run `open` with `panel` as the next webview panel the manager creates. */
+async function withPanel(open: () => Promise<void>) {
+    const panel = createFakePanel();
+    const originalCreate = vscodeStub.window.createWebviewPanel;
+    vscodeStub.window.createWebviewPanel = () => panel;
+    try {
+        await open();
+    } finally {
+        vscodeStub.window.createWebviewPanel = originalCreate;
+    }
+    return panel;
+}
+
+const loadRows = (sql: string) => ({ command: 'loadRows', sql: `${sql} LIMIT 50 OFFSET 0`, baseSql: sql, loadId: 1 });
+const lastSessionInfo = (panel: any) => panel.posted.filter((m: any) => m.command === 'sessionInfo').pop()?.session;
+
+test('every Data Viewer runs its queries on a database session of its own', async () => {
+    const { dbSessions, clients } = createSessionManager();
+    const poolQueries: string[] = [];
+    const { manager } = createManager({
+        dbSessions,
+        connection: { queryPositional: async (sql: string) => { poolQueries.push(sql); return { rows: [], fields: [] }; } }
+    });
+    const first = await withPanel(() => manager.openQueryView('SELECT 1 AS n', 'First'));
+    const second = await withPanel(() => manager.openQueryView('SELECT 2 AS n', 'Second'));
+    assert.deepEqual(lastSessionInfo(first), { label: 'First', own: true, sharedWith: 0, open: false, pid: null });
+
+    await first.state.onMessage(loadRows('SELECT 1 AS n'));
+    await second.state.onMessage(loadRows('SELECT 2 AS n'));
+    await first.state.onMessage(loadRows('SELECT 1 AS n'));
+
+    assert.deepEqual(poolQueries, [], 'no query of a Data Viewer may run on the pool');
+    assert.equal(clients.length, 2);
+    assert.deepEqual(clients[0].queries, ['SELECT 1 AS n LIMIT 50 OFFSET 0', 'SELECT 1 AS n LIMIT 50 OFFSET 0']);
+    assert.deepEqual(clients[1].queries, ['SELECT 2 AS n LIMIT 50 OFFSET 0']);
+    assert.ok(first.posted.some((m: any) => m.command === 'rowsLoaded'));
+    assert.deepEqual(lastSessionInfo(first), { label: 'First', own: true, sharedWith: 0, open: true, pid: 900 });
+});
+
+test('Data Viewers opened with the session of a SQL file share that session', async () => {
+    const { dbSessions, clients } = createSessionManager();
+    const { manager } = createManager({ dbSessions });
+    const ref = { key: 'file:file:///work/payroll.sql', label: 'payroll.sql' };
+    dbSessions.acquire(ref, 'file');
+
+    const first = await withPanel(() => manager.openQueryView('SELECT 1 AS n', 'A', undefined, undefined, ref));
+    const second = await withPanel(() => manager.openQueryView('SELECT 2 AS n', 'B', undefined, undefined, ref));
+    await first.state.onMessage(loadRows('SELECT 1 AS n'));
+    await second.state.onMessage(loadRows('SELECT 2 AS n'));
+
+    assert.equal(clients.length, 1);
+    assert.deepEqual(clients[0].queries, ['SELECT 1 AS n LIMIT 50 OFFSET 0', 'SELECT 2 AS n LIMIT 50 OFFSET 0']);
+    assert.deepEqual(lastSessionInfo(first), { label: 'payroll.sql', own: false, sharedWith: 2, open: true, pid: 900 });
+});
+
+test('closing a Data Viewer ends its own session', async () => {
+    const { dbSessions, clients } = createSessionManager();
+    const { manager } = createManager({ dbSessions });
+    const panel = await withPanel(() => manager.openQueryView('SELECT 1 AS n', 'First'));
+    await panel.state.onMessage(loadRows('SELECT 1 AS n'));
+
+    panel.state.onDispose.forEach((dispose) => dispose());
+
+    assert.equal(clients[0].ended, true);
+});
+
+test('a table opened through a foreign key runs on the session of the Data Viewer it came from', async () => {
+    const { dbSessions, clients } = createSessionManager();
+    const { manager } = createManager({ dbSessions });
+    const orders = await withPanel(() => manager.openQueryView('SELECT 1 AS n', 'orders'));
+    await orders.state.onMessage(loadRows('SELECT 1 AS n'));
+
+    const customers = await withPanel(() => orders.state.onMessage({
+        command: 'openForeignKey', refSchema: 'public', refTable: 'customers', refColumn: 'id', value: 5, conditions: []
+    }));
+    await customers.state.onMessage(loadRows('SELECT * FROM public.customers'));
+
+    assert.equal(clients.length, 1);
+    assert.deepEqual(clients[0].queries, ['SELECT 1 AS n LIMIT 50 OFFSET 0', 'SELECT * FROM public.customers LIMIT 50 OFFSET 0']);
+    assert.deepEqual(lastSessionInfo(customers), { label: 'orders', own: false, sharedWith: 1, open: true, pid: 900 });
+
+    // The session outlives the tab that opened it while the other one uses it.
+    orders.state.onDispose.forEach((dispose) => dispose());
+    assert.equal(clients[0].ended, false);
+});
+
+test('the session badge resets the session of the panel after asking', async (t) => {
+    const { dbSessions, clients } = createSessionManager();
+    const { manager } = createManager({ dbSessions });
+    const panel = await withPanel(() => manager.openQueryView('SELECT 1 AS n', 'First'));
+    await panel.state.onMessage(loadRows('SELECT 1 AS n'));
+    const asked = stubWarningMessage(t, (items) => items.find((item) => item === 'Reset Session'));
+
+    await panel.state.onMessage({ command: 'resetSession' });
+
+    assert.equal(asked.length, 1);
+    assert.equal(clients[0].ended, true);
+    assert.equal(lastSessionInfo(panel).open, false);
+});
+
+test('a query cut off by closing its Data Viewer is not reported as an error', async (t) => {
+    const errors: any[] = [];
+    const original = vscodeStub.window.showErrorMessage;
+    vscodeStub.window.showErrorMessage = (...args: any[]) => { errors.push(args); return Promise.resolve(undefined); };
+    t.after(() => { vscodeStub.window.showErrorMessage = original; });
+    let client: any;
+    const { dbSessions } = createSessionManager(() => new Promise((_resolve, reject) => {
+        client.once('ended', () => reject(new Error('Connection terminated')));
+    }));
+    const { manager } = createManager({ dbSessions });
+    const panel = await withPanel(() => manager.openQueryView('SELECT pg_sleep(60)', 'Slow'));
+    const session = dbSessions.get('tab:1');
+    assert.ok(session, 'the panel holds a session of its own');
+    await session.run(async (c: any) => { client = c; });
+
+    const running = panel.state.onMessage(loadRows('SELECT pg_sleep(60)'));
+    await new Promise((resolve) => setImmediate(resolve));
+    panel.state.onDispose.forEach((dispose) => dispose());
+    await running;
+
+    assert.deepEqual(errors, []);
 });
