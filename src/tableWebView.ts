@@ -24,6 +24,9 @@ import { resetSessionWithConfirmation } from './sqlFileSession';
 import * as path from 'path';
 import * as fs from 'fs';
 
+/** Said after a save that joined a transaction the user opened in the session. */
+const PENDING_HINT = 'they become permanent once that transaction is committed with COMMIT.';
+
 /**
  * One open Data Viewer panel. Both entry points — a table opened from the tree
  * and an ad-hoc SELECT opened via "View Data" — create the same kind of
@@ -498,7 +501,10 @@ export class TableWebViewManager {
 
         let tableReference = `${schema}.${table}`;
         try {
-            const initQueryRunner = new QueryRunner(this.connectionManager);
+            // A shared session may resolve names differently than the pool
+            // (SET search_path), so the default query is built where it runs.
+            const sharedSession = sessionRef ? this.dbSessions?.get(sessionRef.key) : undefined;
+            const initQueryRunner = new QueryRunner(this.connectionManager, undefined, sharedSession);
             tableReference = (await initQueryRunner.getSelectBuildInfo(schema, table)).tableReference;
         } catch {
             // Ignore init formatting errors; the first load provides the
@@ -958,14 +964,16 @@ export class TableWebViewManager {
         // statements.
         const editedSql: string = typeof message.sql === 'string' ? message.sql.trim() : '';
         if (editedSql) {
-            await queryRunner.executeStatements(editedSql);
+            const outcome = await queryRunner.executeStatements(editedSql);
             this.recordModifyHistory(splitSqlStatements(editedSql).map(sql => ({
                 sql,
                 schema: session.schema,
                 table: session.table
             })));
             this.post(session, { command: 'commitSuccess' });
-            vscode.window.showInformationMessage('Edited statements committed');
+            vscode.window.showInformationMessage(outcome === 'pending'
+                ? `Edited statements ran inside the open transaction of the database session; ${PENDING_HINT}`
+                : 'Edited statements committed');
             return;
         }
 
@@ -975,14 +983,16 @@ export class TableWebViewManager {
             // only) - tell the user instead of silently dropping the changes.
             throw new Error('These changes cannot be saved: no writable source table could be determined for them.');
         }
-        await queryRunner.commitChanges(targets);
+        const outcome = await queryRunner.commitChanges(targets);
         this.recordModifyHistory(targets.flatMap(target =>
             splitSqlStatements(queryRunner.generateSQL([target]))
                 .map(sql => ({ sql, schema: target.schema, table: target.table }))
         ));
         this.post(session, { command: 'commitSuccess' });
         const names = [...new Set(targets.map(t => `${t.schema}.${t.table}`))].join(', ');
-        vscode.window.showInformationMessage(`Changes committed to ${names}`);
+        vscode.window.showInformationMessage(outcome === 'pending'
+            ? `Changes saved to ${names} inside the open transaction of the database session; ${PENDING_HINT}`
+            : `Changes committed to ${names}`);
     }
 
     private recordModifyHistory(entries: Array<{ sql: string; schema?: string; table?: string }>): void {
@@ -1149,8 +1159,15 @@ export class TableWebViewManager {
             if (!probeSql) {
                 return undefined;
             }
-            const probe = await this.connectionManager.query(probeSql);
-            if (!probe.fields || probe.fields.length === 0) {
+            // On a session the probe runs there as well, so the columns and the
+            // table they are saved to are those of the rows shown — a SET
+            // search_path or a temporary table of the session changes both.
+            // Inside the user's transaction it is skipped, because a probe that
+            // fails would abort that transaction.
+            const probe = session.dbSession
+                ? await session.dbSession.queryOutsideTransaction(probeSql)
+                : await this.connectionManager.query(probeSql);
+            if (!probe || !probe.fields || probe.fields.length === 0) {
                 return undefined;
             }
             // Same renaming as for the real result, so the early header does not
@@ -1222,8 +1239,8 @@ export class TableWebViewManager {
         }
 
         try {
-            const queryRunner = new QueryRunner(this.connectionManager);
-            const data = await queryRunner.getMultiTableJoinData([
+            // The table references are resolved where the joined query will run.
+            const data = await ctx.queryRunner.getMultiTableJoinData([
                 { schema: targetSchema, table: targetTable },
                 { schema: sourceSchema, table: sourceTable }
             ]);

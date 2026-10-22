@@ -118,6 +118,8 @@ stays in place for *More*, *All*, the row count, *Auto refresh*, *Save* and
 shares the session, and a Data Viewer opened with **View Data** from a SQL file
 runs on the session of that file. The badge next to the connection says *Own
 session* or *Session: payroll.sql*; clicking it resets the session after asking.
+If you opened a transaction in the session yourself (`BEGIN`), *Save* runs as a
+savepoint inside it, so nothing is permanent before your `COMMIT`.
 Switching the connection, disconnecting or changing the `search_path` closes
 every session, and the next query reconnects; if the server drops a session, a
 warning says that its settings are gone.
@@ -247,18 +249,19 @@ fields wherever it comes from.
   opens it in the Data Viewer. PL/pgSQL variables inside the statement are
   recognised and asked for — column names that merely look like variables are
   not.
-- **Execute Statement** (`Ctrl+Alt+Enter`) runs the selection, or the statement
-  under the cursor — a whole `DO` block wherever the cursor sits in it — in a
-  database session that belongs to the file. It is meant for what returns no
-  rows worth a grid: a `DO` block, a `CALL`, `SET` or `set_config(…)`. **View
-  Data** in the same file runs on that session too, so a `SELECT` sees what the
-  `DO` block set up:
+- **Execute Selection** (`Ctrl+Alt+Enter`) runs exactly the selected text in a
+  database session that belongs to the file — nothing is guessed from the
+  cursor, and without a selection nothing runs. It is meant for what returns no
+  rows worth a grid: a `DO` block, a `CALL`, `SET` or `set_config(…)`. A
+  selection that is a single `SELECT` (or `WITH … SELECT`, `VALUES`, `TABLE`)
+  opens in the Data Viewer on that session instead. **View Data** in the same
+  file runs on the session too, so a `SELECT` sees what the `DO` block set up:
 
   ```sql
   DO $$
   BEGIN
       CALL payroll.set_params(DATE '2026-09-21', DATE '2026-10-20');
-  END $$;                                   -- Ctrl+Alt+Enter here …
+  END $$;                                   -- select it, Ctrl+Alt+Enter …
 
   SELECT * FROM payroll.v_wages;            -- … then View Data here
   ```
@@ -267,7 +270,8 @@ fields wherever it comes from.
   closed; **Reset Database Session** starts it afresh. `RAISE NOTICE`, `INFO`
   and `WARNING` messages, and the details of a failed statement, appear in the
   *PostgreSQL Messages* output; a syntax error puts the cursor where it is. A
-  running statement can be cancelled from its notification.
+  running statement can be cancelled from its notification; one still waiting
+  for a Data Viewer query of the same session is then not run at all.
 - **Bookmark Query** stores the statement under the cursor.
 - **Autocomplete** in SQL files offers the same suggestions as the Data
   Viewer's query bar, for the statement the cursor is in — also inside a
@@ -362,7 +366,7 @@ Every command lives in the Command Palette (`Ctrl+Shift+P`) under the category
 | Open SQL Editor | Open the panel for ad-hoc SQL |
 | Open psql Console | Start `psql` for the active connection in a terminal |
 | View Data | Run the `SELECT` under the cursor in the Data Viewer |
-| Execute Statement | Run the selection or the statement under the cursor in the session of the SQL file |
+| Execute Selection | Run exactly the selected text in the session of the SQL file; a selected `SELECT` opens in the Data Viewer |
 | Reset Database Session | Discard the session of the SQL file: settings, temporary tables, an open transaction |
 | Format PL/pgSQL | Format the current SQL file |
 | Export Formatter Settings to .pgformat.json | Write the current formatter settings into a file |
@@ -383,7 +387,7 @@ duplicating, deleting and moving between the personal and the workspace scope.
 | Shortcut | Where | What it does |
 |----------|-------|--------------|
 | `Ctrl+Enter` | SQL editor, query bar | Run the query |
-| `Ctrl+Alt+Enter` | SQL files | Execute the selection or the statement under the cursor |
+| `Ctrl+Alt+Enter` | SQL files | Execute the selected text |
 | `Enter` | Filter inputs | Apply the column filter |
 | `Alt+←` / `Alt+→` | Single record view | Previous / next row |
 | `Esc` | Dialogs | Close |

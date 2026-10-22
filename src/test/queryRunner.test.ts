@@ -93,6 +93,45 @@ test('the query, its row count, saving and edited statements run on the given se
     assert.ok(metadataCalls.length > 0, 'the column types are still read from the catalog');
 });
 
+test('the search_path that decides about qualifying a table is read from the session', async () => {
+    const sessionCalls: string[] = [];
+    const executor = {
+        query: async (sql: string) => { sessionCalls.push(sql); return { rows: [{ search_path: 'tenant_b, public', current_user: 'alice' }] }; },
+        queryPositional: async () => ({ rows: [], fields: [] }),
+        transaction: async () => undefined
+    };
+    const { runner, queryCalls } = createRunner({ executor });
+
+    const info = await runner.getSelectBuildInfo('tenant_b', 'orders');
+
+    assert.equal(info.tableReference, 'orders');
+    assert.deepEqual(sessionCalls, ["SELECT current_setting('search_path') AS search_path, current_user AS current_user"]);
+    assert.deepEqual(queryCalls, []);
+});
+
+test('a save that joined the open transaction of the session reports it as pending', async () => {
+    const executor = {
+        query: async () => ({ rows: [] }),
+        queryPositional: async () => ({ rows: [], fields: [] }),
+        transaction: async (work: (query: (sql: string) => Promise<any>, joined: boolean) => Promise<any>) =>
+            work(async () => ({ rows: [], rowCount: 1 }), true)
+    };
+    const { runner } = createRunner({ options: { alwaysQualifySchema: true, alwaysQuote: false }, executor });
+
+    assert.equal(await runner.executeStatements('UPDATE t SET a = 1'), 'pending');
+    assert.equal(await runner.commitChanges([{
+        schema: 'public',
+        table: 'users',
+        changes: { updates: [{ primaryKey: { id: 1 }, changes: { name: 'Alice' } }], inserts: [], deletes: [] }
+    }]), 'pending');
+});
+
+test('a save on the pool is committed', async () => {
+    const client = { query: async () => ({ rows: [], rowCount: 1 }), release() {} };
+    const { runner } = createRunner({ pool: { connect: async () => client } });
+    assert.equal(await runner.executeStatements('UPDATE t SET a = 1'), 'committed');
+});
+
 test('parseSearchPath splits a plain comma-separated search_path', () => {
     assert.deepEqual(
         QueryRunner.parseSearchPath('leda, leda_types, oracle', 'leda'),

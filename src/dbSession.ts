@@ -24,6 +24,8 @@ export interface SessionClient {
     on(event: 'notice', listener: (notice: SessionNotice) => void): unknown;
     removeListener(event: 'error', listener: (err: Error) => void): unknown;
     removeListener(event: 'notice', listener: (notice: SessionNotice) => void): unknown;
+    /** `I` idle, `T` inside a transaction, `E` inside a failed transaction (pg ≥ 8.20). */
+    getTransactionStatus?(): string | null;
 }
 
 export type QueryFn = (sql: string, params?: unknown[]) => Promise<QueryResult>;
@@ -35,8 +37,12 @@ export type QueryFn = (sql: string, params?: unknown[]) => Promise<QueryResult>;
 export interface QueryExecutor {
     query: QueryFn;
     queryPositional(sql: string, params?: unknown[]): Promise<QueryArrayResult>;
-    /** Run `work` between BEGIN and COMMIT, rolling back when it throws. */
-    transaction<T>(work: (query: QueryFn) => Promise<T>): Promise<T>;
+    /**
+     * Run `work` as one unit that is applied completely or not at all. `joined`
+     * is true when it ran inside a transaction the user had already opened, so
+     * nothing is permanent before the user commits it.
+     */
+    transaction<T>(work: (query: QueryFn, joined: boolean) => Promise<T>): Promise<T>;
 }
 
 /** Names a session: the key it is shared under and what it is shown as. */
@@ -55,6 +61,14 @@ interface DbSessionHost {
 }
 
 const noop = (): void => undefined;
+
+/** The savepoint a save runs in when the user has a transaction open. */
+const SAVEPOINT = 'pqb_save';
+
+/** The transaction state of `client`; a client that cannot tell counts as idle. */
+function transactionStatus(client: SessionClient): string {
+    return client.getTransactionStatus?.() ?? 'I';
+}
 
 /**
  * One database session that stays the same from one statement to the next:
@@ -110,16 +124,45 @@ export class DbSession implements QueryExecutor {
         return this.run((client) => client.query({ text: sql, rowMode: 'array', values: params }));
     }
 
-    transaction<T>(work: (query: QueryFn) => Promise<T>): Promise<T> {
+    /**
+     * Run `sql` only while the session is outside a transaction, and return
+     * null otherwise: inside a transaction a statement that fails would abort
+     * the user's open work.
+     */
+    queryOutsideTransaction(sql: string): Promise<QueryResult | null> {
+        return this.run(async (client) => (transactionStatus(client) === 'I' ? client.query(sql) : null));
+    }
+
+    /**
+     * Inside a transaction the user opened, the work becomes a savepoint of it
+     * instead: BEGIN would be ignored and COMMIT or ROLLBACK would end the
+     * user's own transaction. A failed transaction accepts nothing until the
+     * user ends it, so the work is refused.
+     */
+    transaction<T>(work: (query: QueryFn, joined: boolean) => Promise<T>): Promise<T> {
         return this.run(async (client) => {
-            await client.query('BEGIN');
+            const status = transactionStatus(client);
+            if (status === 'E') {
+                throw new Error(
+                    `The open transaction of the database session of ${this.label} has failed, so nothing can be saved in it. `
+                    + 'End it with ROLLBACK or reset the session.'
+                );
+            }
+            const joined = status === 'T';
+            await client.query(joined ? `SAVEPOINT ${SAVEPOINT}` : 'BEGIN');
             try {
-                const result = await work((sql, params) => client.query(sql, params));
-                await client.query('COMMIT');
+                const result = await work((sql, params) => client.query(sql, params), joined);
+                await client.query(joined ? `RELEASE SAVEPOINT ${SAVEPOINT}` : 'COMMIT');
                 return result;
             } catch (err) {
                 try {
-                    await client.query('ROLLBACK');
+                    if (joined) {
+                        // Back to where the user's transaction stood, savepoint gone.
+                        await client.query(`ROLLBACK TO SAVEPOINT ${SAVEPOINT}`);
+                        await client.query(`RELEASE SAVEPOINT ${SAVEPOINT}`);
+                    } else {
+                        await client.query('ROLLBACK');
+                    }
                 } catch {
                     // The statement's own error is the one worth reporting.
                 }
@@ -141,9 +184,13 @@ export class DbSession implements QueryExecutor {
         return true;
     }
 
-    /** Close the connection because the active connection changed; the next statement reconnects. */
+    /**
+     * Close a connection opened for a connection that has since been switched;
+     * the next statement reconnects. One opened for the active connection —
+     * by a statement that ran while the switch was announced — stays.
+     */
     disconnect(): void {
-        if (!this.client) return;
+        if (!this.client || this.clientGeneration === this.host.generation()) return;
         this.drop();
         this.host.changed(this);
     }

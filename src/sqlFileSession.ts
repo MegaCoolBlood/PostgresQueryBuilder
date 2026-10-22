@@ -79,8 +79,10 @@ export function codeMask(text: string): string {
             i = j;
             continue;
         }
-        if (c === '$') {
-            const tag = /^\$[A-Za-z_]?[A-Za-z0-9_]*\$/.exec(text.slice(i, i + 64));
+        // A `$` inside a name (`a$b$c`) or a positional parameter (`$1`) does
+        // not start a dollar quote, and a tag never starts with a digit.
+        if (c === '$' && !/[A-Za-z0-9_$\u0080-\uffff]/.test(text[i - 1] ?? '')) {
+            const tag = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/.exec(text.slice(i, i + 64));
             if (tag) {
                 const close = text.indexOf(tag[0], i + tag[0].length);
                 const j = close === -1 ? n : close + tag[0].length;
@@ -94,11 +96,27 @@ export function codeMask(text: string): string {
     return out.join('');
 }
 
-/** Positions of the semicolons that end a statement, followed by the end of the text. */
+/**
+ * Positions of the semicolons that end a statement, followed by the end of the
+ * text. The body of a `BEGIN ATOMIC … END` function or procedure separates its
+ * statements with semicolons too; like psql, those do not end the statement.
+ */
 function statementEnds(masked: string): number[] {
     const ends: number[] = [];
-    for (let i = 0; i < masked.length; i++) {
-        if (masked[i] === ';') ends.push(i);
+    let depth = 0;
+    let previous = '';
+    for (const match of masked.matchAll(/[A-Za-z_][A-Za-z0-9_$]*|;/g)) {
+        const token = match[0].toLowerCase();
+        if (token === ';') {
+            if (depth === 0) ends.push(match.index ?? 0);
+        } else if (token === 'atomic' && previous === 'begin') {
+            depth++;
+        } else if (depth > 0 && token === 'case') {
+            depth++;
+        } else if (depth > 0 && token === 'end') {
+            depth--;
+        }
+        previous = token;
     }
     ends.push(masked.length);
     return ends;
@@ -107,8 +125,8 @@ function statementEnds(masked: string): number[] {
 /**
  * The top-level statements of `text` as `[start, end)` ranges without their
  * semicolon and without leading or trailing comments. A semicolon inside a
- * string, a quoted name, a comment or a dollar-quoted body (a `DO` block, a
- * function body) does not end a statement.
+ * string, a quoted name, a comment, a dollar-quoted body (a `DO` block, a
+ * function body) or a `BEGIN ATOMIC` body does not end a statement.
  */
 export function statementRanges(text: string): Array<{ start: number; end: number } | null> {
     const masked = codeMask(text);
@@ -120,47 +138,23 @@ export function statementRanges(text: string): Array<{ start: number; end: numbe
     });
 }
 
-/**
- * The statement the cursor at `offset` belongs to. A whole `DO` block counts as
- * one statement wherever the cursor sits in it. A cursor at the end of a line
- * behind a statement's semicolon means that statement, and one in the blank
- * space after the last statement means the last one.
- */
-export function statementRangeAt(text: string, offset: number): { start: number; end: number } | null {
-    const masked = codeMask(text);
-    const ends = statementEnds(masked);
-    const ranges = statementRanges(text);
-    let index = ends.findIndex((end) => offset <= end);
-    if (index === -1) index = ends.length - 1;
-
-    if (index > 0) {
-        const lineEnd = masked.indexOf('\n', offset);
-        const before = masked.slice(ends[index - 1] + 1, offset);
-        const after = masked.slice(offset, lineEnd === -1 ? masked.length : lineEnd);
-        if (!before.includes('\n') && !before.trim() && !after.trim() && ranges[index - 1]) {
-            return ranges[index - 1];
-        }
-    }
-    for (let i = index; i >= 0; i--) {
-        if (ranges[i]) return ranges[i];
-    }
-    return null;
-}
-
 /** The SQL to execute and where it starts in the document. */
 export interface StatementTarget {
     sql: string;
     start: number;
 }
 
-/** The selected text, or the statement under the cursor when nothing is selected. */
+/**
+ * Exactly the selected text, or null when nothing (or only blanks and
+ * comments) is selected. Nothing is guessed from the cursor position: what
+ * runs is what the user marked.
+ */
 export function statementToExecute(text: string, selectionStart: number, selectionEnd: number): StatementTarget | null {
-    if (selectionEnd > selectionStart) {
-        const sql = text.slice(selectionStart, selectionEnd);
-        return codeMask(sql).trim() ? { sql, start: selectionStart } : null;
+    if (selectionEnd <= selectionStart) {
+        return null;
     }
-    const range = statementRangeAt(text, selectionStart);
-    return range ? { sql: text.slice(range.start, range.end), start: range.start } : null;
+    const sql = text.slice(selectionStart, selectionEnd);
+    return codeMask(sql).trim() ? { sql, start: selectionStart } : null;
 }
 
 /** The statements of a script, split like {@link statementRanges}. */
@@ -168,6 +162,29 @@ export function splitStatements(sql: string): string[] {
     return statementRanges(sql)
         .filter((range): range is { start: number; end: number } => range !== null)
         .map((range) => sql.slice(range.start, range.end));
+}
+
+/**
+ * True for a statement whose result is rows to look at — a `SELECT`, `VALUES`
+ * or `TABLE`, or a `WITH` query ending in one — and that is better shown in
+ * the Data Viewer than counted. Not a `WITH` that writes data, and not
+ * `SELECT … INTO`, which creates a table.
+ */
+export function isResultQuery(statement: string): boolean {
+    const code = codeMask(statement)
+        .toLowerCase()
+        .replace(/\bfor\s+(no\s+key\s+)?update\b/g, ' ')
+        .trim();
+    if (!/^(select|values|table|with)\b/.test(code)) {
+        return false;
+    }
+    return !/\b(insert|update|delete|merge|into)\b/.test(code);
+}
+
+/** The tab title of a Data Viewer opened for `sql`, as "View Data" names it. */
+export function queryViewTitle(sql: string): string {
+    const oneLine = sql.replace(/\s+/g, ' ').trim();
+    return 'View Data: ' + (oneLine.length > 40 ? oneLine.slice(0, 40) + '…' : oneLine);
 }
 
 const ROW_COUNT_COMMANDS = new Set(['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'COPY', 'FETCH', 'MOVE']);
@@ -275,9 +292,15 @@ export async function resetSessionWithConfirmation(session: DbSession, sharedWit
     return true;
 }
 
+/** Opens a Data Viewer for `sql` on the session `ref`. */
+export type OpenQueryView = (sql: string, title: string, ref: DbSessionRef) => Promise<void>;
+
+/** Thrown inside the session when Cancel was pressed before the statement got its turn. */
+class CancelledBeforeStart extends Error {}
+
 /**
  * The database sessions of SQL files. A file gets its session with the first
- * "Execute Statement" or "View Data", the Data Viewers opened from it share
+ * "Execute Selection" or "View Data", the Data Viewers opened from it share
  * that session, and it ends once the file and all those Data Viewers are
  * closed.
  */
@@ -290,7 +313,8 @@ export class SqlFileSessions implements vscode.Disposable {
         private readonly sessions: DbSessionManager,
         private readonly connectionManager: ConnectionManager,
         private readonly messages: vscode.OutputChannel,
-        private readonly modifyHistoryStore?: ModifyHistoryStore
+        private readonly modifyHistoryStore?: ModifyHistoryStore,
+        private readonly openQueryView?: OpenQueryView
     ) {
         this.subscriptions.push(
             vscode.workspace.onDidCloseTextDocument(() => this.releaseClosedFiles()),
@@ -307,13 +331,15 @@ export class SqlFileSessions implements vscode.Disposable {
     }
 
     /**
-     * Run the selection, or the statement under the cursor, in the file's
-     * session. Meant for what has no result to show — a `DO` block, a `CALL`,
-     * `SET`, `set_config(…)` — before looking at data with "View Data".
+     * Run exactly the selected text in the file's session. Meant for what has
+     * no result to show — a `DO` block, a `CALL`, `SET`, `set_config(…)` —
+     * before looking at data with "View Data". A selection that is a single
+     * query returning rows is opened in the Data Viewer on the same session
+     * instead of being counted.
      */
     async execute(editor: vscode.TextEditor | undefined): Promise<void> {
         if (!editor) {
-            vscode.window.showWarningMessage('Open a SQL file and place the cursor inside the statement to execute.');
+            vscode.window.showWarningMessage('Open a SQL file and select the statements to execute.');
             return;
         }
         const document = editor.document;
@@ -323,7 +349,7 @@ export class SqlFileSessions implements vscode.Disposable {
             document.offsetAt(editor.selection.end)
         );
         if (!target) {
-            vscode.window.showWarningMessage('There is no statement at the cursor to execute.');
+            vscode.window.showWarningMessage('Select the statements to execute: Execute Selection runs exactly the selected text.');
             return;
         }
         if (!await this.connectionManager.ensureConnected()) {
@@ -331,6 +357,12 @@ export class SqlFileSessions implements vscode.Disposable {
         }
 
         const { ref, session } = this.acquire(document);
+        const statements = splitStatements(target.sql);
+        if (this.openQueryView && statements.length === 1 && isResultQuery(statements[0])) {
+            await this.openQueryView(statements[0], queryViewTitle(statements[0]), ref);
+            return;
+        }
+
         const notices: SessionNotice[] = [];
         const started = Date.now();
         let outcome: QueryResult | QueryResult[];
@@ -342,19 +374,38 @@ export class SqlFileSessions implements vscode.Disposable {
                     cancellable: true
                 },
                 (_progress, token) => {
-                    token.onCancellationRequested(() => { void this.cancel(session); });
+                    // Cancel must only ever reach this statement: before it got
+                    // its turn in the session it is skipped, while it runs its
+                    // server process is asked to cancel, afterwards nothing.
+                    let cancelled = false;
+                    let runningPid: number | null = null;
+                    token.onCancellationRequested(() => {
+                        cancelled = true;
+                        if (runningPid !== null) {
+                            void this.cancelBackend(runningPid);
+                        }
+                    });
                     return session.run(async (client) => {
+                        if (cancelled) {
+                            throw new CancelledBeforeStart();
+                        }
                         const collect = (notice: SessionNotice): void => { notices.push(notice); };
                         client.on('notice', collect);
+                        runningPid = client.processID ?? null;
                         try {
                             return await client.query(target.sql) as QueryResult | QueryResult[];
                         } finally {
+                            runningPid = null;
                             client.removeListener('notice', collect);
                         }
                     });
                 }
             );
         } catch (err: unknown) {
+            if (err instanceof CancelledBeforeStart) {
+                vscode.window.showInformationMessage('Execute Selection was cancelled before it started; nothing ran.');
+                return;
+            }
             this.reportFailure(editor, target, ref.label, err);
             return;
         }
@@ -396,16 +447,12 @@ export class SqlFileSessions implements vscode.Disposable {
         this.held.clear();
     }
 
-    /** Ask the server to cancel what the session is running, from another connection. */
-    private async cancel(session: DbSession): Promise<void> {
-        const pid = session.processId;
-        if (pid === null) {
-            return;
-        }
+    /** Ask the server, from another connection, to cancel what the process `pid` is running. */
+    private async cancelBackend(pid: number): Promise<void> {
         try {
             await this.connectionManager.query('SELECT pg_cancel_backend($1)', [pid]);
         } catch (err: unknown) {
-            Logger.error('SqlFileSessions.cancel', err);
+            Logger.error('SqlFileSessions.cancelBackend', err);
         }
     }
 
@@ -426,7 +473,7 @@ export class SqlFileSessions implements vscode.Disposable {
             editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
         }
         const where = typeof details.where === 'string' ? details.where.split('\n')[0] : '';
-        vscode.window.showErrorMessage(`Execute Statement failed: ${getErrorMessage(err)}${where ? ` (${where})` : ''}`);
+        vscode.window.showErrorMessage(`Execute Selection failed: ${getErrorMessage(err)}${where ? ` (${where})` : ''}`);
     }
 
     private recordModifyHistory(sql: string): void {

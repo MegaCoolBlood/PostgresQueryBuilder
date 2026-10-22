@@ -13,7 +13,7 @@ const VARIABLE_CACHE_KEY = 'viewDataVariableCache';
  * cursor (or the current selection) inside a PL/pgSQL procedure/function, ask
  * the user to fill in any variables via a modal, then open the result in the
  * data viewer in a side-by-side editor. The Data Viewer runs on the database
- * session of the SQL file, so what "Execute Statement" set up there applies.
+ * session of the SQL file, so what "Execute Selection" set up there applies.
  */
 export class ViewDataFromSelect {
     constructor(

@@ -1599,7 +1599,7 @@ test('data viewer: deleting a custom mapping happens only after the modal confir
 // ===== 3.4.0: a database session per Data Viewer =====
 
 /** A session manager whose connections record what they are asked to run. */
-function createSessionManager(answer?: (sql: string) => Promise<any>) {
+function createSessionManager(answer?: (sql: string) => Promise<any>, txStatus: () => string = () => 'I') {
     const clients: any[] = [];
     const dbSessions = new DbSessionManager({
         openClient: async () => {
@@ -1607,6 +1607,7 @@ function createSessionManager(answer?: (sql: string) => Promise<any>) {
             client.processID = 900 + clients.length;
             client.queries = [] as string[];
             client.ended = false;
+            client.getTransactionStatus = () => txStatus();
             client.query = async (config: any) => {
                 const sql = typeof config === 'string' ? config : config.text;
                 client.queries.push(sql);
@@ -1636,14 +1637,20 @@ async function withPanel(open: () => Promise<void>) {
 }
 
 const loadRows = (sql: string) => ({ command: 'loadRows', sql: `${sql} LIMIT 50 OFFSET 0`, baseSql: sql, loadId: 1 });
+const columnProbe = (sql: string) => `SELECT * FROM (${sql}) AS _pqb_cols LIMIT 0`;
 const lastSessionInfo = (panel: any) => panel.posted.filter((m: any) => m.command === 'sessionInfo').pop()?.session;
+/** What a session ran for the user, without the search_path lookups of the table references. */
+const userQueries = (client: any) => client.queries.filter((sql: string) => !sql.includes("current_setting('search_path')"));
 
-test('every Data Viewer runs its queries on a database session of its own', async () => {
+test('every Data Viewer runs its queries, column probe included, on a database session of its own', async () => {
     const { dbSessions, clients } = createSessionManager();
     const poolQueries: string[] = [];
     const { manager } = createManager({
         dbSessions,
-        connection: { queryPositional: async (sql: string) => { poolQueries.push(sql); return { rows: [], fields: [] }; } }
+        connection: {
+            query: async (sql: string) => { poolQueries.push(sql); return { rows: [], fields: [] }; },
+            queryPositional: async (sql: string) => { poolQueries.push(sql); return { rows: [], fields: [] }; }
+        }
     });
     const first = await withPanel(() => manager.openQueryView('SELECT 1 AS n', 'First'));
     const second = await withPanel(() => manager.openQueryView('SELECT 2 AS n', 'Second'));
@@ -1653,12 +1660,45 @@ test('every Data Viewer runs its queries on a database session of its own', asyn
     await second.state.onMessage(loadRows('SELECT 2 AS n'));
     await first.state.onMessage(loadRows('SELECT 1 AS n'));
 
-    assert.deepEqual(poolQueries, [], 'no query of a Data Viewer may run on the pool');
+    assert.deepEqual(poolQueries.filter((sql) => sql.includes('SELECT 1 AS n') || sql.includes('SELECT 2 AS n')), [],
+        'neither the query nor its column probe may run on the pool');
     assert.equal(clients.length, 2);
-    assert.deepEqual(clients[0].queries, ['SELECT 1 AS n LIMIT 50 OFFSET 0', 'SELECT 1 AS n LIMIT 50 OFFSET 0']);
-    assert.deepEqual(clients[1].queries, ['SELECT 2 AS n LIMIT 50 OFFSET 0']);
+    assert.deepEqual(userQueries(clients[0]), [
+        columnProbe('SELECT 1 AS n'), 'SELECT 1 AS n LIMIT 50 OFFSET 0',
+        columnProbe('SELECT 1 AS n'), 'SELECT 1 AS n LIMIT 50 OFFSET 0'
+    ]);
+    assert.deepEqual(userQueries(clients[1]), [columnProbe('SELECT 2 AS n'), 'SELECT 2 AS n LIMIT 50 OFFSET 0']);
     assert.ok(first.posted.some((m: any) => m.command === 'rowsLoaded'));
     assert.deepEqual(lastSessionInfo(first), { label: 'First', own: true, sharedWith: 0, open: true, pid: 900 });
+});
+
+test('the column probe is left out while the session is inside a transaction', async () => {
+    const { dbSessions, clients } = createSessionManager(undefined, () => 'T');
+    const { manager } = createManager({ dbSessions });
+    const panel = await withPanel(() => manager.openQueryView('SELECT 1 AS n', 'First'));
+
+    await panel.state.onMessage(loadRows('SELECT 1 AS n'));
+
+    assert.deepEqual(userQueries(clients[0]), ['SELECT 1 AS n LIMIT 50 OFFSET 0'],
+        'a failing probe would abort the transaction of the user');
+    assert.ok(panel.posted.some((m: any) => m.command === 'rowsLoaded'));
+});
+
+test('a save inside the open transaction of the session says it still needs COMMIT', async (t) => {
+    const infos: any[] = [];
+    const original = vscodeStub.window.showInformationMessage;
+    vscodeStub.window.showInformationMessage = (...args: any[]) => { infos.push(args); return Promise.resolve(undefined); };
+    t.after(() => { vscodeStub.window.showInformationMessage = original; });
+    const { dbSessions, clients } = createSessionManager(undefined, () => 'T');
+    const { manager } = createManager({ dbSessions });
+    const panel = await withPanel(() => manager.openQueryView('SELECT 1 AS n', 'First'));
+
+    await panel.state.onMessage({ command: 'commitChanges', targets: [], sql: 'UPDATE t SET a = 1 WHERE id = 7;' });
+
+    assert.deepEqual(clients[0].queries, ['SAVEPOINT pqb_save', 'UPDATE t SET a = 1 WHERE id = 7', 'RELEASE SAVEPOINT pqb_save']);
+    assert.ok(panel.posted.some((m: any) => m.command === 'commitSuccess'));
+    assert.equal(infos[0][0],
+        'Edited statements ran inside the open transaction of the database session; they become permanent once that transaction is committed with COMMIT.');
 });
 
 test('Data Viewers opened with the session of a SQL file share that session', async () => {
@@ -1673,7 +1713,10 @@ test('Data Viewers opened with the session of a SQL file share that session', as
     await second.state.onMessage(loadRows('SELECT 2 AS n'));
 
     assert.equal(clients.length, 1);
-    assert.deepEqual(clients[0].queries, ['SELECT 1 AS n LIMIT 50 OFFSET 0', 'SELECT 2 AS n LIMIT 50 OFFSET 0']);
+    assert.deepEqual(userQueries(clients[0]), [
+        columnProbe('SELECT 1 AS n'), 'SELECT 1 AS n LIMIT 50 OFFSET 0',
+        columnProbe('SELECT 2 AS n'), 'SELECT 2 AS n LIMIT 50 OFFSET 0'
+    ]);
     assert.deepEqual(lastSessionInfo(first), { label: 'payroll.sql', own: false, sharedWith: 2, open: true, pid: 900 });
 });
 
@@ -1700,14 +1743,18 @@ test('a table opened through a foreign key runs on the session of the Data Viewe
     await customers.state.onMessage(loadRows('SELECT * FROM public.customers'));
 
     assert.equal(clients.length, 1);
-    assert.deepEqual(clients[0].queries, ['SELECT 1 AS n LIMIT 50 OFFSET 0', 'SELECT * FROM public.customers LIMIT 50 OFFSET 0']);
+    assert.ok(clients[0].queries.some((sql: string) => sql.includes("current_setting('search_path')")),
+        'the table reference is resolved with the search_path of the session it runs on');
+    assert.deepEqual(userQueries(clients[0]), [
+        columnProbe('SELECT 1 AS n'), 'SELECT 1 AS n LIMIT 50 OFFSET 0',
+        columnProbe('SELECT * FROM public.customers'), 'SELECT * FROM public.customers LIMIT 50 OFFSET 0'
+    ]);
     assert.deepEqual(lastSessionInfo(customers), { label: 'orders', own: false, sharedWith: 1, open: true, pid: 900 });
 
     // The session outlives the tab that opened it while the other one uses it.
     orders.state.onDispose.forEach((dispose) => dispose());
     assert.equal(clients[0].ended, false);
 });
-
 test('the session badge resets the session of the panel after asking', async (t) => {
     const { dbSessions, clients } = createSessionManager();
     const { manager } = createManager({ dbSessions });

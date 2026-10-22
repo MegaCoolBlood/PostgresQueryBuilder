@@ -9,8 +9,9 @@ import {
     errorOffset,
     fileSessionRef,
     formatServerMessage,
+    isResultQuery,
+    queryViewTitle,
     splitStatements,
-    statementRangeAt,
     statementToExecute,
     summarizeExecution,
     tabShowsUri,
@@ -39,55 +40,7 @@ const SELECT = 'SELECT * FROM pks_ate_payroll.v_lohn';
 
 const FILE = `${DO_BLOCK};\n\n${SET_CONFIG};\n\n${SELECT};\n\n`;
 
-// ===== statementRangeAt / statementToExecute =====
-
-function statementAt(text: string, offset: number): string | null {
-    const range = statementRangeAt(text, offset);
-    return range ? text.slice(range.start, range.end) : null;
-}
-
-test('the cursor anywhere in a DO block means the whole block, semicolons inside included', () => {
-    assert.equal(statementAt(FILE, FILE.indexOf('CALL')), DO_BLOCK);
-    assert.equal(statementAt(FILE, FILE.indexOf('DECLARE')), DO_BLOCK);
-    assert.equal(statementAt(FILE, 0), DO_BLOCK);
-});
-
-test('the cursor at the end of a line behind a semicolon means that statement', () => {
-    assert.equal(statementAt(FILE, FILE.indexOf('END $$;') + 'END $$;'.length), DO_BLOCK);
-    assert.equal(statementAt('SELECT 1;   -- done\nSELECT 2;', 'SELECT 1;'.length), 'SELECT 1');
-});
-
-test('the cursor right before the next statement on the same line means that next statement', () => {
-    assert.equal(statementAt('SELECT 1; SELECT 2;', 'SELECT 1; '.length), 'SELECT 2');
-});
-
-test('the cursor inside a statement spanning several lines means all of it', () => {
-    assert.equal(statementAt(FILE, FILE.indexOf('UNION ALL')), SET_CONFIG);
-    assert.equal(statementAt(FILE, FILE.indexOf('v_lohn')), SELECT);
-});
-
-test('the cursor in the blank space after the last statement means the last statement', () => {
-    assert.equal(statementAt(FILE, FILE.length), SELECT);
-});
-
-test('semicolons in strings, quoted names and comments do not end a statement', () => {
-    const text = "SELECT 'a;b' AS \"x;y\" /* c;d */, 2 -- e;f\nFROM t;\nSELECT 3;";
-    assert.equal(statementAt(text, 3), "SELECT 'a;b' AS \"x;y\" /* c;d */, 2 -- e;f\nFROM t");
-});
-
-test('comments in front of a statement are not part of it', () => {
-    assert.equal(statementAt('-- set up the period\nSELECT 1;', 3), 'SELECT 1');
-});
-
-test('an escaped quote in an E string does not end the string', () => {
-    const text = "SELECT E'it\\'s; fine' AS x;\nSELECT 2;";
-    assert.equal(statementAt(text, 3), "SELECT E'it\\'s; fine' AS x");
-});
-
-test('a file without a statement has none at the cursor', () => {
-    assert.equal(statementAt('', 0), null);
-    assert.equal(statementAt('  -- only a comment\n', 5), null);
-});
+// ===== statementToExecute: exactly the selection =====
 
 test('a selection is executed exactly as selected', () => {
     const start = FILE.indexOf(SET_CONFIG);
@@ -97,17 +50,86 @@ test('a selection is executed exactly as selected', () => {
     );
 });
 
+test('without a selection nothing is executed, wherever the cursor is', () => {
+    const offset = FILE.indexOf('CALL');
+    assert.equal(statementToExecute(FILE, offset, offset), null);
+    assert.equal(statementToExecute(FILE, 0, 0), null);
+});
+
 test('a selection of blanks and comments executes nothing', () => {
     assert.equal(statementToExecute('  -- x\n  ', 0, 9), null);
 });
 
-test('without a selection the statement under the cursor is executed', () => {
-    const offset = FILE.indexOf('CALL');
-    assert.deepEqual(statementToExecute(FILE, offset, offset), { sql: DO_BLOCK, start: 0 });
-});
+// ===== splitStatements =====
 
 test('splitStatements keeps a DO block together', () => {
     assert.deepEqual(splitStatements(FILE), [DO_BLOCK, SET_CONFIG, SELECT]);
+});
+
+test('semicolons in strings, quoted names and comments do not split a statement', () => {
+    assert.deepEqual(
+        splitStatements("SELECT 'a;b' AS \"x;y\" /* c;d */, 2 -- e;f\nFROM t;\nSELECT 3;"),
+        ["SELECT 'a;b' AS \"x;y\" /* c;d */, 2 -- e;f\nFROM t", 'SELECT 3']
+    );
+});
+
+test('comments in front of a statement are not part of it', () => {
+    assert.deepEqual(splitStatements('-- set up the period\nSELECT 1;'), ['SELECT 1']);
+});
+
+test('an escaped quote in an E string does not end the string', () => {
+    assert.deepEqual(
+        splitStatements("SELECT E'it\\'s; fine' AS x;\nSELECT 2;"),
+        ["SELECT E'it\\'s; fine' AS x", 'SELECT 2']
+    );
+});
+
+test('a dollar sign inside a name or a parameter does not start a dollar quote', () => {
+    assert.deepEqual(
+        splitStatements('SELECT a$b$c FROM t;\nDELETE FROM t WHERE id = $1;\nSELECT 2;'),
+        ['SELECT a$b$c FROM t', 'DELETE FROM t WHERE id = $1', 'SELECT 2']
+    );
+});
+
+test('a BEGIN ATOMIC body is kept together with its CASE … END', () => {
+    const procedure = [
+        'CREATE PROCEDURE purge() LANGUAGE SQL',
+        'BEGIN ATOMIC',
+        '  DELETE FROM audit_log;',
+        "  UPDATE t SET kind = CASE WHEN a THEN 'x' ELSE 'y' END;",
+        'END'
+    ].join('\n');
+    assert.deepEqual(splitStatements(`${procedure};\nSELECT 1;`), [procedure, 'SELECT 1']);
+});
+
+test('a file without a statement has none', () => {
+    assert.deepEqual(splitStatements(''), []);
+    assert.deepEqual(splitStatements('  -- only a comment\n'), []);
+});
+
+// ===== isResultQuery / queryViewTitle =====
+
+test('isResultQuery accepts the queries whose rows are worth a look', () => {
+    assert.equal(isResultQuery(SELECT), true);
+    assert.equal(isResultQuery(SET_CONFIG), true);
+    assert.equal(isResultQuery('WITH x AS (SELECT 1) SELECT * FROM x'), true);
+    assert.equal(isResultQuery('VALUES (1), (2)'), true);
+    assert.equal(isResultQuery('TABLE orders'), true);
+    assert.equal(isResultQuery('SELECT * FROM orders FOR UPDATE'), true);
+    assert.equal(isResultQuery("SELECT 'insert into' AS note"), true);
+});
+
+test('isResultQuery leaves statements that change something to be executed', () => {
+    assert.equal(isResultQuery(DO_BLOCK), false);
+    assert.equal(isResultQuery('CALL p()'), false);
+    assert.equal(isResultQuery('SELECT * INTO copy FROM orders'), false);
+    assert.equal(isResultQuery('WITH gone AS (DELETE FROM t RETURNING *) SELECT * FROM gone'), false);
+    assert.equal(isResultQuery('UPDATE t SET a = 1'), false);
+});
+
+test('queryViewTitle names the Data Viewer like View Data does', () => {
+    assert.equal(queryViewTitle('SELECT *\n  FROM orders'), 'View Data: SELECT * FROM orders');
+    assert.equal(queryViewTitle(SELECT + ' WHERE period = 1'), 'View Data: SELECT * FROM pks_ate_payroll.v_lohn WHE…');
 });
 
 // ===== summarizeExecution =====
@@ -250,60 +272,126 @@ function createFileSessions(options: { onQuery?: (client: FakeClient, sql: strin
     };
     const history: Array<{ sql: string }> = [];
     const poolQueries: Array<{ sql: string; params?: unknown[] }> = [];
+    const opened: Array<{ sql: string; title: string; ref: any }> = [];
     const connectionManager: any = {
         ensureConnected: async () => options.connected !== false,
         query: async (sql: string, params?: unknown[]) => { poolQueries.push({ sql, params }); return { rows: [] }; }
     };
     const modifyHistoryStore: any = { addMany: (entries: Array<{ sql: string }>) => history.push(...entries) };
-    const fileSessions = new SqlFileSessions(manager, connectionManager, channel as any, modifyHistoryStore);
+    const openQueryView = async (sql: string, title: string, ref: any) => { opened.push({ sql, title, ref }); };
+    const fileSessions = new SqlFileSessions(manager, connectionManager, channel as any, modifyHistoryStore, openQueryView);
     showFile(true);
-    return { manager, clients, channel, history, poolQueries, fileSessions };
+    return { manager, clients, channel, history, poolQueries, opened, fileSessions };
 }
 
-test('Execute Statement runs the DO block under the cursor in the session of the file', async (t) => {
+/** An editor in which exactly `selected` is selected. */
+function selecting(text: string, selected: string) {
+    const start = text.indexOf(selected);
+    assert.ok(start >= 0, `"${selected}" is not in the text`);
+    return createEditor(text, start, start + selected.length);
+}
+
+/** Let `withProgress` hand out a token whose Cancel the test presses itself. */
+function controllableCancel(t: { after(fn: () => void): void }) {
+    const control = { cancel: () => undefined as void };
+    recordWindowCalls(t, 'withProgress', (_options: any, task: any) => task(
+        { report() {} },
+        { isCancellationRequested: false, onCancellationRequested: (listener: () => void) => { control.cancel = listener; return { dispose() {} }; } }
+    ));
+    return control;
+}
+
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test('Execute Selection runs the selected DO block in the session of the file', async (t) => {
     const infos = recordWindowCalls(t, 'showInformationMessage');
     const { fileSessions, clients, manager } = createFileSessions();
     t.after(() => fileSessions.dispose());
 
-    await fileSessions.execute(createEditor(FILE, FILE.indexOf('CALL')) as any);
+    await fileSessions.execute(selecting(FILE, `${DO_BLOCK};`) as any);
 
     assert.equal(clients.length, 1);
-    assert.deepEqual(clients[0].queries, [DO_BLOCK]);
+    assert.deepEqual(clients[0].queries, [`${DO_BLOCK};`]);
     assert.match(String(infos[0][0]), /^DO completed in \d+ ms\.$/);
     const session = manager.get(`file:${URI}`);
     assert.ok(session && session.isOpen, 'the file keeps its session open');
 });
 
-test('every statement of a file runs on the same connection, so a setting stays visible', async (t) => {
-    recordWindowCalls(t, 'showInformationMessage');
-    const { fileSessions, clients, manager } = createFileSessions();
+test('Execute Selection runs nothing without a selection, wherever the cursor is', async (t) => {
+    const warnings = recordWindowCalls(t, 'showWarningMessage');
+    const { fileSessions, clients } = createFileSessions();
     t.after(() => fileSessions.dispose());
 
     await fileSessions.execute(createEditor(FILE, FILE.indexOf('CALL')) as any);
-    await fileSessions.execute(createEditor(FILE, FILE.indexOf('UNION ALL')) as any);
+    await fileSessions.execute(selecting('SELECT 1; -- nothing to run\n', '-- nothing to run') as any);
+    await fileSessions.execute(undefined);
+
+    assert.equal(clients.length, 0);
+    assert.equal(warnings.length, 3);
+    assert.equal(warnings[0][0], 'Select the statements to execute: Execute Selection runs exactly the selected text.');
+});
+
+test('a selected SELECT opens in the Data Viewer on the session of the file instead of running', async (t) => {
+    const { fileSessions, clients, opened, manager } = createFileSessions();
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.execute(selecting(FILE, `${SELECT};`) as any);
+
+    assert.deepEqual(clients, [], 'nothing was fetched just to be counted');
+    assert.equal(opened.length, 1);
+    assert.equal(opened[0].sql, SELECT);
+    assert.equal(opened[0].title, 'View Data: SELECT * FROM pks_ate_payroll.v_lohn');
+    assert.deepEqual(opened[0].ref, { key: `file:${URI}`, label: 'payroll.sql' });
+    assert.ok(manager.get(`file:${URI}`), 'the file holds the session the Data Viewer runs on');
+});
+
+test('a selection of several statements runs as a whole, even with a SELECT among them', async (t) => {
+    const infos = recordWindowCalls(t, 'showInformationMessage');
+    const { fileSessions, clients, opened } = createFileSessions({
+        onQuery: () => [{ command: 'DO', rowCount: null }, { command: 'SELECT', rowCount: 2 }]
+    });
+    t.after(() => fileSessions.dispose());
+    const selected = `${DO_BLOCK};\n\n${SET_CONFIG};`;
+
+    await fileSessions.execute(selecting(FILE, selected) as any);
+
+    assert.deepEqual(opened, []);
+    assert.deepEqual(clients[0].queries, [selected]);
+    assert.match(String(infos[0][0]), /^2 statements completed in \d+ ms: DO, SELECT \(2 rows\)\.$/);
+});
+
+test('every selection of a file runs on the same connection, so a setting stays visible', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const { fileSessions, clients, manager } = createFileSessions();
+    t.after(() => fileSessions.dispose());
+    const setting = "SET pks_ate_payroll.l_von = '2026-09-21'";
+    const text = `${FILE}${setting};\n`;
+
+    await fileSessions.execute(selecting(text, DO_BLOCK) as any);
+    await fileSessions.execute(selecting(text, setting) as any);
     // A Data Viewer opened from the file with "View Data" uses the same session.
-    const { ref } = fileSessions.acquire(createDocument(FILE) as any);
+    const { ref } = fileSessions.acquire(createDocument(text) as any);
     await manager.acquire(ref, 'panel:1').query(SELECT);
 
     assert.equal(clients.length, 1);
-    assert.deepEqual(clients[0].queries, [DO_BLOCK, SET_CONFIG, SELECT]);
+    assert.deepEqual(clients[0].queries, [DO_BLOCK, setting, SELECT]);
 });
 
-test('Execute Statement counts the messages of the server and shows them', async (t) => {
+test('Execute Selection counts the messages of the server and shows them', async (t) => {
     const infos = recordWindowCalls(t, 'showInformationMessage');
     const { fileSessions, channel } = createFileSessions({
         onQuery: (client) => { client.emit('notice', { severity: 'NOTICE', message: 'period set' }); }
     });
     t.after(() => fileSessions.dispose());
 
-    await fileSessions.execute(createEditor(FILE, FILE.indexOf('CALL')) as any);
+    await fileSessions.execute(selecting(FILE, DO_BLOCK) as any);
 
     assert.match(String(infos[0][0]), /The server sent 1 message, shown in the "PostgreSQL Messages" output\./);
     assert.equal(channel.shown, 1);
     assert.equal(MESSAGES_CHANNEL_NAME, 'PostgreSQL Messages');
 });
 
-test('a statement that fails puts the cursor where the server saw the error', async (t) => {
+test('a selection that fails puts the cursor where the server saw the error', async (t) => {
     const errors = recordWindowCalls(t, 'showErrorMessage');
     const { fileSessions, channel } = createFileSessions({
         onQuery: () => {
@@ -312,11 +400,11 @@ test('a statement that fails puts the cursor where the server saw the error', as
     });
     t.after(() => fileSessions.dispose());
     const text = 'SELECT 1;\n\nDO $$ BEGIN SELEC 1; END $$;';
-    const editor = createEditor(text, text.indexOf('BEGIN'));
+    const editor = selecting(text, 'DO $$ BEGIN SELEC 1; END $$;');
 
     await fileSessions.execute(editor as any);
 
-    assert.equal(errors[0][0], 'Execute Statement failed: syntax error at or near "SELEC"');
+    assert.equal(errors[0][0], 'Execute Selection failed: syntax error at or near "SELEC"');
     assert.equal((editor.selection as any).active.offset, text.indexOf('DO $$') + 9);
     assert.equal(editor.revealed.length, 1);
     assert.match(channel.lines[0], /payroll\.sql — ERROR: syntax error at or near "SELEC"\n {4}HINT: check the spelling$/);
@@ -333,33 +421,17 @@ test('statements that change data are recorded in the Modify History', async (t)
     assert.deepEqual(history, [{ sql: 'CALL pks_ate_payroll.p_set_params(now(), now(), now())' }]);
 });
 
-test('Execute Statement without a statement at the cursor warns and runs nothing', async (t) => {
-    const warnings = recordWindowCalls(t, 'showWarningMessage');
-    const { fileSessions, clients } = createFileSessions();
-    t.after(() => fileSessions.dispose());
-
-    await fileSessions.execute(createEditor('-- nothing to run\n', 3) as any);
-    await fileSessions.execute(undefined);
-
-    assert.equal(clients.length, 0);
-    assert.equal(warnings.length, 2);
-});
-
-test('Execute Statement runs nothing when no connection is chosen', async (t) => {
+test('Execute Selection runs nothing when no connection is chosen', async (t) => {
     const { fileSessions, clients } = createFileSessions({ connected: false });
     t.after(() => fileSessions.dispose());
 
-    await fileSessions.execute(createEditor(FILE, 0) as any);
+    await fileSessions.execute(selecting(FILE, DO_BLOCK) as any);
 
     assert.equal(clients.length, 0);
 });
 
-test('cancelling Execute Statement asks the server to cancel the session process', async (t) => {
-    let cancel: () => void = () => undefined;
-    recordWindowCalls(t, 'withProgress', (_options: any, task: any) => task(
-        { report() {} },
-        { isCancellationRequested: false, onCancellationRequested: (listener: () => void) => { cancel = listener; return { dispose() {} }; } }
-    ));
+test('cancelling a running selection cancels its own server process', async (t) => {
+    const control = controllableCancel(t);
     recordWindowCalls(t, 'showErrorMessage');
     let release: () => void = () => undefined;
     const { fileSessions, poolQueries } = createFileSessions({
@@ -369,21 +441,46 @@ test('cancelling Execute Statement asks the server to cancel the session process
     });
     t.after(() => fileSessions.dispose());
 
-    const running = fileSessions.execute(createEditor('SELECT pg_sleep(60);', 0) as any);
-    await new Promise((resolve) => setImmediate(resolve));
-    cancel();
-    await new Promise((resolve) => setImmediate(resolve));
+    const running = fileSessions.execute(selecting('DO $$ BEGIN PERFORM pg_sleep(60); END $$;', 'DO $$ BEGIN PERFORM pg_sleep(60); END $$') as any);
+    await tick();
+    control.cancel();
+    await tick();
     release();
     await running;
 
     assert.deepEqual(poolQueries, [{ sql: 'SELECT pg_cancel_backend($1)', params: [4711] }]);
 });
 
+test('cancelling a selection still waiting for its turn skips it and cancels nothing else', async (t) => {
+    const control = controllableCancel(t);
+    const infos = recordWindowCalls(t, 'showInformationMessage');
+    let release: () => void = () => undefined;
+    const { fileSessions, manager, clients, poolQueries } = createFileSessions({
+        onQuery: (_client, sql) => (sql === 'SELECT pg_sleep(60)' ? new Promise((resolve) => { release = () => resolve(undefined); }) : undefined)
+    });
+    t.after(() => fileSessions.dispose());
+    // A Data Viewer on the file's session is busy with a long query.
+    const { ref } = fileSessions.acquire(createDocument(FILE) as any);
+    const viewerQuery = manager.acquire(ref, 'panel:1').query('SELECT pg_sleep(60)');
+    await tick();
+
+    const waiting = fileSessions.execute(selecting(FILE, DO_BLOCK) as any);
+    await tick();
+    control.cancel();
+    release();
+    await viewerQuery;
+    await waiting;
+
+    assert.deepEqual(poolQueries, [], 'the query of the Data Viewer was left alone');
+    assert.deepEqual(clients[0].queries, ['SELECT pg_sleep(60)'], 'the cancelled selection never ran');
+    assert.equal(infos[0][0], 'Execute Selection was cancelled before it started; nothing ran.');
+});
+
 test('the session of a file ends once no tab shows the file', async (t) => {
     recordWindowCalls(t, 'showInformationMessage');
     const { fileSessions, clients, manager } = createFileSessions();
     t.after(() => fileSessions.dispose());
-    await fileSessions.execute(createEditor(FILE, 0) as any);
+    await fileSessions.execute(selecting(FILE, DO_BLOCK) as any);
 
     fireDidChangeTabs();
     assert.equal(clients[0].ended, false, 'the file is still open');
@@ -398,7 +495,7 @@ test('the session of a closed file lives on while a Data Viewer opened from it u
     recordWindowCalls(t, 'showInformationMessage');
     const { fileSessions, clients, manager } = createFileSessions();
     t.after(() => fileSessions.dispose());
-    await fileSessions.execute(createEditor(FILE, 0) as any);
+    await fileSessions.execute(selecting(FILE, DO_BLOCK) as any);
     const ref = fileSessionRef({ toString: () => URI }, '/work/payroll.sql');
     manager.acquire(ref, 'panel:1');
 
@@ -414,7 +511,7 @@ test('Reset Database Session asks first and then throws the session of the file 
     recordWindowCalls(t, 'showInformationMessage');
     const { fileSessions, clients } = createFileSessions();
     t.after(() => fileSessions.dispose());
-    const editor = createEditor(FILE, 0);
+    const editor = selecting(FILE, DO_BLOCK);
     await fileSessions.execute(editor as any);
 
     // Cancel first, confirm the second time.

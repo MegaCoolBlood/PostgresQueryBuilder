@@ -250,7 +250,7 @@ export function activate(context: vscode.ExtensionContext) {
                     await sqlFileSessions.execute(vscode.window.activeTextEditor);
                 } catch (err: unknown) {
                     outputChannel.appendLine(`[executeStatement] ${getErrorStack(err)}`);
-                    vscode.window.showErrorMessage(`Execute Statement failed: ${getErrorMessage(err)}`);
+                    vscode.window.showErrorMessage(`Execute Selection failed: ${getErrorMessage(err)}`);
                 }
             }),
             vscode.commands.registerCommand('postgresQueryBuilder.resetSqlFileSession', async () => {
@@ -357,7 +357,11 @@ export function activate(context: vscode.ExtensionContext) {
 
         tableWebViewManager = new TableWebViewManager(context, connectionManager, columnMappingManager, permanentConstraintManager, modifyHistoryStore, savedQueryStore, dbSessions);
         sqlEditorManager = new SqlEditorManager(context, connectionManager, modifyHistoryStore);
-        sqlFileSessions = new SqlFileSessions(dbSessions, connectionManager, messagesChannel, modifyHistoryStore);
+        sqlFileSessions = new SqlFileSessions(
+            dbSessions, connectionManager, messagesChannel, modifyHistoryStore,
+            // A selected SELECT is shown in the Data Viewer, on the file's session.
+            (sql, title, ref) => tableWebViewManager.openQueryView(sql, title, vscode.ViewColumn.Beside, undefined, ref)
+        );
         context.subscriptions.push(sqlFileSessions);
         viewDataFromSelect = new ViewDataFromSelect(context, connectionManager, tableWebViewManager, sqlFileSessions);
 

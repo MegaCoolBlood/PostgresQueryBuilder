@@ -7,8 +7,13 @@ import { DbSessionManager, type DbSessionManagerOptions } from '../dbSession';
 class FakeClient extends EventEmitter {
     queries: string[] = [];
     ended = false;
+    /** What `getTransactionStatus()` reports: `I`, `T` or `E`. */
+    txStatus = 'I';
     constructor(readonly processID: number, private readonly handler?: (sql: string) => unknown) {
         super();
+    }
+    getTransactionStatus(): string {
+        return this.txStatus;
     }
     async query(textOrConfig: string | { text: string }, _values?: unknown[]): Promise<any> {
         const sql = typeof textOrConfig === 'string' ? textOrConfig : textOrConfig.text;
@@ -154,6 +159,64 @@ test('a failed transaction is rolled back and reports its own error', async () =
     assert.deepEqual(clients[0].queries, ['BEGIN', 'UPDATE t SET a = 1', 'ROLLBACK']);
 });
 
+test('a save inside a transaction the user opened becomes a savepoint of it', async () => {
+    const { manager, clients } = createSessions();
+    const session = manager.acquire(REF, 'file');
+    await session.query('BEGIN');
+    clients[0].txStatus = 'T';
+
+    const joined = await session.transaction(async (query, inUserTransaction) => {
+        await query('UPDATE t SET a = 1');
+        return inUserTransaction;
+    });
+
+    assert.equal(joined, true);
+    assert.deepEqual(clients[0].queries, ['BEGIN', 'SAVEPOINT pqb_save', 'UPDATE t SET a = 1', 'RELEASE SAVEPOINT pqb_save']);
+});
+
+test('a failed save inside the user transaction rolls back only to its savepoint', async () => {
+    const { manager, clients } = createSessions({
+        handler: (sql) => { if (sql.startsWith('UPDATE')) throw new Error('boom'); return { rows: [] }; }
+    });
+    const session = manager.acquire(REF, 'file');
+    await session.query('SELECT 1');
+    clients[0].txStatus = 'T';
+
+    await assert.rejects(session.transaction((query) => query('UPDATE t SET a = 1')), /boom/);
+
+    assert.deepEqual(clients[0].queries, [
+        'SELECT 1', 'SAVEPOINT pqb_save', 'UPDATE t SET a = 1', 'ROLLBACK TO SAVEPOINT pqb_save', 'RELEASE SAVEPOINT pqb_save'
+    ]);
+});
+
+test('nothing is saved into a failed transaction of the user', async () => {
+    const { manager, clients } = createSessions();
+    const session = manager.acquire(REF, 'file');
+    await session.query('SELECT 1');
+    clients[0].txStatus = 'E';
+
+    await assert.rejects(session.transaction((query) => query('UPDATE t SET a = 1')), /has failed, so nothing can be saved in it\. End it with ROLLBACK/);
+
+    assert.deepEqual(clients[0].queries, ['SELECT 1']);
+});
+
+test('a save outside a transaction reports that it did not join one', async () => {
+    const { manager } = createSessions();
+    const joined = await manager.acquire(REF, 'file').transaction(async (_query, inUserTransaction) => inUserTransaction);
+    assert.equal(joined, false);
+});
+
+test('queryOutsideTransaction runs only while the session is outside a transaction', async () => {
+    const { manager, clients } = createSessions();
+    const session = manager.acquire(REF, 'file');
+
+    assert.notEqual(await session.queryOutsideTransaction('SELECT 1'), null);
+    clients[0].txStatus = 'T';
+    assert.equal(await session.queryOutsideTransaction('SELECT 2'), null);
+
+    assert.deepEqual(clients[0].queries, ['SELECT 1']);
+});
+
 test('reset closes the connection and the next statement starts a fresh session', async () => {
     const { manager, clients, lost } = createSessions();
     const session = manager.acquire(REF, 'file');
@@ -278,13 +341,14 @@ test('releasing a holder twice or an unknown key changes nothing', async () => {
     assert.equal(manager.holderCount(REF.key), 1);
 });
 
-test('disconnectAll closes every open connection without closing the sessions', async () => {
-    const { manager, clients, lost } = createSessions();
+test('disconnectAll closes every connection opened for the previous connection', async () => {
+    const { manager, clients, lost, setGeneration } = createSessions();
     const first = manager.acquire(REF, 'file');
     const second = manager.acquire({ key: 'tab:2', label: 'public.orders' }, 'panel:2');
     await first.query('SELECT 1');
     await second.query('SELECT 1');
 
+    setGeneration(2);
     manager.disconnectAll();
 
     assert.deepEqual(clients.map((c) => c.ended), [true, true]);
@@ -293,6 +357,24 @@ test('disconnectAll closes every open connection without closing the sessions', 
     await first.query('SELECT 2');
     assert.equal(clients.length, 3);
     assert.deepEqual(lost, []);
+});
+
+test('a connection opened for the new connection survives the late announcement of the switch', async () => {
+    const { manager, clients, setGeneration } = createSessions();
+    const session = manager.acquire(REF, 'file');
+    await session.query('SELECT 1');
+
+    // The switch is counted first and announced only after the old pool ended;
+    // a statement in between already reconnected.
+    setGeneration(2);
+    await session.query("SET pks_ate_payroll.l_von = '2026-09-21'");
+    manager.disconnectAll();
+
+    assert.equal(clients.length, 2);
+    assert.equal(clients[1].ended, false);
+    assert.equal(session.isOpen, true);
+    await session.query('SELECT 2');
+    assert.deepEqual(clients[1].queries, ["SET pks_ate_payroll.l_von = '2026-09-21'", 'SELECT 2']);
 });
 
 test('onDidChange reports a session that opens, gets shared and is released', async () => {

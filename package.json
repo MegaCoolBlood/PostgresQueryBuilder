@@ -151,7 +151,7 @@
       },
       {
         "command": "postgresQueryBuilder.executeStatement",
-        "title": "Execute Statement",
+        "title": "Execute Selection",
         "category": "PostgreSQL Query Booster",
         "icon": "$(play)"
       },
@@ -331,7 +331,7 @@
       "editor/context": [
         {
           "command": "postgresQueryBuilder.executeStatement",
-          "when": "editorTextFocus && resourceLangId == sql",
+          "when": "editorTextFocus && editorHasSelection && resourceLangId == sql",
           "group": "navigation@8"
         },
         {

@@ -204,6 +204,12 @@ export interface ReferencingTableInfo {
     localColumn: string;
 }
 
+/**
+ * How a save ended: `committed` when it is permanent, `pending` when it joined
+ * a transaction the user opened in the session and still has to commit.
+ */
+export type SaveOutcome = 'committed' | 'pending';
+
 export class QueryRunner {
     private static vscodeModule: typeof import('vscode') | undefined;
     private connectionManager: ConnectionManager;
@@ -232,7 +238,7 @@ export class QueryRunner {
         return {
             query: (sql, params) => this.connectionManager.query(sql, params),
             queryPositional: (sql, params) => this.connectionManager.queryPositional(sql, params),
-            transaction: async <T>(work: (query: QueryFn) => Promise<T>): Promise<T> => {
+            transaction: async <T>(work: (query: QueryFn, joined: boolean) => Promise<T>): Promise<T> => {
                 const pool = this.connectionManager.getPool();
                 if (!pool) {
                     throw new Error('Not connected to database');
@@ -240,7 +246,7 @@ export class QueryRunner {
                 const client = await pool.connect();
                 try {
                     await client.query('BEGIN');
-                    const result = await work((sql, params) => client.query(sql, params));
+                    const result = await work((sql, params) => client.query(sql, params), false);
                     await client.query('COMMIT');
                     return result;
                 } catch (err) {
@@ -600,19 +606,20 @@ export class QueryRunner {
      * Run a SQL script the user edited in the commit preview as one
      * transaction: either every statement is applied or none.
      */
-    async executeStatements(sql: string): Promise<void> {
+    async executeStatements(sql: string): Promise<SaveOutcome> {
         const statements = splitSqlStatements(sql).map(s => s.trim()).filter(s => s.length > 0);
         if (statements.length === 0) {
             throw new Error('There is no statement to execute.');
         }
-        await this.executor.transaction(async (query) => {
+        return this.executor.transaction(async (query, joined): Promise<SaveOutcome> => {
             for (const statement of statements) {
                 await query(statement);
             }
+            return joined ? 'pending' : 'committed';
         });
     }
 
-    async commitChanges(targets: ReadonlyArray<CommitTarget>): Promise<void> {
+    async commitChanges(targets: ReadonlyArray<CommitTarget>): Promise<SaveOutcome> {
         const { alwaysQuote } = this.getSelectOptions();
         const typesByTarget = new Map<CommitTarget, Readonly<Record<string, string>>>();
         for (const target of targets) {
@@ -620,7 +627,7 @@ export class QueryRunner {
         }
         // Nothing but `query` may reach the database in here: on a session,
         // another statement would wait for this transaction to finish.
-        await this.executor.transaction(async (query) => {
+        return this.executor.transaction(async (query, joined): Promise<SaveOutcome> => {
             for (const target of targets) {
                 const { schema, table, changes } = target;
                 const types = typesByTarget.get(target) ?? {};
@@ -703,6 +710,7 @@ export class QueryRunner {
                     this.assertSingleRow(verifyRowCount, result, 'DELETE', schema, table);
                 }
             }
+            return joined ? 'pending' : 'committed';
         });
     }
 
@@ -943,8 +951,9 @@ export class QueryRunner {
         // the latter only reflects the *currently executing* session's resolved
         // path and was observed to return an empty list on pooled connections
         // where the configured path had not (yet) been applied, even though the
-        // schema clearly exists and is on the path.
-        const result = await this.connectionManager.query(
+        // schema clearly exists and is on the path. It is read where the query
+        // will run: a session may have changed its search_path with SET.
+        const result = await this.executor.query(
             'SELECT current_setting(\'search_path\') AS search_path, current_user AS current_user'
         );
         const rawSearchPath: string = result.rows[0]?.search_path ?? '';
