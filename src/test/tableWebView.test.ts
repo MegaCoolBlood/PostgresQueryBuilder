@@ -1755,6 +1755,87 @@ test('a table opened through a foreign key runs on the session of the Data Viewe
     orders.state.onDispose.forEach((dispose) => dispose());
     assert.equal(clients[0].ended, false);
 });
+/** Open a query panel through openQueryViewWithLoad and record how its first query ends. */
+async function openTrackedPanel(manager: TableWebViewManager, ref: { key: string; label: string }) {
+    let view: any;
+    const panel = await withPanel(async () => { view = await manager.openQueryViewWithLoad('SELECT 1 AS n', 'A', ref); });
+    const outcome: { value?: any } = {};
+    view.loaded.then((value: any) => { outcome.value = value; });
+    return { panel, outcome };
+}
+
+const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+
+test('openQueryViewWithLoad tells a script once the first query of the panel has run', async () => {
+    const { dbSessions } = createSessionManager();
+    const { manager } = createManager({ dbSessions });
+    const ref = { key: 'file:file:///work/payroll.sql', label: 'payroll.sql' };
+    dbSessions.acquire(ref, 'file');
+    const { panel, outcome } = await openTrackedPanel(manager, ref);
+    await nextTurn();
+    assert.equal(outcome.value, undefined, 'nothing has run yet');
+
+    await panel.state.onMessage(loadRows('SELECT 1 AS n'));
+    await nextTurn();
+
+    assert.deepEqual(outcome.value, { status: 'loaded' });
+    assert.ok(panel.posted.some((m: any) => m.command === 'rowsLoaded'));
+});
+
+test('openQueryViewWithLoad reports a first query that failed', async (t) => {
+    const original = vscodeStub.window.showErrorMessage;
+    vscodeStub.window.showErrorMessage = () => Promise.resolve(undefined);
+    t.after(() => { vscodeStub.window.showErrorMessage = original; });
+    const { dbSessions } = createSessionManager(async () => { throw new Error('relation "x" does not exist'); });
+    const { manager } = createManager({ dbSessions });
+    const ref = { key: 'file:file:///work/payroll.sql', label: 'payroll.sql' };
+    dbSessions.acquire(ref, 'file');
+    const { panel, outcome } = await openTrackedPanel(manager, ref);
+
+    await panel.state.onMessage(loadRows('SELECT 1 AS n'));
+    await nextTurn();
+
+    assert.deepEqual(outcome.value, { status: 'failed', error: 'relation "x" does not exist' });
+});
+
+test('openQueryViewWithLoad reports a panel closed before its first query ran', async () => {
+    const { dbSessions } = createSessionManager();
+    const { manager } = createManager({ dbSessions });
+    const ref = { key: 'file:file:///work/payroll.sql', label: 'payroll.sql' };
+    dbSessions.acquire(ref, 'file');
+    const { panel, outcome } = await openTrackedPanel(manager, ref);
+
+    panel.state.onDispose.forEach((dispose) => dispose());
+    await nextTurn();
+
+    assert.deepEqual(outcome.value, { status: 'closed' });
+});
+
+test('openQueryViewWithLoad places the panel as asked and reports the group it is in', async () => {
+    const { dbSessions } = createSessionManager();
+    const { manager } = createManager({ dbSessions });
+    const ref = { key: 'file:file:///work/payroll.sql', label: 'payroll.sql' };
+    dbSessions.acquire(ref, 'file');
+    const panel: any = createFakePanel();
+    const shownWith: any[] = [];
+    const originalCreate = vscodeStub.window.createWebviewPanel;
+    vscodeStub.window.createWebviewPanel = (...args: any[]) => { shownWith.push(args[2]); return panel; };
+    let view: any;
+    try {
+        view = await manager.openQueryViewWithLoad('SELECT 1 AS n', 'A', ref, { viewColumn: 2, preserveFocus: true });
+        await manager.openQueryViewWithLoad('SELECT 2 AS n', 'B', ref);
+    } finally {
+        vscodeStub.window.createWebviewPanel = originalCreate;
+    }
+
+    assert.deepEqual(shownWith, [
+        { viewColumn: 2, preserveFocus: true },
+        { viewColumn: vscodeStub.ViewColumn.Beside, preserveFocus: false }
+    ]);
+    panel.viewColumn = 2;
+    assert.equal(view.viewColumn(), 2);
+});
+
 test('the session badge resets the session of the panel after asking', async (t) => {
     const { dbSessions, clients } = createSessionManager();
     const { manager } = createManager({ dbSessions });

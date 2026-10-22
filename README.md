@@ -272,6 +272,14 @@ fields wherever it comes from.
   *PostgreSQL Messages* output; a syntax error puts the cursor where it is. A
   running statement can be cancelled from its notification; one still waiting
   for a Data Viewer query of the same session is then not run at all.
+- **Execute File** (`Ctrl+Shift+Alt+Enter`, or the run button in the editor's
+  title bar) runs every statement of the file from top to bottom in the file's
+  session. Each query returning rows opens in its own Data Viewer, and the run
+  goes on only once that Data Viewer has loaded its first page, so it shows the
+  data as the statements above left it. All Data Viewers of a run open as tabs
+  of one editor group beside the file, which keeps the focus. The run stops at
+  the first statement that fails, names it with its line and puts the cursor
+  at the error.
 - **Bookmark Query** stores the statement under the cursor.
 - **Autocomplete** in SQL files offers the same suggestions as the Data
   Viewer's query bar, for the statement the cursor is in — also inside a
@@ -367,6 +375,7 @@ Every command lives in the Command Palette (`Ctrl+Shift+P`) under the category
 | Open psql Console | Start `psql` for the active connection in a terminal |
 | View Data | Run the `SELECT` under the cursor in the Data Viewer |
 | Execute Selection | Run exactly the selected text in the session of the SQL file; a selected `SELECT` opens in the Data Viewer |
+| Execute File | Run every statement of the SQL file from top to bottom in its session; queries open in the Data Viewer |
 | Reset Database Session | Discard the session of the SQL file: settings, temporary tables, an open transaction |
 | Format PL/pgSQL | Format the current SQL file |
 | Export Formatter Settings to .pgformat.json | Write the current formatter settings into a file |
@@ -388,6 +397,7 @@ duplicating, deleting and moving between the personal and the workspace scope.
 |----------|-------|--------------|
 | `Ctrl+Enter` | SQL editor, query bar | Run the query |
 | `Ctrl+Alt+Enter` | SQL files | Execute the selected text |
+| `Ctrl+Shift+Alt+Enter` | SQL files | Execute the whole file |
 | `Enter` | Filter inputs | Apply the column filter |
 | `Alt+←` / `Alt+→` | Single record view | Previous / next row |
 | `Esc` | Dialogs | Close |

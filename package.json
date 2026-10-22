@@ -161,6 +161,12 @@
         "category": "PostgreSQL Query Booster"
       },
       {
+        "command": "postgresQueryBuilder.executeFile",
+        "title": "Execute File",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(run-all)"
+      },
+      {
         "command": "postgresQueryBuilder.formatSql",
         "title": "Format PL/pgSQL",
         "category": "PostgreSQL Query Booster",
@@ -328,10 +334,22 @@
           "group": "3_delete@1"
         }
       ],
+      "editor/title": [
+        {
+          "command": "postgresQueryBuilder.executeFile",
+          "when": "resourceLangId == sql",
+          "group": "navigation"
+        }
+      ],
       "editor/context": [
         {
           "command": "postgresQueryBuilder.executeStatement",
           "when": "editorTextFocus && editorHasSelection && resourceLangId == sql",
+          "group": "navigation@7"
+        },
+        {
+          "command": "postgresQueryBuilder.executeFile",
+          "when": "editorTextFocus && resourceLangId == sql",
           "group": "navigation@8"
         },
         {
@@ -361,6 +379,12 @@
         "command": "postgresQueryBuilder.executeStatement",
         "key": "ctrl+alt+enter",
         "mac": "cmd+alt+enter",
+        "when": "editorTextFocus && editorLangId == sql"
+      },
+      {
+        "command": "postgresQueryBuilder.executeFile",
+        "key": "ctrl+shift+alt+enter",
+        "mac": "cmd+shift+alt+enter",
         "when": "editorTextFocus && editorLangId == sql"
       }
     ],

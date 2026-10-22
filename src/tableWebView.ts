@@ -20,7 +20,7 @@ import { addHiddenKeyColumns, isHiddenKeyColumn, planHiddenKeyColumns, type Hidd
 import { autoRefreshIntervalError, autoRefreshRefusal, exportQueryRefusal, formatAutoRefreshInterval, parseAutoRefreshInterval } from './autoRefresh';
 import { loadCompletionCatalog, loadCompletionColumns } from './sqlCompletion';
 import type { DbSession, DbSessionManager, DbSessionRef } from './dbSession';
-import { resetSessionWithConfirmation } from './sqlFileSession';
+import { resetSessionWithConfirmation, type QueryViewLoad, type ViewerPlacement } from './sqlFileSession';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -56,7 +56,16 @@ interface PanelSession {
     dbSession?: DbSession;
     /** Handed to the tabs opened from this one, so they share its session. */
     dbSessionRef?: DbSessionRef;
+    /** Told once how the panel's first query ended; see {@link TableWebViewManager.openQueryViewWithLoad}. */
+    onFirstLoad?: (outcome: QueryViewLoad) => void;
     disposed: boolean;
+}
+
+/** Settle the first-load promise of a panel, once. */
+function settleFirstLoad(session: PanelSession, outcome: QueryViewLoad): void {
+    const settle = session.onFirstLoad;
+    session.onFirstLoad = undefined;
+    settle?.(outcome);
 }
 
 /** Shared context passed to each webview message handler. */
@@ -365,12 +374,13 @@ export class TableWebViewManager {
         table: string,
         historyKey: string,
         viewColumn: vscode.ViewColumn,
-        sessionRef?: DbSessionRef
+        sessionRef?: DbSessionRef,
+        preserveFocus = false
     ): PanelSession {
         const panel = vscode.window.createWebviewPanel(
             'postgresTableView',
             title,
-            viewColumn,
+            { viewColumn, preserveFocus },
             {
                 enableScripts: true,
                 retainContextWhenHidden: true,
@@ -396,6 +406,7 @@ export class TableWebViewManager {
 
         panel.onDidDispose(() => {
             session.disposed = true;
+            settleFirstLoad(session, { status: 'closed' });
             this.sessions.delete(id);
             if (dbSessions && session.dbSessionRef) {
                 dbSessions.release(session.dbSessionRef.key, holder);
@@ -432,9 +443,18 @@ export class TableWebViewManager {
                 return;
             }
             const queryRunner = new QueryRunner(this.connectionManager, undefined, session.dbSession);
+            // The first query the panel runs on its own (not a page appended
+            // to it, not an auto refresh) is what a script waits for.
+            const firstLoad = message.command === 'loadRows' && !message.append && !message.autoRefresh;
             try {
                 await handler.call(this, { session, message, queryRunner });
+                if (firstLoad) {
+                    settleFirstLoad(session, { status: 'loaded' });
+                }
             } catch (err: unknown) {
+                if (firstLoad) {
+                    settleFirstLoad(session, { status: 'failed', error: getErrorMessage(err) });
+                }
                 // Always release the loading state, otherwise the grid keeps
                 // showing a spinner for a query that already failed. A failed
                 // auto refresh is named so the panel can switch it off.
@@ -565,14 +585,49 @@ export class TableWebViewManager {
         savedQuery?: { id: string; parameters: SavedQueryParameter[]; values: Record<string, string> },
         sessionRef?: DbSessionRef
     ): Promise<void> {
+        await this.createQueryPanel(sql, title, viewColumn, savedQuery, sessionRef);
+    }
+
+    /**
+     * Open the Data Viewer for `sql` on the session `sessionRef` and tell when
+     * its first query has run, so a script can go on in order: `loaded`,
+     * `failed` with the error, or `closed` when the tab went away first.
+     * `viewColumn()` names the editor group the panel ended up in, so a script
+     * can open its next Data Viewers there as tabs of the same group.
+     * Resolves to undefined when no connection could be made.
+     */
+    async openQueryViewWithLoad(
+        sql: string,
+        title: string,
+        sessionRef: DbSessionRef,
+        placement: ViewerPlacement = {}
+    ): Promise<{ loaded: Promise<QueryViewLoad>; viewColumn: () => vscode.ViewColumn | undefined } | undefined> {
+        let settle: (outcome: QueryViewLoad) => void = () => undefined;
+        const loaded = new Promise<QueryViewLoad>((resolve) => { settle = resolve; });
+        const session = await this.createQueryPanel(
+            sql, title, placement.viewColumn ?? vscode.ViewColumn.Beside, undefined, sessionRef, settle, placement.preserveFocus
+        );
+        return session ? { loaded, viewColumn: () => session.panel.viewColumn } : undefined;
+    }
+
+    private async createQueryPanel(
+        sql: string,
+        title: string,
+        viewColumn: vscode.ViewColumn,
+        savedQuery: { id: string; parameters: SavedQueryParameter[]; values: Record<string, string> } | undefined,
+        sessionRef: DbSessionRef | undefined,
+        onFirstLoad?: (outcome: QueryViewLoad) => void,
+        preserveFocus = false
+    ): Promise<PanelSession | undefined> {
         // Running the query needs a connection; without this the panel would
         // open and spin forever.
         if (!await this.connectionManager.ensureConnected()) {
-            return;
+            return undefined;
         }
 
         const id = `query:${++this.querySessionCounter}`;
-        const session = this.createSession(id, title, 'query', '', '', `query:${title}`, viewColumn, sessionRef);
+        const session = this.createSession(id, title, 'query', '', '', `query:${title}`, viewColumn, sessionRef, preserveFocus);
+        session.onFirstLoad = onFirstLoad;
         const parameters = savedQuery?.parameters ?? [];
 
         this.post(session, {
@@ -598,6 +653,7 @@ export class TableWebViewManager {
             awaitParameters: parameters.length > 0
         });
         this.postSessionInfo(session);
+        return session;
     }
 
     /** Maps each webview message command to its handler method. */

@@ -228,6 +228,13 @@ export function summarizeExecution(results: ReadonlyArray<ExecutionResult>, ms: 
     return `${results.length} statements completed in ${time}: ${parts.join(', ')}.`;
 }
 
+/** One line telling what "Execute File" did, e.g. `Ran all 12 statements of payroll.sql in 1.2 s; 2 opened in the Data Viewer.` */
+export function summarizeFileRun(label: string, total: number, opened: number, ms: number): string {
+    const all = total === 1 ? 'the statement' : `all ${total} statements`;
+    const viewers = opened === 0 ? '' : `; ${opened} ${opened === 1 ? 'query' : 'queries'} opened in the Data Viewer`;
+    return `Ran ${all} of ${label} in ${durationText(ms)}${viewers}.`;
+}
+
 /** A server message as a line (plus its detail lines) for the messages output. */
 export function formatServerMessage(label: string, notice: SessionNotice, now: Date = new Date()): string {
     const time = now.toTimeString().slice(0, 8);
@@ -292,17 +299,86 @@ export async function resetSessionWithConfirmation(session: DbSession, sharedWit
     return true;
 }
 
-/** Opens a Data Viewer for `sql` on the session `ref`. */
-export type OpenQueryView = (sql: string, title: string, ref: DbSessionRef) => Promise<void>;
+/** How the first query of a Data Viewer opened by a script ended. */
+export type QueryViewLoad = { status: 'loaded' } | { status: 'failed'; error: string } | { status: 'closed' };
+
+/** Where a Data Viewer opened by a script goes, and whether the editor keeps the focus. */
+export interface ViewerPlacement {
+    viewColumn?: vscode.ViewColumn;
+    preserveFocus?: boolean;
+}
+
+/**
+ * Opens a Data Viewer for `sql` on the session `ref`; `loaded` settles once its
+ * first query has run, and `viewColumn()` names the editor group it is in.
+ * Undefined when no connection could be made.
+ */
+export type OpenQueryView = (
+    sql: string,
+    title: string,
+    ref: DbSessionRef,
+    placement?: ViewerPlacement
+) => Promise<{ loaded: Promise<QueryViewLoad>; viewColumn?: () => vscode.ViewColumn | undefined } | undefined>;
 
 /** Thrown inside the session when Cancel was pressed before the statement got its turn. */
 class CancelledBeforeStart extends Error {}
 
 /**
+ * Runs statements of one command on a session, so that Cancel only ever
+ * reaches them: a statement that has not had its turn yet is skipped, the one
+ * running has its server process asked to cancel, and the session does not go
+ * on to the next statement before that request has been handled.
+ */
+class CancellableRun {
+    cancelled = false;
+    /** Settles when Cancel is pressed. */
+    readonly whenCancelled: Promise<void>;
+    private markCancelled: () => void = () => undefined;
+    private runningPid: number | null = null;
+    private cancelRequest: Promise<void> | null = null;
+
+    constructor(private readonly cancelBackend: (pid: number) => Promise<void>) {
+        this.whenCancelled = new Promise((resolve) => { this.markCancelled = resolve; });
+    }
+
+    cancel(): void {
+        this.cancelled = true;
+        this.markCancelled();
+        if (this.runningPid !== null && !this.cancelRequest) {
+            this.cancelRequest = this.cancelBackend(this.runningPid);
+        }
+    }
+
+    run(session: DbSession, sql: string, notices: SessionNotice[]): Promise<QueryResult | QueryResult[]> {
+        return session.run(async (client) => {
+            if (this.cancelled) {
+                throw new CancelledBeforeStart();
+            }
+            const collect = (notice: SessionNotice): void => { notices.push(notice); };
+            client.on('notice', collect);
+            this.runningPid = client.processID ?? null;
+            try {
+                return await client.query(sql) as QueryResult | QueryResult[];
+            } finally {
+                this.runningPid = null;
+                client.removeListener('notice', collect);
+                // The statement may end before a slow cancel request reaches
+                // the server; the session's next statement must not start
+                // until it has, or it gets cancelled instead.
+                if (this.cancelRequest) {
+                    await this.cancelRequest;
+                    this.cancelRequest = null;
+                }
+            }
+        });
+    }
+}
+
+/**
  * The database sessions of SQL files. A file gets its session with the first
- * "Execute Selection" or "View Data", the Data Viewers opened from it share
- * that session, and it ends once the file and all those Data Viewers are
- * closed.
+ * "Execute Selection", "Execute File" or "View Data", the Data Viewers opened
+ * from it share that session, and it ends once the file and all those Data
+ * Viewers are closed.
  */
 export class SqlFileSessions implements vscode.Disposable {
     /** Sessions held by an open SQL file: session key → document URI. */
@@ -374,38 +450,9 @@ export class SqlFileSessions implements vscode.Disposable {
                     cancellable: true
                 },
                 (_progress, token) => {
-                    // Cancel must only ever reach this statement: before it got
-                    // its turn in the session it is skipped, while it runs its
-                    // server process is asked to cancel, afterwards nothing.
-                    let cancelled = false;
-                    let runningPid: number | null = null;
-                    let cancelRequest: Promise<void> | null = null;
-                    token.onCancellationRequested(() => {
-                        cancelled = true;
-                        if (runningPid !== null) {
-                            cancelRequest = this.cancelBackend(runningPid);
-                        }
-                    });
-                    return session.run(async (client) => {
-                        if (cancelled) {
-                            throw new CancelledBeforeStart();
-                        }
-                        const collect = (notice: SessionNotice): void => { notices.push(notice); };
-                        client.on('notice', collect);
-                        runningPid = client.processID ?? null;
-                        try {
-                            return await client.query(target.sql) as QueryResult | QueryResult[];
-                        } finally {
-                            runningPid = null;
-                            client.removeListener('notice', collect);
-                            // The statement may end before a slow cancel request
-                            // reaches the server; the session's next statement
-                            // must not start until it has, or it gets cancelled.
-                            if (cancelRequest) {
-                                await cancelRequest;
-                            }
-                        }
-                    });
+                    const runner = new CancellableRun((pid) => this.cancelBackend(pid));
+                    token.onCancellationRequested(() => runner.cancel());
+                    return runner.run(session, target.sql, notices);
                 }
             );
         } catch (err: unknown) {
@@ -420,11 +467,129 @@ export class SqlFileSessions implements vscode.Disposable {
         this.recordModifyHistory(target.sql);
         let message = summarizeExecution(Array.isArray(outcome) ? outcome : [outcome], Date.now() - started);
         if (notices.length > 0) {
-            message += ` The server sent ${notices.length} ${notices.length === 1 ? 'message' : 'messages'}, `
-                + `shown in the "${MESSAGES_CHANNEL_NAME}" output.`;
-            this.messages.show(true);
+            message += this.noticesText(notices.length);
         }
         vscode.window.showInformationMessage(message);
+    }
+
+    /**
+     * Run the whole file from top to bottom, one statement after the other, in
+     * the file's session. A query returning rows opens in the Data Viewer on
+     * that session, and the run goes on only once its first page has loaded,
+     * so it sees the data exactly as the statements above left it. The run
+     * stops at the first statement that fails.
+     */
+    async executeFile(editor: vscode.TextEditor | undefined): Promise<void> {
+        if (!editor) {
+            vscode.window.showWarningMessage('Open the SQL file to execute.');
+            return;
+        }
+        const document = editor.document;
+        const text = document.getText();
+        const ranges = statementRanges(text).filter((range): range is { start: number; end: number } => range !== null);
+        if (ranges.length === 0) {
+            vscode.window.showWarningMessage('The file holds no statement to execute.');
+            return;
+        }
+        if (!await this.connectionManager.ensureConnected()) {
+            return;
+        }
+
+        const { ref, session } = this.acquire(document);
+        const notices: SessionNotice[] = [];
+        const started = Date.now();
+        const total = ranges.length;
+        type Stop = { reason: 'failed'; index: number; error: unknown; inViewer: boolean } | { reason: 'cancelled'; index: number };
+        let opened = 0;
+
+        const stop = await vscode.window.withProgress(
+            {
+                location: vscode.ProgressLocation.Notification,
+                title: `Executing ${ref.label}`,
+                cancellable: true
+            },
+            async (progress, token): Promise<Stop | null> => {
+                const runner = new CancellableRun((pid) => this.cancelBackend(pid));
+                token.onCancellationRequested(() => runner.cancel());
+                // All Data Viewers of the run go into one group beside the
+                // file, as tabs: the file keeps the focus, so "beside" stays
+                // the same group, and once the first one is placed, the others
+                // follow it there even if the focus moved meanwhile.
+                let viewerColumn: vscode.ViewColumn | undefined;
+                for (let index = 0; index < total; index++) {
+                    if (runner.cancelled) {
+                        return { reason: 'cancelled', index };
+                    }
+                    progress.report({ message: `statement ${index + 1} of ${total}`, increment: 100 / total });
+                    const sql = text.slice(ranges[index].start, ranges[index].end);
+
+                    if (this.openQueryView && isResultQuery(sql)) {
+                        const view = await this.openQueryView(sql, queryViewTitle(sql), ref, {
+                            viewColumn: viewerColumn ?? vscode.ViewColumn.Beside,
+                            preserveFocus: true
+                        });
+                        if (!view) {
+                            return { reason: 'cancelled', index };
+                        }
+                        opened++;
+                        const load = await Promise.race([view.loaded, runner.whenCancelled.then(() => null)]);
+                        // Known for sure only once the panel has shown itself.
+                        const column = view.viewColumn?.();
+                        if (viewerColumn === undefined && column !== undefined && column > 0) {
+                            viewerColumn = column;
+                        }
+                        if (load === null) {
+                            return { reason: 'cancelled', index: index + 1 };
+                        }
+                        if (load.status === 'failed') {
+                            return { reason: 'failed', index, error: new Error(load.error), inViewer: true };
+                        }
+                        continue;
+                    }
+
+                    try {
+                        await runner.run(session, sql, notices);
+                    } catch (err: unknown) {
+                        // A statement stopped by Cancel fails with "canceling
+                        // statement due to user request"; that is no error.
+                        if (err instanceof CancelledBeforeStart || runner.cancelled) {
+                            return { reason: 'cancelled', index };
+                        }
+                        return { reason: 'failed', index, error: err, inViewer: false };
+                    }
+                    this.recordModifyHistory(sql);
+                }
+                return null;
+            }
+        );
+
+        const noticeText = notices.length > 0 ? this.noticesText(notices.length) : '';
+        if (!stop) {
+            vscode.window.showInformationMessage(summarizeFileRun(ref.label, total, opened, Date.now() - started) + noticeText);
+            return;
+        }
+        if (stop.reason === 'cancelled') {
+            vscode.window.showInformationMessage(
+                `Execute File was cancelled after ${stop.index} of ${total} statements; the rest did not run.${noticeText}`
+            );
+            return;
+        }
+        const range = ranges[stop.index];
+        const line = document.positionAt(range.start).line + 1;
+        const before = stop.index === 0
+            ? 'nothing before it ran'
+            : `the ${stop.index === 1 ? 'statement' : `${stop.index} statements`} before it ran`;
+        const failedIn = stop.inViewer ? ', whose query failed in the Data Viewer' : '';
+        this.reportFailure(
+            editor,
+            { sql: text.slice(range.start, range.end), start: range.start },
+            ref.label,
+            stop.error,
+            {
+                prefix: `Execute File stopped at statement ${stop.index + 1} of ${total} (line ${line})${failedIn}; ${before}`,
+                revealStatement: true
+            }
+        );
     }
 
     /** Throw away the session of the file in `editor`, after asking. */
@@ -463,7 +628,19 @@ export class SqlFileSessions implements vscode.Disposable {
         }
     }
 
-    private reportFailure(editor: vscode.TextEditor, target: StatementTarget, label: string, err: unknown): void {
+    /** Text telling where the messages of the server are, which also shows them. */
+    private noticesText(count: number): string {
+        this.messages.show(true);
+        return ` The server sent ${count} ${count === 1 ? 'message' : 'messages'}, shown in the "${MESSAGES_CHANNEL_NAME}" output.`;
+    }
+
+    private reportFailure(
+        editor: vscode.TextEditor,
+        target: StatementTarget,
+        label: string,
+        err: unknown,
+        options: { prefix?: string; revealStatement?: boolean } = {}
+    ): void {
         const details = (err ?? {}) as { detail?: string; hint?: string; where?: string };
         this.messages.appendLine(formatServerMessage(label, {
             severity: 'ERROR',
@@ -472,15 +649,18 @@ export class SqlFileSessions implements vscode.Disposable {
             hint: details.hint,
             where: details.where
         }));
-        // A syntax error points at its position: put the cursor there.
-        const offset = errorOffset(err, target.start, target.sql.length);
+        // A syntax error points at its position: put the cursor there, or at
+        // the start of the failed statement of a file.
+        const offset = errorOffset(err, target.start, target.sql.length) ?? (options.revealStatement ? target.start : null);
         if (offset !== null && !editor.document.isClosed) {
             const position = editor.document.positionAt(offset);
             editor.selection = new vscode.Selection(position, position);
             editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
         }
         const where = typeof details.where === 'string' ? details.where.split('\n')[0] : '';
-        vscode.window.showErrorMessage(`Execute Selection failed: ${getErrorMessage(err)}${where ? ` (${where})` : ''}`);
+        vscode.window.showErrorMessage(
+            `${options.prefix ?? 'Execute Selection failed'}: ${getErrorMessage(err)}${where ? ` (${where})` : ''}`
+        );
     }
 
     private recordModifyHistory(sql: string): void {

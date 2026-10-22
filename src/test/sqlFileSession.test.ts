@@ -14,8 +14,10 @@ import {
     splitStatements,
     statementToExecute,
     summarizeExecution,
+    summarizeFileRun,
     tabShowsUri,
-    MESSAGES_CHANNEL_NAME
+    MESSAGES_CHANNEL_NAME,
+    type QueryViewLoad
 } from '../sqlFileSession';
 
 const DO_BLOCK = [
@@ -152,6 +154,14 @@ test('summarizeExecution lists every statement of a script', () => {
     );
 });
 
+// ===== summarizeFileRun =====
+
+test('summarizeFileRun tells how many statements ran and how many went to the Data Viewer', () => {
+    assert.equal(summarizeFileRun('payroll.sql', 4, 1, 1234), 'Ran all 4 statements of payroll.sql in 1.2 s; 1 query opened in the Data Viewer.');
+    assert.equal(summarizeFileRun('payroll.sql', 3, 2, 50), 'Ran all 3 statements of payroll.sql in 50 ms; 2 queries opened in the Data Viewer.');
+    assert.equal(summarizeFileRun('payroll.sql', 1, 0, 12), 'Ran the statement of payroll.sql in 12 ms.');
+});
+
 // ===== formatServerMessage / errorOffset / tabShowsUri / fileSessionRef =====
 
 test('formatServerMessage writes a server message with its details', () => {
@@ -221,7 +231,7 @@ function createDocument(text: string) {
         isClosed: false,
         getText: () => text,
         offsetAt: (position: { offset: number }) => position.offset,
-        positionAt: (offset: number) => ({ offset })
+        positionAt: (offset: number) => ({ offset, line: text.slice(0, offset).split('\n').length - 1 })
     };
 }
 
@@ -258,11 +268,18 @@ function createFileSessions(options: {
     onQuery?: (client: FakeClient, sql: string) => unknown;
     connected?: boolean;
     poolQuery?: (sql: string, params?: unknown[]) => Promise<any>;
+    /** How the first query of a Data Viewer opened for `sql` ends; loaded at once by default. */
+    viewerLoad?: (sql: string) => Promise<QueryViewLoad>;
 } = {}) {
     const clients: FakeClient[] = [];
+    /** Statements run on the session (`run:`) and Data Viewers opened (`view:`), in order. */
+    const events: string[] = [];
     const manager = new DbSessionManager({
         openClient: async () => {
-            const client = new FakeClient(4711 + clients.length, options.onQuery);
+            const client = new FakeClient(4711 + clients.length, (c, sql) => {
+                events.push(`run:${sql}`);
+                return options.onQuery?.(c, sql);
+            });
             clients.push(client);
             return client as any;
         },
@@ -276,7 +293,7 @@ function createFileSessions(options: {
     };
     const history: Array<{ sql: string }> = [];
     const poolQueries: Array<{ sql: string; params?: unknown[] }> = [];
-    const opened: Array<{ sql: string; title: string; ref: any }> = [];
+    const opened: Array<{ sql: string; title: string; ref: any; placement?: any }> = [];
     const connectionManager: any = {
         ensureConnected: async () => options.connected !== false,
         query: async (sql: string, params?: unknown[]) => {
@@ -285,10 +302,18 @@ function createFileSessions(options: {
         }
     };
     const modifyHistoryStore: any = { addMany: (entries: Array<{ sql: string }>) => history.push(...entries) };
-    const openQueryView = async (sql: string, title: string, ref: any) => { opened.push({ sql, title, ref }); };
+    const openQueryView = async (sql: string, title: string, ref: any, placement?: any) => {
+        opened.push({ sql, title, ref, placement });
+        events.push(`view:${sql}`);
+        return {
+            loaded: options.viewerLoad ? options.viewerLoad(sql) : Promise.resolve({ status: 'loaded' } as QueryViewLoad),
+            // The editor group the first Data Viewer landed in, beside the file.
+            viewColumn: () => 2
+        };
+    };
     const fileSessions = new SqlFileSessions(manager, connectionManager, channel as any, modifyHistoryStore, openQueryView);
     showFile(true);
-    return { manager, clients, channel, history, poolQueries, opened, fileSessions };
+    return { manager, clients, channel, history, poolQueries, opened, events, fileSessions };
 }
 
 /** An editor in which exactly `selected` is selected. */
@@ -512,6 +537,181 @@ test('the next statement of the session waits until a slow cancel request has be
     await viewerQuery;
     assert.deepEqual(clients[0].queries, [DO_BLOCK, 'SELECT 1']);
     assert.deepEqual(poolQueries, [{ sql: 'SELECT pg_cancel_backend($1)', params: [4711] }]);
+});
+
+// ===== Execute File =====
+
+const UPDATE = 'UPDATE pks_ate_payroll.lohn SET done = false';
+const DELETE = 'DELETE FROM pks_ate_payroll.tmp';
+/** Line 1 a comment, the DO block on lines 2–10, UPDATE on 12, SELECT on 14, DELETE on 16. */
+const SCRIPT = `-- payroll run\n${DO_BLOCK};\n\n${UPDATE};\n\n${SELECT};\n\n${DELETE};\n`;
+
+/** Let every pending promise of the run settle. */
+async function settle(): Promise<void> {
+    for (let i = 0; i < 20; i++) {
+        await tick();
+    }
+}
+
+function deferredLoad() {
+    let resolve: (outcome: QueryViewLoad) => void = () => undefined;
+    const promise = new Promise<QueryViewLoad>((res) => { resolve = res; });
+    return { promise, resolve };
+}
+
+test('Execute File runs the file from top to bottom on its session and opens SELECTs in the Data Viewer', async (t) => {
+    const infos = recordWindowCalls(t, 'showInformationMessage');
+    const { fileSessions, events, opened, history, clients } = createFileSessions();
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(createEditor(SCRIPT, 0) as any);
+
+    assert.deepEqual(events, [`run:${DO_BLOCK}`, `run:${UPDATE}`, `view:${SELECT}`, `run:${DELETE}`]);
+    assert.equal(clients.length, 1, 'every statement ran on the one session of the file');
+    assert.deepEqual(opened[0].ref, { key: `file:${URI}`, label: 'payroll.sql' });
+    assert.deepEqual(history, [{ sql: UPDATE }, { sql: DELETE }]);
+    assert.match(String(infos[0][0]), /^Ran all 4 statements of payroll\.sql in \d+ ms; 1 query opened in the Data Viewer\.$/);
+});
+
+test('Execute File opens all its Data Viewers as tabs of one group beside the file', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const { fileSessions, opened } = createFileSessions();
+    t.after(() => fileSessions.dispose());
+    const queries = ['SELECT 1 AS a', 'SELECT 2 AS b', 'SELECT 3 AS c'];
+
+    await fileSessions.executeFile(createEditor(queries.map((q) => `${q};`).join('\n'), 0) as any);
+
+    assert.deepEqual(opened.map((o) => o.placement), [
+        { viewColumn: vscodeStub.ViewColumn.Beside, preserveFocus: true },
+        { viewColumn: 2, preserveFocus: true },
+        { viewColumn: 2, preserveFocus: true }
+    ], 'only the first one may open a new group; the file keeps the focus');
+});
+
+test('a SELECT handed over by Execute Selection opens like View Data and takes the focus', async (t) => {
+    const { fileSessions, opened } = createFileSessions();
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.execute(selecting(FILE, SELECT) as any);
+
+    assert.equal(opened[0].placement, undefined);
+});
+
+test('Execute File runs the whole file even when text is selected', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const { fileSessions, events } = createFileSessions();
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(selecting(SCRIPT, UPDATE) as any);
+
+    assert.equal(events.length, 4);
+});
+
+test('Execute File goes on only once the Data Viewer has loaded its first page', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const load = deferredLoad();
+    const { fileSessions, events } = createFileSessions({ viewerLoad: () => load.promise });
+    t.after(() => fileSessions.dispose());
+
+    const running = fileSessions.executeFile(createEditor(SCRIPT, 0) as any);
+    await settle();
+    assert.deepEqual(events, [`run:${DO_BLOCK}`, `run:${UPDATE}`, `view:${SELECT}`],
+        'the DELETE below must not change the data before the SELECT has shown it');
+
+    load.resolve({ status: 'loaded' });
+    await running;
+    assert.deepEqual(events.at(-1), `run:${DELETE}`);
+});
+
+test('Execute File stops at the first statement that fails and points at the error', async (t) => {
+    const errors = recordWindowCalls(t, 'showErrorMessage');
+    const { fileSessions, events } = createFileSessions({
+        onQuery: (_client, sql) => {
+            if (sql === UPDATE) {
+                throw Object.assign(new Error('column "done" does not exist'), { position: '35' });
+            }
+            return undefined;
+        }
+    });
+    t.after(() => fileSessions.dispose());
+    const editor = createEditor(SCRIPT, 0);
+
+    await fileSessions.executeFile(editor as any);
+
+    assert.deepEqual(events, [`run:${DO_BLOCK}`, `run:${UPDATE}`], 'nothing after the failed statement ran');
+    assert.equal(errors[0][0],
+        'Execute File stopped at statement 2 of 4 (line 12); the statement before it ran: column "done" does not exist');
+    assert.equal((editor.selection as any).active.offset, SCRIPT.indexOf(UPDATE) + 34);
+});
+
+test('a query that fails in the Data Viewer stops Execute File at its statement', async (t) => {
+    const errors = recordWindowCalls(t, 'showErrorMessage');
+    const { fileSessions, events } = createFileSessions({
+        viewerLoad: async () => ({ status: 'failed', error: 'relation "pks_ate_payroll.v_lohn" does not exist' })
+    });
+    t.after(() => fileSessions.dispose());
+    const editor = createEditor(SCRIPT, 0);
+
+    await fileSessions.executeFile(editor as any);
+
+    assert.deepEqual(events, [`run:${DO_BLOCK}`, `run:${UPDATE}`, `view:${SELECT}`]);
+    assert.equal(errors[0][0],
+        'Execute File stopped at statement 3 of 4 (line 14), whose query failed in the Data Viewer; '
+        + 'the 2 statements before it ran: relation "pks_ate_payroll.v_lohn" does not exist');
+    assert.equal((editor.selection as any).active.offset, SCRIPT.indexOf(SELECT), 'the cursor goes to the failed statement');
+});
+
+test('cancelling Execute File while a Data Viewer loads runs nothing after it', async (t) => {
+    const control = controllableCancel(t);
+    const infos = recordWindowCalls(t, 'showInformationMessage');
+    const load = deferredLoad();
+    const { fileSessions, events } = createFileSessions({ viewerLoad: () => load.promise });
+    t.after(() => fileSessions.dispose());
+
+    const running = fileSessions.executeFile(createEditor(SCRIPT, 0) as any);
+    await settle();
+    control.cancel();
+    await running;
+
+    assert.deepEqual(events, [`run:${DO_BLOCK}`, `run:${UPDATE}`, `view:${SELECT}`]);
+    assert.equal(infos[0][0], 'Execute File was cancelled after 3 of 4 statements; the rest did not run.');
+});
+
+test('cancelling Execute File during a statement cancels that statement and stops without an error', async (t) => {
+    const control = controllableCancel(t);
+    const infos = recordWindowCalls(t, 'showInformationMessage');
+    const errors = recordWindowCalls(t, 'showErrorMessage');
+    let release: () => void = () => undefined;
+    const { fileSessions, events, poolQueries } = createFileSessions({
+        onQuery: (_client, sql) => (sql === UPDATE
+            ? new Promise<void>((resolve) => { release = resolve; }).then(() => { throw new Error('canceling statement due to user request'); })
+            : undefined)
+    });
+    t.after(() => fileSessions.dispose());
+
+    const running = fileSessions.executeFile(createEditor(SCRIPT, 0) as any);
+    await settle();
+    control.cancel();
+    await settle();
+    release();
+    await running;
+
+    assert.deepEqual(poolQueries, [{ sql: 'SELECT pg_cancel_backend($1)', params: [4711] }]);
+    assert.deepEqual(events, [`run:${DO_BLOCK}`, `run:${UPDATE}`]);
+    assert.deepEqual(errors, []);
+    assert.equal(infos[0][0], 'Execute File was cancelled after 1 of 4 statements; the rest did not run.');
+});
+
+test('Execute File on a file without statements warns and runs nothing', async (t) => {
+    const warnings = recordWindowCalls(t, 'showWarningMessage');
+    const { fileSessions, events } = createFileSessions();
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(createEditor('-- nothing here yet\n', 0) as any);
+    await fileSessions.executeFile(undefined);
+
+    assert.deepEqual(events, []);
+    assert.deepEqual(warnings.map((w) => w[0]), ['The file holds no statement to execute.', 'Open the SQL file to execute.']);
 });
 
 test('the session of a file ends once no tab shows the file', async (t) => {

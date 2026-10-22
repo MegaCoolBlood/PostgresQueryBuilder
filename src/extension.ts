@@ -261,6 +261,19 @@ export function activate(context: vscode.ExtensionContext) {
                     vscode.window.showErrorMessage(`Reset Database Session failed: ${getErrorMessage(err)}`);
                 }
             }),
+            // The editor title button passes the file it belongs to, which may
+            // be shown in another editor group than the active one.
+            vscode.commands.registerCommand('postgresQueryBuilder.executeFile', async (uri?: vscode.Uri) => {
+                try {
+                    const editor = uri instanceof vscode.Uri
+                        ? vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === uri.toString())
+                        : undefined;
+                    await sqlFileSessions.executeFile(editor ?? vscode.window.activeTextEditor);
+                } catch (err: unknown) {
+                    outputChannel.appendLine(`[executeFile] ${getErrorStack(err)}`);
+                    vscode.window.showErrorMessage(`Execute File failed: ${getErrorMessage(err)}`);
+                }
+            }),
             vscode.commands.registerCommand('postgresQueryBuilder.formatSql', async () => {
                 const editor = vscode.window.activeTextEditor;
                 if (!editor) {
@@ -359,8 +372,8 @@ export function activate(context: vscode.ExtensionContext) {
         sqlEditorManager = new SqlEditorManager(context, connectionManager, modifyHistoryStore);
         sqlFileSessions = new SqlFileSessions(
             dbSessions, connectionManager, messagesChannel, modifyHistoryStore,
-            // A selected SELECT is shown in the Data Viewer, on the file's session.
-            (sql, title, ref) => tableWebViewManager.openQueryView(sql, title, vscode.ViewColumn.Beside, undefined, ref)
+            // A SELECT of a selection or file is shown in the Data Viewer, on the file's session.
+            (sql, title, ref, placement) => tableWebViewManager.openQueryViewWithLoad(sql, title, ref, placement)
         );
         context.subscriptions.push(sqlFileSessions);
         viewDataFromSelect = new ViewDataFromSelect(context, connectionManager, tableWebViewManager, sqlFileSessions);
