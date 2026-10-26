@@ -5,7 +5,9 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { PoolConfig } from 'pg';
-import { Client } from 'pg';
+import { Client, Pool } from 'pg';
+import { EventEmitter } from 'events';
+import { Logger } from '../logger';
 import {
     ConnectionConfig,
     ConnectionManager,
@@ -28,9 +30,10 @@ const prod: ConnectionConfig = { name: 'prod', host: '127.0.0.1', port: 5432, da
 interface FakePool {
     config: PoolConfig;
     ended: boolean;
+    listeners: Record<string, Array<(...args: any[]) => void>>;
     connect(): Promise<{ release(): void }>;
     end(): Promise<void>;
-    on(): void;
+    on(event: string, listener: (...args: any[]) => void): void;
     query(): Promise<{ rows: Array<{ search_path: string }> }>;
 }
 
@@ -42,12 +45,13 @@ function fakePoolFactory(failures: Array<Error | null> = []) {
         const pool: FakePool = {
             config,
             ended: false,
+            listeners: {},
             async connect() {
                 if (failure) throw failure;
                 return { release() {} };
             },
             async end() { this.ended = true; },
-            on() {},
+            on(event, listener) { (this.listeners[event] ??= []).push(listener); },
             async query() { return { rows: [{ search_path: 'public' }] }; }
         };
         pools.push(pool);
@@ -113,6 +117,78 @@ test('a successful connect replaces and ends the previous pool and announces the
     assert.equal(cm.getActiveConnectionConfig()?.name, 'other');
     assert.equal(pools[0].ended, true);
     assert.equal(changes, 2);
+});
+
+// ===== connect: a pooled connection that breaks while idle =====
+
+/**
+ * A real pg Pool whose clients are stand-ins: they connect at once, answer
+ * every query, and can be made to fail like a connection the server dropped.
+ */
+function realPoolFactory() {
+    const clients: EventEmitter[] = [];
+    class StandInClient extends EventEmitter {
+        _queryable = true;
+        _ending = false;
+        connection = null;
+        constructor() {
+            super();
+            clients.push(this);
+        }
+        connect(cb: (err: Error | null) => void) { process.nextTick(() => cb(null)); }
+        query(_text: string, _values: unknown, cb: (err: Error | null, res: unknown) => void) {
+            process.nextTick(() => cb(null, { rows: [{ search_path: 'public' }] }));
+        }
+        end(cb?: () => void) {
+            this._ending = true;
+            this._queryable = false;
+            if (cb) process.nextTick(cb);
+            return Promise.resolve();
+        }
+        isConnected() { return !this._ending; }
+    }
+    const factory = (config: PoolConfig) => new Pool({ ...config, Client: StandInClient as any });
+    return { factory, clients };
+}
+
+test('a pooled connection that breaks while idle is discarded and logged instead of thrown', async () => {
+    const { factory, clients } = realPoolFactory();
+    const logged: string[] = [];
+    Logger.init({ appendLine: (line: string) => logged.push(line) } as any);
+    const cm = createManager(factory);
+    try {
+        await connect(cm, prod);
+        const pool = cm.getPool()!;
+        assert.equal(pool.idleCount, 1);
+
+        assert.doesNotThrow(() => clients[0].emit('error', new Error('Connection terminated unexpectedly')));
+
+        assert.equal(pool.totalCount, 0, 'the broken connection has left the pool');
+        assert.equal(cm.getPool(), pool, 'the connection stays active');
+        assert.match(
+            logged.join('\n'),
+            /An idle connection to the server failed and was discarded; the next query opens a new one\. Connection terminated unexpectedly/
+        );
+        const result = await cm.query('SHOW search_path');
+        assert.equal(result.rows[0].search_path, 'public');
+        assert.equal(clients.length, 2, 'the next query opens a new connection');
+    } finally {
+        (Logger as any).channel = undefined;
+        await cm.disconnect();
+    }
+});
+
+test('every pool the manager creates handles the errors of its idle connections', async () => {
+    const { factory, pools } = fakePoolFactory([new Error('The server does not support SSL connections')]);
+    const cm = createManager(factory);
+
+    await connect(cm, prod);
+    await cm.setSearchPath('payroll, public');
+
+    assert.equal(pools.length, 3, 'the SSL attempt, the plain retry and the pool rebuilt for the search_path');
+    for (const [i, pool] of pools.entries()) {
+        assert.equal(pool.listeners.error?.length, 1, `pool ${i} has an error listener`);
+    }
 });
 
 // ===== connect: SSL modes =====

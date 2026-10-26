@@ -414,9 +414,17 @@ export class ConnectionManager {
      * as a bound parameter so the comma-separated schema list is handled safely
      * (no SQL injection, no manual quoting). Because queries are serialized per
      * client, the override runs before any query issued on that client.
+     * Every pool also gets an `'error'` listener, so a connection that fails
+     * while idle is logged and discarded instead of thrown as an uncaught exception.
      */
     private createPool(poolConfig: PoolConfig, override: string | null = this.searchPathOverride): Pool {
         const pool = this.poolFactory(poolConfig);
+        // An idle connection that breaks (server restart, dropped VPN, sleeping
+        // laptop) is reported on the pool after the pool has discarded it.
+        // Without a listener Node throws that 'error' event as an uncaught exception.
+        pool.on('error', (err: Error) => {
+            Logger.log('connection', `An idle connection to the server failed and was discarded; the next query opens a new one. ${getErrorMessage(err)}`);
+        });
         if (override) {
             pool.on('connect', (client) => {
                 client.query("SELECT set_config('search_path', $1, false)", [override])
