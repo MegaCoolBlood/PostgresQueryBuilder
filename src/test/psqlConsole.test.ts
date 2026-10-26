@@ -63,6 +63,11 @@ test('buildPsqlEnvironment leaves the password out when none is stored, so psql 
     assert.equal('PGPASSWORD' in buildPsqlEnvironment(config, ''), false);
 });
 
+test('buildPsqlEnvironment reports the application name of the connection to the server', () => {
+    assert.equal(buildPsqlEnvironment({ ...config, applicationName: ' nightly import ' }, 'x').PGAPPNAME, 'nightly import');
+    assert.equal(buildPsqlEnvironment({ ...config, applicationName: '   ' }, 'x').PGAPPNAME, 'PostgreSQL Query Booster console');
+});
+
 test('buildPsqlEnvironment applies a search_path override through PGOPTIONS', () => {
     const env = buildPsqlEnvironment(config, 'x', 'app, public');
     assert.equal(env.PGOPTIONS, '-c search_path=app,\\ public');

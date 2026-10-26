@@ -5,12 +5,17 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { PoolConfig } from 'pg';
+import { Client } from 'pg';
 import {
     ConnectionConfig,
     ConnectionManager,
+    DEFAULT_APPLICATION_NAME,
     allowsPlainFallback,
+    applicationNameOptions,
     buildSslOptions,
+    connectionConfigFromForm,
     connectionFingerprint,
+    customApplicationName,
     decideStoredPassword,
     effectiveSslMode,
     findUserOnlySettings,
@@ -391,4 +396,111 @@ test('the connection generation moves on with every connect, search_path change 
     seen.push(cm.getConnectionGeneration());
 
     assert.deepEqual(seen, [0, 1, 2, 3]);
+});
+
+// ===== application_name =====
+
+/** The `application_name` pg sends in the startup message for a client config. */
+function startupApplicationName(config: PoolConfig): string | undefined {
+    return (new Client(config) as any).getStartupConf().application_name;
+}
+
+test('customApplicationName trims the entered name and treats a blank one as none', () => {
+    assert.equal(customApplicationName({}), undefined);
+    assert.equal(customApplicationName({ applicationName: '' }), undefined);
+    assert.equal(customApplicationName({ applicationName: '   ' }), undefined);
+    assert.equal(customApplicationName({ applicationName: 42 as any }), undefined);
+    assert.equal(customApplicationName({ applicationName: '  payroll import  ' }), 'payroll import');
+});
+
+test('applicationNameOptions sends the entered name and keeps the default as fallback', () => {
+    assert.deepEqual(applicationNameOptions({}), { fallback_application_name: DEFAULT_APPLICATION_NAME });
+    assert.deepEqual(applicationNameOptions({ applicationName: ' ' }), { fallback_application_name: DEFAULT_APPLICATION_NAME });
+    assert.deepEqual(applicationNameOptions({ applicationName: ' reporting ' }), {
+        application_name: 'reporting',
+        fallback_application_name: DEFAULT_APPLICATION_NAME
+    });
+});
+
+test('pg reports the default name, PGAPPNAME or the entered name in that order of precedence', () => {
+    const saved = process.env.PGAPPNAME;
+    try {
+        delete process.env.PGAPPNAME;
+        assert.equal(startupApplicationName(applicationNameOptions({})), 'PostgreSQL Query Booster');
+        assert.equal(startupApplicationName(applicationNameOptions({ applicationName: 'reporting' })), 'reporting');
+        process.env.PGAPPNAME = 'from environment';
+        assert.equal(startupApplicationName(applicationNameOptions({})), 'from environment');
+        assert.equal(startupApplicationName(applicationNameOptions({ applicationName: 'reporting' })), 'reporting');
+    } finally {
+        if (saved === undefined) delete process.env.PGAPPNAME;
+        else process.env.PGAPPNAME = saved;
+    }
+});
+
+test('a connection without an application name connects as PostgreSQL Query Booster', async () => {
+    const { factory, pools } = fakePoolFactory();
+    const cm = createManager(factory);
+
+    await connect(cm, prod);
+
+    assert.equal(pools[0].config.application_name, undefined);
+    assert.equal(pools[0].config.fallback_application_name, 'PostgreSQL Query Booster');
+});
+
+test('a connection sends its application name, also after falling back to an unencrypted connection', async () => {
+    const { factory, pools } = fakePoolFactory([new Error('The server does not support SSL connections')]);
+    const cm = createManager(factory);
+
+    await connect(cm, { ...prod, applicationName: ' nightly import ' });
+
+    assert.equal(pools[0].config.application_name, 'nightly import');
+    assert.equal(pools[1].config.application_name, 'nightly import');
+    assert.equal(cm.getPool(), pools[1] as any);
+});
+
+test('a session client uses the application name of the connection', async () => {
+    const { factory } = fakePoolFactory();
+    const sessions = fakeSessionClients();
+    const cm = createManager(factory, {}, sessions.factory);
+    await connect(cm, { ...prod, applicationName: 'nightly import' });
+
+    await cm.openSessionClient();
+
+    assert.equal(sessions.clients[0].config.application_name, 'nightly import');
+    assert.equal(sessions.clients[0].config.fallback_application_name, 'PostgreSQL Query Booster');
+});
+
+// ===== connection form =====
+
+const formMessage = { name: 'prod', host: 'db', port: 5432, database: 'app', user: 'alice' };
+
+test('connectionConfigFromForm stores the entered application name trimmed', () => {
+    const config = connectionConfigFromForm({ ...formMessage, sslMode: 'require', applicationName: '  reporting ' });
+    assert.equal(config.applicationName, 'reporting');
+    assert.equal(config.sslMode, 'require');
+});
+
+test('connectionConfigFromForm stores no application name when the field is left empty', () => {
+    assert.equal('applicationName' in connectionConfigFromForm({ ...formMessage, applicationName: '' }), false);
+    assert.equal('applicationName' in connectionConfigFromForm({ ...formMessage, applicationName: '   ' }), false);
+    assert.equal('applicationName' in connectionConfigFromForm(formMessage), false);
+});
+
+test('connectionConfigFromForm keeps reading schemas, SSL mode and CA file as before', () => {
+    assert.deepEqual(
+        connectionConfigFromForm({ ...formMessage, schemas: ' public, sales ,', sslMode: 'bogus', caFile: ' C:\\ca.pem ' }),
+        { ...formMessage, schemas: ['public', 'sales'], sslMode: 'verify-full', caFile: 'C:\\ca.pem' }
+    );
+    assert.equal(connectionConfigFromForm({ ...formMessage, schemas: '' }).schemas, undefined);
+    assert.equal('caFile' in connectionConfigFromForm({ ...formMessage, caFile: '  ' }), false);
+});
+
+test('the connection form has an application name field that is prefilled and posted', () => {
+    const cm = createManager(fakePoolFactory().factory);
+    const html: string = (cm as any).getConnectionFormHtml({ cspSource: 'vscode-webview:' });
+
+    assert.match(html, /<label for="applicationName">Application name \(optional, shown in pg_stat_activity\)<\/label>/);
+    assert.match(html, /<input type="text" id="applicationName" placeholder="PostgreSQL Query Booster" \/>/);
+    assert.match(html, /if \(msg\.applicationName\) document\.getElementById\('applicationName'\)\.value = msg\.applicationName;/);
+    assert.match(html, /sslMode, caFile, applicationName\s*\n\s*\}\);/);
 });

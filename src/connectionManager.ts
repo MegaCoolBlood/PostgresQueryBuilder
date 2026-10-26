@@ -78,6 +78,72 @@ export interface ConnectionConfig {
     sslMode?: SslMode;
     /** PEM file with the CA certificate(s) used by `verify-full`. */
     caFile?: string;
+    /** Sent to the server as `application_name`; {@link DEFAULT_APPLICATION_NAME} when missing. */
+    applicationName?: string;
+}
+
+/** The `application_name` of a connection that has none of its own. */
+export const DEFAULT_APPLICATION_NAME = 'PostgreSQL Query Booster';
+
+/** The application name entered for a connection, trimmed; undefined when there is none. */
+export function customApplicationName(config: Pick<ConnectionConfig, 'applicationName'>): string | undefined {
+    const name = typeof config.applicationName === 'string' ? config.applicationName.trim() : '';
+    return name === '' ? undefined : name;
+}
+
+/**
+ * The `application_name` options handed to `pg`. A name entered for the
+ * connection is always sent; without one, `PGAPPNAME` from the environment
+ * still wins over {@link DEFAULT_APPLICATION_NAME}, as libpq resolves its
+ * fallback name.
+ */
+export function applicationNameOptions(
+    config: Pick<ConnectionConfig, 'applicationName'>
+): Pick<PoolConfig, 'application_name' | 'fallback_application_name'> {
+    const name = customApplicationName(config);
+    const options: Pick<PoolConfig, 'application_name' | 'fallback_application_name'> = {
+        fallback_application_name: DEFAULT_APPLICATION_NAME
+    };
+    if (name !== undefined) options.application_name = name;
+    return options;
+}
+
+/** The fields the connection form posts with its `connect` message. */
+export interface ConnectionFormMessage {
+    name: string;
+    host: string;
+    port: number;
+    database: string;
+    user: string;
+    schemas?: string;
+    sslMode?: string;
+    caFile?: string;
+    applicationName?: string;
+}
+
+/** The connection the connection form describes; optional fields left empty are not stored. */
+export function connectionConfigFromForm(msg: ConnectionFormMessage): ConnectionConfig {
+    const schemas = msg.schemas
+        ? msg.schemas.split(',').map((s) => s.trim()).filter((s) => s)
+        : undefined;
+    const config: ConnectionConfig = {
+        name: msg.name,
+        host: msg.host,
+        port: msg.port,
+        database: msg.database,
+        user: msg.user,
+        schemas: schemas,
+        sslMode: SSL_MODES.includes(msg.sslMode as SslMode) ? msg.sslMode as SslMode : 'verify-full'
+    };
+    const caFile = typeof msg.caFile === 'string' ? msg.caFile.trim() : '';
+    if (caFile) {
+        config.caFile = caFile;
+    }
+    const applicationName = customApplicationName(msg);
+    if (applicationName !== undefined) {
+        config.applicationName = applicationName;
+    }
+    return config;
 }
 
 /** The `sslMode` as written, normalised; '' when it is missing. */
@@ -463,11 +529,13 @@ export class ConnectionManager {
                 schemas: (existingConfig.schemas || []).join(', '),
                 sslMode: effectiveSslMode(existingConfig),
                 caFile: existingConfig.caFile ?? '',
+                applicationName: customApplicationName(existingConfig) ?? '',
                 title: `Edit: ${existingConfig.name}`
             }
             : {
                 name: 'My Database', host: defaultHost, port: String(defaultPort), database: defaultDatabase,
-                user: 'postgres', schemas: '', sslMode: 'verify-full' as SslMode, caFile: '', title: 'New Connection'
+                user: 'postgres', schemas: '', sslMode: 'verify-full' as SslMode, caFile: '', applicationName: '',
+                title: 'New Connection'
             };
 
         // Send prefill after webview is ready
@@ -481,22 +549,7 @@ export class ConnectionManager {
                     return;
                 }
                 if (msg.type === 'connect') {
-                    const schemas = msg.schemas
-                        ? msg.schemas.split(',').map((s: string) => s.trim()).filter((s: string) => s)
-                        : undefined;
-                    const connConfig: ConnectionConfig = {
-                        name: msg.name,
-                        host: msg.host,
-                        port: msg.port,
-                        database: msg.database,
-                        user: msg.user,
-                        schemas: schemas,
-                        sslMode: SSL_MODES.includes(msg.sslMode) ? msg.sslMode : 'verify-full'
-                    };
-                    const caFile = typeof msg.caFile === 'string' ? msg.caFile.trim() : '';
-                    if (caFile) {
-                        connConfig.caFile = caFile;
-                    }
+                    const connConfig = connectionConfigFromForm(msg);
                     // When editing an existing connection and the password field is left
                     // empty, reuse the previously stored password instead of overwriting
                     // it with an empty value — but only while host, port, database and
@@ -590,6 +643,10 @@ export class ConnectionManager {
             <label for="caFile">CA certificate file (optional, PEM)</label>
             <input type="text" id="caFile" placeholder="Uses the system's trusted certificates when empty" />
         </div>
+        <div class="form-group">
+            <label for="applicationName">Application name (optional, shown in pg_stat_activity)</label>
+            <input type="text" id="applicationName" placeholder="${DEFAULT_APPLICATION_NAME}" />
+        </div>
         <div class="error" id="error"></div>
         <div class="button-row">
             <button type="submit" class="btn btn-primary">${icon('plug')}Connect</button>
@@ -610,6 +667,7 @@ export class ConnectionManager {
                 if (msg.schemas) document.getElementById('schemas').value = msg.schemas;
                 if (msg.sslMode) document.getElementById('sslMode').value = msg.sslMode;
                 if (msg.caFile) document.getElementById('caFile').value = msg.caFile;
+                if (msg.applicationName) document.getElementById('applicationName').value = msg.applicationName;
                 if (msg.title) document.getElementById('title').textContent = msg.title;
             } else if (msg.type === 'error') {
                 const el = document.getElementById('error');
@@ -629,6 +687,7 @@ export class ConnectionManager {
             const schemas = document.getElementById('schemas').value.trim();
             const sslMode = document.getElementById('sslMode').value;
             const caFile = document.getElementById('caFile').value.trim();
+            const applicationName = document.getElementById('applicationName').value.trim();
 
             if (!name || !host || !port || !database || !user) {
                 const el = document.getElementById('error');
@@ -640,7 +699,7 @@ export class ConnectionManager {
             document.getElementById('error').style.display = 'none';
             vscode.postMessage({
                 type: 'connect',
-                name, host, port: parseInt(port, 10), database, user, password, schemas, sslMode, caFile
+                name, host, port: parseInt(port, 10), database, user, password, schemas, sslMode, caFile, applicationName
             });
         });
 
@@ -742,11 +801,13 @@ export class ConnectionManager {
             throw new Error(sslModeProblem);
         }
         const sslMode = effectiveSslMode(config);
+        const applicationName = customApplicationName(config);
         Logger.log(
             'connection',
             `Connecting to ${config.host}:${config.port} (resolved host ${resolvedHost}), ` +
             `database "${config.database}", user "${config.user}", SSL ${sslMode}` +
-            (config.schemas?.length ? `, display schemas [${config.schemas.join(', ')}]` : '')
+            (config.schemas?.length ? `, display schemas [${config.schemas.join(', ')}]` : '') +
+            (applicationName !== undefined ? `, application name "${applicationName}"` : '')
         );
 
         let ca: string | undefined;
@@ -765,6 +826,7 @@ export class ConnectionManager {
             user: config.user,
             password: password,
             ssl: buildSslOptions(sslMode, config.host, ca),
+            ...applicationNameOptions(config),
             max: 10,
             connectionTimeoutMillis: 5000
         };

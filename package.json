@@ -2,7 +2,7 @@
   "name": "postgres-query-booster",
   "displayName": "PostgreSQL Query Booster",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "3.4.0",
+  "version": "3.5.0",
   "publisher": "sirlychee",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -422,7 +422,7 @@
           "type": "array",
           "default": [],
           "scope": "application",
-          "description": "Saved connection configurations (passwords stored in SecretStorage). Optional per connection: sslMode (disable, prefer, require, verify-full; prefer when missing) and caFile (PEM file used by verify-full)."
+          "description": "Saved connection configurations (passwords stored in SecretStorage). Optional per connection: sslMode (disable, prefer, require, verify-full; prefer when missing), caFile (PEM file used by verify-full) and applicationName (sent to the server as application_name; PostgreSQL Query Booster when missing)."
         },
         "postgresQueryBuilder.psqlPath": {
           "type": "string",

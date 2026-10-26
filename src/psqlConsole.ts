@@ -2,10 +2,13 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { ConnectionConfig, ConnectionManager, effectiveSslMode } from './connectionManager';
+import { ConnectionConfig, ConnectionManager, customApplicationName, effectiveSslMode } from './connectionManager';
 import { Logger, getErrorMessage } from './logger';
 
-/** Shown to the server as `application_name`, so the session is recognisable in `pg_stat_activity`. */
+/**
+ * Shown to the server as `application_name` when the connection has no name of
+ * its own, so the session is recognisable in `pg_stat_activity`.
+ */
 export const PSQL_APPLICATION_NAME = 'PostgreSQL Query Booster console';
 
 /**
@@ -23,6 +26,7 @@ export function escapePgOption(value: string): string {
  * through `PGOPTIONS` so the console resolves names like the rest of the
  * extension does. The connection's SSL mode is passed on as `PGSSLMODE`, so
  * psql never sends the password over a connection the extension would refuse.
+ * An application name entered for the connection is used by psql as well.
  */
 export function buildPsqlEnvironment(
     config: ConnectionConfig,
@@ -34,7 +38,7 @@ export function buildPsqlEnvironment(
         PGPORT: String(config.port),
         PGDATABASE: config.database,
         PGUSER: config.user,
-        PGAPPNAME: PSQL_APPLICATION_NAME
+        PGAPPNAME: customApplicationName(config) ?? PSQL_APPLICATION_NAME
     };
     if (password) {
         env.PGPASSWORD = password;

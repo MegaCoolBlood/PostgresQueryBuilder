@@ -60,6 +60,7 @@ under the category **PostgreSQL Query Booster**.
 | Schemas | no | Comma-separated list of the schemas to show; all if empty |
 | SSL | yes | *Verify certificate and host name* (default for new connections), *Require SSL, do not verify the certificate*, *Prefer SSL, fall back to unencrypted*, or *Disable SSL* |
 | CA certificate file | no | PEM file with the CA certificate(s) used to verify the server; the system's trusted certificates when empty |
+| Application name | no | The `application_name` the server shows for this connection in `pg_stat_activity` and its logs; `PostgreSQL Query Booster` when empty |
 
 Connections saved before the SSL option existed keep their old behaviour,
 *Prefer SSL*: SSL is attempted first and falls back to an unencrypted
@@ -73,7 +74,8 @@ saved for; when one of them changes, the password is asked for again.
 The psql console uses the connection's SSL mode too. With *Verify certificate
 and host name* and no CA certificate file it relies on the system's trusted
 certificates, which needs psql 16 or later; an older psql refuses to connect
-instead of skipping the check.
+instead of skipping the check. It reports the connection's application name as
+well, or `PostgreSQL Query Booster console` when none is set.
 
 Several connections can be saved and switched from the status bar item at the
 bottom left, which also shows which database you are currently looking at.
