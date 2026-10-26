@@ -20,6 +20,30 @@ const MONACO_OUT = path.join(__dirname, 'dist', 'monaco');
 const MONACO_DIR = path.join(__dirname, 'node_modules', 'monaco-editor');
 // Monaco's package "exports" hide the deep ESM paths, so they are imported by file.
 const MONACO_ESM = path.join(MONACO_DIR, 'esm', 'vs').replace(/\\/g, '/');
+
+// Monaco carries its own copy of DOMPurify (esm/vs/base/browser/dompurify/),
+// which is updated only with a new Monaco release, and the editor's hovers and
+// suggestion details go through that sanitizer. The bundle takes the dompurify
+// package instead — "overrides" in package.json keeps it at a version without
+// the published bypasses — so a security fix of DOMPurify need not wait for Monaco.
+const DOMPURIFY_DIR = path.join(__dirname, 'node_modules', 'dompurify');
+const DOMPURIFY_ESM = path.join(DOMPURIFY_DIR, 'dist', 'purify.es.mjs');
+
+/** esbuild plugin: resolve Monaco's own copy of DOMPurify to the dompurify package. */
+const dompurifyFromPackage = {
+    name: 'dompurify-from-package',
+    setup(build) {
+        build.onResolve({ filter: /(^|[\\/])dompurify[\\/]dompurify\.js$/ }, (args) => {
+            if (!/[\\/]monaco-editor[\\/]esm[\\/]/.test(args.importer)) {
+                return undefined;
+            }
+            if (!fs.existsSync(DOMPURIFY_ESM)) {
+                return { errors: [{ text: `The dompurify package is not installed (${DOMPURIFY_ESM}); run npm install.` }] };
+            }
+            return { path: DOMPURIFY_ESM };
+        });
+    }
+};
 // Everything editor.main pulls in, minus the diff editor, language services of
 // other languages, GPU rendering and touch-device helpers.
 const MONACO_CONTRIBS = [
@@ -58,7 +82,7 @@ const MONACO_ENTRY = [
     `export { language as pgsqlLanguage } from '${MONACO_ESM}/languages/definitions/pgsql/pgsql.js';`
 ].join('\n');
 
-/** Build dist/monaco/ unless it is newer than the installed Monaco and this script. */
+/** Build dist/monaco/ unless it is newer than the installed Monaco, DOMPurify and this script. */
 async function buildMonaco() {
     const monacoPkg = path.join(MONACO_DIR, 'package.json');
     if (!fs.existsSync(monacoPkg)) {
@@ -68,11 +92,12 @@ async function buildMonaco() {
     const marker = path.join(MONACO_OUT, 'monaco.js');
     if (fs.existsSync(marker)) {
         const built = fs.statSync(marker).mtimeMs;
-        if (built > fs.statSync(monacoPkg).mtimeMs && built > fs.statSync(__filename).mtimeMs) {
+        const inputs = [monacoPkg, path.join(DOMPURIFY_DIR, 'package.json'), __filename].filter((f) => fs.existsSync(f));
+        if (inputs.every((f) => built > fs.statSync(f).mtimeMs)) {
             return;
         }
     }
-    const vendor = { bundle: true, minify: true, sourcemap: false, target: 'chrome110', logLevel: 'warning' };
+    const vendor = { bundle: true, minify: true, sourcemap: false, target: 'chrome110', logLevel: 'warning', plugins: [dompurifyFromPackage] };
     await esbuild.build({
         ...vendor,
         stdin: { contents: MONACO_ENTRY, resolveDir: __dirname, sourcefile: 'monaco-entry.js' },
@@ -197,7 +222,12 @@ function buildSea() {
     });
 }
 
-main().catch((err) => {
-    console.error(err);
-    process.exit(1);
-});
+// Run the build when started as a script; a test only loads the plugin.
+if (require.main === module) {
+    main().catch((err) => {
+        console.error(err);
+        process.exit(1);
+    });
+}
+
+module.exports = { dompurifyFromPackage, DOMPURIFY_ESM, MONACO_ESM };
