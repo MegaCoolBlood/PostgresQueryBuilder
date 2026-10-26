@@ -25,6 +25,7 @@ import { formatOptionsToRepoConfig } from './repoFormatConfig';
 import { getFormatOptions, isFormatterEnabled } from './formatSettings';
 import { DoubleClickGate } from './doubleClick';
 import { PsqlConsole } from './psqlConsole';
+import { ExecutableValueRunner } from './executableColumns';
 import { CompletionCatalogCache, SqlFileCompletionProvider, loadSqlCompletionApi, loadSqlWords } from './sqlCompletion';
 
 /**
@@ -376,6 +377,16 @@ export function activate(context: vscode.ExtensionContext) {
             (sql, title, ref, placement) => tableWebViewManager.openQueryViewWithLoad(sql, title, ref, placement)
         );
         context.subscriptions.push(sqlFileSessions);
+        // A cell of an executable column runs its value: opens it, runs it in
+        // the panel's session or sends it to the psql console or PowerShell.
+        tableWebViewManager.setExecutableValueRunner(new ExecutableValueRunner({
+            ensureConnected: () => connectionManager.ensureConnected(),
+            connectionName: () => connectionManager.getActiveConnectionConfig()?.name,
+            connectionGeneration: () => connectionManager.getConnectionGeneration(),
+            openQueryView: (sql, title, ref) => tableWebViewManager.openQueryView(sql, title, vscode.ViewColumn.Beside, undefined, ref),
+            executeStatement: (session, label, sql) => sqlFileSessions.executeOnSession(session, label, sql),
+            openPsqlConsole: () => new PsqlConsole(connectionManager).open()
+        }));
         viewDataFromSelect = new ViewDataFromSelect(context, connectionManager, tableWebViewManager, sqlFileSessions);
 
         statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);

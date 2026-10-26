@@ -16,6 +16,8 @@ import {
     summarizeExecution,
     summarizeFileRun,
     tabShowsUri,
+    resultValueText,
+    statementErrorText,
     MESSAGES_CHANNEL_NAME,
     type QueryViewLoad
 } from '../sqlFileSession';
@@ -772,4 +774,96 @@ test('Reset Database Session on a file without a session says there is nothing t
     await fileSessions.reset(createEditor(FILE, 0) as any);
 
     assert.match(String(infos[0][0]), /No database session is open for "payroll\.sql" yet/);
+});
+// ===== executeOnSession: a statement from a Data Viewer =====
+
+const KILL = 'SELECT pg_terminate_backend(4242);';
+const panelRef = { key: 'tab:7', label: 'Locks' };
+
+test('executeOnSession runs the statement in the given session and names its single result', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const { fileSessions, manager, clients } = createFileSessions({
+        onQuery: (_c, sql) => sql.startsWith('SELECT pg_terminate_backend')
+            ? { command: 'SELECT', rowCount: 1, rows: [{ pg_terminate_backend: true }], fields: [{ name: 'pg_terminate_backend' }] }
+            : undefined
+    });
+    t.after(() => fileSessions.dispose());
+    const session = manager.acquire(panelRef, 'panel:7');
+
+    const outcome = await fileSessions.executeOnSession(session, 'Locks', KILL);
+
+    assert.equal(outcome.status, 'executed');
+    assert.match((outcome as any).message, /^SELECT returned 1 row in \d+ ms\. Result: true\.$/);
+    assert.deepEqual(clients[0].queries, [KILL]);
+    assert.equal(session.isOpen, true, 'the session of the Data Viewer stays open');
+});
+
+test('executeOnSession records data changes in the Modify History and reports nothing itself', async (t) => {
+    const infos = recordWindowCalls(t, 'showInformationMessage');
+    const errors = recordWindowCalls(t, 'showErrorMessage');
+    const { fileSessions, manager, history } = createFileSessions({
+        onQuery: () => ({ command: 'UPDATE', rowCount: 3, rows: [], fields: [] })
+    });
+    t.after(() => fileSessions.dispose());
+
+    const outcome = await fileSessions.executeOnSession(manager.acquire(panelRef, 'panel:7'), 'Locks', 'UPDATE jobs SET done = true');
+
+    assert.deepEqual(outcome, { status: 'executed', message: (outcome as any).message });
+    assert.match((outcome as any).message, /^UPDATE affected 3 rows in \d+ ms\.$/);
+    assert.deepEqual(history, [{ sql: 'UPDATE jobs SET done = true' }]);
+    assert.equal(infos.length + errors.length, 0, 'the caller reports the outcome');
+});
+
+test('executeOnSession returns a failure with its context and logs the details of the server', async (t) => {
+    const errors = recordWindowCalls(t, 'showErrorMessage');
+    const { fileSessions, manager, channel } = createFileSessions({
+        onQuery: () => {
+            throw Object.assign(new Error('must be a superuser to terminate superuser process'), { hint: 'Ask an admin.', where: 'SQL statement "x"\nline 2' });
+        }
+    });
+    t.after(() => fileSessions.dispose());
+
+    const outcome = await fileSessions.executeOnSession(manager.acquire(panelRef, 'panel:7'), 'Locks', KILL);
+
+    assert.deepEqual(outcome, { status: 'failed', message: 'must be a superuser to terminate superuser process (SQL statement "x")' });
+    assert.match(channel.lines.join('\n'), /Locks — ERROR: must be a superuser[\s\S]*HINT: Ask an admin\./);
+    assert.equal(errors.length, 0);
+});
+
+test('executeOnSession runs nothing when Cancel was pressed before the statement got its turn', async (t) => {
+    const control = controllableCancel(t);
+    let release: () => void = () => undefined;
+    const { fileSessions, manager, clients } = createFileSessions({
+        onQuery: (_c, sql) => sql === 'SELECT pg_sleep(10)' ? new Promise((resolve) => { release = () => resolve(undefined); }) : undefined
+    });
+    t.after(() => fileSessions.dispose());
+    const session = manager.acquire(panelRef, 'panel:7');
+    const busy = session.query('SELECT pg_sleep(10)');
+    await tick();
+
+    const pending = fileSessions.executeOnSession(session, 'Locks', KILL);
+    await tick();
+    control.cancel();
+    release();
+    await busy;
+
+    assert.deepEqual(await pending, { status: 'cancelled' });
+    assert.deepEqual(clients[0].queries, ['SELECT pg_sleep(10)']);
+});
+
+test('resultValueText names the single value of a single statement and nothing else', () => {
+    const one = (value: unknown) => [{ rows: [{ v: value }], fields: [{ name: 'v' }] }];
+    assert.equal(resultValueText(one(true)), 'true');
+    assert.equal(resultValueText(one(null)), 'NULL');
+    assert.equal(resultValueText(one({ a: 1 })), '{"a":1}');
+    assert.equal(resultValueText(one('x'.repeat(300))), 'x'.repeat(200) + '…');
+    assert.equal(resultValueText([{ rows: [{ a: 1 }, { a: 2 }], fields: [{ name: 'a' }] }]), undefined);
+    assert.equal(resultValueText([{ rows: [{ a: 1, b: 2 }], fields: [{ name: 'a' }, { name: 'b' }] }]), undefined);
+    assert.equal(resultValueText([{ rows: [], fields: [] }]), undefined);
+    assert.equal(resultValueText([...one(1), ...one(2)]), undefined);
+});
+
+test('statementErrorText adds the first line of the context of an error', () => {
+    assert.equal(statementErrorText(new Error('boom')), 'boom');
+    assert.equal(statementErrorText(Object.assign(new Error('boom'), { where: 'PL/pgSQL function f() line 3\nmore' })), 'boom (PL/pgSQL function f() line 3)');
 });

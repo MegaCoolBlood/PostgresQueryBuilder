@@ -882,6 +882,37 @@ td.has-fk-btn > .fk-btn {
     color: var(--vscode-button-foreground);
 }
 
+/* Executable columns: the header names what a value does, and every cell carries
+   its run button at the left edge, outside the editable text. A value that ran
+   shows a check; one that failed keeps its icon in the error colour, and the
+   tooltip tells which. */
+.col-exec-indicator {
+    display: inline-flex;
+    vertical-align: middle;
+    margin-left: var(--sp-1);
+    color: var(--c-accent);
+}
+
+td.has-exec-btn {
+    position: relative;
+    padding-left: 26px;
+}
+
+td.has-exec-btn > .exec-btn {
+    position: absolute;
+    left: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.exec-btn.is-executed {
+    color: var(--c-success);
+}
+
+.exec-btn.is-failed {
+    color: var(--c-danger);
+}
+
 /* Context Menu */
 .context-menu {
     position: fixed;

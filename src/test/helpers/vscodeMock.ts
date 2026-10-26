@@ -176,7 +176,8 @@ const vscodeStub = {
         showInputBox: (_options?: any): Promise<any> => Promise.resolve(undefined),
         showQuickPick: (_items?: any, _options?: any): Promise<any> => Promise.resolve(undefined),
         createWebviewPanel: (..._args: any[]): any => undefined,
-        createTerminal: (_options?: any): any => ({ show() {}, dispose() {} }),
+        createTerminal: (_options?: any): any => ({ show() {}, sendText() {}, dispose() {} }),
+        terminals: [] as any[],
         createQuickPick: (): any => undefined,
         withProgress: (_options: any, task: (progress: any, token: any) => any): Promise<any> => Promise.resolve(task(
             { report() {} },
@@ -192,9 +193,17 @@ const vscodeStub = {
     commands: {
         executeCommand: (..._args: any[]): Promise<any> => Promise.resolve(undefined)
     },
+    env: {
+        openExternal: (_uri: any): Promise<boolean> => Promise.resolve(true),
+        clipboard: {
+            readText: (): Promise<string> => Promise.resolve(''),
+            writeText: (_text: string): Promise<void> => Promise.resolve()
+        }
+    },
     ViewColumn: { One: 1, Two: 2, Three: 3, Beside: -2, Active: -1 },
     Uri: {
         file: (p: string) => ({ fsPath: p, path: p }),
+        parse: (value: string, _strict?: boolean) => ({ toString: () => value, scheme: value.split(':')[0] }),
         joinPath: (base: any, ...segs: string[]) => ({
             fsPath: [base?.fsPath ?? base?.path ?? '', ...segs].join('/'),
             path: [base?.path ?? '', ...segs].join('/')

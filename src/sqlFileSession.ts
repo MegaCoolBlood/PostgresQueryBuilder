@@ -235,6 +235,35 @@ export function summarizeFileRun(label: string, total: number, opened: number, m
     return `Ran ${all} of ${label} in ${durationText(ms)}${viewers}.`;
 }
 
+/**
+ * The value a single statement returned when it is one row of one column —
+ * such as the `true` of `SELECT pg_terminate_backend(…)` — or undefined.
+ */
+export function resultValueText(results: ReadonlyArray<{ rows?: unknown[]; fields?: ReadonlyArray<{ name: string }> }>): string | undefined {
+    if (results.length !== 1) return undefined;
+    const { rows, fields } = results[0];
+    if (!Array.isArray(rows) || rows.length !== 1 || !Array.isArray(fields) || fields.length !== 1) return undefined;
+    const value = (rows[0] as Record<string, unknown> | null)?.[fields[0].name];
+    if (value === null || value === undefined) return 'NULL';
+    const text = value instanceof Date ? value.toISOString()
+        : typeof value === 'object' ? JSON.stringify(value)
+        : String(value);
+    return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+}
+
+/** How a statement run for a Data Viewer ended; see {@link SqlFileSessions.executeOnSession}. */
+export type StatementOutcome =
+    | { status: 'executed'; message: string }
+    | { status: 'cancelled' }
+    | { status: 'failed'; message: string };
+
+/** The error of a failed statement for a message, with the first line of its context. */
+export function statementErrorText(err: unknown): string {
+    const where = (err as { where?: unknown } | null)?.where;
+    const context = typeof where === 'string' ? where.split('\n')[0] : '';
+    return `${getErrorMessage(err)}${context ? ` (${context})` : ''}`;
+}
+
 /** A server message as a line (plus its detail lines) for the messages output. */
 export function formatServerMessage(label: string, notice: SessionNotice, now: Date = new Date()): string {
     const time = now.toTimeString().slice(0, 8);
@@ -592,6 +621,51 @@ export class SqlFileSessions implements vscode.Disposable {
         );
     }
 
+    /**
+     * Run `sql` in `session` — the session of a Data Viewer — the way Execute
+     * Selection runs a selection: cancellable from its notification, the
+     * messages of the server in the "PostgreSQL Messages" output, data changes
+     * in the Modify History. It reports nothing itself; the outcome says how
+     * the statement ended.
+     */
+    async executeOnSession(session: DbSession, label: string, sql: string): Promise<StatementOutcome> {
+        const notices: SessionNotice[] = [];
+        const started = Date.now();
+        let outcome: QueryResult | QueryResult[];
+        try {
+            outcome = await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: `Running in the database session of "${label}"`,
+                    cancellable: true
+                },
+                (_progress, token) => {
+                    const runner = new CancellableRun((pid) => this.cancelBackend(pid));
+                    token.onCancellationRequested(() => runner.cancel());
+                    return runner.run(session, sql, notices);
+                }
+            );
+        } catch (err: unknown) {
+            if (err instanceof CancelledBeforeStart) {
+                return { status: 'cancelled' };
+            }
+            this.logServerError(label, err);
+            return { status: 'failed', message: statementErrorText(err) };
+        }
+
+        this.recordModifyHistory(sql);
+        const results = Array.isArray(outcome) ? outcome : [outcome];
+        let message = summarizeExecution(results, Date.now() - started);
+        const value = resultValueText(results);
+        if (value !== undefined) {
+            message += ` Result: ${value}.`;
+        }
+        if (notices.length > 0) {
+            message += this.noticesText(notices.length);
+        }
+        return { status: 'executed', message };
+    }
+
     /** Throw away the session of the file in `editor`, after asking. */
     async reset(editor: vscode.TextEditor | undefined): Promise<void> {
         if (!editor) {
@@ -641,14 +715,7 @@ export class SqlFileSessions implements vscode.Disposable {
         err: unknown,
         options: { prefix?: string; revealStatement?: boolean } = {}
     ): void {
-        const details = (err ?? {}) as { detail?: string; hint?: string; where?: string };
-        this.messages.appendLine(formatServerMessage(label, {
-            severity: 'ERROR',
-            message: getErrorMessage(err),
-            detail: details.detail,
-            hint: details.hint,
-            where: details.where
-        }));
+        this.logServerError(label, err);
         // A syntax error points at its position: put the cursor there, or at
         // the start of the failed statement of a file.
         const offset = errorOffset(err, target.start, target.sql.length) ?? (options.revealStatement ? target.start : null);
@@ -657,10 +724,19 @@ export class SqlFileSessions implements vscode.Disposable {
             editor.selection = new vscode.Selection(position, position);
             editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
         }
-        const where = typeof details.where === 'string' ? details.where.split('\n')[0] : '';
-        vscode.window.showErrorMessage(
-            `${options.prefix ?? 'Execute Selection failed'}: ${getErrorMessage(err)}${where ? ` (${where})` : ''}`
-        );
+        vscode.window.showErrorMessage(`${options.prefix ?? 'Execute Selection failed'}: ${statementErrorText(err)}`);
+    }
+
+    /** Write a failed statement's error with its detail, hint and context to the messages output. */
+    private logServerError(label: string, err: unknown): void {
+        const details = (err ?? {}) as { detail?: string; hint?: string; where?: string };
+        this.messages.appendLine(formatServerMessage(label, {
+            severity: 'ERROR',
+            message: getErrorMessage(err),
+            detail: details.detail,
+            hint: details.hint,
+            where: details.where
+        }));
     }
 
     private recordModifyHistory(sql: string): void {

@@ -1853,6 +1853,443 @@ function reorderSelectColumns(sql, fromIndex, toIndex) {
     return clauses.map(c => (c.content ? `${c.kw} ${c.content}` : c.kw)).join(' ').trim();
 }
 
+// --- Executable columns ------------------------------------------------------
+// NOTE: Copy of EXECUTABLE_COLUMN_TYPES in src/executableColumns.ts, which this
+// script cannot import; src/test/executableColumns.test.ts keeps them in sync.
+const EXECUTABLE_COLUMN_TYPES = [
+    { prefix: 'sql_', kind: 'dataViewer', label: 'Open in Data Viewer', action: 'Open this query in a new Data Viewer', confirm: false },
+    { prefix: 'pgsql_', kind: 'statement', label: 'Run as Statement', action: 'Run this statement in the database session of this Data Viewer', confirm: true },
+    { prefix: 'psql_', kind: 'psql', label: 'Send to psql Console', action: 'Send this to the psql console of the connection', confirm: true },
+    { prefix: 'ps_', kind: 'powershell', label: 'Run in PowerShell', action: 'Run this command in a PowerShell terminal', confirm: true },
+    { prefix: 'url_', kind: 'url', label: 'Open in Browser', action: 'Open this link in the browser', confirm: false },
+    { prefix: 'file_', kind: 'file', label: 'Open File in Editor', action: 'Open this file in the editor', confirm: false },
+    { prefix: 'copy_', kind: 'copy', label: 'Copy to Clipboard', action: 'Copy this value to the clipboard', confirm: false }
+];
+
+// The type a column name asks for through its prefix (in any letter case), or null.
+function executableColumnType(name) {
+    const lower = String(name == null ? '' : name).toLowerCase();
+    return EXECUTABLE_COLUMN_TYPES.find(t => lower.startsWith(t.prefix) && lower.length > t.prefix.length) || null;
+}
+
+// The type of a result column whose values can be run, or null. Only a name the
+// query gave — an alias or a computed column — counts: a stored table column that
+// is merely called `url_slug` or `ps_number` and selected under its own name
+// stays an ordinary column. `source` is the column's entry in columnSources.
+function executableTypeOfColumn(name, source) {
+    const type = executableColumnType(name);
+    if (!type) return null;
+    if (source && source.sourceColumn === name) return null;
+    return type;
+}
+
+// The name a column gets for the type with `prefix`, or without a type for ''.
+// A prefix the name already has is replaced rather than stacked, and an unnamed
+// expression (`?column?`) is called `column`.
+function executableColumnAlias(name, prefix) {
+    let base = String(name == null ? '' : name);
+    const current = executableColumnType(base);
+    if (current) base = base.slice(current.prefix.length);
+    if (base === '' || base === '?column?') base = 'column';
+    return String(prefix || '') + base;
+}
+
+// The icon of what an executable column does.
+function executableIcon(kind) {
+    switch (kind) {
+        case 'dataViewer': return icon('table');
+        case 'psql':
+        case 'powershell': return icon('terminal');
+        case 'url': return icon('goto');
+        case 'file': return icon('file');
+        case 'copy': return icon('copy');
+        default: return icon('run');
+    }
+}
+
+// Key under which a value that ran is remembered: the same text in the same
+// column stays marked across reloads, sorting and auto refresh.
+function executableMarkKey(column, value) {
+    return String(column) + '\u0000' + String(value);
+}
+
+// How a cell whose value ran is marked, from the outcome the extension reported
+// and the time it came back; null for an outcome that leaves no mark (a link or
+// a Data Viewer opened, a value copied, a run cancelled).
+function executableMark(outcome, time) {
+    if (!outcome) return null;
+    const message = String(outcome.message || '').trim();
+    switch (outcome.status) {
+        case 'executed':
+            return { status: 'executed', title: `Executed at ${time}: ${message} Click to run it again.` };
+        case 'sent':
+            return { status: 'executed', title: `${message.replace(/\.$/, '')} at ${time}. Click to send it again.` };
+        case 'failed':
+            return { status: 'failed', title: `Failed at ${time}: ${message} Click to try again.` };
+        default:
+            return null;
+    }
+}
+
+// A copy of `sql` for finding its structure, offsets kept: comments become
+// blanks, string literals and dollar-quoted bodies a run of `0` (a token that
+// is never a name) and the inside of a quoted name a run of `_`, its quotes kept.
+function maskSqlStructure(sql) {
+    const src = String(sql == null ? '' : sql);
+    const out = src.split('');
+    const n = src.length;
+    const fill = (from, to, ch) => {
+        for (let k = Math.max(0, from); k < to && k < n; k++) {
+            if (out[k] !== '\n' && out[k] !== '\r') out[k] = ch;
+        }
+    };
+    let i = 0;
+    while (i < n) {
+        const c = src[i], c2 = src[i + 1];
+        if (c === '-' && c2 === '-') {
+            let j = i + 2;
+            while (j < n && src[j] !== '\n') j++;
+            fill(i, j, ' '); i = j; continue;
+        }
+        if (c === '/' && c2 === '*') {
+            let j = i + 2, depth = 1;
+            while (j < n && depth > 0) {
+                if (src[j] === '/' && src[j + 1] === '*') { depth++; j += 2; }
+                else if (src[j] === '*' && src[j + 1] === '/') { depth--; j += 2; }
+                else j++;
+            }
+            fill(i, j, ' '); i = j; continue;
+        }
+        if (c === "'") {
+            // The E of E'…' (and B, X, N, U&) belongs to its literal.
+            const before = src[i - 1] || '', twoBefore = src[i - 2] || '';
+            let from = i;
+            if (/[eEbBxXnN]/.test(before) && !/[A-Za-z0-9_$]/.test(twoBefore)) from = i - 1;
+            else if (before === '&' && /[uU]/.test(twoBefore) && !/[A-Za-z0-9_$]/.test(src[i - 3] || '')) from = i - 2;
+            const escapes = from === i - 1 && /[eE]/.test(before);
+            let j = i + 1;
+            while (j < n) {
+                if (escapes && src[j] === '\\') { j += 2; continue; }
+                if (src[j] === "'") { if (src[j + 1] === "'") { j += 2; continue; } j++; break; }
+                j++;
+            }
+            fill(from, j, '0'); i = j; continue;
+        }
+        if (c === '"') {
+            let j = i + 1;
+            while (j < n) {
+                if (src[j] === '"') { if (src[j + 1] === '"') { j += 2; continue; } break; }
+                j++;
+            }
+            fill(i + 1, j, '_'); i = j + 1; continue;
+        }
+        if (c === '$' && !/[A-Za-z0-9_$]/.test(src[i - 1] || '')) {
+            const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(src.slice(i, i + 64));
+            if (tag) {
+                const close = src.indexOf(tag[0], i + tag[0].length);
+                const j = close === -1 ? n : close + tag[0].length;
+                fill(i, j, '0'); i = j; continue;
+            }
+        }
+        i++;
+    }
+    return out.join('');
+}
+
+// Words, parentheses and semicolons of masked SQL, each with its nesting depth.
+function sqlStructureTokens(masked) {
+    const tokens = [];
+    const re = /[A-Za-z_\u0080-\uffff][A-Za-z0-9_$\u0080-\uffff]*|[();]/g;
+    let depth = 0, m;
+    while ((m = re.exec(masked)) !== null) {
+        const text = m[0];
+        if (text === '(') { tokens.push({ text, start: m.index, end: m.index + 1, depth }); depth++; continue; }
+        if (text === ')') { depth = Math.max(0, depth - 1); tokens.push({ text, start: m.index, end: m.index + 1, depth }); continue; }
+        tokens.push({ text, lower: text === ';' ? undefined : text.toLowerCase(), start: m.index, end: m.index + text.length, depth });
+    }
+    return tokens;
+}
+
+// Keywords that end the select list of a SELECT.
+const SELECT_LIST_END_KEYWORDS = new Set([
+    'from', 'into', 'where', 'group', 'having', 'window', 'order', 'limit', 'offset', 'fetch',
+    'union', 'intersect', 'except', 'for'
+]);
+
+// Where the select list of the outermost SELECT — the one naming the result
+// columns — lies in masked SQL, as { start, end, tokens, endToken }; null for a
+// statement that is no SELECT or WITH … SELECT.
+function findSelectListRange(masked) {
+    const tokens = sqlStructureTokens(masked);
+    const first = tokens[0];
+    if (!first || first.depth !== 0 || (first.lower !== 'select' && first.lower !== 'with')) return null;
+    let k = 0;
+    for (; k < tokens.length; k++) {
+        const t = tokens[k];
+        if (t.depth !== 0) continue;
+        if (t.text === ';' && k > 0) return null;
+        if (t.lower === 'select') break;
+        if (['insert', 'update', 'delete', 'merge', 'values', 'table'].indexOf(t.lower) !== -1) return null;
+    }
+    if (k >= tokens.length) return null;
+    let start = tokens[k].end;
+    k++;
+    if (tokens[k] && tokens[k].lower === 'all') {
+        start = tokens[k].end; k++;
+    } else if (tokens[k] && tokens[k].lower === 'distinct') {
+        start = tokens[k].end; k++;
+        if (tokens[k] && tokens[k].lower === 'on' && tokens[k + 1] && tokens[k + 1].text === '(') {
+            let m = k + 2;
+            while (m < tokens.length && !(tokens[m].text === ')' && tokens[m].depth === 0)) m++;
+            if (m >= tokens.length) return null;
+            start = tokens[m].end; k = m + 1;
+        }
+    }
+    let end = masked.length;
+    let endToken = tokens.length;
+    for (; k < tokens.length; k++) {
+        const t = tokens[k];
+        if (t.depth !== 0) continue;
+        if (t.text === ';' || SELECT_LIST_END_KEYWORDS.has(t.lower)) { end = t.start; endToken = k; break; }
+    }
+    return { start, end, tokens, endToken };
+}
+
+// The items of a select list as [start, end) ranges without surrounding blanks,
+// or null when one of them is empty (a stray comma).
+function splitSelectItems(masked, range) {
+    const items = [];
+    const trimmed = (from, to) => {
+        while (from < to && /\s/.test(masked[from])) from++;
+        while (to > from && /\s/.test(masked[to - 1])) to--;
+        return from < to ? { start: from, end: to } : null;
+    };
+    let depth = 0, from = range.start;
+    for (let i = range.start; i < range.end; i++) {
+        const ch = masked[i];
+        if (ch === '(' || ch === '[') depth++;
+        else if (ch === ')' || ch === ']') depth--;
+        else if (ch === ',' && depth === 0) { items.push(trimmed(from, i)); from = i + 1; }
+    }
+    items.push(trimmed(from, range.end));
+    return items.some(item => item === null) ? null : items;
+}
+
+// The name SQL gives an identifier token: a quoted name as written, any other
+// folded to lower case.
+function sqlIdentifierName(token) {
+    const t = String(token || '');
+    return t.length > 1 && t[0] === '"' && t[t.length - 1] === '"' ? t.slice(1, -1).replace(/""/g, '"') : t.toLowerCase();
+}
+
+const SQL_IDENT_MASKED = '(?:"_*"|[A-Za-z_\\u0080-\\uffff][A-Za-z0-9_$\\u0080-\\uffff]*)';
+
+// Words after which the next word is an operand, never an alias.
+const NO_ALIAS_AFTER = new Set([
+    'and', 'or', 'not', 'is', 'in', 'like', 'ilike', 'similar', 'between', 'then', 'else', 'when', 'case',
+    'distinct', 'collate', 'at', 'zone', 'over', 'escape', 'by', 'operator', 'interval', 'array', 'only'
+]);
+// Last words of type names, which follow a cast rather than name a column.
+const TYPE_NAME_TAILS = new Set(['precision', 'varying', 'zone']);
+
+// The name a select-list expression without an alias gives its column, as far
+// as it can be told without a database: a column reference or a function call
+// yields its name, a cast the name of what is cast; anything else null.
+function implicitSelectItemName(sql, masked, start, end) {
+    let exprEnd = end;
+    // A cast keeps the name of what it casts.
+    let depth = 0;
+    for (let i = start; i < end - 1; i++) {
+        const ch = masked[i];
+        if (ch === '(' || ch === '[') depth++;
+        else if (ch === ')' || ch === ']') depth--;
+        else if (depth === 0 && ch === ':' && masked[i + 1] === ':') { exprEnd = i; break; }
+    }
+    while (exprEnd > start && /\s/.test(masked[exprEnd - 1])) exprEnd--;
+    const text = masked.slice(start, exprEnd);
+    const original = sql.slice(start, exprEnd);
+    // The last part of a dotted name, splitting only at dots outside quotes.
+    const lastPart = (dotted) => {
+        const parts = dotted.split(/\s*\.\s*(?=(?:[^"]*"[^"]*")*[^"]*$)/);
+        return sqlIdentifierName(parts[parts.length - 1].trim());
+    };
+    const columnRef = new RegExp(`^${SQL_IDENT_MASKED}(?:\\s*\\.\\s*${SQL_IDENT_MASKED})*$`);
+    if (columnRef.test(text)) {
+        return lastPart(original);
+    }
+    const call = new RegExp(`^(${SQL_IDENT_MASKED}(?:\\s*\\.\\s*${SQL_IDENT_MASKED})?)\\s*\\(`).exec(text);
+    if (call && text.endsWith(')')) {
+        // The call has to span the whole expression: its parenthesis closes at the end.
+        let d = 0;
+        for (let i = call[0].length - 1; i < text.length; i++) {
+            if (text[i] === '(') d++;
+            else if (text[i] === ')') { d--; if (d === 0 && i !== text.length - 1) return null; }
+        }
+        const name = lastPart(original.slice(0, call[1].length));
+        return name === 'cast' ? null : name;
+    }
+    return null;
+}
+
+// One item of a select list: a wildcard (`*`, `t.*`) with its qualifier, or an
+// expression with the alias it has (range in the SQL text), where the
+// expression ends and the name of its result column (null when unknown).
+function analyzeSelectItem(sql, masked, item, isReservedWord) {
+    const text = masked.slice(item.start, item.end);
+    const wildcard = new RegExp(`^((?:${SQL_IDENT_MASKED}\\s*\\.\\s*)*)\\*$`).exec(text);
+    if (wildcard) {
+        const qualifier = sql.slice(item.start, item.start + wildcard[1].length).replace(/\s*\.\s*$/, '').trim();
+        return { wildcard: true, qualifier, start: item.start, end: item.end };
+    }
+    const plain = { wildcard: false, start: item.start, end: item.end, exprEnd: item.end, alias: null, name: null };
+    // The last word of the item, if it is a name.
+    let s = item.end;
+    if (masked[s - 1] === '"') {
+        s = masked.lastIndexOf('"', s - 2);
+    } else {
+        while (s > item.start && /[A-Za-z0-9_$\u0080-\uffff]/.test(masked[s - 1])) s--;
+    }
+    const lastWord = s >= item.start ? masked.slice(s, item.end) : '';
+    const isName = lastWord !== '' && (lastWord[0] === '"' || /^[A-Za-z_\u0080-\uffff]/.test(lastWord));
+    let alias = null;
+    if (isName && s > item.start && /\s/.test(masked[s - 1])) {
+        let p = s - 1;
+        while (p > item.start && /\s/.test(masked[p])) p--;
+        const prevChar = masked[p];
+        const candidate = lastWord.toLowerCase();
+        const quoted = lastWord[0] === '"';
+        if (/[A-Za-z0-9_$\u0080-\uffff]/.test(prevChar)) {
+            let w = p + 1;
+            while (w > item.start && /[A-Za-z0-9_$\u0080-\uffff]/.test(masked[w - 1])) w--;
+            const prevWord = masked.slice(w, p + 1).toLowerCase();
+            if (prevWord === 'as') {
+                let e = w;
+                while (e > item.start && /\s/.test(masked[e - 1])) e--;
+                alias = { start: s, end: item.end, exprEnd: e };
+            } else if (!/^[0-9]/.test(prevWord)
+                && (NO_ALIAS_AFTER.has(prevWord) || (isReservedWord(prevWord) && prevWord !== 'end'))) {
+                alias = null;
+            } else if (quoted || (!isReservedWord(candidate) && !TYPE_NAME_TAILS.has(candidate))) {
+                alias = { start: s, end: item.end, exprEnd: p + 1 };
+            }
+        } else if ((prevChar === ')' || prevChar === '"' || prevChar === ']')
+            && (quoted || (!isReservedWord(candidate) && !TYPE_NAME_TAILS.has(candidate)))) {
+            alias = { start: s, end: item.end, exprEnd: p + 1 };
+        }
+    }
+    if (alias) {
+        plain.alias = { start: alias.start, end: alias.end };
+        plain.exprEnd = alias.exprEnd;
+        plain.name = sqlIdentifierName(sql.slice(alias.start, alias.end));
+    } else {
+        plain.name = implicitSelectItemName(sql, masked, item.start, item.end);
+    }
+    return plain;
+}
+
+// Apply text edits ({ start, end, text }) that do not overlap.
+function applyTextEdits(text, edits) {
+    return edits.slice().sort((a, b) => b.start - a.start)
+        .reduce((out, e) => out.slice(0, e.start) + e.text + out.slice(e.end), text);
+}
+
+// Edits that rename a bare ORDER BY reference to the output column `oldName`;
+// such a reference names the output column, so it has to follow its new name.
+function orderByRenameEdits(sql, masked, range, oldName, newText) {
+    const tokens = range.tokens;
+    let k = range.endToken;
+    for (; k < tokens.length - 1; k++) {
+        const t = tokens[k];
+        if (t.depth === 0 && t.lower === 'order' && tokens[k + 1].lower === 'by') break;
+        if (t.depth === 0 && t.text === ';') return [];
+    }
+    if (k >= tokens.length - 1) return [];
+    const from = tokens[k + 1].end;
+    let to = masked.length;
+    for (let m = k + 2; m < tokens.length; m++) {
+        const t = tokens[m];
+        if (t.depth === 0 && (t.text === ';' || ['limit', 'offset', 'fetch', 'for'].indexOf(t.lower) !== -1)) { to = t.start; break; }
+    }
+    const edits = [];
+    const sortItems = splitSelectItems(masked, { start: from, end: to }) || [];
+    const lead = new RegExp(`^${SQL_IDENT_MASKED}`);
+    for (const item of sortItems) {
+        const m = lead.exec(masked.slice(item.start, item.end));
+        if (!m) continue;
+        const after = masked.slice(item.start + m[0].length, item.end);
+        if (after !== '' && !/^\s/.test(after)) continue;
+        if (sqlIdentifierName(sql.slice(item.start, item.start + m[0].length)) === oldName) {
+            edits.push({ start: item.start, end: item.start + m[0].length, text: newText });
+        }
+    }
+    return edits;
+}
+
+// Rename the result column `target.name` — the column at `target.index` of a
+// grid whose column names are `target.columns` — to `newName` in `sql`, and
+// change nothing else: an alias is replaced, a missing one is added with AS, a
+// lone `*` (or `t.*`) is spelled out as the column list, and a bare ORDER BY
+// reference follows. `formatIdent` quotes a name where needed, `isReservedWord`
+// knows the reserved keywords. Returns { sql } or { error }.
+function renameSelectColumn(sql, target, newName, formatIdent, isReservedWord) {
+    const source = String(sql == null ? '' : sql);
+    const masked = maskSqlStructure(source);
+    const range = findSelectListRange(masked);
+    if (!range) {
+        return { error: 'Only a column of a SELECT can be renamed, and the query bar holds no SELECT.' };
+    }
+    const items = splitSelectItems(masked, range);
+    if (!items) {
+        return { error: 'The select list of the query has an empty entry, so the column cannot be renamed.' };
+    }
+    const columns = Array.isArray(target.columns) ? target.columns : [];
+    const sameName = columns.filter(c => c === target.name).length;
+    if (sameName > 1) {
+        return { error: `The result has ${sameName} columns named "${target.name}", so the one to rename is not clear. Give them different aliases first.` };
+    }
+    const reserved = typeof isReservedWord === 'function' ? isReservedWord : () => false;
+    const analyzed = items.map(item => analyzeSelectItem(source, masked, item, reserved));
+    const newText = formatIdent(newName);
+    const orderBy = orderByRenameEdits(source, masked, range, target.name, newText);
+
+    if (analyzed.length === 1 && analyzed[0].wildcard) {
+        if (new Set(columns).size !== columns.length || target.index < 0 || target.index >= columns.length) {
+            return { error: 'The * of the query cannot be spelled out into its columns, so the column cannot be renamed.' };
+        }
+        const qualifier = analyzed[0].qualifier ? analyzed[0].qualifier + '.' : '';
+        const list = columns.map((c, i) => qualifier + formatIdent(c) + (i === target.index ? ' AS ' + newText : '')).join(', ');
+        return { sql: applyTextEdits(source, [{ start: analyzed[0].start, end: analyzed[0].end, text: list }].concat(orderBy)) };
+    }
+
+    let item = null;
+    const anyWildcard = analyzed.some(a => a.wildcard);
+    // Up to the first wildcard, list entries and grid columns correspond one to one.
+    const byPosition = anyWildcard
+        ? !analyzed.slice(0, target.index + 1).some(a => a.wildcard)
+        : analyzed.length === columns.length;
+    if (byPosition && target.index >= 0) {
+        const candidate = analyzed[target.index];
+        if (candidate && !candidate.wildcard && (candidate.name === null || candidate.name === target.name)) {
+            item = candidate;
+        }
+    }
+    if (!item) {
+        const named = analyzed.filter(a => !a.wildcard && a.name === target.name);
+        if (named.length === 1) item = named[0];
+    }
+    if (!item) {
+        return {
+            error: anyWildcard
+                ? `"${target.name}" comes from a * in the query. List it in the SELECT to rename it.`
+                : `"${target.name}" was not found in the select list of the query. Run the query first if you have changed it.`
+        };
+    }
+    const edit = item.alias
+        ? { start: item.alias.start, end: item.alias.end, text: newText }
+        : { start: item.exprEnd, end: item.exprEnd, text: ' AS ' + newText };
+    return { sql: applyTextEdits(source, [edit].concat(orderBy)) };
+}
+
 // Decide whether a data-load message replaces the current rows wholesale (a
 // fresh first page or a re-run query) rather than appending a "Load More" page.
 // Fresh loads must discard pending edits, since those edits are keyed by a
@@ -2929,6 +3366,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // tables of the displayed columns, so an ad-hoc SELECT gets the same
     // features as a table opened from the tree whenever that is possible.
     let caps = emptyCapabilities();
+    // Values of executable columns that ran, keyed by executableMarkKey, with
+    // the mark their run button shows ({ status, title }).
+    const executedValues = new Map();
+    // When a run button was last clicked, so a double click does not run twice.
+    let lastExecutableClickAt = 0;
     // Pagination state of the query currently displayed. `currentSql` is the
     // query without a trailing LIMIT/OFFSET so Load More can page through it.
     let currentSql = '';           // SQL without trailing LIMIT/OFFSET clause
@@ -3879,6 +4321,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             e.preventDefault();
             return;
         }
+        // The run button of an executable cell is a button, not a cell to select.
+        if (e.target.closest && e.target.closest('.exec-btn')) return;
         const td = e.target.closest('td[data-col]');
         if (!td || td.parentElement.parentElement !== tableBody) return;
         // A cell already being edited keeps native caret / text-selection behaviour.
@@ -4004,7 +4448,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     // Double-click a cell to edit it: the previous single-click behaviour.
     tableBody.addEventListener('dblclick', (e) => {
-        if (e.target.closest && e.target.closest('.fk-btn')) return;
+        if (e.target.closest && e.target.closest('.fk-btn, .exec-btn')) return;
         const editable = editableElementOf(e.target);
         if (!editable) return;
         enterCellEditMode(editable, e);
@@ -4659,6 +5103,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'sessionInfo':
                 updateSessionDisplay(msg.session);
                 break;
+            case 'executableValueDone':
+                handleExecutableValueDone(msg);
+                break;
+            case 'executableTypeChosen':
+                if (typeof msg.prefix === 'string') makeColumnExecutable(String(msg.column || ''), msg.prefix);
+                break;
         }
     });
 
@@ -5187,7 +5637,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const commentTitle = buildColumnHeaderTitle(col);
             const titleAttr = commentTitle ? ` title="${escapeAttr(commentTitle)}"` : '';
             const commentMark = commentTitle ? ' <span class="col-comment-indicator" aria-hidden="true">🛈</span>' : '';
-            html += `<th class="${cls}" draggable="true" data-col="${escapeAttr(col.name)}"${titleAttr}><div class="col-select-strip" title="Click to select this column, drag to select several columns"></div>${escapeHtml(col.name)}${commentMark}<br><small class="col-type">${escapeHtml(formatColumnTypeLabel(col))}</small><div class="col-resize-handle" title="Drag to change column width"></div></th>`;
+            const execType = executableTypeOfColumn(col.name, caps.columnSources[col.name]);
+            const execMark = execType
+                ? `<span class="col-exec-indicator" title="${escapeAttr(`Executable column: ${execType.label}. Every value has a button for it.`)}">${executableIcon(execType.kind)}</span>`
+                : '';
+            html += `<th class="${cls}" draggable="true" data-col="${escapeAttr(col.name)}"${titleAttr}><div class="col-select-strip" title="Click to select this column, drag to select several columns"></div>${escapeHtml(col.name)}${execMark}${commentMark}<br><small class="col-type">${escapeHtml(formatColumnTypeLabel(col))}</small><div class="col-resize-handle" title="Drag to change column width"></div></th>`;
         });
         html += '</tr>';
 
@@ -5430,6 +5884,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         // 0. View full record (only for existing rows)
         if (rowIdx !== null) {
+            const execCell = executableCellValue(td);
+            if (execCell) {
+                items.push({ label: execCell.type.label, action: () => runExecutableCell(td) });
+                items.push({ separator: true });
+            }
             items.push({
                 label: 'View Full Record...',
                 action: () => {
@@ -5607,6 +6066,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         items.push({ separator: true });
         items.push({ label: `Add ${colName} IS NULL to WHERE`, action: () => applyNullConstraint(colName, true) });
         items.push({ label: `Add ${colName} IS NOT NULL to WHERE`, action: () => applyNullConstraint(colName, false) });
+
+        items.push({ separator: true });
+        items.push({ label: 'Make Column Executable...', action: () => chooseExecutableType(colName) });
 
         addHeaderRelationItems(items, colName);
 
@@ -5830,6 +6292,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function buildTableHtml() {
         let html = '';
         let rowNum = 0;
+        // Which columns run their values, worked out once rather than per cell.
+        const execTypes = new Map(columns.map(col => [col.name, executableTypeOfColumn(col.name, caps.columnSources[col.name])]));
 
         // Build a render plan that interleaves inserted/duplicated rows
         // directly below the existing row they were anchored to. Inserts
@@ -5934,8 +6398,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 }
                 const canEditCell = !isDeleted && isColumnEditable(col.name);
                 const spanClass = canEditCell ? 'cell-content editable-cell' : 'cell-content';
-                const cellExtraClass = fkBtn ? ' has-fk-btn' : '';
-                html += `<td class="${cellClass}${cellExtraClass}" ${invalidReason ? `title="${escapeAttr(invalidReason)}"` : ''} data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}"><span class="${spanClass}" contenteditable="false">${displayVal}</span>${fkBtn}</td>`;
+                const execType = execTypes.get(col.name);
+                const execBtn = execType && currentVal !== null && currentVal !== undefined
+                    ? executableButtonHtml(execType, executedValues.get(executableMarkKey(col.name, cellToString(currentVal))))
+                    : '';
+                const cellExtraClass = (fkBtn ? ' has-fk-btn' : '') + (execBtn ? ' has-exec-btn' : '');
+                html += `<td class="${cellClass}${cellExtraClass}" ${invalidReason ? `title="${escapeAttr(invalidReason)}"` : ''} data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}">${execBtn}<span class="${spanClass}" contenteditable="false">${displayVal}</span>${fkBtn}</td>`;
             });
             html += '</tr>';
 
@@ -6401,6 +6869,98 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const arg = parseInt(btn.getAttribute('data-row-arg'), 10);
         if (action && !isNaN(arg)) action(arg);
     });
+
+    // The run button of a cell in an executable column.
+    tableBody.addEventListener('click', (e) => {
+        const btn = e.target && e.target.closest ? e.target.closest('.exec-btn') : null;
+        if (!btn || !tableBody.contains(btn)) return;
+        e.preventDefault();
+        if (Date.now() - lastExecutableClickAt < 500) return;
+        lastExecutableClickAt = Date.now();
+        runExecutableCell(btn.closest('td[data-col]'));
+    });
+
+    // The run button of a cell, marked when its value ran before.
+    function executableButtonHtml(type, mark) {
+        const state = mark ? ` is-${mark.status}` : '';
+        const title = mark ? mark.title : type.action;
+        const glyph = mark && mark.status === 'executed' ? icon('check') : executableIcon(type.kind);
+        return `<button class="btn btn-ghost btn-sm btn-icon exec-btn${state}" title="${escapeAttr(title)}" aria-label="${escapeAttr(type.label)}">${glyph}</button>`;
+    }
+
+    // The value of a cell of an existing row in an executable column, as it is
+    // shown (an unsaved edit included), or null when the cell has none.
+    function executableCellValue(td) {
+        if (!td) return null;
+        const colName = td.getAttribute('data-col');
+        const rowAttr = td.getAttribute('data-row');
+        if (rowAttr === null) return null;
+        const idx = parseInt(rowAttr, 10);
+        const modKey = `${idx}:${colName}`;
+        const raw = modifiedCells.has(modKey) ? modifiedCells.get(modKey) : (allRows[idx] || {})[colName];
+        const type = executableTypeOfColumn(colName, caps.columnSources[colName]);
+        if (!type || raw === null || raw === undefined) return null;
+        return { colName, type, value: cellToString(raw) };
+    }
+
+    function runExecutableCell(td) {
+        const cell = executableCellValue(td);
+        if (!cell) return;
+        vscode.postMessage({ command: 'runExecutableValue', column: cell.colName, value: cell.value });
+    }
+
+    // Mark every cell showing the value that ran, in place, so a selection or
+    // an edit in progress is not disturbed by a re-render.
+    function handleExecutableValueDone(msg) {
+        const mark = executableMark(msg.outcome, new Date().toTimeString().slice(0, 8));
+        if (!mark) return;
+        executedValues.set(executableMarkKey(msg.column, msg.value), mark);
+        tableBody.querySelectorAll('td[data-col] > .exec-btn').forEach(btn => {
+            const cell = executableCellValue(btn.parentElement);
+            if (cell && cell.colName === msg.column && cell.value === msg.value) {
+                btn.outerHTML = executableButtonHtml(cell.type, mark);
+            }
+        });
+    }
+
+    // Rename a column in the query so its alias carries the prefix of a type
+    // ('' removes it), then run the query again.
+    function renameColumnInQuery(colName, newName) {
+        const sql = (queryInput.value || '').trim() || getDefaultQuery();
+        return renameSelectColumn(
+            sql,
+            { name: colName, index: columns.findIndex(c => c.name === colName), columns: columns.map(c => c.name) },
+            newName,
+            formatIdentifier,
+            word => POSTGRES_RESERVED_KEYWORDS.has(word)
+        );
+    }
+
+    // Ask the extension which type the column should get, once it is clear the
+    // query can be rewritten for it.
+    function chooseExecutableType(colName) {
+        const probe = renameColumnInQuery(colName, executableColumnAlias(colName, 'copy_'));
+        if (probe.error) {
+            showError(probe.error);
+            return;
+        }
+        vscode.postMessage({ command: 'chooseExecutableType', column: colName });
+    }
+
+    function makeColumnExecutable(colName, prefix) {
+        const newName = executableColumnAlias(colName, prefix);
+        if (newName === colName) return;
+        const result = renameColumnInQuery(colName, newName);
+        if (result.error) {
+            showError(result.error);
+            return;
+        }
+        // The rewrite touches only the alias, so the query keeps its layout.
+        queryInput.value = result.sql;
+        autoSizeQueryInput();
+        recordEditHistory();
+        runQuery();
+    }
 
     function insertRow() {
         const newRow = {};
@@ -7425,7 +7985,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         td.childNodes.forEach(node => {
             if (node.nodeType === Node.TEXT_NODE) {
                 text += node.textContent;
-            } else if (node.nodeType === Node.ELEMENT_NODE && !node.classList.contains('fk-btn')) {
+            } else if (node.nodeType === Node.ELEMENT_NODE && !node.classList.contains('fk-btn') && !node.classList.contains('exec-btn')) {
                 text += node.textContent;
             }
         });
@@ -8572,6 +9132,16 @@ if (typeof module !== 'undefined' && module.exports) {
         relatedJoinPayload,
         parseSelectChain,
         selectItemColumn,
-        describePendingChanges
+        describePendingChanges,
+        EXECUTABLE_COLUMN_TYPES,
+        executableColumnType,
+        executableTypeOfColumn,
+        executableColumnAlias,
+        executableIcon,
+        executableMarkKey,
+        executableMark,
+        maskSqlStructure,
+        findSelectListRange,
+        renameSelectColumn
     };
 }

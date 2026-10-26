@@ -21,6 +21,7 @@ import { autoRefreshIntervalError, autoRefreshRefusal, exportQueryRefusal, forma
 import { loadCompletionCatalog, loadCompletionColumns } from './sqlCompletion';
 import type { DbSession, DbSessionManager, DbSessionRef } from './dbSession';
 import { resetSessionWithConfirmation, type QueryViewLoad, type ViewerPlacement } from './sqlFileSession';
+import { executableColumnType, executableTypePickItems, type ExecutableValueRunner } from './executableColumns';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -288,6 +289,8 @@ export class TableWebViewManager {
     private querySessionCounter = 0;
     private panelCounter = 0;
     private dbSessions?: DbSessionManager;
+    /** Runs the values of executable columns; set once the extension has wired it. */
+    private executableValueRunner?: ExecutableValueRunner;
     /** Cell values currently open in an editor tab, keyed by scratch file path. */
     private cellEditors: Map<string, CellEditorLink> = new Map();
     private cellEditorCounter = 0;
@@ -335,6 +338,14 @@ export class TableWebViewManager {
                 }
             })
         );
+    }
+
+    /**
+     * Give the panels what runs the values of executable columns. It is set
+     * after construction because it opens Data Viewers through this manager.
+     */
+    setExecutableValueRunner(runner: ExecutableValueRunner): void {
+        this.executableValueRunner = runner;
     }
 
     private broadcastMappings(): void {
@@ -686,8 +697,38 @@ export class TableWebViewManager {
         openGeneratedStatement: this.handleOpenGeneratedStatement,
         queryEditorRequest: this.handleQueryEditorRequest,
         chooseAutoRefreshInterval: this.handleChooseAutoRefreshInterval,
-        resetSession: this.handleResetSession
+        resetSession: this.handleResetSession,
+        runExecutableValue: this.handleRunExecutableValue,
+        chooseExecutableType: this.handleChooseExecutableType
     };
+
+    /**
+     * Run the value of a cell of an executable column, as the prefix of the
+     * column asks, and tell the panel how it ended so it can mark the cell.
+     */
+    private async handleRunExecutableValue(ctx: MessageContext): Promise<void> {
+        const column = String(ctx.message.column ?? '');
+        const value = typeof ctx.message.value === 'string' ? ctx.message.value : '';
+        const type = executableColumnType(column);
+        if (!type || !this.executableValueRunner) {
+            return;
+        }
+        const outcome = await this.executableValueRunner.run(type, value, {
+            session: ctx.session.dbSession,
+            ref: ctx.session.dbSessionRef
+        });
+        this.post(ctx.session, { command: 'executableValueDone', column, value, outcome });
+    }
+
+    /** Ask what a column should do when one of its values is run; null when cancelled. */
+    private async handleChooseExecutableType(ctx: MessageContext): Promise<void> {
+        const column = String(ctx.message.column ?? '');
+        const picked = await vscode.window.showQuickPick(executableTypePickItems(executableColumnType(column)), {
+            title: `Make Column "${column}" Executable`,
+            placeHolder: 'What a click on a value of this column does; the column alias in the query gets the matching prefix'
+        });
+        this.post(ctx.session, { command: 'executableTypeChosen', column, prefix: picked ? picked.prefix : null });
+    }
 
     /** Ask for a custom auto refresh interval and answer with the seconds, or null when cancelled. */
     private async handleChooseAutoRefreshInterval(ctx: MessageContext): Promise<void> {

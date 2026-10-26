@@ -25,6 +25,10 @@ SQL before it is written.
 - **Sessions that keep their state.** Every Data Viewer, and every SQL file,
   runs on a database session of its own: run a `DO` block or `set_config(…)`
   from the file, then look at the data it prepared with **View Data**.
+- **Columns that act.** Name a column `pgsql_…`, `url_…` or `ps_…` and every
+  value gets a button that runs the statement, opens the link or runs the
+  command — a list of blocking sessions with a kill button in each row is one
+  query away.
 - **Export what you see.** CSV, Excel, JSON, XML or ready-made `INSERT`
   statements — always the complete result, not just the page you loaded.
 - **Format PL/pgSQL.** A formatter for `sql`, `plpgsql` and `pgsql` that never
@@ -191,6 +195,45 @@ warning says that its settings are gone.
   condition. They are kept personally or shared with the workspace.
 - A cell value can be added to the query as an exact match or as an exclusion
   straight from the context menu.
+
+### Executable columns
+
+A column whose alias starts with one of these prefixes runs its values: every
+cell gets a button at its left edge, the context menu of the cell offers the
+same action, and the header shows an icon for it.
+
+| Prefix | A click on a value |
+|--------|--------------------|
+| `sql_` | opens the query in a new Data Viewer that shares the database session of this one |
+| `pgsql_` | runs the statement in the database session of this Data Viewer |
+| `psql_` | sends it to the psql console of the connection (a statement gets its closing `;`) |
+| `ps_` | runs it in a PowerShell terminal |
+| `url_` | opens the http or https link in the browser |
+| `file_` | opens the file in the editor — an absolute path, a `file:` URI or a path relative to the workspace folder |
+| `copy_` | copies it to the clipboard |
+
+```sql
+SELECT psa.pid,
+       psa.query,
+       'SELECT pg_terminate_backend(' || psa.pid || ');' AS pgsql_kill_command
+FROM pg_stat_activity AS psa
+```
+
+A `pgsql_`, `psql_` or `ps_` value only runs after you confirmed it in a dialog
+that shows its exact text, because it comes from the data. Only a name the
+query gives counts: a stored table column that happens to be called `url_slug`
+stays an ordinary column. A statement that ran is marked with a check, and its
+tooltip tells when and what it returned (`Result: true`); one that failed is
+marked in the error colour. A `sql_` value has to be one query that returns
+rows, and the psql console and the PowerShell terminal are reused while they
+are open.
+
+**Make Column Executable** in the context menu of a column header asks for the
+type and writes the matching prefix into the alias of that column in the
+query, without touching anything else of it: an alias is replaced, a missing
+one is added with `AS`, a lone `SELECT *` is spelled out into its columns and
+an `ORDER BY` on the old name follows. *Not Executable* takes the prefix away
+again.
 
 ### Joins
 

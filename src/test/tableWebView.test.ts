@@ -1872,3 +1872,80 @@ test('a query cut off by closing its Data Viewer is not reported as an error', a
 
     assert.deepEqual(errors, []);
 });
+
+// ===== executable columns =====
+
+/** A query panel whose executable values go to `runner`. */
+async function openPanelWithRunner(runner: any) {
+    const { manager } = createManager();
+    manager.setExecutableValueRunner(runner);
+    const panel = createFakePanel();
+    const originalCreate = vscodeStub.window.createWebviewPanel;
+    vscodeStub.window.createWebviewPanel = () => panel;
+    try {
+        await manager.openQueryView('SELECT 1 AS n', 'Locks');
+    } finally {
+        vscodeStub.window.createWebviewPanel = originalCreate;
+    }
+    return { panel, send: (m: any) => panel.state.onMessage(m) };
+}
+
+function recordingRunner(outcome: any = { status: 'executed', message: 'SELECT returned 1 row in 3 ms.' }) {
+    return {
+        calls: [] as any[],
+        async run(type: any, value: string, target: any) {
+            this.calls.push({ type, value, target });
+            return outcome;
+        }
+    };
+}
+
+test('the run button of a cell runs its value as the column prefix says and reports the outcome to the panel', async () => {
+    const runner = recordingRunner();
+    const { panel, send } = await openPanelWithRunner(runner);
+
+    await send({ command: 'runExecutableValue', column: 'pgsql_kill_command', value: 'SELECT pg_terminate_backend(42);' });
+
+    assert.equal(runner.calls.length, 1);
+    assert.equal(runner.calls[0].type.kind, 'statement');
+    assert.equal(runner.calls[0].value, 'SELECT pg_terminate_backend(42);');
+    assert.deepEqual(panel.posted.filter((m: any) => m.command === 'executableValueDone'), [{
+        command: 'executableValueDone',
+        column: 'pgsql_kill_command',
+        value: 'SELECT pg_terminate_backend(42);',
+        outcome: { status: 'executed', message: 'SELECT returned 1 row in 3 ms.' }
+    }]);
+});
+
+test('a column without a prefix runs nothing, whatever the panel asks', async () => {
+    const runner = recordingRunner();
+    const { panel, send } = await openPanelWithRunner(runner);
+
+    await send({ command: 'runExecutableValue', column: 'kill_command', value: 'DROP TABLE orders' });
+
+    assert.equal(runner.calls.length, 0);
+    assert.equal(panel.posted.some((m: any) => m.command === 'executableValueDone'), false);
+});
+
+test('Make Column Executable asks for the type and tells the panel the prefix, or null when cancelled', async (t) => {
+    const picks: any[] = [];
+    const answers = [(items: any[]) => items.find((i) => i.prefix === 'pgsql_'), () => undefined];
+    const original = vscodeStub.window.showQuickPick;
+    vscodeStub.window.showQuickPick = ((items: any, options: any) => {
+        picks.push({ items, options });
+        return Promise.resolve(answers.shift()!(items));
+    }) as any;
+    t.after(() => { vscodeStub.window.showQuickPick = original; });
+    const { panel, send } = await openPanelWithRunner(recordingRunner());
+
+    await send({ command: 'chooseExecutableType', column: 'kill_command' });
+    await send({ command: 'chooseExecutableType', column: 'pgsql_kill_command' });
+
+    assert.equal(picks[0].options.title, 'Make Column "kill_command" Executable');
+    assert.equal(picks[0].items.some((i: any) => i.label === 'Not Executable'), false);
+    assert.equal(picks[1].items[picks[1].items.length - 1].label, 'Not Executable');
+    assert.deepEqual(panel.posted.filter((m: any) => m.command === 'executableTypeChosen'), [
+        { command: 'executableTypeChosen', column: 'kill_command', prefix: 'pgsql_' },
+        { command: 'executableTypeChosen', column: 'pgsql_kill_command', prefix: null }
+    ]);
+});
