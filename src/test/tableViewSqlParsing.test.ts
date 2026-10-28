@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
 
 const {
     stripTrailingLimitOffset,
@@ -21,6 +22,7 @@ const {
     formatConstraintSort,
     buildConstraintOrderBy,
     isFreshRowLoad,
+    expectsRelationMetadata,
     recordFieldReadonlyAttr,
     isBackdropDismissClick,
     AUTO_REFRESH_PRESETS,
@@ -502,6 +504,26 @@ test('isFreshRowLoad is false when appending custom-query pages', () => {
 
 test('isFreshRowLoad is true when a custom query is re-run (not appending)', () => {
     assert.equal(isFreshRowLoad(0, false), true);
+});
+
+// ===== 3.5.0: "Loading relations..." only while relations are on the way =====
+
+test('expectsRelationMetadata: only a fresh result of a table is followed by its relations', () => {
+    assert.equal(expectsRelationMetadata({ command: 'rowsLoaded' }, 'orders'), true);
+    assert.equal(expectsRelationMetadata({ command: 'rowsLoaded', autoRefresh: true }, 'orders'), false, 'an auto refresh loads no relations');
+    assert.equal(expectsRelationMetadata({ command: 'rowsLoaded', append: true }, 'orders'), false, 'Load More loads no relations');
+    assert.equal(expectsRelationMetadata({ command: 'rowsLoaded' }, ''), false, 'a result without a source table has none');
+    assert.equal(expectsRelationMetadata(undefined, 'orders'), false);
+});
+
+test('the relations indicator is hidden until a load that brings relations shows it', () => {
+    const html = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.html'), 'utf8');
+    assert.match(html, /<span class="loading-indicator hidden" id="metaLoading">/);
+    const js = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    const shows = js.match(/metaLoading\.classList\.remove\('hidden'\)/g) || [];
+    assert.equal(shows.length, 1, 'only handleRowsLoaded may show the indicator');
+    const handler = js.slice(js.indexOf('    function handleRowsLoaded(msg) {'), js.indexOf('    let fkLoaded = false;'));
+    assert.match(handler, /if \(expectsRelationMetadata\(msg, caps\.table\)\) \{\s*fkLoaded = false;\s*refsLoaded = false;\s*metaLoading\.classList\.remove\('hidden'\);/);
 });
 
 // ===== 2.1.5: Single Record View respects read-only views =====

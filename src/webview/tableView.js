@@ -2387,6 +2387,17 @@ function virtualWindow(o) {
     };
 }
 
+// Whether a rowsLoaded answer is followed by the relation metadata
+// (foreignKeysLoaded / referencingTablesLoaded). The host sends it only after
+// a fresh result: neither a "Load More" page nor an auto refresh, which re-runs
+// the same query, loads it again.
+function expectsRelationMetadata(msg, sourceTable) {
+    if (!msg || msg.append || msg.autoRefresh) {
+        return false;
+    }
+    return Boolean(sourceTable);
+}
+
 // Decide whether a data-load message replaces the current rows wholesale (a
 // fresh first page or a re-run query) rather than appending a "Load More" page.
 // Fresh loads must discard pending edits, since those edits are keyed by a
@@ -5282,7 +5293,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // with the default query for that table.
         setQueryText(msg.sql || getDefaultQuery());
         applyCapabilities(caps);
-        if (table) { metaLoading.classList.remove('hidden'); }
         if (msg.awaitParameters && savedQueryParameters.length) {
             // The template cannot run as-is: ask for the placeholder values and
             // let the dialog trigger the first query.
@@ -5318,9 +5328,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         toggle(groupDeleteBtn, caps.canEdit);
         // Relation metadata is only fetched for a single source table; without
         // one nothing will arrive and the indicator must not keep spinning.
-        if (caps.table) {
-            metaLoading.classList.remove('hidden');
-        } else {
+        // It is shown by handleRowsLoaded, for the loads the metadata follows.
+        if (!caps.table) {
             metaLoading.classList.add('hidden');
         }
     }
@@ -5395,6 +5404,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!isAppend) {
             applyCapabilities(msg.capabilities);
             adoptSourceTable(msg);
+            // An auto refresh re-runs the same query, so the host sends no
+            // relations for it and the indicator stays hidden.
+            if (expectsRelationMetadata(msg, caps.table)) {
+                fkLoaded = false;
+                refsLoaded = false;
+                metaLoading.classList.remove('hidden');
+            }
             // Without an explicit count the total is unknown until requested.
             // An auto refresh keeps the last count until the new one arrives.
             totalCount = auto ? previousTotal : null;
@@ -9514,6 +9530,7 @@ if (typeof module !== 'undefined' && module.exports) {
         reorderColumns,
         reorderSelectColumns,
         isFreshRowLoad,
+        expectsRelationMetadata,
         recordFieldReadonlyAttr,
         isBackdropDismissClick,
         AUTO_REFRESH_PRESETS,
