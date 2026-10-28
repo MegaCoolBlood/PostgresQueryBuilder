@@ -7,6 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { DbSessionManager } from '../dbSession';
+import { exportChoiceProblem } from '../exportInstructions';
 import {
     SqlFileSessions,
     errorOffset,
@@ -999,7 +1000,8 @@ test('dialog opens the export dialog prefilled from the instruction, and exports
 
     await fileSessions.executeFile(editor as any);
 
-    assert.deepEqual(exporter.dialogs, [{
+    const [{ validate, ...request }] = exporter.dialogs;
+    assert.deepEqual(request, {
         title: 'Export: line 2 of payroll.sql',
         format: 'excel',
         fileName: 'payroll.xlsx',
@@ -1007,7 +1009,8 @@ test('dialog opens the export dialog prefilled from the instruction, and exports
         options: { excelSheetName: 'Orders' },
         sql: ORDERS,
         sessionRef: { key: `file:${URI}`, label: 'payroll.sql' }
-    }]);
+    });
+    assert.equal(validate, exportChoiceProblem, 'an INSERT export is refused in the dialog without its table');
     assert.equal(saves[0][0].defaultUri.fsPath, path.join(dir, 'orders.xlsx'), 'the save dialog has the last word, as in the Data Viewer');
     assert.deepEqual(exporter.written[0].options, {
         format: 'excel', excelSheetName: 'Open', excelIncludeHeaders: true, excelSqlStatement: ORDERS, filePath: path.join(dir, 'orders.xlsx')

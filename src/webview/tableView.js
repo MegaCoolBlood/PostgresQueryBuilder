@@ -5053,6 +5053,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 applyExportDefaults(msg.defaults);
                 applyExportPrefill();
                 break;
+            case 'exportDialogInvalid':
+                // The dialog stays open with what was entered, to be corrected.
+                document.getElementById('exportDialogError').textContent = String(msg.message || '');
+                break;
             case 'exportSuccess':
                 changeCount.textContent = `Exported to ${msg.filePath}`;
                 setTimeout(() => { updateChangeIndicator(); }, 3000);
@@ -7877,13 +7881,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function startExportOnly(prefill, title) {
         exportOnly = prefill || {};
         document.body.classList.add('export-only');
+        // Writing an `-- @export` line instead of exporting.
+        document.body.classList.toggle('export-instruction', exportOnly.purpose === 'instruction');
         setDataLoading(false);
         // The dialog names where the query comes from and shows it as written.
         document.getElementById('exportDialogTitle').textContent = title || 'Export Data';
         document.getElementById('exportQuerySql').textContent = typeof exportOnly.sql === 'string' ? exportOnly.sql : '';
+        document.getElementById('exportExecuteLabel').textContent = exportOnly.submitLabel || 'Export';
+        document.getElementById('exportAskAtRunTime').checked = exportOnly.askAtRunTime === true;
+        document.getElementById('exportDialogError').textContent = '';
         const options = exportOnly.options || {};
         // The key columns of ON CONFLICT … DO UPDATE come from the instruction.
-        primaryKeys = Array.isArray(options.insertConflictColumns) ? options.insertConflictColumns.slice() : [];
+        document.getElementById('insertConflictColumns').value = Array.isArray(options.insertConflictColumns)
+            ? options.insertConflictColumns.join(', ')
+            : '';
         if (exportOptGroups[exportOnly.format]) exportFormat.value = exportOnly.format;
         openExportDialog();
         applyExportPrefill();
@@ -7893,7 +7904,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function applyExportPrefill() {
         if (!exportOnly) return;
         const options = exportOnly.options || {};
-        if (exportOnly.fileName) exportFilename.value = exportOnly.fileName;
+        // An instruction may have no file on purpose: then it asks when it runs.
+        if (typeof exportOnly.fileName === 'string') exportFilename.value = exportOnly.fileName;
         if (exportOnly.folder) exportSaveLocation.value = exportOnly.folder;
         onExportFormatChange();
         applyExportFormatOptions(exportFormat.value, options);
@@ -7981,12 +7993,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             opts.xmlRootElement = document.getElementById('xmlRootElement').value || 'data';
             opts.xmlRowElement = document.getElementById('xmlRowElement').value || 'row';
         } else if (fmt === 'insert') {
-            opts.insertTableName = document.getElementById('insertTableName').value || defaultInsertTableName(getDefaultTableReference());
+            const typedTable = document.getElementById('insertTableName').value.trim();
+            // The Export tab of a SQL file has no table to fall back to: the
+            // extension asks for one rather than inventing it.
+            opts.insertTableName = typedTable || (exportOnly ? '' : defaultInsertTableName(getDefaultTableReference()));
             opts.insertBatchSize = parseInt(document.getElementById('insertBatchSize').value) || 1;
             opts.insertOnConflict = document.getElementById('insertOnConflict').value || 'none';
             // The conflict target for DO UPDATE is the primary key; every other
-            // column is rewritten from EXCLUDED on the host side.
-            opts.insertConflictColumns = primaryKeys.slice();
+            // column is rewritten from EXCLUDED on the host side. The Export
+            // tab of a SQL file has no table, so its key columns are entered.
+            opts.insertConflictColumns = exportOnly
+                ? document.getElementById('insertConflictColumns').value.split(',').map(c => c.trim()).filter(c => c)
+                : primaryKeys.slice();
         } else if (fmt === 'excel') {
             opts.excelIncludeHeaders = document.getElementById('excelIncludeHeaders').checked;
             opts.excelSheetName = document.getElementById('excelSheetName').value || 'Data';
@@ -8001,6 +8019,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const opts = gatherExportOptions();
         opts.saveLocation = exportSaveLocation.value.trim() || '';
         if (exportOnly) {
+            // The name as typed: an instruction keeps placeholders and may have none.
+            opts.typedFilename = exportFilename.value.trim();
+            opts.askAtRunTime = document.getElementById('exportAskAtRunTime').checked;
+            document.getElementById('exportDialogError').textContent = '';
             vscode.postMessage({ command: 'exportDialogResult', options: opts });
             return;
         }

@@ -167,6 +167,12 @@
         "icon": "$(run-all)"
       },
       {
+        "command": "postgresQueryBuilder.addExportInstruction",
+        "title": "Add Export Instruction",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(export)"
+      },
+      {
         "command": "postgresQueryBuilder.formatSql",
         "title": "Format PL/pgSQL",
         "category": "PostgreSQL Query Booster",
@@ -366,6 +372,11 @@
           "command": "postgresQueryBuilder.resetSqlFileSession",
           "when": "editorTextFocus && resourceLangId == sql",
           "group": "navigation@11"
+        },
+        {
+          "command": "postgresQueryBuilder.addExportInstruction",
+          "when": "editorTextFocus && resourceLangId == sql",
+          "group": "navigation@12"
         },
         {
           "command": "postgresQueryBuilder.formatSql",

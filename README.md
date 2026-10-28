@@ -368,6 +368,25 @@ fields wherever it comes from.
   instruction — or whose first query has one on the lines right above it —
   runs statement by statement like *Execute File*. Every export is listed with
   its row count and file in the *PostgreSQL Messages* output.
+- **Writing an instruction without typing it.** **Add Export Instruction** —
+  in the context menu of a SQL file, as the light bulb on the first line of a
+  query, or with `Ctrl+.` anywhere in it — opens the export dialog of the
+  Data Viewer for the query at the cursor. Choose format, file and options
+  there as for any export, tick *Open this dialog when the SQL file runs* if
+  you want to decide then, and **Insert** writes the matching `-- @export`
+  line above the query, with every option of the format spelled out. On a
+  query that has an instruction already, the dialog starts from it and
+  **Update** replaces it. A file name may keep `{date}`, `{time}` and `{file}`,
+  an empty one means *ask each time*, and a folder inside the folder of the
+  SQL file is written relative to it.
+
+  Typing an instruction by hand is guided too: `-- @export` is offered as a
+  snippet at the start of a line, and inside the line the formats, the
+  options of the chosen format, their values (`true`/`false`, `crlf`/`lf`,
+  `none`/`nothing`/`update`) and the placeholders of `file=` are suggested.
+  Hovering a word explains it, and a wrong instruction is underlined while
+  you type, with the message *Execute File* would stop with — the light bulb
+  on it offers **Rewrite Export Instruction**.
 - **Bookmark Query** stores the statement under the cursor.
 - **Autocomplete** in SQL files offers the same suggestions as the Data
   Viewer's query bar, for the statement the cursor is in — also inside a
@@ -464,6 +483,7 @@ Every command lives in the Command Palette (`Ctrl+Shift+P`) under the category
 | View Data | Run the `SELECT` under the cursor in the Data Viewer |
 | Execute Selection | Run exactly the selected text in the session of the SQL file; a selected `SELECT` opens in the Data Viewer |
 | Execute File | Run every statement of the SQL file from top to bottom in its session; queries open in the Data Viewer |
+| Add Export Instruction | Write an `-- @export` line above the query at the cursor from the export dialog, so *Execute File* exports it |
 | Reset Database Session | Discard the session of the SQL file: settings, temporary tables, an open transaction |
 | Format PL/pgSQL | Format the current SQL file |
 | Export Formatter Settings to .pgformat.json | Write the current formatter settings into a file |

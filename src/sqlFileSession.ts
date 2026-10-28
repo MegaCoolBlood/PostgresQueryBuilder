@@ -10,8 +10,10 @@ import { uniqueFieldNames } from './queryRunner';
 import {
     EXPORT_FILE_EXTENSIONS,
     defaultExportFileName,
+    exportChoiceProblem,
     exportPlaceholders,
     exportSettingsFor,
+    exportTargetErrors,
     formatExportMessage,
     planExportInstructions,
     resolveExportTarget,
@@ -607,16 +609,7 @@ export class SqlFileSessions implements vscode.Disposable {
 
     /** A `file=` that cannot name a file — a wrong placeholder, a relative path in an unsaved file — before anything runs. */
     private targetErrors(document: vscode.TextDocument, statements: ReadonlyArray<PlannedStatement>): InstructionError[] {
-        const errors: InstructionError[] = [];
-        const values = exportPlaceholders(new Date(), document.fileName);
-        for (const { instruction } of statements) {
-            if (!instruction?.file) continue;
-            const resolved = resolveExportTarget(instruction.file, instruction.format ?? 'csv', this.documentFolder(document), values);
-            if ('error' in resolved) {
-                errors.push({ line: instruction.line, message: resolved.error });
-            }
-        }
-        return errors.sort((a, b) => a.line - b.line);
+        return exportTargetErrors(statements, this.documentFolder(document), exportPlaceholders(new Date(), document.fileName));
     }
 
     /** Say why a run did not start and put the cursor on the first wrong instruction. */
@@ -811,7 +804,8 @@ export class SqlFileSessions implements vscode.Disposable {
                 folder: dialogFolder,
                 options: instruction.options,
                 sql,
-                sessionRef: ref
+                sessionRef: ref,
+                validate: exportChoiceProblem
             });
             if (!choice) {
                 return { status: 'cancelled' };

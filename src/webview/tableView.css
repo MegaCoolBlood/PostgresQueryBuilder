@@ -1139,6 +1139,43 @@ body.export-only .export-dialog {
     margin: 0 0 var(--sp-3) 0;
 }
 
+/* Parts of the export dialog that only the Export tab of a SQL file shows:
+   the key columns of ON CONFLICT (the Data Viewer takes the primary key), and
+   — when it writes an `-- @export` instruction — the run-time choice and a
+   hint on file names. */
+.export-dialog .export-only-field,
+.export-dialog .export-instruction-only,
+.export-dialog .export-instruction-hint {
+    display: none;
+}
+
+body.export-only .export-dialog .export-only-field,
+body.export-instruction .export-dialog .export-instruction-only {
+    display: flex;
+}
+
+body.export-instruction .export-dialog .export-instruction-hint {
+    display: block;
+    margin: 0 0 var(--sp-3);
+    font-size: var(--fs-xs);
+    color: var(--c-muted);
+}
+
+body.export-instruction #exportSaveDefault {
+    display: none;
+}
+
+/* Why the dialog's choice was refused; it stays open to be corrected. */
+.export-dialog-error {
+    padding: var(--sp-2) var(--sp-4);
+    color: var(--c-danger);
+    border-top: 1px solid var(--c-border);
+}
+
+.export-dialog-error:empty {
+    display: none;
+}
+
 /* Custom Column Mapping Dialog */
 .mapping-dialog {
     max-width: 560px;

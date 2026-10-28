@@ -241,16 +241,36 @@ function lineOf(text: string, offset: number): number {
 
 const INSTRUCTION_LINE = /^[ \t]*--[ \t]*@export\b(.*)$/gim;
 
-/** The instructions in `text` between `from` and `to`. */
-function instructionsBetween(text: string, from: number, to: number): Array<{ line: number; body: string }> {
-    const found: Array<{ line: number; body: string }> = [];
+/** An `-- @export` comment line: where it is and what follows the keyword. */
+export interface InstructionLine {
+    /** 0-based line. */
+    line: number;
+    /** Offset of the `--`. */
+    start: number;
+    /** Offset of the end of the line, before its line break. */
+    end: number;
+    /** The text after `@export`. */
+    body: string;
+}
+
+/** The `-- @export` lines in `text` between the offsets `from` and `to`. */
+export function findInstructionLines(text: string, from: number, to: number): InstructionLine[] {
+    const found: InstructionLine[] = [];
     const gap = text.slice(from, to);
     INSTRUCTION_LINE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = INSTRUCTION_LINE.exec(gap)) !== null) {
-        found.push({ line: lineOf(text, from + m.index), body: m[1].replace(/\r$/, '') });
+        const lineStart = from + m.index;
+        const start = lineStart + m[0].indexOf('--');
+        const body = m[1].replace(/\r$/, '');
+        found.push({ line: lineOf(text, lineStart), start, end: lineStart + m[0].replace(/\r$/, '').length, body });
     }
     return found;
+}
+
+/** The instructions in `text` between `from` and `to`. */
+function instructionsBetween(text: string, from: number, to: number): Array<{ line: number; body: string }> {
+    return findInstructionLines(text, from, to).map(({ line, body }) => ({ line, body }));
 }
 
 /** A statement to run, with the instruction it carries. */
@@ -352,6 +372,26 @@ export function defaultExportFileName(values: ExportPlaceholders, line: number, 
 }
 
 /**
+ * A `file=` that cannot name a file — an unknown placeholder, a relative path
+ * in a SQL file that was never saved — reported before anything runs.
+ */
+export function exportTargetErrors(
+    statements: ReadonlyArray<PlannedStatement>,
+    folder: string | undefined,
+    values: ExportPlaceholders
+): InstructionError[] {
+    const errors: InstructionError[] = [];
+    for (const { instruction } of statements) {
+        if (!instruction?.file) continue;
+        const resolved = resolveExportTarget(instruction.file, instruction.format ?? 'csv', folder, values);
+        if ('error' in resolved) {
+            errors.push({ line: instruction.line, message: resolved.error });
+        }
+    }
+    return errors.sort((a, b) => a.line - b.line);
+}
+
+/**
  * The settings of an export: what the export dialog presets, the saved
  * defaults it would apply on top, and what the instruction names. An Excel
  * file gets the query for its optional SQL sheet.
@@ -391,6 +431,17 @@ export interface ExportDialogRequest {
     options: Partial<ExportSettings>;
     sql: string;
     sessionRef?: DbSessionRef;
+    /**
+     * `export` (default) when a running file asks for the settings of an
+     * export; `instruction` when the dialog writes an `-- @export` line.
+     */
+    purpose?: 'export' | 'instruction';
+    /** The label of the dialog's main button. */
+    submitLabel?: string;
+    /** For an instruction: whether "Open this dialog when the file runs" starts ticked. */
+    askAtRunTime?: boolean;
+    /** Why a choice cannot be taken, shown in the dialog, which stays open; undefined to accept it. */
+    validate?: (choice: ExportDialogChoice) => string | undefined;
 }
 
 /** What the user chose in the Export tab. */
@@ -398,6 +449,10 @@ export interface ExportDialogChoice {
     settings: ExportSettings;
     fileName: string;
     folder: string;
+    /** The file name exactly as typed, '' when the field was left empty. */
+    typedFileName: string;
+    /** "Open this dialog when the file runs" of an instruction. */
+    askAtRunTime: boolean;
 }
 
 /** Every option key a format may carry, for checking what the webview sends. */
@@ -435,7 +490,23 @@ export function exportDialogChoiceFrom(raw: unknown): ExportDialogChoice | undef
         ? path.basename(message.filename.trim())
         : `export${EXPORT_FILE_EXTENSIONS[format]}`;
     const folder = typeof message.saveLocation === 'string' ? message.saveLocation.trim() : '';
-    return { settings, fileName, folder };
+    const typedFileName = typeof message.typedFilename === 'string' ? message.typedFilename.trim() : '';
+    return { settings, fileName, folder, typedFileName, askAtRunTime: message.askAtRunTime === true };
+}
+
+/**
+ * Why the settings of an export cannot be used as they are, or undefined:
+ * INSERT statements need the table they write to.
+ */
+export function exportChoiceProblem(choice: ExportDialogChoice): string | undefined {
+    if (choice.settings.format === 'insert' && !(choice.settings.insertTableName ?? '').trim()) {
+        return 'Enter the table the INSERT statements write to.';
+    }
+    if (choice.settings.format === 'insert' && choice.settings.insertOnConflict === 'update'
+        && !(choice.settings.insertConflictColumns ?? []).length) {
+        return 'ON CONFLICT … DO UPDATE needs the key columns a conflict is detected on.';
+    }
+    return undefined;
 }
 
 /** What running an export needs from the rest of the extension. */

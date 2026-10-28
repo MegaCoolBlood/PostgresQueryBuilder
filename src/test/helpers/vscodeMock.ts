@@ -55,7 +55,66 @@ class DocumentDropEdit {
     constructor(public insertText: any) {}
 }
 
-const CompletionItemKind = { Text: 0, Function: 2, Field: 4, Variable: 5, Class: 6, Interface: 7, Module: 8, Keyword: 13 };
+const CompletionItemKind = { Text: 0, Function: 2, Field: 4, Variable: 5, Class: 6, Interface: 7, Module: 8, Property: 9, Value: 11, Keyword: 13, Snippet: 14, EnumMember: 19 };
+const CompletionTriggerKind = { Invoke: 0, TriggerCharacter: 1, TriggerForIncompleteCompletions: 2 };
+const CodeActionTriggerKind = { Invoke: 1, Automatic: 2 };
+const DiagnosticSeverity = { Error: 0, Warning: 1, Information: 2, Hint: 3 };
+
+class CodeActionKind {
+    static readonly QuickFix = new CodeActionKind('quickfix');
+    static readonly RefactorRewrite = new CodeActionKind('refactor.rewrite');
+    constructor(public value: string) {}
+}
+
+class CodeAction {
+    command?: any;
+    diagnostics?: any[];
+    isPreferred?: boolean;
+    constructor(public title: string, public kind?: CodeActionKind) {}
+}
+
+class Diagnostic {
+    source?: string;
+    constructor(public range: any, public message: string, public severity?: number) {}
+}
+
+class MarkdownString {
+    constructor(public value: string = '') {}
+}
+
+class Hover {
+    constructor(public contents: any, public range?: any) {}
+}
+
+/** Records the changes of an edit instead of applying them. */
+class WorkspaceEdit {
+    readonly changes: Array<{ uri: any; range: any; text: string }> = [];
+    replace(uri: any, range: any, text: string): void {
+        this.changes.push({ uri, range, text });
+    }
+}
+
+/** What the code under test registered with `vscode.languages`, for the test to call. */
+const languageRegistrations = {
+    completion: [] as Array<{ selector: any; provider: any; triggers: string[] }>,
+    hover: [] as Array<{ selector: any; provider: any }>,
+    codeActions: [] as Array<{ selector: any; provider: any; metadata: any }>,
+    diagnostics: [] as any[]
+};
+
+function createDiagnosticCollection(name?: string) {
+    const entries = new Map<string, any[]>();
+    const collection = {
+        name,
+        entries,
+        set(uri: any, diagnostics: any[]) { entries.set(String(uri), diagnostics); },
+        get(uri: any) { return entries.get(String(uri)); },
+        delete(uri: any) { entries.delete(String(uri)); },
+        dispose() { entries.clear(); }
+    };
+    languageRegistrations.diagnostics.push(collection);
+    return collection;
+}
 
 class CompletionItem {
     insertText?: any;
@@ -74,7 +133,18 @@ class Position {
 }
 
 class Range {
-    constructor(public start: Position, public end: Position) {}
+    start: Position;
+    end: Position;
+    /** `new Range(start, end)` or `new Range(startLine, startCharacter, endLine, endCharacter)`. */
+    constructor(a: any, b: any, c?: number, d?: number) {
+        if (typeof a === 'number') {
+            this.start = new Position(a, b);
+            this.end = new Position(c as number, d as number);
+        } else {
+            this.start = a;
+            this.end = b;
+        }
+    }
 }
 
 class Selection extends Range {
@@ -90,7 +160,9 @@ const TextEditorRevealType = { Default: 0, InCenter: 1, InCenterIfOutsideViewpor
 const documentListeners = {
     save: [] as Array<(doc: any) => void>,
     close: [] as Array<(doc: any) => void>,
-    tabs: [] as Array<(event: any) => void>
+    tabs: [] as Array<(event: any) => void>,
+    open: [] as Array<(doc: any) => void>,
+    change: [] as Array<(event: any) => void>
 };
 
 function registerDocumentListener(bucket: Array<(doc: any) => void>, listener: (doc: any) => void) {
@@ -125,6 +197,13 @@ export function fireDidChangeTabs(event: any = { opened: [], closed: [], changed
     }
 }
 
+/** Let a test replay a change of a document to everything that subscribed. */
+export function fireDidChangeTextDocument(document: any): void {
+    for (const l of [...documentListeners.change]) {
+        l({ document, contentChanges: [] });
+    }
+}
+
 const vscodeStub = {
     EventEmitter,
     ThemeIcon,
@@ -132,14 +211,38 @@ const vscodeStub = {
     DataTransferItem,
     DocumentDropEdit,
     CompletionItemKind,
+    CompletionTriggerKind,
     CompletionItem,
     SnippetString,
+    CodeAction,
+    CodeActionKind,
+    CodeActionTriggerKind,
+    Diagnostic,
+    DiagnosticSeverity,
+    Hover,
+    MarkdownString,
+    WorkspaceEdit,
     Position,
     Range,
     Selection,
     ProgressLocation,
     TextEditorRevealType,
     TreeItemCollapsibleState,
+    languages: {
+        createDiagnosticCollection,
+        registerCompletionItemProvider: (selector: any, provider: any, ...triggers: string[]) => {
+            languageRegistrations.completion.push({ selector, provider, triggers });
+            return { dispose() {} };
+        },
+        registerHoverProvider: (selector: any, provider: any) => {
+            languageRegistrations.hover.push({ selector, provider });
+            return { dispose() {} };
+        },
+        registerCodeActionsProvider: (selector: any, provider: any, metadata?: any) => {
+            languageRegistrations.codeActions.push({ selector, provider, metadata });
+            return { dispose() {} };
+        }
+    },
     workspace: {
         workspaceFolders: undefined as any,
         textDocuments: [] as any[],
@@ -147,6 +250,9 @@ const vscodeStub = {
         onDidChangeWorkspaceFolders: (_listener: any) => ({ dispose() {} }),
         onDidSaveTextDocument: (listener: any) => registerDocumentListener(documentListeners.save, listener),
         onDidCloseTextDocument: (listener: any) => registerDocumentListener(documentListeners.close, listener),
+        onDidOpenTextDocument: (listener: any) => registerDocumentListener(documentListeners.open, listener),
+        onDidChangeTextDocument: (listener: any) => registerDocumentListener(documentListeners.change, listener),
+        applyEdit: (_edit: any): Promise<boolean> => Promise.resolve(true),
         openTextDocument: (uri: any): Promise<any> => Promise.resolve({ uri, getText: () => '' }),
         getConfiguration: (_section?: string) => ({
             get<T>(_key: string, defaultValue?: T): T {
@@ -229,7 +335,7 @@ export function installVscodeMock(): void {
     };
 }
 
-export { vscodeStub };
+export { vscodeStub, languageRegistrations };
 
 /**
  * Answer `window.showWarningMessage` for the rest of one test: `answer` gets the

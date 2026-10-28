@@ -27,6 +27,7 @@ import { DoubleClickGate } from './doubleClick';
 import { PsqlConsole } from './psqlConsole';
 import { ExecutableValueRunner } from './executableColumns';
 import { ExportService } from './exportService';
+import { ADD_EXPORT_INSTRUCTION_COMMAND, ExportInstructionAssist } from './exportInstructionAssist';
 import { CompletionCatalogCache, SqlFileCompletionProvider, loadSqlCompletionApi, loadSqlWords } from './sqlCompletion';
 
 /**
@@ -54,6 +55,7 @@ let savedQueryExplorer: SavedQueryExplorerProvider;
 let savedQueryEditor: SavedQueryEditor;
 let viewDataFromSelect: ViewDataFromSelect;
 let sqlFileSessions: SqlFileSessions;
+let exportInstructionAssist: ExportInstructionAssist;
 let statusBarItem: vscode.StatusBarItem;
 let outputChannel: vscode.OutputChannel;
 
@@ -263,6 +265,18 @@ export function activate(context: vscode.ExtensionContext) {
                     vscode.window.showErrorMessage(`Reset Database Session failed: ${getErrorMessage(err)}`);
                 }
             }),
+            // The context menu passes the file, the code action the file and the offset.
+            vscode.commands.registerCommand(ADD_EXPORT_INSTRUCTION_COMMAND, async (uri?: unknown, offset?: unknown) => {
+                try {
+                    await exportInstructionAssist.addInstruction(
+                        uri instanceof vscode.Uri ? uri : undefined,
+                        typeof offset === 'number' ? offset : undefined
+                    );
+                } catch (err: unknown) {
+                    outputChannel.appendLine(`[addExportInstruction] ${getErrorStack(err)}`);
+                    vscode.window.showErrorMessage(`Add Export Instruction failed: ${getErrorMessage(err)}`);
+                }
+            }),
             // The editor title button passes the file it belongs to, which may
             // be shown in another editor group than the active one.
             vscode.commands.registerCommand('postgresQueryBuilder.executeFile', async (uri?: vscode.Uri) => {
@@ -385,6 +399,13 @@ export function activate(context: vscode.ExtensionContext) {
             }
         );
         context.subscriptions.push(sqlFileSessions);
+        // Writing `-- @export` instructions: the command and code action, and
+        // suggestions, explanations and checks inside an instruction.
+        exportInstructionAssist = new ExportInstructionAssist(
+            (request) => tableWebViewManager.openExportDialog(request),
+            FORMATTER_LANGUAGES
+        );
+        context.subscriptions.push(exportInstructionAssist);
         // A cell of an executable column runs its value: opens it, runs it in
         // the panel's session or sends it to the psql console or PowerShell.
         tableWebViewManager.setExecutableValueRunner(new ExecutableValueRunner({

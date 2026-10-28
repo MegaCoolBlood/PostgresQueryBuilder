@@ -136,6 +136,12 @@
                         <input type="text" id="exportSaveLocation" placeholder="(will prompt on export)" />
                         <button class="btn" id="exportBrowseLocation" title="Browse for folder">Browse</button>
                     </div>
+                    <!-- Writing an `-- @export` instruction only -->
+                    <div class="export-instruction-hint">File name and folder may use {date}, {time} and {file}. Leave the file name empty to be asked for the file each time the SQL file runs. A folder inside the folder of the SQL file is written relative to it.</div>
+                    <div class="export-field-checkbox export-instruction-only">
+                        <input type="checkbox" id="exportAskAtRunTime" />
+                        <label for="exportAskAtRunTime">Open this dialog when the SQL file runs</label>
+                    </div>
                     <!-- CSV Options -->
                     <div class="export-options-group" id="exportOptsCsv">
                         <h4>CSV Options</h4>
@@ -212,6 +218,11 @@
                                 <option value="update">DO UPDATE (all non-key columns)</option>
                             </select>
                         </div>
+                        <!-- In the Data Viewer the key is the primary key of the table -->
+                        <div class="export-field export-only-field">
+                            <label for="insertConflictColumns">Key columns:</label>
+                            <input type="text" id="insertConflictColumns" placeholder="id, tenant_id" title="The columns a conflict is detected on, separated by commas" />
+                        </div>
                     </div>
                     <!-- Excel Options -->
                     <div class="export-options-group" id="exportOptsExcel" style="display:none;">
@@ -230,9 +241,10 @@
                         </div>
                     </div>
                 </div>
+                <div class="export-dialog-error" id="exportDialogError" role="alert"></div>
                 <div class="sql-dialog-footer">
                     <button class="btn" id="exportSaveDefault" title="Save current settings as default for this format">Save as Default</button>
-                    <button class="btn btn-primary" id="exportExecute"><svg class="ico" aria-hidden="true"><use href="#icon-export"/></svg>Export</button>
+                    <button class="btn btn-primary" id="exportExecute"><svg class="ico" aria-hidden="true"><use href="#icon-export"/></svg><span id="exportExecuteLabel">Export</span></button>
                     <button class="btn" id="exportCancel">Cancel</button>
                 </div>
             </div>

@@ -62,6 +62,8 @@ interface PanelSession {
     onFirstLoad?: (outcome: QueryViewLoad) => void;
     /** Set for an Export tab: told what its export dialog chose, or undefined when cancelled. */
     onExportChoice?: (choice: ExportDialogChoice | undefined) => void;
+    /** Set for an Export tab: why a choice cannot be taken; the dialog then stays open. */
+    validateExportChoice?: (choice: ExportDialogChoice) => string | undefined;
     disposed: boolean;
 }
 
@@ -729,6 +731,7 @@ export class TableWebViewManager {
                 settle(choice);
                 session.panel.dispose();
             };
+            session.validateExportChoice = request.validate;
             session.panel.onDidDispose(() => settle(undefined));
             this.post(session, {
                 command: 'init',
@@ -746,15 +749,29 @@ export class TableWebViewManager {
                     fileName: request.fileName,
                     folder: request.folder,
                     options: request.options,
-                    sql: request.sql
+                    sql: request.sql,
+                    purpose: request.purpose ?? 'export',
+                    submitLabel: request.submitLabel ?? 'Export',
+                    askAtRunTime: request.askAtRunTime === true
                 }
             });
         });
     }
 
-    /** The answer of the export dialog of an Export tab; a Cancel arrives with no options. */
+    /**
+     * The answer of the export dialog of an Export tab; a Cancel arrives with
+     * no options. A choice the tab's check refuses is sent back with the
+     * reason, and the dialog stays open.
+     */
     private handleExportDialogResult(ctx: MessageContext): void {
-        ctx.session.onExportChoice?.(exportDialogChoiceFrom(ctx.message.options));
+        const { session } = ctx;
+        const choice = exportDialogChoiceFrom(ctx.message.options);
+        const problem = choice && session.validateExportChoice ? session.validateExportChoice(choice) : undefined;
+        if (problem) {
+            this.post(session, { command: 'exportDialogInvalid', message: problem });
+            return;
+        }
+        session.onExportChoice?.(choice);
     }
 
     /**

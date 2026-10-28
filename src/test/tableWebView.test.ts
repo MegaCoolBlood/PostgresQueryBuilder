@@ -1986,7 +1986,8 @@ test('the Export tab shows only the export dialog, prefilled from the instructio
     const init = panel.posted.find((m: any) => m.command === 'init');
     assert.equal(init.title, 'Export: line 12 of payroll.sql');
     assert.deepEqual(init.exportOnly, {
-        format: 'csv', fileName: 'payroll_line12.csv', folder: 'C:\\work', options: { csvSeparator: ';' }, sql: 'SELECT * FROM orders'
+        format: 'csv', fileName: 'payroll_line12.csv', folder: 'C:\\work', options: { csvSeparator: ';' }, sql: 'SELECT * FROM orders',
+        purpose: 'export', submitLabel: 'Export', askAtRunTime: false
     });
     assert.match(panel.webview.html, /id="exportDialogOverlay"/, 'the page of the Data Viewer, with its export dialog');
     assert.equal(panel.posted.some((m: any) => m.command === 'rowsLoaded'), false);
@@ -1997,8 +1998,36 @@ test('Export in the Export tab answers with the choice and closes the tab', asyn
 
     await send({ command: 'exportDialogResult', options: { format: 'csv', filename: 'orders.csv', saveLocation: 'C:\\exports', csvSeparator: '\t' } });
 
-    assert.deepEqual(await choice, { settings: { format: 'csv', csvSeparator: '\t' }, fileName: 'orders.csv', folder: 'C:\\exports' });
+    assert.deepEqual(await choice, {
+        settings: { format: 'csv', csvSeparator: '\t' }, fileName: 'orders.csv', folder: 'C:\\exports', typedFileName: '', askAtRunTime: false
+    });
     assert.equal(panel.disposed, 1);
+});
+
+test('an Export tab whose check refuses the choice says why and stays open', async () => {
+    const checked: any[] = [];
+    const { panel, choice, send } = openExportTab({
+        ...EXPORT_REQUEST,
+        purpose: 'instruction',
+        submitLabel: 'Insert',
+        askAtRunTime: true,
+        validate: (c: any) => { checked.push(c); return c.settings.format === 'insert' ? 'Enter the table the INSERT statements write to.' : undefined; }
+    });
+    const init = panel.posted.find((m: any) => m.command === 'init');
+    assert.equal(init.exportOnly.purpose, 'instruction');
+    assert.equal(init.exportOnly.submitLabel, 'Insert');
+    assert.equal(init.exportOnly.askAtRunTime, true);
+
+    await send({ command: 'exportDialogResult', options: { format: 'insert', filename: 'o.sql' } });
+    assert.deepEqual(panel.posted.filter((m: any) => m.command === 'exportDialogInvalid'), [
+        { command: 'exportDialogInvalid', message: 'Enter the table the INSERT statements write to.' }
+    ]);
+    assert.equal(panel.disposed, 0, 'the dialog stays open to be corrected');
+
+    await send({ command: 'exportDialogResult', options: { format: 'csv', filename: 'o.csv', typedFilename: 'o', askAtRunTime: true } });
+    assert.equal((await choice)?.typedFileName, 'o');
+    assert.equal(panel.disposed, 1);
+    assert.equal(checked.length, 2);
 });
 
 test('Cancel in the Export tab, or closing it, chooses nothing', async () => {

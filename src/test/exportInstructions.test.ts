@@ -226,8 +226,14 @@ test('the answer of the export dialog is taken with its file and the options it 
     }), {
         settings: { format: 'csv', csvSeparator: ';', csvIncludeHeaders: false, csvLineEnding: 'lf' },
         fileName: 'orders.csv',
-        folder: 'C:\\exports'
+        folder: 'C:\\exports',
+        typedFileName: '',
+        askAtRunTime: false
     });
+    const instruction = exportDialogChoiceFrom({ format: 'json', filename: 'export.json', typedFilename: ' out/{file} ', askAtRunTime: true });
+    assert.equal(instruction?.typedFileName, 'out/{file}', 'as typed, placeholders and folders kept');
+    assert.equal(instruction?.askAtRunTime, true);
+    assert.equal(exportDialogChoiceFrom({ format: 'json', askAtRunTime: 'yes' })?.askAtRunTime, false);
 });
 
 test('a cancelled or malformed answer of the export dialog chooses nothing', () => {
