@@ -5051,6 +5051,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 break;
             case 'exportDefaultsLoaded':
                 applyExportDefaults(msg.defaults);
+                applyExportPrefill();
                 break;
             case 'exportSuccess':
                 changeCount.textContent = `Exported to ${msg.filePath}`;
@@ -5128,6 +5129,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (typeof msg.connectionName === 'string') {
             currentConnection = msg.connectionName;
             updateConnectionDisplay();
+        }
+
+        // An Export tab shows only the export dialog and runs nothing.
+        if (msg.exportOnly) {
+            tableName.textContent = msg.title || 'Export';
+            startExportOnly(msg.exportOnly);
+            return;
         }
 
         tableName.textContent = msg.title || (table ? `${schema}.${table}` : 'Query result');
@@ -7855,6 +7863,38 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function closeExportDialog() {
         exportDialogOverlay.style.display = 'none';
+        // In an Export tab the dialog is all there is: closing it cancels.
+        if (exportOnly) {
+            vscode.postMessage({ command: 'exportDialogResult', options: null });
+        }
+    }
+
+    // The Export tab of an `-- @export … dialog` instruction in a SQL file:
+    // only the export dialog, prefilled from the instruction, whose answer goes
+    // back to the run of the file instead of exporting from a grid.
+    let exportOnly = null;
+
+    function startExportOnly(prefill) {
+        exportOnly = prefill || {};
+        document.body.classList.add('export-only');
+        setDataLoading(false);
+        const options = exportOnly.options || {};
+        // The key columns of ON CONFLICT … DO UPDATE come from the instruction.
+        primaryKeys = Array.isArray(options.insertConflictColumns) ? options.insertConflictColumns.slice() : [];
+        if (exportOptGroups[exportOnly.format]) exportFormat.value = exportOnly.format;
+        openExportDialog();
+        applyExportPrefill();
+    }
+
+    // The instruction outranks the saved defaults, so it is applied after them.
+    function applyExportPrefill() {
+        if (!exportOnly) return;
+        const options = exportOnly.options || {};
+        if (exportOnly.fileName) exportFilename.value = exportOnly.fileName;
+        if (exportOnly.folder) exportSaveLocation.value = exportOnly.folder;
+        onExportFormatChange();
+        applyExportFormatOptions(exportFormat.value, options);
+        if (options.insertTableName) document.getElementById('insertTableName').value = options.insertTableName;
     }
 
     function onExportFormatChange() {
@@ -7876,7 +7916,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const fmt = exportFormat.value;
         const defs = exportDefaults[fmt];
         if (!defs) return;
+        applyExportFormatOptions(fmt, defs);
+    }
 
+    // Put the options of one format into the dialog's fields.
+    function applyExportFormatOptions(fmt, defs) {
         if (fmt === 'csv') {
             if (defs.csvSeparator) {
                 // Check if the separator matches a preset
@@ -7953,6 +7997,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function executeExport() {
         const opts = gatherExportOptions();
         opts.saveLocation = exportSaveLocation.value.trim() || '';
+        if (exportOnly) {
+            vscode.postMessage({ command: 'exportDialogResult', options: opts });
+            return;
+        }
         // Export what the grid shows: the last executed query, not unsaved text
         // in the query bar. Only the paging LIMIT the grid added is left out; a
         // LIMIT the user wrote is kept.

@@ -22,6 +22,7 @@ import { loadCompletionCatalog, loadCompletionColumns } from './sqlCompletion';
 import type { DbSession, DbSessionManager, DbSessionRef } from './dbSession';
 import { resetSessionWithConfirmation, type QueryViewLoad, type ViewerPlacement } from './sqlFileSession';
 import { executableColumnType, executableTypePickItems, type ExecutableValueRunner } from './executableColumns';
+import { exportDialogChoiceFrom, type ExportDialogChoice, type ExportDialogRequest } from './exportInstructions';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -59,6 +60,8 @@ interface PanelSession {
     dbSessionRef?: DbSessionRef;
     /** Told once how the panel's first query ended; see {@link TableWebViewManager.openQueryViewWithLoad}. */
     onFirstLoad?: (outcome: QueryViewLoad) => void;
+    /** Set for an Export tab: told what its export dialog chose, or undefined when cancelled. */
+    onExportChoice?: (choice: ExportDialogChoice | undefined) => void;
     disposed: boolean;
 }
 
@@ -287,6 +290,7 @@ export class TableWebViewManager {
     private savedQueryStore?: SavedQueryStore;
     private modifyHistoryStore?: ModifyHistoryStore;
     private querySessionCounter = 0;
+    private exportDialogCounter = 0;
     private panelCounter = 0;
     private dbSessions?: DbSessionManager;
     /** Runs the values of executable columns; set once the extension has wired it. */
@@ -699,8 +703,57 @@ export class TableWebViewManager {
         chooseAutoRefreshInterval: this.handleChooseAutoRefreshInterval,
         resetSession: this.handleResetSession,
         runExecutableValue: this.handleRunExecutableValue,
-        chooseExecutableType: this.handleChooseExecutableType
+        chooseExecutableType: this.handleChooseExecutableType,
+        exportDialogResult: this.handleExportDialogResult
     };
+
+    /**
+     * Open an "Export" tab that holds only the export dialog of the Data
+     * Viewer, prefilled from an `-- @export … dialog` instruction. Nothing is
+     * shown or run in it; it closes itself once the dialog is answered.
+     * Resolves to the choice, or undefined when it was cancelled or closed.
+     */
+    openExportDialog(request: ExportDialogRequest): Promise<ExportDialogChoice | undefined> {
+        return new Promise((resolve) => {
+            const id = `export:${++this.exportDialogCounter}`;
+            const session = this.createSession(id, request.title, 'query', '', '', 'export', vscode.ViewColumn.Active, request.sessionRef);
+            let settled = false;
+            const settle = (choice: ExportDialogChoice | undefined): void => {
+                if (!settled) {
+                    settled = true;
+                    resolve(choice);
+                }
+            };
+            session.onExportChoice = (choice) => {
+                settle(choice);
+                session.panel.dispose();
+            };
+            session.panel.onDidDispose(() => settle(undefined));
+            this.post(session, {
+                command: 'init',
+                origin: 'query',
+                schema: '',
+                table: '',
+                title: request.title,
+                sql: request.sql,
+                tableReference: '',
+                connectionName: this.getConnectionName(),
+                permanentConstraints: [],
+                permanentSorts: [],
+                exportOnly: {
+                    format: request.format,
+                    fileName: request.fileName,
+                    folder: request.folder,
+                    options: request.options
+                }
+            });
+        });
+    }
+
+    /** The answer of the export dialog of an Export tab; a Cancel arrives with no options. */
+    private handleExportDialogResult(ctx: MessageContext): void {
+        ctx.session.onExportChoice?.(exportDialogChoiceFrom(ctx.message.options));
+    }
 
     /**
      * Run the value of a cell of an executable column, as the prefix of the

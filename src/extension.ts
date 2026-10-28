@@ -26,6 +26,7 @@ import { getFormatOptions, isFormatterEnabled } from './formatSettings';
 import { DoubleClickGate } from './doubleClick';
 import { PsqlConsole } from './psqlConsole';
 import { ExecutableValueRunner } from './executableColumns';
+import { ExportService } from './exportService';
 import { CompletionCatalogCache, SqlFileCompletionProvider, loadSqlCompletionApi, loadSqlWords } from './sqlCompletion';
 
 /**
@@ -371,10 +372,17 @@ export function activate(context: vscode.ExtensionContext) {
 
         tableWebViewManager = new TableWebViewManager(context, connectionManager, columnMappingManager, permanentConstraintManager, modifyHistoryStore, savedQueryStore, dbSessions);
         sqlEditorManager = new SqlEditorManager(context, connectionManager, modifyHistoryStore);
+        const exportService = new ExportService(context);
         sqlFileSessions = new SqlFileSessions(
             dbSessions, connectionManager, messagesChannel, modifyHistoryStore,
             // A SELECT of a selection or file is shown in the Data Viewer, on the file's session.
-            (sql, title, ref, placement) => tableWebViewManager.openQueryViewWithLoad(sql, title, ref, placement)
+            (sql, title, ref, placement) => tableWebViewManager.openQueryViewWithLoad(sql, title, ref, placement),
+            // …unless an `-- @export` instruction above it sends it to a file.
+            {
+                savedDefaults: (format) => exportService.getDefaults()[format],
+                chooseSettings: (request) => tableWebViewManager.openExportDialog(request),
+                write: (rows, columns, options) => exportService.exportData(rows, columns, options)
+            }
         );
         context.subscriptions.push(sqlFileSessions);
         // A cell of an executable column runs its value: opens it, runs it in

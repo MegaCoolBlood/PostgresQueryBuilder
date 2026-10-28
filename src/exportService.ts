@@ -155,6 +155,8 @@ export class ExportService {
     }
 
     async exportData(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
+        // A target named in a SQL file may point into a folder that does not exist yet.
+        await fs.promises.mkdir(path.dirname(options.filePath), { recursive: true });
         switch (options.format) {
             case 'csv':
                 await this.exportCsv(rows, columns, options);

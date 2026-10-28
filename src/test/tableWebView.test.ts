@@ -156,7 +156,12 @@ function createFakePanel() {
         },
         onDidDispose: (cb: () => void) => { state.onDispose.push(cb); return { dispose() {} }; },
         onDidChangeViewState: (cb: any) => { state.onViewState = cb; return { dispose() {} }; },
-        reveal() {}
+        reveal() {},
+        disposed: 0,
+        dispose() {
+            this.disposed++;
+            for (const cb of [...state.onDispose]) cb();
+        }
     };
     return panel;
 }
@@ -1948,4 +1953,64 @@ test('Make Column Executable asks for the type and tells the panel the prefix, o
         { command: 'executableTypeChosen', column: 'kill_command', prefix: 'pgsql_' },
         { command: 'executableTypeChosen', column: 'pgsql_kill_command', prefix: null }
     ]);
+});
+
+// ===== the Export tab of an -- @export … dialog instruction =====
+
+const EXPORT_REQUEST = {
+    title: 'Export: line 12 of payroll.sql',
+    format: 'csv' as const,
+    fileName: 'payroll_line12.csv',
+    folder: 'C:\\work',
+    options: { csvSeparator: ';' },
+    sql: 'SELECT * FROM orders'
+};
+
+/** Open the Export tab for `request`, with the choice it will resolve to. */
+function openExportTab(request: any = EXPORT_REQUEST) {
+    const { manager } = createManager();
+    const panel = createFakePanel();
+    const originalCreate = vscodeStub.window.createWebviewPanel;
+    vscodeStub.window.createWebviewPanel = () => panel;
+    try {
+        const choice = manager.openExportDialog(request);
+        return { panel, choice, send: (m: any) => panel.state.onMessage(m) };
+    } finally {
+        vscodeStub.window.createWebviewPanel = originalCreate;
+    }
+}
+
+test('the Export tab shows only the export dialog, prefilled from the instruction, and runs nothing', () => {
+    const { panel } = openExportTab();
+
+    const init = panel.posted.find((m: any) => m.command === 'init');
+    assert.equal(init.title, 'Export: line 12 of payroll.sql');
+    assert.deepEqual(init.exportOnly, { format: 'csv', fileName: 'payroll_line12.csv', folder: 'C:\\work', options: { csvSeparator: ';' } });
+    assert.match(panel.webview.html, /id="exportDialogOverlay"/, 'the page of the Data Viewer, with its export dialog');
+    assert.equal(panel.posted.some((m: any) => m.command === 'rowsLoaded'), false);
+});
+
+test('Export in the Export tab answers with the choice and closes the tab', async () => {
+    const { panel, choice, send } = openExportTab();
+
+    await send({ command: 'exportDialogResult', options: { format: 'csv', filename: 'orders.csv', saveLocation: 'C:\\exports', csvSeparator: '\t' } });
+
+    assert.deepEqual(await choice, { settings: { format: 'csv', csvSeparator: '\t' }, fileName: 'orders.csv', folder: 'C:\\exports' });
+    assert.equal(panel.disposed, 1);
+});
+
+test('Cancel in the Export tab, or closing it, chooses nothing', async () => {
+    const cancelled = openExportTab();
+    await cancelled.send({ command: 'exportDialogResult', options: null });
+    assert.equal(await cancelled.choice, undefined);
+    assert.equal(cancelled.panel.disposed, 1);
+
+    const closed = openExportTab();
+    closed.panel.dispose();
+    assert.equal(await closed.choice, undefined);
+});
+
+test('an answer of an export dialog in an ordinary Data Viewer is ignored', async () => {
+    const { send } = await openCustomQueryPanel();
+    await send({ command: 'exportDialogResult', options: { format: 'csv' } });
 });

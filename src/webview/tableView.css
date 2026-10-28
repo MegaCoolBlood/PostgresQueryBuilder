@@ -1051,6 +1051,12 @@ textarea.sql-dialog-content {
     max-width: 520px;
 }
 
+/* The Export tab of an `-- @export … dialog` instruction in a SQL file holds
+   nothing but the export dialog: the grid around it is never filled. */
+body.export-only .container > :not(#exportDialogOverlay) {
+    display: none;
+}
+
 .export-dialog-content {
     padding: var(--sp-4);
     overflow-y: auto;

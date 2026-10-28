@@ -325,6 +325,48 @@ fields wherever it comes from.
   of one editor group beside the file, which keeps the focus. The run stops at
   the first statement that fails, names it with its line and puts the cursor
   at the error.
+- **Export instead of showing.** A comment line `-- @export …` above a query
+  sends its result to a file when the query runs through *Execute File* or
+  *Execute Selection*, instead of opening it in the Data Viewer:
+
+  ```sql
+  DO $$ BEGIN PERFORM set_config('payroll.month', '2026-10', false); END $$;
+
+  -- @export excel file=exports/{file}_{date}.xlsx sheet=Wages sqlsheet=true
+  SELECT * FROM payroll.v_wages;
+
+  -- @export csv separator=; lineending=lf
+  SELECT * FROM payroll.v_deductions;
+
+  -- @export insert dialog table=archive.wages
+  SELECT * FROM payroll.wages WHERE month = '2026-10';
+  ```
+
+  The format comes first — `csv`, `excel` (or `xlsx`), `json`, `xml` or
+  `insert` (or `sql`) — followed by `key=value` options; a value with blanks
+  goes in quotes (`file="my exports/a.csv"`).
+
+  | Format | Options |
+  |--------|---------|
+  | every format | `file=` — relative to the folder of the SQL file; `{date}`, `{time}` and `{file}` (the name of the SQL file) are filled in, and the extension is added when the name has none |
+  | `csv` | `separator=` (a character, or `tab`, `comma`, `semicolon`, `pipe`, `space`), `header=`, `quote=`, `lineending=crlf\|lf` |
+  | `excel` | `sheet=`, `header=`, `sqlsheet=` |
+  | `json` | `pretty=`, `array=` |
+  | `xml` | `root=`, `row=` |
+  | `insert` | `table=` (required), `batch=`, `onconflict=none\|nothing\|update`, `conflict=` (the key columns, required for `update`) |
+
+  Options you leave out are preset like the export dialog of the Data Viewer:
+  your saved defaults for that format, otherwise the dialog's own. Without
+  `file=` a save dialog asks where the file goes, and an existing file is
+  only overwritten after asking. The word `dialog` opens the export dialog of
+  the Data Viewer in a small *Export* tab, prefilled from the instruction, to
+  choose format, file and options there. The query runs in the file's
+  session like every other statement. Every instruction is checked before the
+  first statement runs, so a typo stops the run with its line; a Cancel in any
+  of the dialogs stops it at that query. A selection that holds an
+  instruction — or whose first query has one on the lines right above it —
+  runs statement by statement like *Execute File*. Every export is listed with
+  its row count and file in the *PostgreSQL Messages* output.
 - **Bookmark Query** stores the statement under the cursor.
 - **Autocomplete** in SQL files offers the same suggestions as the Data
   Viewer's query bar, for the statement the cursor is in — also inside a

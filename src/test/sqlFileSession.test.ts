@@ -3,6 +3,9 @@ import { vscodeStub, fireDidChangeTabs, stubWarningMessage } from './helpers/vsc
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { DbSessionManager } from '../dbSession';
 import {
     SqlFileSessions,
@@ -209,6 +212,8 @@ test('fileSessionRef keys the session by the document and names it by the file',
 
 class FakeClient extends EventEmitter {
     queries: string[] = [];
+    /** Every query as it was passed, a config object included. */
+    configs: Array<string | { text: string; rowMode?: string }> = [];
     ended = false;
     constructor(readonly processID: number, private readonly onQuery?: (client: FakeClient, sql: string) => unknown) {
         super();
@@ -216,6 +221,7 @@ class FakeClient extends EventEmitter {
     async query(textOrConfig: string | { text: string }): Promise<any> {
         const sql = typeof textOrConfig === 'string' ? textOrConfig : textOrConfig.text;
         this.queries.push(sql);
+        this.configs.push(textOrConfig);
         const answer = this.onQuery ? await this.onQuery(this, sql) : undefined;
         return answer ?? { rows: [], fields: [], rowCount: null, command: sql.trim().split(/\s+/)[0].toUpperCase() };
     }
@@ -254,7 +260,7 @@ function showFile(open: boolean) {
 }
 
 /** Replace a `window` function for the rest of one test and record its calls. */
-function recordWindowCalls(t: { after(fn: () => void): void }, name: 'showInformationMessage' | 'showErrorMessage' | 'showWarningMessage' | 'withProgress', impl?: (...args: any[]) => any): any[][] {
+function recordWindowCalls(t: { after(fn: () => void): void }, name: 'showInformationMessage' | 'showErrorMessage' | 'showWarningMessage' | 'withProgress' | 'showSaveDialog', impl?: (...args: any[]) => any): any[][] {
     const calls: any[][] = [];
     const window = vscodeStub.window as any;
     const original = window[name];
@@ -272,6 +278,7 @@ function createFileSessions(options: {
     poolQuery?: (sql: string, params?: unknown[]) => Promise<any>;
     /** How the first query of a Data Viewer opened for `sql` ends; loaded at once by default. */
     viewerLoad?: (sql: string) => Promise<QueryViewLoad>;
+    exporter?: any;
 } = {}) {
     const clients: FakeClient[] = [];
     /** Statements run on the session (`run:`) and Data Viewers opened (`view:`), in order. */
@@ -313,7 +320,7 @@ function createFileSessions(options: {
             viewColumn: () => 2
         };
     };
-    const fileSessions = new SqlFileSessions(manager, connectionManager, channel as any, modifyHistoryStore, openQueryView);
+    const fileSessions = new SqlFileSessions(manager, connectionManager, channel as any, modifyHistoryStore, openQueryView, options.exporter);
     showFile(true);
     return { manager, clients, channel, history, poolQueries, opened, events, fileSessions };
 }
@@ -866,4 +873,240 @@ test('resultValueText names the single value of a single statement and nothing e
 test('statementErrorText adds the first line of the context of an error', () => {
     assert.equal(statementErrorText(new Error('boom')), 'boom');
     assert.equal(statementErrorText(Object.assign(new Error('boom'), { where: 'PL/pgSQL function f() line 3\nmore' })), 'boom (PL/pgSQL function f() line 3)');
+});
+
+// ===== -- @export instructions =====
+
+/** A SQL file saved in a fresh folder, which is removed after the test. */
+function savedFile(t: { after(fn: () => void): void }, editor: ReturnType<typeof createEditor>) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pgqb-export-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    (editor.document as any).fileName = path.join(dir, 'payroll.sql');
+    return { editor, dir };
+}
+
+/** An exporter that records what it is asked to do instead of writing files. */
+function fakeExporter(options: { choice?: any; saved?: Record<string, any> } = {}) {
+    return {
+        written: [] as Array<{ rows: any[]; columns: any[]; options: any }>,
+        dialogs: [] as any[],
+        savedDefaults(format: string) { return options.saved?.[format]; },
+        async chooseSettings(request: any) { this.dialogs.push(request); return options.choice; },
+        async write(rows: any[], columns: any[], opts: any) { this.written.push({ rows, columns, options: opts }); }
+    };
+}
+
+const ORDERS = 'SELECT id, name FROM orders';
+const ORDERS_RESULT = {
+    command: 'SELECT', rowCount: 2,
+    rows: [[1, 'Alice'], [2, 'Bob']],
+    fields: [{ name: 'id', dataTypeID: 23 }, { name: 'name', dataTypeID: 25 }]
+};
+const exportingSessions = (exporter: any, onQuery?: (c: FakeClient, sql: string) => unknown) => createFileSessions({
+    exporter,
+    onQuery: onQuery ?? ((_c, sql) => sql === ORDERS ? ORDERS_RESULT : undefined),
+    poolQuery: async (sql) => sql.includes('pg_type') ? { rows: [{ oid: 23, typname: 'int4' }, { oid: 25, typname: 'text' }] } : { rows: [] }
+});
+
+const EXPORT_SCRIPT = [
+    `${DO_BLOCK};`,
+    '-- @export csv file=exports/{file}.csv separator=;',
+    `${ORDERS};`,
+    'SELECT * FROM customers;'
+].join('\n');
+/** 0-based line of the instruction in EXPORT_SCRIPT, right below the DO block. */
+const EXPORT_LINE = DO_BLOCK.split('\n').length;
+
+test('Execute File writes a query under an @export instruction to its file instead of showing it', async (t) => {
+    const infos = recordWindowCalls(t, 'showInformationMessage');
+    const exporter = fakeExporter({ saved: { csv: { csvLineEnding: 'lf', csvSeparator: '|' } } });
+    const { fileSessions, clients, opened, channel, events } = exportingSessions(exporter);
+    t.after(() => fileSessions.dispose());
+    const { editor, dir } = savedFile(t, createEditor(EXPORT_SCRIPT, 0));
+
+    await fileSessions.executeFile(editor as any);
+
+    assert.deepEqual(events, [`run:${DO_BLOCK}`, `run:${ORDERS}`, 'view:SELECT * FROM customers']);
+    assert.deepEqual(opened.map((o) => o.sql), ['SELECT * FROM customers'], 'only the query without instruction is shown');
+    assert.deepEqual(clients[0].configs[1], { text: ORDERS, rowMode: 'array' });
+    const target = path.join(dir, 'exports', 'payroll.csv');
+    assert.deepEqual(exporter.written, [{
+        rows: [{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }],
+        columns: [{ name: 'id', dataType: 'int4' }, { name: 'name', dataType: 'text' }],
+        // The instruction outranks the saved defaults, which outrank the dialog's presets.
+        options: { format: 'csv', csvSeparator: ';', csvIncludeHeaders: true, csvQuoteStrings: true, csvLineEnding: 'lf', filePath: target }
+    }]);
+    assert.ok(channel.lines.some((l) => l.endsWith(`payroll.sql — EXPORT: line ${EXPORT_LINE + 2}, 2 rows to ${target}`)), 'named by the line of the query');
+    assert.equal(infos[0][0].replace(/\d+ ms/, 'N ms'),
+        `Ran all 3 statements of payroll.sql in N ms; 1 query opened in the Data Viewer; 2 rows exported to ${target}.`);
+});
+
+test('an existing export file is only overwritten after asking, and declining cancels the run', async (t) => {
+    const infos = recordWindowCalls(t, 'showInformationMessage');
+    const answers: Array<string | undefined> = [undefined, 'Overwrite'];
+    const asked = stubWarningMessage(t, () => answers.shift());
+    const exporter = fakeExporter();
+    const { fileSessions, opened } = exportingSessions(exporter);
+    t.after(() => fileSessions.dispose());
+    const { editor, dir } = savedFile(t, createEditor(EXPORT_SCRIPT, 0));
+    fs.mkdirSync(path.join(dir, 'exports'));
+    fs.writeFileSync(path.join(dir, 'exports', 'payroll.csv'), 'old', 'utf8');
+
+    await fileSessions.executeFile(editor as any);
+    assert.equal(asked[0][0], `"payroll.csv" already exists in ${path.join(dir, 'exports')}. Overwrite it?`);
+    assert.equal(exporter.written.length, 0);
+    assert.equal(opened.length, 0, 'nothing after the export ran');
+    assert.equal(infos[0][0], 'Execute File was cancelled after 1 of 3 statements; the rest did not run.');
+
+    await fileSessions.executeFile(editor as any);
+    assert.equal(exporter.written.length, 1);
+    assert.equal(opened.length, 1);
+});
+
+test('without file= a save dialog asks where the export goes, and its Cancel cancels the run', async (t) => {
+    const infos = recordWindowCalls(t, 'showInformationMessage');
+    const answers: Array<{ fsPath: string } | undefined> = [];
+    const saves = recordWindowCalls(t, 'showSaveDialog', () => Promise.resolve(answers.shift()));
+    const exporter = fakeExporter();
+    const { fileSessions, clients } = exportingSessions(exporter);
+    t.after(() => fileSessions.dispose());
+    const { editor, dir } = savedFile(t, createEditor(`-- @export json pretty=false\n${ORDERS};`, 0));
+
+    answers.push({ fsPath: path.join(dir, 'chosen.json') });
+    await fileSessions.executeFile(editor as any);
+    assert.equal(saves[0][0].defaultUri.fsPath, path.join(dir, 'payroll_line2.json'), 'named by the line of the query');
+    assert.deepEqual(saves[0][0].filters, { 'JSON Files': ['json'] });
+    assert.deepEqual(exporter.written[0].options, { format: 'json', jsonPretty: false, jsonArrayWrapper: true, filePath: path.join(dir, 'chosen.json') });
+
+    answers.push(undefined);
+    await fileSessions.executeFile(editor as any);
+    assert.equal(exporter.written.length, 1);
+    assert.equal(clients[0].queries.length, 1, 'the query does not run for a cancelled export');
+    assert.equal(infos[1][0], 'Execute File was cancelled after 0 of 1 statements; the rest did not run.');
+});
+
+test('dialog opens the export dialog prefilled from the instruction, and exports what it chose', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const exporter = fakeExporter();
+    const { fileSessions } = exportingSessions(exporter);
+    t.after(() => fileSessions.dispose());
+    const { editor, dir } = savedFile(t, createEditor(`-- @export excel dialog file=out/{file} sheet=Orders\n${ORDERS};`, 0));
+    (exporter as any).chooseSettings = async function (request: any) {
+        this.dialogs.push(request);
+        return { settings: { format: 'excel', excelSheetName: 'Open', excelIncludeHeaders: true }, fileName: 'orders.xlsx', folder: dir };
+    };
+    const saves = recordWindowCalls(t, 'showSaveDialog', (options: any) => Promise.resolve({ fsPath: options.defaultUri.fsPath }));
+
+    await fileSessions.executeFile(editor as any);
+
+    assert.deepEqual(exporter.dialogs, [{
+        title: 'Export: line 2 of payroll.sql',
+        format: 'excel',
+        fileName: 'payroll.xlsx',
+        folder: path.join(dir, 'out'),
+        options: { excelSheetName: 'Orders' },
+        sql: ORDERS,
+        sessionRef: { key: `file:${URI}`, label: 'payroll.sql' }
+    }]);
+    assert.equal(saves[0][0].defaultUri.fsPath, path.join(dir, 'orders.xlsx'), 'the save dialog has the last word, as in the Data Viewer');
+    assert.deepEqual(exporter.written[0].options, {
+        format: 'excel', excelSheetName: 'Open', excelIncludeHeaders: true, excelSqlStatement: ORDERS, filePath: path.join(dir, 'orders.xlsx')
+    });
+});
+
+test('Cancel in the export dialog stops the run before its query runs', async (t) => {
+    const infos = recordWindowCalls(t, 'showInformationMessage');
+    const exporter = fakeExporter({ choice: undefined });
+    const { fileSessions, clients, opened } = exportingSessions(exporter);
+    t.after(() => fileSessions.dispose());
+    const { editor } = savedFile(t, createEditor(EXPORT_SCRIPT.replace('csv file=', 'csv dialog file='), 0));
+
+    await fileSessions.executeFile(editor as any);
+
+    assert.equal(exporter.dialogs.length, 1);
+    assert.deepEqual(clients[0].queries, [DO_BLOCK]);
+    assert.equal(opened.length, 0);
+    assert.equal(infos[0][0], 'Execute File was cancelled after 1 of 3 statements; the rest did not run.');
+});
+
+test('a wrong instruction stops Execute File before anything runs and shows its line', async (t) => {
+    const errors = recordWindowCalls(t, 'showErrorMessage');
+    const exporter = fakeExporter();
+    const { fileSessions, clients } = exportingSessions(exporter);
+    t.after(() => fileSessions.dispose());
+    const editor = createEditor(`${DO_BLOCK};\n-- @export cvs\nSELECT 1;\n-- @export csv file=o_{month}.csv\nSELECT 2;`, 0);
+
+    await fileSessions.executeFile(editor as any);
+
+    assert.equal(clients.length, 0, 'not even the session was opened');
+    assert.equal(errors[0][0], `Execute File did not start, nothing ran. The @export instruction on line ${EXPORT_LINE + 1}: `
+        + '"cvs" is neither a format (csv, excel, json, xml, insert) nor dialog. (1 more instruction is wrong as well)');
+    assert.equal((editor.selection as any).start.line, EXPORT_LINE);
+    assert.equal(editor.revealed.length, 1);
+});
+
+test('an export whose query fails stops the run at that statement', async (t) => {
+    const errors = recordWindowCalls(t, 'showErrorMessage');
+    const exporter = fakeExporter();
+    const { fileSessions, opened } = exportingSessions(exporter, (_c, sql) => {
+        if (sql === ORDERS) throw new Error('relation "orders" does not exist');
+        return undefined;
+    });
+    t.after(() => fileSessions.dispose());
+    const { editor } = savedFile(t, createEditor(EXPORT_SCRIPT, 0));
+
+    await fileSessions.executeFile(editor as any);
+
+    assert.equal(exporter.written.length, 0);
+    assert.equal(opened.length, 0);
+    assert.equal(errors[0][0], `Execute File stopped at statement 2 of 3 (line ${EXPORT_LINE + 2}); the statement before it ran: relation "orders" does not exist`);
+});
+
+test('Execute Selection exports a selected query whose instruction stands above the selection', async (t) => {
+    const infos = recordWindowCalls(t, 'showInformationMessage');
+    const exporter = fakeExporter();
+    const { fileSessions, opened } = exportingSessions(exporter);
+    t.after(() => fileSessions.dispose());
+    const text = `SELECT 0;\n\n-- @export csv file=selected.csv\n${ORDERS};\nSELECT 2;`;
+    const { editor, dir } = savedFile(t, selecting(text, ORDERS));
+
+    await fileSessions.execute(editor as any);
+
+    assert.equal(opened.length, 0, 'the query is exported, not shown');
+    assert.equal(exporter.written[0].options.filePath, path.join(dir, 'selected.csv'));
+    assert.equal(infos[0][0].replace(/\d+ ms/, 'N ms'),
+        `Ran the statement of the selection in payroll.sql in N ms; 2 rows exported to ${path.join(dir, 'selected.csv')}.`);
+});
+
+test('Execute Selection over several statements with an instruction runs them one by one', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const exporter = fakeExporter();
+    const { fileSessions, clients } = exportingSessions(exporter);
+    t.after(() => fileSessions.dispose());
+    const text = `${DO_BLOCK};\n-- @export csv file=selected.csv\n${ORDERS};`;
+    const { editor } = savedFile(t, selecting(text, text));
+
+    await fileSessions.execute(editor as any);
+
+    assert.deepEqual(clients[0].queries, [DO_BLOCK, ORDERS], 'not as one batch');
+    assert.equal(exporter.written.length, 1);
+});
+
+test('a selection without an instruction still runs as one batch', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const { fileSessions, clients } = exportingSessions(fakeExporter());
+    t.after(() => fileSessions.dispose());
+    const text = `${DO_BLOCK};\nUPDATE jobs SET done = true;`;
+
+    await fileSessions.execute(selecting(text, text) as any);
+
+    assert.deepEqual(clients[0].queries, [text]);
+});
+
+test('summarizeFileRun names a single export and points to the messages for several', () => {
+    assert.equal(summarizeFileRun('payroll.sql', 2, 0, 12, [{ rows: 1, path: 'C:\\o.csv' }]), 'Ran all 2 statements of payroll.sql in 12 ms; 1 row exported to C:\\o.csv.');
+    assert.equal(
+        summarizeFileRun('payroll.sql', 3, 1, 12, [{ rows: 1, path: 'a' }, { rows: 2, path: 'b' }]),
+        'Ran all 3 statements of payroll.sql in 12 ms; 1 query opened in the Data Viewer; 2 queries exported, listed in the "PostgreSQL Messages" output.'
+    );
 });

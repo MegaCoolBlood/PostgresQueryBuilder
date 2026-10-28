@@ -38,6 +38,18 @@ const sampleRows = [
 
 // ===== CSV Export Tests =====
 
+test('an export into a folder that does not exist yet creates the folder', async () => {
+    const service = new ExportService(createMockContext());
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'export-test-dir-'));
+    const filePath = path.join(root, 'exports', '2026', 'orders.csv');
+    try {
+        await service.exportData(sampleRows, sampleColumns, { format: 'csv', filePath, csvLineEnding: 'lf' });
+        assert.equal(fs.readFileSync(filePath, 'utf8').split('\n')[0], 'id,name,amount');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test('CSV export with default options includes headers and comma separator', async () => {
     const service = new ExportService(createMockContext());
     const filePath = getTempFile('.csv');

@@ -1,10 +1,27 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import * as path from 'path';
-import type { QueryResult } from 'pg';
+import type { QueryArrayResult, QueryResult } from 'pg';
 import type { ConnectionManager } from './connectionManager';
 import type { DbSession, DbSessionManager, DbSessionRef, SessionNotice } from './dbSession';
 import { isModifyingSql, type ModifyHistoryStore } from './modifyHistoryStore';
 import { getErrorMessage, Logger } from './logger';
+import { uniqueFieldNames } from './queryRunner';
+import {
+    EXPORT_FILE_EXTENSIONS,
+    defaultExportFileName,
+    exportPlaceholders,
+    exportSettingsFor,
+    formatExportMessage,
+    planExportInstructions,
+    resolveExportTarget,
+    type ExportFormat,
+    type ExportInstruction,
+    type ExportSettings,
+    type InstructionError,
+    type PlannedStatement,
+    type QueryExporter
+} from './exportInstructions';
 
 /** The output channel that shows what the server says besides results. */
 export const MESSAGES_CHANNEL_NAME = 'PostgreSQL Messages';
@@ -228,11 +245,24 @@ export function summarizeExecution(results: ReadonlyArray<ExecutionResult>, ms: 
     return `${results.length} statements completed in ${time}: ${parts.join(', ')}.`;
 }
 
-/** One line telling what "Execute File" did, e.g. `Ran all 12 statements of payroll.sql in 1.2 s; 2 opened in the Data Viewer.` */
-export function summarizeFileRun(label: string, total: number, opened: number, ms: number): string {
+/** A query of a run that went to a file instead of the Data Viewer. */
+export interface ExportedQuery {
+    rows: number;
+    path: string;
+}
+
+/**
+ * One line telling what "Execute File" did, e.g. `Ran all 12 statements of
+ * payroll.sql in 1.2 s; 2 queries opened in the Data Viewer.` A single export
+ * names its file; several are listed in the messages output.
+ */
+export function summarizeFileRun(label: string, total: number, opened: number, ms: number, exported: ReadonlyArray<ExportedQuery> = []): string {
     const all = total === 1 ? 'the statement' : `all ${total} statements`;
     const viewers = opened === 0 ? '' : `; ${opened} ${opened === 1 ? 'query' : 'queries'} opened in the Data Viewer`;
-    return `Ran ${all} of ${label} in ${durationText(ms)}${viewers}.`;
+    const files = exported.length === 0 ? ''
+        : exported.length === 1 ? `; ${rowsText(exported[0].rows)} exported to ${exported[0].path}`
+        : `; ${exported.length} queries exported, listed in the "${MESSAGES_CHANNEL_NAME}" output`;
+    return `Ran ${all} of ${label} in ${durationText(ms)}${viewers}${files}.`;
 }
 
 /**
@@ -378,7 +408,9 @@ class CancellableRun {
         }
     }
 
-    run(session: DbSession, sql: string, notices: SessionNotice[]): Promise<QueryResult | QueryResult[]> {
+    run(session: DbSession, sql: string, notices: SessionNotice[]): Promise<QueryResult | QueryResult[]>;
+    run(session: DbSession, sql: { text: string; rowMode: 'array' }, notices: SessionNotice[]): Promise<QueryArrayResult>;
+    run(session: DbSession, sql: string | { text: string; rowMode: 'array' }, notices: SessionNotice[]): Promise<QueryResult | QueryResult[] | QueryArrayResult> {
         return session.run(async (client) => {
             if (this.cancelled) {
                 throw new CancelledBeforeStart();
@@ -387,7 +419,9 @@ class CancellableRun {
             client.on('notice', collect);
             this.runningPid = client.processID ?? null;
             try {
-                return await client.query(sql) as QueryResult | QueryResult[];
+                return typeof sql === 'string'
+                    ? await client.query(sql) as QueryResult | QueryResult[]
+                    : await client.query(sql);
             } finally {
                 this.runningPid = null;
                 client.removeListener('notice', collect);
@@ -419,7 +453,8 @@ export class SqlFileSessions implements vscode.Disposable {
         private readonly connectionManager: ConnectionManager,
         private readonly messages: vscode.OutputChannel,
         private readonly modifyHistoryStore?: ModifyHistoryStore,
-        private readonly openQueryView?: OpenQueryView
+        private readonly openQueryView?: OpenQueryView,
+        private readonly exporter?: QueryExporter
     ) {
         this.subscriptions.push(
             vscode.workspace.onDidCloseTextDocument(() => this.releaseClosedFiles()),
@@ -448,8 +483,9 @@ export class SqlFileSessions implements vscode.Disposable {
             return;
         }
         const document = editor.document;
+        const text = document.getText();
         const target = statementToExecute(
-            document.getText(),
+            text,
             document.offsetAt(editor.selection.start),
             document.offsetAt(editor.selection.end)
         );
@@ -457,7 +493,18 @@ export class SqlFileSessions implements vscode.Disposable {
             vscode.window.showWarningMessage('Select the statements to execute: Execute Selection runs exactly the selected text.');
             return;
         }
+        const plan = this.planSelection(document, text, target);
+        if (plan.errors.length > 0) {
+            this.reportInstructionErrors(editor, 'Execute Selection', plan.errors);
+            return;
+        }
         if (!await this.connectionManager.ensureConnected()) {
+            return;
+        }
+        // A selection holding an export instruction runs statement by
+        // statement, like Execute File, so each query can go where it is told.
+        if (plan.statements.some((statement) => statement.instruction)) {
+            await this.runStepwise(editor, plan.statements, 'Execute Selection');
             return;
         }
 
@@ -505,7 +552,9 @@ export class SqlFileSessions implements vscode.Disposable {
      * Run the whole file from top to bottom, one statement after the other, in
      * the file's session. A query returning rows opens in the Data Viewer on
      * that session, and the run goes on only once its first page has loaded,
-     * so it sees the data exactly as the statements above left it. The run
+     * so it sees the data exactly as the statements above left it; a query
+     * under an `-- @export` instruction is written to a file instead. Every
+     * instruction is checked before the first statement runs, and the run
      * stops at the first statement that fails.
      */
     async executeFile(editor: vscode.TextEditor | undefined): Promise<void> {
@@ -520,21 +569,99 @@ export class SqlFileSessions implements vscode.Disposable {
             vscode.window.showWarningMessage('The file holds no statement to execute.');
             return;
         }
+        const plan = planExportInstructions(text, ranges, isResultQuery);
+        const errors = [...plan.errors, ...this.targetErrors(document, plan.statements)];
+        if (errors.length > 0) {
+            this.reportInstructionErrors(editor, 'Execute File', errors);
+            return;
+        }
         if (!await this.connectionManager.ensureConnected()) {
             return;
         }
+        await this.runStepwise(editor, plan.statements, 'Execute File');
+    }
 
+    /**
+     * The statements of a selection with their export instructions. The
+     * instruction of the first one may stand above the selection, on the
+     * comment lines between it and the statement before it in the file.
+     */
+    private planSelection(
+        document: vscode.TextDocument,
+        text: string,
+        target: StatementTarget
+    ): { statements: PlannedStatement[]; errors: InstructionError[] } {
+        const ranges = statementRanges(target.sql)
+            .filter((range): range is { start: number; end: number } => range !== null)
+            .map((range) => ({ start: range.start + target.start, end: range.end + target.start }));
+        const firstStart = ranges.length > 0 ? ranges[0].start : target.start;
+        const firstGapStart = statementRanges(text)
+            .filter((range): range is { start: number; end: number } => range !== null && range.end <= firstStart)
+            .reduce((last, range) => Math.max(last, range.end), 0);
+        const plan = planExportInstructions(text, ranges, isResultQuery, {
+            firstGapStart: Math.min(firstGapStart, target.start),
+            trailingEnd: target.start + target.sql.length
+        });
+        return { statements: plan.statements, errors: [...plan.errors, ...this.targetErrors(document, plan.statements)] };
+    }
+
+    /** A `file=` that cannot name a file — a wrong placeholder, a relative path in an unsaved file — before anything runs. */
+    private targetErrors(document: vscode.TextDocument, statements: ReadonlyArray<PlannedStatement>): InstructionError[] {
+        const errors: InstructionError[] = [];
+        const values = exportPlaceholders(new Date(), document.fileName);
+        for (const { instruction } of statements) {
+            if (!instruction?.file) continue;
+            const resolved = resolveExportTarget(instruction.file, instruction.format ?? 'csv', this.documentFolder(document), values);
+            if ('error' in resolved) {
+                errors.push({ line: instruction.line, message: resolved.error });
+            }
+        }
+        return errors.sort((a, b) => a.line - b.line);
+    }
+
+    /** Say why a run did not start and put the cursor on the first wrong instruction. */
+    private reportInstructionErrors(editor: vscode.TextEditor, command: string, errors: ReadonlyArray<InstructionError>): void {
+        const first = errors[0];
+        const more = errors.length > 1 ? ` (${errors.length - 1} more ${errors.length === 2 ? 'instruction is' : 'instructions are'} wrong as well)` : '';
+        const position = new vscode.Position(first.line, 0);
+        editor.selection = new vscode.Selection(position, position);
+        editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+        vscode.window.showErrorMessage(`${command} did not start, nothing ran. The @export instruction on line ${first.line + 1}: ${first.message}${more}`);
+    }
+
+    /** The folder of a saved SQL file; undefined for one never saved. */
+    private documentFolder(document: vscode.TextDocument): string | undefined {
+        return document.isUntitled ? undefined : path.dirname(document.fileName);
+    }
+
+    /**
+     * Run `statements` of the document from top to bottom, one after the
+     * other, in the file's session. A query returning rows opens in the Data
+     * Viewer on that session, and the run goes on only once its first page has
+     * loaded; a query under an `-- @export` instruction is written to a file
+     * instead. The run stops at the first statement that fails and at a Cancel
+     * — in its notification or in a dialog of an export.
+     */
+    private async runStepwise(
+        editor: vscode.TextEditor,
+        statements: ReadonlyArray<PlannedStatement>,
+        command: 'Execute File' | 'Execute Selection'
+    ): Promise<void> {
+        const document = editor.document;
+        const text = document.getText();
         const { ref, session } = this.acquire(document);
+        const label = command === 'Execute File' ? ref.label : `the selection in ${ref.label}`;
         const notices: SessionNotice[] = [];
         const started = Date.now();
-        const total = ranges.length;
+        const total = statements.length;
         type Stop = { reason: 'failed'; index: number; error: unknown; inViewer: boolean } | { reason: 'cancelled'; index: number };
         let opened = 0;
+        const exported: ExportedQuery[] = [];
 
         const stop = await vscode.window.withProgress(
             {
                 location: vscode.ProgressLocation.Notification,
-                title: `Executing ${ref.label}`,
+                title: `Executing ${label}`,
                 cancellable: true
             },
             async (progress, token): Promise<Stop | null> => {
@@ -550,7 +677,21 @@ export class SqlFileSessions implements vscode.Disposable {
                         return { reason: 'cancelled', index };
                     }
                     progress.report({ message: `statement ${index + 1} of ${total}`, increment: 100 / total });
-                    const sql = text.slice(ranges[index].start, ranges[index].end);
+                    const statement = statements[index];
+                    const sql = text.slice(statement.start, statement.end);
+
+                    if (statement.instruction) {
+                        const line = document.positionAt(statement.start).line;
+                        const outcome = await this.exportQuery(statement.instruction, sql, line, document, ref, session, runner, notices);
+                        if (outcome.status === 'cancelled') {
+                            return { reason: 'cancelled', index };
+                        }
+                        if (outcome.status === 'failed') {
+                            return { reason: 'failed', index, error: outcome.error, inViewer: false };
+                        }
+                        exported.push(outcome.query);
+                        continue;
+                    }
 
                     if (this.openQueryView && isResultQuery(sql)) {
                         const view = await this.openQueryView(sql, queryViewTitle(sql), ref, {
@@ -593,32 +734,175 @@ export class SqlFileSessions implements vscode.Disposable {
         );
 
         const noticeText = notices.length > 0 ? this.noticesText(notices.length) : '';
+        if (exported.length > 1) {
+            this.messages.show(true);
+        }
         if (!stop) {
-            vscode.window.showInformationMessage(summarizeFileRun(ref.label, total, opened, Date.now() - started) + noticeText);
+            vscode.window.showInformationMessage(summarizeFileRun(label, total, opened, Date.now() - started, exported) + noticeText);
             return;
         }
         if (stop.reason === 'cancelled') {
             vscode.window.showInformationMessage(
-                `Execute File was cancelled after ${stop.index} of ${total} statements; the rest did not run.${noticeText}`
+                `${command} was cancelled after ${stop.index} of ${total} statements; the rest did not run.${noticeText}`
             );
             return;
         }
-        const range = ranges[stop.index];
-        const line = document.positionAt(range.start).line + 1;
+        const failed = statements[stop.index];
+        const line = document.positionAt(failed.start).line + 1;
         const before = stop.index === 0
             ? 'nothing before it ran'
             : `the ${stop.index === 1 ? 'statement' : `${stop.index} statements`} before it ran`;
         const failedIn = stop.inViewer ? ', whose query failed in the Data Viewer' : '';
         this.reportFailure(
             editor,
-            { sql: text.slice(range.start, range.end), start: range.start },
+            { sql: text.slice(failed.start, failed.end), start: failed.start },
             ref.label,
             stop.error,
             {
-                prefix: `Execute File stopped at statement ${stop.index + 1} of ${total} (line ${line})${failedIn}; ${before}`,
+                prefix: `${command} stopped at statement ${stop.index + 1} of ${total} (line ${line})${failedIn}; ${before}`,
                 revealStatement: true
             }
         );
+    }
+
+    /**
+     * Write the result of `sql` — the query starting on 0-based `line` — to
+     * the file its instruction names, instead of showing it. With `dialog` the
+     * export dialog of the Data Viewer chooses format, file and options first;
+     * without `file=` a save dialog asks for the target, and an existing file
+     * is only overwritten after asking. Every Cancel cancels the run.
+     */
+    private async exportQuery(
+        instruction: ExportInstruction,
+        sql: string,
+        line: number,
+        document: vscode.TextDocument,
+        ref: DbSessionRef,
+        session: DbSession,
+        runner: CancellableRun,
+        notices: SessionNotice[]
+    ): Promise<{ status: 'exported'; query: ExportedQuery } | { status: 'cancelled' } | { status: 'failed'; error: unknown }> {
+        const exporter = this.exporter;
+        if (!exporter) {
+            return { status: 'failed', error: new Error('Exporting is not available.') };
+        }
+        const values = exportPlaceholders(new Date(), document.fileName);
+        const folder = this.documentFolder(document);
+        const fallbackFolder = folder ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+
+        let settings: ExportSettings;
+        let target: string | undefined;
+        if (instruction.dialog) {
+            const format = instruction.format ?? 'csv';
+            let fileName = defaultExportFileName(values, line, format);
+            let dialogFolder = fallbackFolder;
+            if (instruction.file) {
+                const resolved = resolveExportTarget(instruction.file, format, folder, values);
+                if ('error' in resolved) {
+                    return { status: 'failed', error: new Error(resolved.error) };
+                }
+                fileName = path.basename(resolved.path);
+                dialogFolder = path.dirname(resolved.path);
+            }
+            const choice = await exporter.chooseSettings({
+                title: `Export: line ${line + 1} of ${ref.label}`,
+                format,
+                fileName,
+                folder: dialogFolder,
+                options: instruction.options,
+                sql,
+                sessionRef: ref
+            });
+            if (!choice) {
+                return { status: 'cancelled' };
+            }
+            settings = { ...choice.settings };
+            if (settings.format === 'excel') {
+                settings.excelSqlStatement = sql;
+            }
+            // As in the Data Viewer, the save dialog has the last word on the file.
+            target = await this.askExportTarget(path.join(choice.folder || dialogFolder, choice.fileName), settings.format);
+        } else {
+            const format = instruction.format as ExportFormat;
+            settings = exportSettingsFor(format, exporter.savedDefaults(format), instruction.options, sql);
+            if (instruction.file) {
+                const resolved = resolveExportTarget(instruction.file, format, folder, values);
+                if ('error' in resolved) {
+                    return { status: 'failed', error: new Error(resolved.error) };
+                }
+                target = fs.existsSync(resolved.path) && !await this.confirmOverwrite(resolved.path) ? undefined : resolved.path;
+            } else {
+                target = await this.askExportTarget(path.join(fallbackFolder, defaultExportFileName(values, line, format)), format);
+            }
+        }
+        if (!target) {
+            return { status: 'cancelled' };
+        }
+
+        let result: QueryArrayResult;
+        try {
+            result = await runner.run(session, { text: sql, rowMode: 'array' }, notices);
+        } catch (err: unknown) {
+            if (err instanceof CancelledBeforeStart || runner.cancelled) {
+                return { status: 'cancelled' };
+            }
+            return { status: 'failed', error: err };
+        }
+        const fields = uniqueFieldNames(result.fields ?? [], sql);
+        const types = await this.typeNames(fields.map((field) => field.dataTypeID));
+        const columns = fields.map((field) => ({ name: field.name, dataType: types.get(field.dataTypeID) ?? '' }));
+        const rows = ((result.rows ?? []) as unknown[][]).map((values) => {
+            const row: Record<string, unknown> = {};
+            fields.forEach((field, i) => { row[field.name] = values[i]; });
+            return row;
+        });
+        try {
+            await exporter.write(rows, columns, { ...settings, filePath: target });
+        } catch (err: unknown) {
+            return { status: 'failed', error: new Error(`Writing ${target} failed: ${getErrorMessage(err)}`) };
+        }
+        this.messages.appendLine(formatExportMessage(ref.label, line, rows.length, target));
+        return { status: 'exported', query: { rows: rows.length, path: target } };
+    }
+
+    /** Ask where an export goes, starting at `suggested`; undefined when cancelled. */
+    private async askExportTarget(suggested: string, format: ExportFormat): Promise<string | undefined> {
+        const extension = EXPORT_FILE_EXTENSIONS[format].slice(1);
+        const uri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file(suggested),
+            filters: { [`${extension.toUpperCase()} Files`]: [extension] },
+            title: 'Export Query Result'
+        });
+        return uri?.fsPath;
+    }
+
+    private async confirmOverwrite(filePath: string): Promise<boolean> {
+        const overwrite = 'Overwrite';
+        const answer = await vscode.window.showWarningMessage(
+            `"${path.basename(filePath)}" already exists in ${path.dirname(filePath)}. Overwrite it?`,
+            { modal: true },
+            overwrite
+        );
+        return answer === overwrite;
+    }
+
+    /** The type names of the result columns, which decide how an export writes their values. */
+    private async typeNames(oids: ReadonlyArray<number>): Promise<Map<number, string>> {
+        const names = new Map<number, string>();
+        const wanted = Array.from(new Set(oids.filter((oid) => oid > 0)));
+        if (wanted.length === 0) {
+            return names;
+        }
+        try {
+            const result = await this.connectionManager.query('SELECT oid, typname FROM pg_catalog.pg_type WHERE oid = ANY($1::oid[])', [wanted]);
+            for (const row of result.rows) {
+                names.set(Number(row.oid), String(row.typname));
+            }
+        } catch (err: unknown) {
+            // Without type names every value is written as text.
+            Logger.error('SqlFileSessions.typeNames', err);
+        }
+        return names;
     }
 
     /**
