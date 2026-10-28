@@ -1057,6 +1057,41 @@ body.export-only .container > :not(#exportDialogOverlay) {
     display: none;
 }
 
+/* There the dialog shows the query it exports, read-only, above the options;
+   it scrolls on its own so the options stay in reach for a long query. */
+.export-query {
+    display: none;
+    padding: var(--sp-3) var(--sp-4) 0;
+}
+
+body.export-only .export-query {
+    display: block;
+}
+
+body.export-only .export-dialog {
+    max-width: 760px;
+}
+
+.export-query-label {
+    margin-bottom: var(--sp-1);
+    font-size: var(--fs-xs);
+    color: var(--c-muted);
+}
+
+.export-query-sql {
+    margin: 0;
+    padding: var(--sp-2) var(--sp-3);
+    max-height: 30vh;
+    overflow: auto;
+    background: var(--c-code-bg);
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius);
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    white-space: pre;
+    tab-size: 4;
+}
+
 .export-dialog-content {
     padding: var(--sp-4);
     overflow-y: auto;

@@ -14,7 +14,7 @@
 
         - **Where the file goes:** `file=` is relative to the folder of the SQL file, missing folders are created, `{date}`, `{time}` and `{file}` are filled in, and the extension of the format is added to a name without one. Without `file=` a save dialog asks, suggesting the name of the SQL file and the line of the query. An existing file is only overwritten after asking.
 
-        - **The export dialog when you want it:** The word `dialog` in the instruction opens the export dialog of the Data Viewer in a small *Export* tab, prefilled from the instruction, so format, file and options can be chosen when the script runs. The tab shows nothing but the dialog and closes itself afterwards.
+        - **The export dialog when you want it:** The word `dialog` in the instruction opens the export dialog of the Data Viewer in a small *Export* tab, prefilled from the instruction, so format, file and options can be chosen when the script runs. The dialog names the line and the file the query comes from and shows the query itself, read-only and as it is written in the file, so it is clear what is about to be exported. The tab shows nothing but the dialog and closes itself afterwards.
 
         - **Checked before anything runs:** Every instruction of the file is checked first, so a misspelt format or option, an `@export` above a statement that returns no rows or one with no statement below it stops the run before its first statement, with the line of the instruction and the cursor on it. A Cancel in the export dialog, the save dialog or the question about overwriting stops the run at that query, as Cancel in its notification does.
 

@@ -108,8 +108,13 @@
         <div class="sql-dialog-overlay" id="exportDialogOverlay" style="display:none;">
             <div class="sql-dialog export-dialog">
                 <div class="sql-dialog-header">
-                    <span>Export Data</span>
+                    <span id="exportDialogTitle">Export Data</span>
                     <button class="btn btn-ghost btn-icon sql-dialog-close" id="exportDialogClose" title="Close"><svg class="ico" aria-hidden="true"><use href="#icon-close"/></svg></button>
+                </div>
+                <!-- Shown in the Export tab of an `-- @export … dialog` instruction only -->
+                <div class="export-query" id="exportQuery">
+                    <div class="export-query-label" id="exportQueryLabel">Query to export</div>
+                    <pre class="export-query-sql" id="exportQuerySql" tabindex="0" aria-labelledby="exportQueryLabel"></pre>
                 </div>
                 <div class="export-dialog-content">
                     <div class="export-field">

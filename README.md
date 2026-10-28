@@ -359,8 +359,9 @@ fields wherever it comes from.
   your saved defaults for that format, otherwise the dialog's own. Without
   `file=` a save dialog asks where the file goes, and an existing file is
   only overwritten after asking. The word `dialog` opens the export dialog of
-  the Data Viewer in a small *Export* tab, prefilled from the instruction, to
-  choose format, file and options there. The query runs in the file's
+  the Data Viewer in a small *Export* tab, prefilled from the instruction and
+  showing the query it exports, to choose format, file and options there. The
+  query runs in the file's
   session like every other statement. Every instruction is checked before the
   first statement runs, so a typo stops the run with its line; a Cancel in any
   of the dialogs stops it at that query. A selection that holds an

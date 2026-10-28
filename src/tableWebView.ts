@@ -709,8 +709,9 @@ export class TableWebViewManager {
 
     /**
      * Open an "Export" tab that holds only the export dialog of the Data
-     * Viewer, prefilled from an `-- @export … dialog` instruction. Nothing is
-     * shown or run in it; it closes itself once the dialog is answered.
+     * Viewer, prefilled from an `-- @export … dialog` instruction and showing
+     * the query it exports, read-only. Nothing runs in it; it closes itself
+     * once the dialog is answered.
      * Resolves to the choice, or undefined when it was cancelled or closed.
      */
     openExportDialog(request: ExportDialogRequest): Promise<ExportDialogChoice | undefined> {
@@ -744,7 +745,8 @@ export class TableWebViewManager {
                     format: request.format,
                     fileName: request.fileName,
                     folder: request.folder,
-                    options: request.options
+                    options: request.options,
+                    sql: request.sql
                 }
             });
         });

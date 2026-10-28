@@ -1980,12 +1980,14 @@ function openExportTab(request: any = EXPORT_REQUEST) {
     }
 }
 
-test('the Export tab shows only the export dialog, prefilled from the instruction, and runs nothing', () => {
+test('the Export tab shows only the export dialog, prefilled from the instruction and with its query, and runs nothing', () => {
     const { panel } = openExportTab();
 
     const init = panel.posted.find((m: any) => m.command === 'init');
     assert.equal(init.title, 'Export: line 12 of payroll.sql');
-    assert.deepEqual(init.exportOnly, { format: 'csv', fileName: 'payroll_line12.csv', folder: 'C:\\work', options: { csvSeparator: ';' } });
+    assert.deepEqual(init.exportOnly, {
+        format: 'csv', fileName: 'payroll_line12.csv', folder: 'C:\\work', options: { csvSeparator: ';' }, sql: 'SELECT * FROM orders'
+    });
     assert.match(panel.webview.html, /id="exportDialogOverlay"/, 'the page of the Data Viewer, with its export dialog');
     assert.equal(panel.posted.some((m: any) => m.command === 'rowsLoaded'), false);
 });

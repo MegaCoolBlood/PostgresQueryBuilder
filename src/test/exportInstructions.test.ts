@@ -250,3 +250,24 @@ test('the Export tab answers the extension with the message it handles', () => {
     assert.ok(host.includes('exportDialogResult: this.handleExportDialogResult'));
     assert.ok(host.includes('exportOnly: {'));
 });
+
+test('the export dialog of the Export tab shows the query it exports, as text and only there', () => {
+    const html = fs.readFileSync(path.join(ROOT, 'src', 'webview', 'tableView.html'), 'utf8');
+    const css = fs.readFileSync(path.join(ROOT, 'src', 'webview', 'tableView.css'), 'utf8');
+    const js = fs.readFileSync(path.join(ROOT, 'src', 'webview', 'tableView.js'), 'utf8');
+
+    // Inside the dialog, between its header and its options.
+    const dialog = html.slice(html.indexOf('id="exportDialogOverlay"'), html.indexOf('class="export-dialog-content"'));
+    assert.match(dialog, /<span id="exportDialogTitle">Export Data<\/span>/);
+    assert.match(dialog, /<div class="export-query" id="exportQuery">[\s\S]*<pre class="export-query-sql" id="exportQuerySql"[^>]*><\/pre>/);
+    assert.equal(/id="exportQuery"[^>]*style=/.test(html), false, 'no inline style');
+
+    // Hidden in the Data Viewer, whose query bar shows the query anyway.
+    assert.match(css, /\.export-query \{\s*display: none;/);
+    assert.match(css, /body\.export-only \.export-query \{\s*display: block;/);
+
+    // The SQL comes from the file, so it is set as text, never as markup.
+    assert.match(js, /getElementById\('exportQuerySql'\)\.textContent = typeof exportOnly\.sql === 'string' \? exportOnly\.sql : ''/);
+    assert.match(js, /getElementById\('exportDialogTitle'\)\.textContent = title \|\| 'Export Data'/);
+    assert.equal(/exportQuerySql'\)\.innerHTML/.test(js), false);
+});

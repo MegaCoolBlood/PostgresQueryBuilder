@@ -5134,7 +5134,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // An Export tab shows only the export dialog and runs nothing.
         if (msg.exportOnly) {
             tableName.textContent = msg.title || 'Export';
-            startExportOnly(msg.exportOnly);
+            startExportOnly(msg.exportOnly, msg.title);
             return;
         }
 
@@ -7874,10 +7874,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // back to the run of the file instead of exporting from a grid.
     let exportOnly = null;
 
-    function startExportOnly(prefill) {
+    function startExportOnly(prefill, title) {
         exportOnly = prefill || {};
         document.body.classList.add('export-only');
         setDataLoading(false);
+        // The dialog names where the query comes from and shows it as written.
+        document.getElementById('exportDialogTitle').textContent = title || 'Export Data';
+        document.getElementById('exportQuerySql').textContent = typeof exportOnly.sql === 'string' ? exportOnly.sql : '';
         const options = exportOnly.options || {};
         // The key columns of ON CONFLICT … DO UPDATE come from the instruction.
         primaryKeys = Array.isArray(options.insertConflictColumns) ? options.insertConflictColumns.slice() : [];
