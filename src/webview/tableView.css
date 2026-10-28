@@ -336,6 +336,9 @@ body {
     flex: 1;
     overflow: auto;
     position: relative;
+    /* The rows in the DOM are replaced while scrolling (virtual scrolling); the
+       browser must not shift the scroll position to keep one of them in place. */
+    overflow-anchor: none;
 }
 
 /* Excel-like fill handle: the small square at the bottom-right of a single
@@ -693,6 +696,17 @@ thead th.actions-cell {
     user-select: none;
     font-variant-numeric: tabular-nums;
     padding: var(--sp-1) var(--sp-2);
+    /* As wide as the highest row number, not only the highest one in the DOM. */
+    min-width: calc(var(--row-num-digits, 1) * 1ch);
+}
+
+/* Stand-ins for the rows above and below those in the DOM (virtual scrolling):
+   as tall as the rows they replace, and otherwise invisible. */
+#tableBody tr.v-spacer td {
+    height: var(--v-h, 0);
+    padding: 0;
+    border: 0;
+    max-width: none;
 }
 
 /* Above the data cells they scroll past, below the pinned header rows. */

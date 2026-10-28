@@ -1793,6 +1793,21 @@ function cssStringLiteral(value) {
 // table layout only honours a width when every cell of the column carries it,
 // so header, filter and body cells are all addressed; the filter input has to
 // be allowed to shrink as well, or its own min-width would hold the column open.
+// The widths columns have grown to while their rows scrolled past, as minimum
+// widths (content box, so a measured width set again does not grow), for every
+// column whose width the user has not set by hand.
+function buildAutoColumnWidthCss(autoWidths, userWidths) {
+    const rules = [];
+    Object.keys(autoWidths || {}).forEach(name => {
+        if (userWidths && Number(userWidths[name]) > 0) return;
+        const w = Math.round(Number(autoWidths[name]) || 0);
+        if (!(w > 0)) return;
+        const sel = `[data-col=${cssStringLiteral(name)}]`;
+        rules.push(`#dataTable th${sel}, #dataTable td${sel} { min-width: ${w}px; }`);
+    });
+    return rules.join('\n');
+}
+
 function buildColumnWidthCss(widths) {
     const rules = [];
     Object.keys(widths || {}).forEach(name => {
@@ -2288,6 +2303,88 @@ function renameSelectColumn(sql, target, newName, formatIdent, isReservedWord) {
         ? { start: item.alias.start, end: item.alias.end, text: newText }
         : { start: item.exprEnd, end: item.exprEnd, text: ' AS ' + newText };
     return { sql: applyTextEdits(source, [edit].concat(orderBy)) };
+}
+
+// --- Virtual scrolling ---------------------------------------------------------
+// The grid keeps only the rows near the visible part of the result in the DOM;
+// two spacer rows of the right height stand in for the rest, so a result of
+// tens of thousands of rows scrolls as lightly as one of fifty.
+
+// The order the rows are shown in, as { kind: 'row' | 'insert' | 'dup', idx }:
+// inserted and duplicated rows without an anchor first, then every displayed
+// loaded row followed by those anchored to it, and last the ones whose anchor
+// row is filtered out, so they are not lost.
+function buildRenderPlan(displayedOrder, insertedRows, duplicatedRows) {
+    const shown = new Set(displayedOrder);
+    const byAnchor = new Map();
+    const top = [];
+    const orphans = [];
+    const place = (anchor, entry) => {
+        if (anchor == null) {
+            top.push(entry);
+        } else if (shown.has(anchor)) {
+            if (!byAnchor.has(anchor)) byAnchor.set(anchor, []);
+            byAnchor.get(anchor).push(entry);
+        } else {
+            orphans.push(entry);
+        }
+    };
+    (insertedRows || []).forEach((e, i) => place(e.anchor, { kind: 'insert', idx: i }));
+    (duplicatedRows || []).forEach((e, i) => place(e.anchor, { kind: 'dup', idx: i }));
+    const plan = top;
+    for (const idx of displayedOrder) {
+        plan.push({ kind: 'row', idx });
+        const anchored = byAnchor.get(idx);
+        if (anchored) anchored.forEach(e => plan.push(e));
+    }
+    orphans.forEach(e => plan.push(e));
+    return plan;
+}
+
+// Where row `index` starts, with every row `rowHeight` high except those in
+// `extras` ({ index, extra }, sorted by index), which are `extra` px taller.
+function virtualRowOffset(index, rowHeight, extras) {
+    let offset = index * rowHeight;
+    for (const e of extras || []) {
+        if (e.index >= index) break;
+        offset += e.extra;
+    }
+    return offset;
+}
+
+// The row at `offset`, counted like virtualRowOffset; clamped to the rows there are.
+function virtualRowAt(offset, rowHeight, extras, total) {
+    if (!(total > 0)) return 0;
+    let base = 0;
+    let baseIndex = 0;
+    for (const e of extras || []) {
+        const rowTop = base + (e.index - baseIndex) * rowHeight;
+        if (offset < rowTop) break;
+        const rowBottom = rowTop + rowHeight + e.extra;
+        if (offset < rowBottom) return Math.min(total - 1, e.index);
+        base = rowBottom;
+        baseIndex = e.index + 1;
+    }
+    const index = baseIndex + Math.floor(Math.max(0, offset - base) / rowHeight);
+    return Math.max(0, Math.min(total - 1, index));
+}
+
+// The rows to put into the DOM for a scroll position: those in view
+// (visibleStart … visibleEnd, end exclusive) and `buffer` rows on either side.
+function virtualWindow(o) {
+    const total = Math.max(0, Number(o.total) || 0);
+    if (total === 0) return { start: 0, end: 0, visibleStart: 0, visibleEnd: 0 };
+    const rowHeight = o.rowHeight > 0 ? o.rowHeight : 24;
+    const top = Math.max(0, Number(o.scrollTop) || 0);
+    const first = virtualRowAt(top, rowHeight, o.extras, total);
+    const last = virtualRowAt(top + Math.max(0, Number(o.viewportHeight) || 0), rowHeight, o.extras, total);
+    const buffer = Math.max(0, Number(o.buffer) || 0);
+    return {
+        visibleStart: first,
+        visibleEnd: last + 1,
+        start: Math.max(0, first - buffer),
+        end: Math.min(total, last + 1 + buffer)
+    };
 }
 
 // Decide whether a data-load message replaces the current rows wholesale (a
@@ -3326,7 +3423,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let referencingTables = []; // [{fkSchema, fkTable, fkColumn, localColumn}]
     let customMappings = []; // [{id, sourceColumn, targetSchema, targetTable, targetColumn, conditions, isDefault, label}]
     let allRows = [];
-    let displayedRows = [];
+    // Indices into allRows of the loaded rows the filters let through, in the
+    // order the sort puts them.
+    let displayedOrder = [];
+    // Every row shown, in display order (see buildRenderPlan), and the part of
+    // it that is in the DOM: [renderStart, renderEnd).
+    let renderPlan = [];
+    let renderStart = 0;
+    let renderEnd = 0;
+    // Where each row of the plan stands, by kind and index.
+    let planIndexByRow = new Map();
+    let planIndexByInsert = new Map();
+    let planIndexByDup = new Map();
+    // Height of a single-line row, measured once rows are on screen.
+    let virtualRowHeight = 25;
+    // Rows the user dragged taller, keyed by planRowKey: the content height set
+    // with the row-height handle, and how much taller the row came out.
+    const rowContentHeights = new Map();
+    const rowExtraHeights = new Map();
+    // Rows put into the DOM above and below the visible ones.
+    const VIRTUAL_BUFFER_ROWS = 40;
+    // Width each column has reached so far; it only grows, so a column does not
+    // jump narrower and wider while the rows in view change.
+    let autoColumnWidths = {};
     let schema = '';
     let table = '';
     let tableReference = '';
@@ -3551,7 +3670,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         e.stopPropagation();
         const startVar = tr.style.getPropertyValue('--row-content-max-h');
         const startHeight = startVar ? parseFloat(startVar) : DEFAULT_ROW_CONTENT_H;
-        rowResizeState = { tr, startY: e.clientY, startHeight };
+        const entry = renderPlan[planIndexOf(tr)];
+        rowResizeState = { tr, startY: e.clientY, startHeight, key: entry ? planRowKey(entry) : null };
         document.addEventListener('mousemove', onRowResizeMove);
         document.addEventListener('mouseup', endRowResize);
         document.body.classList.add('row-resizing');
@@ -3562,6 +3682,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const delta = e.clientY - rowResizeState.startY;
         const h = computeResizedRowHeight(rowResizeState.startHeight, delta, DEFAULT_ROW_CONTENT_H, MAX_ROW_CONTENT_H);
         rowResizeState.tr.style.setProperty('--row-content-max-h', h + 'px');
+        // Kept by row, so the height survives the row leaving the DOM.
+        if (rowResizeState.key) {
+            if (h > DEFAULT_ROW_CONTENT_H) rowContentHeights.set(rowResizeState.key, h);
+            else rowContentHeights.delete(rowResizeState.key);
+        }
     }
 
     function endRowResize() {
@@ -3569,6 +3694,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         document.removeEventListener('mousemove', onRowResizeMove);
         document.removeEventListener('mouseup', endRowResize);
         document.body.classList.remove('row-resizing');
+        // The spacers below have to account for the new height.
+        renderWindow(true);
     }
 
     // Column-width resize: widths the user dragged, keyed by column name so they
@@ -3586,7 +3713,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     document.head.appendChild(columnWidthStyle);
 
     function applyColumnWidths() {
-        columnWidthStyle.textContent = buildColumnWidthCss(columnWidths);
+        columnWidthStyle.textContent = buildAutoColumnWidthCss(autoColumnWidths, columnWidths) + '\n' + buildColumnWidthCss(columnWidths);
     }
 
     function startColumnResize(e) {
@@ -3916,11 +4043,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function cellCoords(td) {
         const tr = td.closest('tr');
-        if (!tr || tr.parentElement !== tableBody) return null;
+        const r = planIndexOf(tr);
+        if (r < 0) return null;
         const dataCells = tr.querySelectorAll(':scope > td[data-col]');
         const c = Array.prototype.indexOf.call(dataCells, td);
         if (c < 0) return null;
-        return { r: tr.sectionRowIndex, c };
+        return { r, c };
     }
 
     function clearNativeTextSelection() {
@@ -3945,10 +4073,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         tableHead.querySelectorAll('th.col-selected')
             .forEach(th => th.classList.remove('col-selected'));
         if (!rangeAnchor || !rangeFocus) return;
-        const lines = fullySelectedLines(rangeBounds(), tableBody.rows.length, columns.length);
+        const lines = fullySelectedLines(rangeBounds(), renderPlan.length, columns.length);
         if (lines.rows) {
-            for (let r = lines.rows.min; r <= lines.rows.max; r++) {
-                const numCell = tableBody.rows[r] ? tableBody.rows[r].querySelector(':scope > td.row-num-cell') : null;
+            for (let r = Math.max(lines.rows.min, renderStart); r <= lines.rows.max && r < renderEnd; r++) {
+                const tr = rowElementAt(r);
+                const numCell = tr ? tr.querySelector(':scope > td.row-num-cell') : null;
                 if (numCell) numCell.classList.add('row-num-selected');
             }
         }
@@ -3983,9 +4112,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         markSelectedLines();
         if (!rangeAnchor || !rangeFocus) return;
         const { minR, maxR, minC, maxC } = rangeBounds();
-        const rows = tableBody.rows;
-        for (let r = minR; r <= maxR; r++) {
-            const tr = rows[r];
+        // Only the rows in the DOM can carry the mark; the others get it when
+        // they are rendered.
+        for (let r = Math.max(minR, renderStart); r <= maxR && r < renderEnd; r++) {
+            const tr = rowElementAt(r);
             if (!tr) continue;
             const dataCells = tr.querySelectorAll(':scope > td[data-col]');
             for (let c = minC; c <= maxC && c < dataCells.length; c++) {
@@ -3994,7 +4124,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         // Offer the fill handle on the bottom-right corner of the selection.
         if (!fillDragging) {
-            const tr = rows[maxR];
+            const tr = rowElementAt(maxR);
             const cells = tr ? tr.querySelectorAll(':scope > td[data-col]') : null;
             const td = cells ? cells[maxC] : null;
             if (td) {
@@ -4014,17 +4144,17 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function collectCellRangeMatrix() {
         if (!rangeAnchor || !rangeFocus) return null;
         const { minR, maxR, minC, maxC } = rangeBounds();
-        const rows = tableBody.rows;
         const matrix = [];
-        for (let r = minR; r <= maxR; r++) {
-            const tr = rows[r];
-            if (!tr) continue;
-            const dataCells = tr.querySelectorAll(':scope > td[data-col]');
+        for (let r = minR; r <= maxR && r < renderPlan.length; r++) {
+            const tr = rowElementAt(r);
+            const dataCells = tr ? tr.querySelectorAll(':scope > td[data-col]') : null;
             const parts = [];
-            for (let c = minC; c <= maxC && c < dataCells.length; c++) {
-                const td = dataCells[c];
-                const text = getCellTextContent(td);
-                parts.push(isNumericColumn(td.getAttribute('data-col'))
+            for (let c = minC; c <= maxC && c < columns.length; c++) {
+                const colName = columns[c].name;
+                // A row in the DOM is read as shown (an edit in progress
+                // included), any other one from the data, the same way.
+                const text = dataCells ? (dataCells[c] ? getCellTextContent(dataCells[c]) : '') : modelCellText(renderPlan[r], colName);
+                parts.push(isNumericColumn(colName)
                     ? stripThousandSeparators(text, thousandSeparator)
                     : text);
             }
@@ -4164,9 +4294,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function beginFillDrag() {
         if (!rangeAnchor || !rangeFocus) { return; }
         if (isSingleCellSelection(rangeAnchor, rangeFocus)) {
-            const tr = tableBody.rows[rangeAnchor.r];
-            const cells = tr ? tr.querySelectorAll(':scope > td[data-col]') : null;
-            const srcTd = cells ? cells[rangeAnchor.c] : null;
+            const srcTd = dataCellAt(rangeAnchor.r, rangeAnchor.c);
             if (!srcTd) { return; }
             fillSourceValue = cellFillValue(srcTd);
             fillSourceBounds = null;
@@ -4242,7 +4370,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         fillPreviewKey = key;
         currentFillWrites().forEach(w => {
             const td = dataCellAt(w.r, w.c);
-            if (!td || !cellAcceptsFill(td)) return;
+            // Only a cell in the DOM can show the preview.
+            if (!td || td.virtual || !cellAcceptsFill(td)) return;
             td.setAttribute('data-fill-preview',
                 fillPreviewText(w.value, isNumericColumn(td.getAttribute('data-col')), thousandSeparator));
             td.classList.add('cell-fill-preview');
@@ -4257,7 +4386,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let colSelectEndedAt = 0;
 
     function selectLines(kind, from, to) {
-        const corners = lineSelectionCorners(kind, from, to, tableBody.rows.length, columns.length);
+        const corners = lineSelectionCorners(kind, from, to, renderPlan.length, columns.length);
         if (!corners) return;
         rangeAnchor = corners.anchor;
         rangeFocus = corners.focus;
@@ -4289,8 +4418,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function lineIndexAt(target, kind) {
         if (!target || !target.closest) return -1;
         if (kind === 'rows') {
-            const tr = target.closest('tr');
-            return tr && tr.parentElement === tableBody ? tr.sectionRowIndex : -1;
+            return planIndexOf(target.closest('tr'));
         }
         const cell = target.closest('th[data-col], td[data-col]');
         if (!cell || !(tableHead.contains(cell) || tableBody.contains(cell))) return -1;
@@ -4309,10 +4437,15 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     tableBody.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
-        // A row number selects the whole row (the resize handle stops propagation).
+        // The handle at the bottom of a row number changes the row's height.
+        if (e.target.closest && e.target.closest('.row-resize-handle')) {
+            startRowResize(e);
+            return;
+        }
+        // A row number selects the whole row.
         const numCell = e.target.closest ? e.target.closest('td.row-num-cell') : null;
-        if (numCell && numCell.parentElement && numCell.parentElement.parentElement === tableBody) {
-            beginLineSelection(e, 'rows', numCell.parentElement.sectionRowIndex);
+        if (numCell && planIndexOf(numCell.parentElement) >= 0) {
+            beginLineSelection(e, 'rows', planIndexOf(numCell.parentElement));
             return;
         }
         // The fill handle of a selected cell starts a copy-drag onto other cells.
@@ -4530,34 +4663,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             || key === 'PageUp' || key === 'PageDown';
     }
 
-    // Number of data columns in the grid, read from the header so it is correct
-    // regardless of which (possibly empty) row the focus currently sits in.
+    // Number of data columns in the grid.
     function dataColumnCount() {
-        return tableBody.querySelector('tr')
-            ? tableBody.querySelector('tr').querySelectorAll(':scope > td[data-col]').length
-            : 0;
+        return columns.length;
     }
 
     // Rows that a PageUp/PageDown jumps, derived from how many rows fit in the
     // scroll viewport (at least one), so a page roughly matches what is visible.
     function pageRowCount() {
-        const rows = tableBody.rows;
-        if (!rows.length) { return 1; }
-        const rowH = rows[0].getBoundingClientRect().height || 0;
-        const scroller = document.getElementById('tableWrapper') || tableBody.parentElement;
-        const viewH = scroller ? scroller.clientHeight : 0;
-        const fit = rowH > 0 && viewH > 0 ? Math.floor(viewH / rowH) : 0;
+        const viewH = gridScroller ? gridScroller.clientHeight - headerHeight() : 0;
+        const fit = virtualRowHeight > 0 && viewH > 0 ? Math.floor(viewH / virtualRowHeight) : 0;
         return Math.max(1, fit - 1);
     }
 
     function navigateCellSelection(key, ctrlKey, shiftKey) {
         const target = computeCellNavTarget(
-            key, ctrlKey, rangeFocus, tableBody.rows.length, dataColumnCount(), pageRowCount());
+            key, ctrlKey, rangeFocus, renderPlan.length, dataColumnCount(), pageRowCount());
         if (!target) { return false; }
         rangeFocus = target;
         if (!shiftKey) {
             rangeAnchor = { r: target.r, c: target.c };
         }
+        // Bring the row into the DOM first, so the highlight lands on it.
+        ensureRowRendered(target.r);
         applyCellRangeHighlight();
         scrollCellIntoView(target);
         return true;
@@ -4567,7 +4695,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // keeping it clear of the pinned header rows and the frozen left columns
     // that otherwise overlap a cell scrolled to the very top or left edge.
     function scrollCellIntoView(coords) {
-        const tr = tableBody.rows[coords.r];
+        ensureRowRendered(coords.r);
+        const tr = rowElementAt(coords.r);
         if (!tr) { return; }
         const cells = tr.querySelectorAll(':scope > td[data-col]');
         const td = cells[coords.c];
@@ -4612,10 +4741,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // cell for a single selection, the whole block for a multi-cell selection).
     function startMultiEdit(e) {
         const b = rangeBounds();
-        const tr = tableBody.rows[b.minR];
-        const cells = tr ? tr.querySelectorAll(':scope > td[data-col]') : null;
-        const anchorTd = cells ? cells[b.minC] : null;
-        const editable = anchorTd ? editableElementOf(anchorTd) : null;
+        ensureRowRendered(b.minR);
+        const anchorTd = dataCellAt(b.minR, b.minC);
+        const editable = anchorTd && !anchorTd.virtual ? editableElementOf(anchorTd) : null;
         if (!editable) { return; }
         multiEditBounds = b;
         editable.setAttribute('contenteditable', 'true');
@@ -4736,11 +4864,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function pasteAnchorTd() {
         if (rangeAnchor && rangeFocus) {
             const { minR, minC } = rangeBounds();
-            const tr = tableBody.rows[minR];
-            if (tr) {
-                const cells = tr.querySelectorAll(':scope > td[data-col]');
-                if (cells[minC]) { return cells[minC]; }
-            }
+            const anchor = dataCellAt(minR, minC);
+            if (anchor) { return anchor; }
         }
         const active = document.activeElement;
         const td = active && active.closest ? active.closest('td[data-col]') : null;
@@ -4829,10 +4954,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // and record the whole fill as one undo step.
     function finishCellFill(validationTargets, bounds) {
         renderBody();
-        validationTargets.forEach(t => {
-            const td = findCellByKey(t.key);
-            if (td) { checkCellValue(td, t.key, t.value); }
-        });
+        // Every written cell is checked, also those outside the DOM.
+        validationTargets.forEach(t => checkCellValue(findCellByKey(t.key), t.key, t.value));
         // renderBody drops the selection; restore it so the filled cells stay
         // marked, then re-highlight the rebuilt tbody.
         selectBounds(bounds);
@@ -4841,10 +4964,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         recordEditHistory();
     }
 
+    // The cell at row r and column c of the display: the <td> when its row is in
+    // the DOM, otherwise a stand-in answering getAttribute like one, so a fill,
+    // a paste or Delete reaches every cell of the selection.
     function dataCellAt(r, c) {
-        const tr = tableBody.rows[r];
-        const cells = tr ? tr.querySelectorAll(':scope > td[data-col]') : null;
-        return cells ? cells[c] || null : null;
+        const tr = rowElementAt(r);
+        if (tr) {
+            return tr.querySelectorAll(':scope > td[data-col]')[c] || null;
+        }
+        const entry = renderPlan[r];
+        const col = columns[c];
+        if (!entry || !col) return null;
+        const attrs = { 'data-col': col.name };
+        attrs[entry.kind === 'row' ? 'data-row' : entry.kind === 'insert' ? 'data-insert' : 'data-dup'] = String(entry.idx);
+        return { virtual: true, getAttribute: (name) => (name in attrs ? attrs[name] : null) };
     }
 
     // Fill every cell of the active rectangle with one value, so a single copied
@@ -4912,7 +5045,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!caps.canEdit && !caps.canInsert) { return; }
         e.preventDefault();
 
-        const rowOrder = displayedRows.map(r => r._originalIndex);
+        const rowOrder = displayedOrder.slice();
         const { startPos, startCol } = pasteStartPosition(pasteAnchorTd(), rowOrder);
         const columnNames = columns.map(c => c.name);
         const plan = planClipboardPaste(matrix, startPos, startCol, rowOrder, columnNames, isColumnEditable);
@@ -4949,10 +5082,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         renderBody();
-        validationTargets.forEach(t => {
-            const td = findCellByKey(t.key);
-            if (td) { checkCellValue(td, t.key, t.value); }
-        });
+        validationTargets.forEach(t => checkCellValue(findCellByKey(t.key), t.key, t.value));
         // Mark the pasted block so it stays selected after the paste.
         markPastedRegion(pastedKeys);
         updateChangeIndicator();
@@ -4967,12 +5097,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     // Select the bounding rectangle of the cells a paste wrote to (found by
-    // their keys in the rebuilt tbody), so the pasted block stays highlighted.
+    // their keys in the display order, in the DOM or not), so the pasted block
+    // stays highlighted.
     function markPastedRegion(keys) {
         let minR = Infinity, maxR = -Infinity, minC = Infinity, maxC = -Infinity;
         keys.forEach(key => {
-            const td = findCellByKey(key);
-            const cc = td ? cellCoords(td) : null;
+            const cc = coordsOfKey(key);
             if (!cc) { return; }
             if (cc.r < minR) minR = cc.r;
             if (cc.r > maxR) maxR = cc.r;
@@ -5250,6 +5380,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             // refer to the previous rows and must not leak onto the newly loaded
             // ones (which share the same 0-based indices).
             resetPendingChanges();
+            // Row heights and grown column widths belonged to the old rows; an
+            // auto refresh shows the same rows again and keeps them.
+            if (!auto) {
+                rowContentHeights.clear();
+                rowExtraHeights.clear();
+                autoColumnWidths = {};
+                applyColumnWidths();
+            }
         } else {
             allRows = allRows.concat(incoming);
         }
@@ -6265,169 +6403,360 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
     }
 
+    // Indices into allRows of the rows the filters let through, in sort order.
+    // Indices rather than copies of the rows, so filtering and sorting tens of
+    // thousands of rows stays quick.
     function getFilteredAndSortedRows() {
-        let rows = allRows.map((row, idx) => ({ ...row, _originalIndex: idx }));
+        let order = allRows.map((_, idx) => idx);
 
         for (const [col, filterVal] of Object.entries(filters)) {
             if (!filterVal) continue;
             const colMeta = columns.find(c => c.name === col);
             const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
             const mode = filterModes[col];
-            rows = rows.filter(row =>
-                rowValueMatchesFilter(row[col], filterVal, filterType, mode, thousandSeparator)
+            order = order.filter(idx =>
+                rowValueMatchesFilter(allRows[idx][col], filterVal, filterType, mode, thousandSeparator)
             );
         }
 
         if (sortState.column) {
-            const sortMeta = columns.find(c => c.name === sortState.column);
+            const sortCol = sortState.column;
+            const sortMeta = columns.find(c => c.name === sortCol);
             const numericSort = !!sortMeta && isNumericScalarType(sortMeta.fullType || sortMeta.dataType);
-            rows.sort((a, b) => compareCellValues(a[sortState.column], b[sortState.column], sortState.direction, numericSort));
+            order.sort((a, b) => compareCellValues(allRows[a][sortCol], allRows[b][sortCol], sortState.direction, numericSort));
         }
 
-        return rows;
+        return order;
     }
 
     function renderBody() {
-        displayedRows = getFilteredAndSortedRows();
-        tableBody.innerHTML = buildTableHtml();
-        wireTableListeners();
+        displayedOrder = getFilteredAndSortedRows();
+        renderPlan = buildRenderPlan(displayedOrder, insertedRows, duplicatedRows);
+        planIndexByRow = new Map();
+        planIndexByInsert = new Map();
+        planIndexByDup = new Map();
+        renderPlan.forEach((entry, i) => {
+            const byKind = entry.kind === 'row' ? planIndexByRow : entry.kind === 'insert' ? planIndexByInsert : planIndexByDup;
+            byKind.set(entry.idx, i);
+        });
+        renderWindow(true);
         updateChangeIndicator();
         // The row-number column widens with the digits of the last row.
         updateStickyFilterOffset();
-        // The tbody was rebuilt, so any cell-range selection now points at stale
-        // DOM; drop it to avoid copying the wrong cells.
+        // The rows were rebuilt, so any cell-range selection now points at stale
+        // positions; drop it to avoid copying the wrong cells.
         clearCellRangeSelection();
     }
 
-    // Build the full <tbody> HTML for the current displayedRows plus any
-    // inserted/duplicated rows, interleaving them next to their anchor rows.
-    function buildTableHtml() {
-        let html = '';
-        let rowNum = 0;
-        // Which columns run their values, worked out once rather than per cell.
-        const execTypes = new Map(columns.map(col => [col.name, executableTypeOfColumn(col.name, caps.columnSources[col.name])]));
+    // The key a row of the plan keeps while it is shown: `row:12`, `insert:0`, `dup:1`.
+    function planRowKey(entry) {
+        return `${entry.kind}:${entry.idx}`;
+    }
 
-        // Build a render plan that interleaves inserted/duplicated rows
-        // directly below the existing row they were anchored to. Inserts
-        // with no anchor (selectedRowIdx was null) go at the very top;
-        // inserts whose anchor row is no longer in the displayed set fall
-        // back to the bottom so the user doesn't lose them.
-        const insertsByAnchor = new Map();
-        const topInserts = [];
-        const orphanInserts = [];
-        const displayedIdxSet = new Set(displayedRows.map(r => r._originalIndex));
-        const placeWrapped = (entry, wrapped) => {
-            if (entry.anchor == null) topInserts.push(wrapped);
-            else if (displayedIdxSet.has(entry.anchor)) {
-                if (!insertsByAnchor.has(entry.anchor)) insertsByAnchor.set(entry.anchor, []);
-                insertsByAnchor.get(entry.anchor).push(wrapped);
-            } else orphanInserts.push(wrapped);
-        };
-        insertedRows.forEach((entry, iIdx) => placeWrapped(entry, { kind: 'insert', iIdx }));
-        duplicatedRows.forEach((entry, dIdx) => placeWrapped(entry, { kind: 'dup', dIdx }));
+    function planIndexOfKey(key) {
+        const sep = key.indexOf(':');
+        const kind = key.slice(0, sep);
+        const idx = parseInt(key.slice(sep + 1), 10);
+        return kind === 'row' ? planIndexByRow.get(idx) : kind === 'insert' ? planIndexByInsert.get(idx) : planIndexByDup.get(idx);
+    }
 
-        function emitInsertRow(w) {
-            rowNum++;
-            if (w.kind === 'insert') {
-                const row = insertedRows[w.iIdx].row;
-                html += `<tr class="row-inserted" data-insert-index="${w.iIdx}">`;
-                html += `<td class="row-num-cell">${rowNum}</td>`;
-                html += `<td class="actions-cell"><button class="btn btn-danger btn-sm btn-icon" data-row-action="removeInsertedRow" data-row-arg="${w.iIdx}" title="Remove this new row">${icon('close')}</button></td>`;
-                columns.forEach(col => {
-                    const val = row[col.name] || '';
-                    const invalid = invalidCells.get(`ins:${w.iIdx}:${col.name}`);
-                    html += `<td class="editable-cell${invalid ? ' cell-invalid' : ''}" ${invalid ? `title="${escapeAttr(invalid)}"` : ''} contenteditable="false" data-insert="${w.iIdx}" data-col="${escapeAttr(col.name)}">${escapeHtml(val)}</td>`;
-                });
-                html += '</tr>';
-            } else {
-                const entry = duplicatedRows[w.dIdx];
-                const row = entry.row;
-                html += `<tr class="row-duplicated" data-dup-index="${w.dIdx}">`;
-                html += `<td class="row-num-cell">${rowNum}</td>`;
-                html += `<td class="actions-cell"><button class="btn btn-danger btn-sm btn-icon" data-row-action="removeDuplicatedRow" data-row-arg="${w.dIdx}" title="Remove this duplicate">${icon('close')}</button></td>`;
-                columns.forEach(col => {
-                    const atDefault = !!entry.defaults && entry.defaults.has(col.name);
-                    const val = row[col.name] !== null && row[col.name] !== undefined ? cellToString(row[col.name]) : '';
-                    const invalid = invalidCells.get(`dup:${w.dIdx}:${col.name}`);
-                    const content = atDefault ? defaultMarkerHtml(col.name) : escapeHtml(val);
-                    html += `<td class="editable-cell${invalid ? ' cell-invalid' : ''}" ${invalid ? `title="${escapeAttr(invalid)}"` : ''} contenteditable="false" data-dup="${w.dIdx}" data-col="${escapeAttr(col.name)}">${content}</td>`;
-                });
-                html += '</tr>';
+    // The position in the display of a row of the tbody, or -1 for anything else.
+    function planIndexOf(tr) {
+        if (!tr || tr.parentElement !== tableBody) return -1;
+        const value = tr.getAttribute('data-plan');
+        return value === null ? -1 : parseInt(value, 10);
+    }
+
+    // The <tr> of the row at position r of the display, or null when it is not in the DOM.
+    function rowElementAt(r) {
+        if (r < renderStart || r >= renderEnd) return null;
+        const tr = tableBody.rows[r - renderStart + 1];
+        return tr && planIndexOf(tr) === r ? tr : null;
+    }
+
+    function headerHeight() {
+        return tableHead ? tableHead.getBoundingClientRect().height : 0;
+    }
+
+    // The rows dragged taller, as { index, extra } by position.
+    function rowExtrasList() {
+        const list = [];
+        for (const [key, extra] of rowExtraHeights) {
+            const index = planIndexOfKey(key);
+            if (index !== undefined && extra > 0) list.push({ index, extra });
+        }
+        return list.sort((a, b) => a.index - b.index);
+    }
+
+    // Scroll the row at position r into the DOM, if it is not there.
+    function ensureRowRendered(r) {
+        if (!gridScroller || r < 0 || r >= renderPlan.length || rowElementAt(r)) return;
+        const top = virtualRowOffset(r, virtualRowHeight, rowExtrasList());
+        const viewH = Math.max(0, gridScroller.clientHeight - headerHeight());
+        gridScroller.scrollTop = top < gridScroller.scrollTop ? top : Math.max(0, top + virtualRowHeight - viewH);
+        renderWindow(false);
+    }
+
+    let renderingWindow = false;
+
+    // Put the rows around the visible part of the result into the DOM. Without
+    // `force` nothing happens while the rows in view are there already, so
+    // scrolling re-renders only every few dozen rows.
+    function renderWindow(force) {
+        if (renderingWindow || !tableBody) return;
+        const total = renderPlan.length;
+        const extras = rowExtrasList();
+        const win = virtualWindow({
+            scrollTop: gridScroller ? gridScroller.scrollTop : 0,
+            viewportHeight: gridScroller ? Math.max(0, gridScroller.clientHeight - headerHeight()) : 800,
+            rowHeight: virtualRowHeight,
+            total,
+            buffer: VIRTUAL_BUFFER_ROWS,
+            extras
+        });
+        if (!force && win.visibleStart >= renderStart && win.visibleEnd <= renderEnd && renderEnd <= total) return;
+        if (!force) {
+            // A cell being edited would leave the DOM with its row: commit it
+            // first, as leaving the cell does.
+            const active = document.activeElement;
+            if (active && tableBody.contains(active) && typeof active.blur === 'function') {
+                active.blur();
+                renderWindow(false);
+                return;
             }
         }
-
-        // Top inserts (above all existing rows)
-        topInserts.forEach(emitInsertRow);
-
-        // Existing rows, with anchored inserts emitted right after each row
-        displayedRows.forEach(row => {
-            const idx = row._originalIndex;
-            const isDeleted = deletedRows.has(idx);
-            const isModified = hasModifications(idx);
-            const isSelected = selectedRowIdx === idx;
-            let rowClass = '';
-            if (isDeleted) rowClass = 'row-deleted';
-            else if (isModified) rowClass = 'row-modified';
-            if (isSelected) rowClass = (rowClass ? rowClass + ' ' : '') + 'row-selected';
-
-            rowNum++;
-            html += `<tr class="${rowClass}" data-row-index="${idx}">`;
-            html += `<td class="row-num-cell">${rowNum}<div class="row-resize-handle" title="Drag to change row height"></div></td>`;
-            html += `<td class="actions-cell">`;
-            if (!caps.canDelete) {
-                html += `<button class="btn-view-record" data-row-action="openRecordDialog" data-row-arg="${idx}" title="View full record">&#128065;</button>`;
-            } else if (!isDeleted) {
-                html += `<button class="btn-view-record" data-row-action="openRecordDialog" data-row-arg="${idx}" title="View full record">&#128065;</button>`;
-                html += `<button class="btn btn-sm btn-icon" data-row-action="duplicateRow" data-row-arg="${idx}" title="Duplicate row">${icon('copy')}</button>`;
-                html += `<button class="btn btn-danger btn-sm btn-icon" data-row-action="deleteRow" data-row-arg="${idx}" title="Delete row">${icon('trash')}</button>`;
-            } else {
-                html += `<button class="btn-view-record" data-row-action="openRecordDialog" data-row-arg="${idx}" title="View full record">&#128065;</button>`;
-                html += `<button class="btn btn-sm btn-icon" data-row-action="undeleteRow" data-row-arg="${idx}" title="Restore row">${icon('undo')}</button>`;
+        renderingWindow = true;
+        let remeasure = false;
+        try {
+            renderStart = win.start;
+            renderEnd = win.end;
+            buildCellContext();
+            const parts = [spacerRowHtml(virtualRowOffset(win.start, virtualRowHeight, extras))];
+            for (let i = win.start; i < win.end; i++) {
+                parts.push(planRowHtml(renderPlan[i], i));
             }
-            html += `</td>`;
+            const totalHeight = virtualRowOffset(total, virtualRowHeight, extras);
+            parts.push(spacerRowHtml(Math.max(0, totalHeight - virtualRowOffset(win.end, virtualRowHeight, extras))));
+            tableBody.innerHTML = parts.join('');
+            // The row numbers keep the width of the highest one, wherever the rows in view are.
+            dataTable.style.setProperty('--row-num-digits', String(String(Math.max(total, 1)).length));
+            remeasure = measureRenderedRows();
+            growColumnWidths();
+        } finally {
+            renderingWindow = false;
+        }
+        applyCellRangeHighlight();
+        if (fillDragging) {
+            fillPreviewKey = '';
+            updateFillPreview();
+        }
+        // The rows came out another height than assumed: lay the spacers out again.
+        if (remeasure) renderWindow(true);
+    }
 
-            columns.forEach(col => {
-                const originalVal = allRows[idx][col.name];
-                const modKey = `${idx}:${col.name}`;
-                const currentVal = modifiedCells.has(modKey) ? modifiedCells.get(modKey) : originalVal;
-                const isModifiedCell = modifiedCells.has(modKey);
-                const invalidReason = invalidCells.get(modKey);
-                const cellClass = `${isModifiedCell ? 'cell-modified' : ''}${invalidReason ? ' cell-invalid' : ''}`;
-                const displayVal = currentVal === null ? '<span class="null-value">NULL</span>' : (
-                    getColumnFilterType(col.dataType) === 'numeric'
-                        ? escapeHtml(formatNumberDisplay(currentVal, thousandSeparator))
-                        : escapeHtml(cellToString(currentVal))
-                );
+    // A row standing in for the rows above or below the ones in the DOM.
+    function spacerRowHtml(height) {
+        return `<tr class="v-spacer" aria-hidden="true"><td colspan="${columns.length + 2}" style="--v-h:${Math.round(height)}px"></td></tr>`;
+    }
 
-                const fk = foreignKeys.find(f => f.column === col.name);
-                const defaultCustomMapping = customMappings.find(m => m.isDefault && m.sourceColumn === col.name && evaluateMappingConditions(m, allRows[idx]));
-                let fkBtn = '';
-                if (defaultCustomMapping && currentVal !== null && currentVal !== undefined) {
-                    // Custom mapping overrides or supplements FK button
-                    fkBtn = `<button class="fk-btn custom-fk-btn" data-ref-schema="${escapeAttr(defaultCustomMapping.targetSchema)}" data-ref-table="${escapeAttr(defaultCustomMapping.targetTable)}" data-ref-column="${escapeAttr(defaultCustomMapping.targetColumn)}" data-value="${escapeAttr(cellToString(currentVal))}" title="${escapeAttr(defaultCustomMapping.label || defaultCustomMapping.targetSchema + '.' + defaultCustomMapping.targetTable)}">&#8599;</button>`;
-                } else if (fk && currentVal !== null && currentVal !== undefined) {
-                    fkBtn = `<button class="fk-btn" data-ref-schema="${escapeAttr(fk.refSchema)}" data-ref-table="${escapeAttr(fk.refTable)}" data-ref-column="${escapeAttr(fk.refColumn)}" data-value="${escapeAttr(cellToString(currentVal))}" title="${escapeAttr('Open ' + fk.refSchema + '.' + fk.refTable)}">&#8599;</button>`;
+    // Measure the rows just rendered: the height of a single-line row, and how
+    // much taller each row is that the user dragged open. True when it changed.
+    function measureRenderedRows() {
+        let sum = 0;
+        let count = 0;
+        let changed = false;
+        const rows = tableBody.rows;
+        for (let i = 1; i < rows.length - 1; i++) {
+            const r = planIndexOf(rows[i]);
+            if (r < 0) continue;
+            const height = rows[i].getBoundingClientRect().height;
+            if (!(height > 0)) continue;
+            const key = planRowKey(renderPlan[r]);
+            if (rowContentHeights.has(key)) {
+                const extra = Math.max(0, height - virtualRowHeight);
+                if (Math.abs((rowExtraHeights.get(key) || 0) - extra) > 0.5) {
+                    rowExtraHeights.set(key, extra);
+                    changed = true;
                 }
-                const canEditCell = !isDeleted && isColumnEditable(col.name);
-                const spanClass = canEditCell ? 'cell-content editable-cell' : 'cell-content';
-                const execType = execTypes.get(col.name);
-                const execBtn = execType && currentVal !== null && currentVal !== undefined
-                    ? executableButtonHtml(execType, executedValues.get(executableMarkKey(col.name, cellToString(currentVal))))
-                    : '';
-                const cellExtraClass = (fkBtn ? ' has-fk-btn' : '') + (execBtn ? ' has-exec-btn' : '');
-                html += `<td class="${cellClass}${cellExtraClass}" ${invalidReason ? `title="${escapeAttr(invalidReason)}"` : ''} data-row="${idx}" data-col="${escapeAttr(col.name)}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}">${execBtn}<span class="${spanClass}" contenteditable="false">${displayVal}</span>${fkBtn}</td>`;
-            });
-            html += '</tr>';
+            } else {
+                sum += height;
+                count++;
+            }
+        }
+        for (const key of Array.from(rowExtraHeights.keys())) {
+            if (!rowContentHeights.has(key)) {
+                rowExtraHeights.delete(key);
+                changed = true;
+            }
+        }
+        if (count > 0 && Math.abs(sum / count - virtualRowHeight) > 0.5) {
+            virtualRowHeight = sum / count;
+            changed = true;
+        }
+        return changed;
+    }
 
-            // Emit any inserts/duplicates anchored to this row
-            const anchored = insertsByAnchor.get(idx);
-            if (anchored) anchored.forEach(emitInsertRow);
+    // Let each column keep the widest it has been, so it does not change width
+    // while rows of other lengths scroll into the DOM.
+    function growColumnWidths() {
+        const headers = tableHead.querySelectorAll('tr:first-child > th[data-col]');
+        if (!headers.length) return;
+        const style = getComputedStyle(headers[0]);
+        const chrome = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0)
+            + (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.borderRightWidth) || 0);
+        let grown = false;
+        headers.forEach(th => {
+            const name = th.getAttribute('data-col');
+            if (Number(columnWidths[name]) > 0) return;
+            const width = Math.floor(th.getBoundingClientRect().width - chrome);
+            if (width > (autoColumnWidths[name] || 0) + 1) {
+                autoColumnWidths[name] = width;
+                grown = true;
+            }
         });
+        if (grown) applyColumnWidths();
+    }
 
-        // Orphan inserts whose anchor row is filtered out
-        orphanInserts.forEach(emitInsertRow);
+    // What every cell of a column shares, worked out once per render rather
+    // than once per cell.
+    let cellContext = { modifiedRows: new Set(), cols: [] };
 
-        return html;
+    function buildCellContext() {
+        const modifiedRows = new Set();
+        for (const key of modifiedCells.keys()) {
+            modifiedRows.add(parseInt(key.slice(0, key.indexOf(':')), 10));
+        }
+        cellContext = {
+            modifiedRows,
+            cols: columns.map(col => ({
+                name: col.name,
+                attr: escapeAttr(col.name),
+                numeric: getColumnFilterType(col.dataType) === 'numeric',
+                editable: isColumnEditable(col.name),
+                fk: foreignKeys.find(f => f.column === col.name),
+                mappings: customMappings.filter(m => m.isDefault && m.sourceColumn === col.name),
+                execType: executableTypeOfColumn(col.name, caps.columnSources[col.name])
+            }))
+        };
+    }
+
+    // The text a cell shows, read from the data: what a row outside the DOM
+    // would show, the same way getCellTextContent reads a rendered one.
+    function modelCellText(entry, colName) {
+        if (!entry) return '';
+        if (entry.kind === 'insert') {
+            const inserted = insertedRows[entry.idx];
+            return inserted ? String(inserted.row[colName] || '').trim() : '';
+        }
+        if (entry.kind === 'dup') {
+            const dup = duplicatedRows[entry.idx];
+            if (!dup) return '';
+            if (dup.defaults && dup.defaults.has(colName)) return 'DEFAULT';
+            const value = dup.row[colName];
+            return value === null || value === undefined ? '' : cellToString(value).trim();
+        }
+        const key = `${entry.idx}:${colName}`;
+        const value = modifiedCells.has(key) ? modifiedCells.get(key) : (allRows[entry.idx] || {})[colName];
+        if (value === null) return 'NULL';
+        return String(isNumericColumn(colName) ? formatNumberDisplay(value, thousandSeparator) : cellToString(value)).trim();
+    }
+
+    // The markup of the row at position `planIndex` of the display.
+    function planRowHtml(entry, planIndex) {
+        const contentHeight = rowContentHeights.get(planRowKey(entry));
+        const attrs = ` data-plan="${planIndex}"` + (contentHeight ? ` style="--row-content-max-h:${contentHeight}px"` : '');
+        if (entry.kind === 'insert') return insertedRowHtml(entry.idx, planIndex + 1, attrs);
+        if (entry.kind === 'dup') return duplicatedRowHtml(entry.idx, planIndex + 1, attrs);
+        return loadedRowHtml(entry.idx, planIndex + 1, attrs);
+    }
+
+    function insertedRowHtml(iIdx, rowNum, attrs) {
+        const row = insertedRows[iIdx].row;
+        let html = `<tr class="row-inserted" data-insert-index="${iIdx}"${attrs}>`;
+        html += `<td class="row-num-cell">${rowNum}</td>`;
+        html += `<td class="actions-cell"><button class="btn btn-danger btn-sm btn-icon" data-row-action="removeInsertedRow" data-row-arg="${iIdx}" title="Remove this new row">${icon('close')}</button></td>`;
+        cellContext.cols.forEach(cc => {
+            const val = row[cc.name] || '';
+            const invalid = invalidCells.get(`ins:${iIdx}:${cc.name}`);
+            html += `<td class="editable-cell${invalid ? ' cell-invalid' : ''}" ${invalid ? `title="${escapeAttr(invalid)}"` : ''} contenteditable="false" data-insert="${iIdx}" data-col="${cc.attr}">${escapeHtml(val)}</td>`;
+        });
+        return html + '</tr>';
+    }
+
+    function duplicatedRowHtml(dIdx, rowNum, attrs) {
+        const entry = duplicatedRows[dIdx];
+        const row = entry.row;
+        let html = `<tr class="row-duplicated" data-dup-index="${dIdx}"${attrs}>`;
+        html += `<td class="row-num-cell">${rowNum}</td>`;
+        html += `<td class="actions-cell"><button class="btn btn-danger btn-sm btn-icon" data-row-action="removeDuplicatedRow" data-row-arg="${dIdx}" title="Remove this duplicate">${icon('close')}</button></td>`;
+        cellContext.cols.forEach(cc => {
+            const atDefault = !!entry.defaults && entry.defaults.has(cc.name);
+            const val = row[cc.name] !== null && row[cc.name] !== undefined ? cellToString(row[cc.name]) : '';
+            const invalid = invalidCells.get(`dup:${dIdx}:${cc.name}`);
+            const content = atDefault ? defaultMarkerHtml(cc.name) : escapeHtml(val);
+            html += `<td class="editable-cell${invalid ? ' cell-invalid' : ''}" ${invalid ? `title="${escapeAttr(invalid)}"` : ''} contenteditable="false" data-dup="${dIdx}" data-col="${cc.attr}">${content}</td>`;
+        });
+        return html + '</tr>';
+    }
+
+    function loadedRowHtml(idx, rowNum, attrs) {
+        const row = allRows[idx];
+        const isDeleted = deletedRows.has(idx);
+        const isModified = cellContext.modifiedRows.has(idx);
+        const isSelected = selectedRowIdx === idx;
+        let rowClass = '';
+        if (isDeleted) rowClass = 'row-deleted';
+        else if (isModified) rowClass = 'row-modified';
+        if (isSelected) rowClass = (rowClass ? rowClass + ' ' : '') + 'row-selected';
+
+        let html = `<tr class="${rowClass}" data-row-index="${idx}"${attrs}>`;
+        html += `<td class="row-num-cell">${rowNum}<div class="row-resize-handle" title="Drag to change row height"></div></td>`;
+        html += `<td class="actions-cell">`;
+        if (!caps.canDelete) {
+            html += `<button class="btn-view-record" data-row-action="openRecordDialog" data-row-arg="${idx}" title="View full record">&#128065;</button>`;
+        } else if (!isDeleted) {
+            html += `<button class="btn-view-record" data-row-action="openRecordDialog" data-row-arg="${idx}" title="View full record">&#128065;</button>`;
+            html += `<button class="btn btn-sm btn-icon" data-row-action="duplicateRow" data-row-arg="${idx}" title="Duplicate row">${icon('copy')}</button>`;
+            html += `<button class="btn btn-danger btn-sm btn-icon" data-row-action="deleteRow" data-row-arg="${idx}" title="Delete row">${icon('trash')}</button>`;
+        } else {
+            html += `<button class="btn-view-record" data-row-action="openRecordDialog" data-row-arg="${idx}" title="View full record">&#128065;</button>`;
+            html += `<button class="btn btn-sm btn-icon" data-row-action="undeleteRow" data-row-arg="${idx}" title="Restore row">${icon('undo')}</button>`;
+        }
+        html += `</td>`;
+
+        cellContext.cols.forEach(cc => {
+            const originalVal = row[cc.name];
+            const modKey = `${idx}:${cc.name}`;
+            const isModifiedCell = modifiedCells.has(modKey);
+            const currentVal = isModifiedCell ? modifiedCells.get(modKey) : originalVal;
+            const invalidReason = invalidCells.get(modKey);
+            const cellClass = `${isModifiedCell ? 'cell-modified' : ''}${invalidReason ? ' cell-invalid' : ''}`;
+            const displayVal = currentVal === null ? '<span class="null-value">NULL</span>' : (
+                cc.numeric
+                    ? escapeHtml(formatNumberDisplay(currentVal, thousandSeparator))
+                    : escapeHtml(cellToString(currentVal))
+            );
+
+            const hasValue = currentVal !== null && currentVal !== undefined;
+            const defaultCustomMapping = hasValue && cc.mappings.length
+                ? cc.mappings.find(m => evaluateMappingConditions(m, row))
+                : undefined;
+            let fkBtn = '';
+            if (defaultCustomMapping) {
+                // Custom mapping overrides or supplements FK button
+                fkBtn = `<button class="fk-btn custom-fk-btn" data-ref-schema="${escapeAttr(defaultCustomMapping.targetSchema)}" data-ref-table="${escapeAttr(defaultCustomMapping.targetTable)}" data-ref-column="${escapeAttr(defaultCustomMapping.targetColumn)}" data-value="${escapeAttr(cellToString(currentVal))}" title="${escapeAttr(defaultCustomMapping.label || defaultCustomMapping.targetSchema + '.' + defaultCustomMapping.targetTable)}">&#8599;</button>`;
+            } else if (cc.fk && hasValue) {
+                fkBtn = `<button class="fk-btn" data-ref-schema="${escapeAttr(cc.fk.refSchema)}" data-ref-table="${escapeAttr(cc.fk.refTable)}" data-ref-column="${escapeAttr(cc.fk.refColumn)}" data-value="${escapeAttr(cellToString(currentVal))}" title="${escapeAttr('Open ' + cc.fk.refSchema + '.' + cc.fk.refTable)}">&#8599;</button>`;
+            }
+            const canEditCell = !isDeleted && cc.editable;
+            const spanClass = canEditCell ? 'cell-content editable-cell' : 'cell-content';
+            const execBtn = cc.execType && hasValue
+                ? executableButtonHtml(cc.execType, executedValues.get(executableMarkKey(cc.name, cellToString(currentVal))))
+                : '';
+            const cellExtraClass = (fkBtn ? ' has-fk-btn' : '') + (execBtn ? ' has-exec-btn' : '');
+            html += `<td class="${cellClass}${cellExtraClass}" ${invalidReason ? `title="${escapeAttr(invalidReason)}"` : ''} data-row="${idx}" data-col="${cc.attr}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}">${execBtn}<span class="${spanClass}" contenteditable="false">${displayVal}</span>${fkBtn}</td>`;
+        });
+        return html + '</tr>';
     }
 
     // Fill a counter element from a budget, or blank it out when the column has
@@ -6474,120 +6803,123 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (charBudgetTarget) showCharBudgetBadge(charBudgetTarget);
     }, true);
 
-    // Attach all event listeners for the freshly-rendered <tbody>.
-    function wireTableListeners() {
-        // Live formatting for numeric cells during editing.
-        // `editable` is the contenteditable element (a .cell-content span for existing rows,
-        // or the td itself for inserted/duplicated rows).
-        function handleNumericCellInput(editable) {
-            const td = editable.closest('td');
-            if (!td) return;
-            const colName = td.getAttribute('data-col');
-            const colMeta = columns.find(c => c.name === colName);
-            if (!colMeta || getColumnFilterType(colMeta.dataType) !== 'numeric') return;
+    // Live formatting for numeric cells during editing.
+    // `editable` is the contenteditable element (a .cell-content span for existing rows,
+    // or the td itself for inserted/duplicated rows).
+    function handleNumericCellInput(editable) {
+        const td = editable.closest('td');
+        if (!td) return;
+        const colName = td.getAttribute('data-col');
+        const colMeta = columns.find(c => c.name === colName);
+        if (!colMeta || getColumnFilterType(colMeta.dataType) !== 'numeric') return;
 
-            const text = editable.textContent;
+        const text = editable.textContent;
 
-            // Get cursor position as digit count
-            const sel = window.getSelection();
-            let digitsBefore = 0;
-            if (sel && sel.rangeCount > 0) {
-                const range = sel.getRangeAt(0);
-                const beforeCursor = text.substring(0, range.startOffset);
-                digitsBefore = beforeCursor.split(thousandSeparator).join('').length;
-            }
-
-            const result = liveFormatNumeric(text, digitsBefore, thousandSeparator);
-            if (!result) return;
-
-            editable.textContent = result.formatted;
-
-            // Restore cursor position
-            if (sel && editable.firstChild) {
-                const newRange = document.createRange();
-                newRange.setStart(editable.firstChild, Math.min(result.newCursor, result.formatted.length));
-                newRange.collapse(true);
-                sel.removeAllRanges();
-                sel.addRange(newRange);
-            }
+        // Get cursor position as digit count
+        const sel = window.getSelection();
+        let digitsBefore = 0;
+        if (sel && sel.rangeCount > 0) {
+            const range = sel.getRangeAt(0);
+            const beforeCursor = text.substring(0, range.startOffset);
+            digitsBefore = beforeCursor.split(thousandSeparator).join('').length;
         }
 
-        // Clear the "NULL" placeholder when the user focuses a NULL cell so
-        // they can immediately type a new value. Leaving the cell empty on
-        // blur restores NULL via handleCellEdit (which converts '' -> null).
-        function handleNullCellFocus(span) {
-            if (span.querySelector('.null-value')) {
-                span.textContent = '';
-            }
+        const result = liveFormatNumeric(text, digitsBefore, thousandSeparator);
+        if (!result) return;
+
+        editable.textContent = result.formatted;
+
+        // Restore cursor position
+        if (sel && editable.firstChild) {
+            const newRange = document.createRange();
+            newRange.setStart(editable.firstChild, Math.min(result.newCursor, result.formatted.length));
+            newRange.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(newRange);
         }
+    }
 
-        // Attach focus/blur/input listeners for editable cell-content spans (existing rows)
-        tableBody.querySelectorAll('td[data-row] .cell-content.editable-cell').forEach(span => {
-            span.addEventListener('focus', () => { handleNullCellFocus(span); showCharBudgetBadge(span); });
-            span.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleCellEdit(e); exitCellEditMode(span); commitMultiEdit(span); });
-            span.addEventListener('input', () => { handleNumericCellInput(span); showCharBudgetBadge(span); });
-        });
+    // Clear the "NULL" placeholder when the user focuses a NULL cell so
+    // they can immediately type a new value. Leaving the cell empty on
+    // blur restores NULL via handleCellEdit (which converts '' -> null).
+    function handleNullCellFocus(span) {
+        if (span.querySelector('.null-value')) {
+            span.textContent = '';
+        }
+    }
 
-        // Attach blur listeners for inserted rows
-        tableBody.querySelectorAll('td[data-insert].editable-cell').forEach(td => {
-            td.addEventListener('focus', () => showCharBudgetBadge(td));
-            td.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleInsertCellEdit(e); exitCellEditMode(td); commitMultiEdit(td); });
-            td.addEventListener('input', () => { handleNumericCellInput(td); showCharBudgetBadge(td); });
-        });
+    // Which kind of editable element of the grid `el` is: the .cell-content
+    // span of a loaded row, or the cell of an inserted or duplicated row.
+    function editableKind(el) {
+        if (!el || !el.matches || !tableBody.contains(el)) return null;
+        if (el.matches('td[data-row] .cell-content.editable-cell')) return 'row';
+        if (el.matches('td[data-insert].editable-cell')) return 'insert';
+        if (el.matches('td[data-dup].editable-cell')) return 'dup';
+        return null;
+    }
 
-        // Attach blur listeners for duplicated rows
-        tableBody.querySelectorAll('td[data-dup].editable-cell').forEach(td => {
-            td.addEventListener('focus', () => { clearDefaultMarker(td); showCharBudgetBadge(td); });
-            td.addEventListener('blur', (e) => { hideCharBudgetBadge(); handleDupCellEdit(e); exitCellEditMode(td); commitMultiEdit(td); });
-            td.addEventListener('input', () => { handleNumericCellInput(td); showCharBudgetBadge(td); });
-        });
+    // The cells listen through the tbody, once, instead of each cell carrying
+    // listeners of its own that every render would create anew.
+    tableBody.addEventListener('focusin', (e) => {
+        const el = e.target;
+        const kind = editableKind(el);
+        if (kind === 'row') handleNullCellFocus(el);
+        else if (kind === 'dup') clearDefaultMarker(el);
+        if (kind) showCharBudgetBadge(el);
+    });
 
-        // Row-height resize handles (drag the bottom of the row-number cell).
-        tableBody.querySelectorAll('.row-resize-handle').forEach(handle => {
-            handle.addEventListener('mousedown', startRowResize);
-        });
+    tableBody.addEventListener('focusout', (e) => {
+        const el = e.target;
+        const kind = editableKind(el);
+        if (!kind) return;
+        hideCharBudgetBadge();
+        if (kind === 'row') handleCellEdit(e);
+        else if (kind === 'insert') handleInsertCellEdit(e);
+        else handleDupCellEdit(e);
+        exitCellEditMode(el);
+        commitMultiEdit(el);
+    });
 
-        tableBody.querySelectorAll('.fk-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const refSchema = btn.getAttribute('data-ref-schema');
-                const refTable = btn.getAttribute('data-ref-table');
-                const refColumn = btn.getAttribute('data-ref-column');
-                const value = btn.getAttribute('data-value');
-                vscode.postMessage({
-                    command: 'openForeignKey',
-                    refSchema, refTable, refColumn, value
-                });
+    tableBody.addEventListener('input', (e) => {
+        const el = e.target;
+        if (!editableKind(el)) return;
+        handleNumericCellInput(el);
+        showCharBudgetBadge(el);
+    });
+
+    tableBody.addEventListener('contextmenu', (e) => {
+        const td = e.target.closest ? e.target.closest('td[data-col]') : null;
+        if (!td || planIndexOf(td.parentElement) < 0) return;
+        e.preventDefault();
+        showCellContextMenu(e, td);
+    });
+
+    tableBody.addEventListener('click', (e) => {
+        const fkBtn = e.target.closest ? e.target.closest('.fk-btn') : null;
+        if (fkBtn && tableBody.contains(fkBtn)) {
+            vscode.postMessage({
+                command: 'openForeignKey',
+                refSchema: fkBtn.getAttribute('data-ref-schema'),
+                refTable: fkBtn.getAttribute('data-ref-table'),
+                refColumn: fkBtn.getAttribute('data-ref-column'),
+                value: fkBtn.getAttribute('data-value')
             });
-        });
-
-        tableBody.querySelectorAll('td[data-col]').forEach(td => {
-            td.addEventListener('contextmenu', (e) => {
-                e.preventDefault();
-                showCellContextMenu(e, td);
-            });
-        });
-
+            return;
+        }
         // Row selection: clicking anywhere in an existing row marks it as
         // selected so that subsequent Insert Row / Duplicate Row place new
-        // rows directly below it. Clicking on action buttons (which stop
-        // propagation or trigger their own handler) still updates selection
-        // because the click bubbles up before button work.
-        tableBody.querySelectorAll('tr[data-row-index]').forEach(tr => {
-            tr.addEventListener('click', (e) => {
-                // Ignore clicks inside the FK button (it opens another view)
-                if (e.target.closest('.fk-btn')) return;
-                const idxStr = tr.getAttribute('data-row-index');
-                const idx = parseInt(idxStr);
-                if (selectedRowIdx === idx) return;
-                // Update class on previously selected row without full
-                // re-render to avoid clobbering an in-progress edit.
-                tableBody.querySelectorAll('tr.row-selected').forEach(prev => prev.classList.remove('row-selected'));
-                tr.classList.add('row-selected');
-                selectedRowIdx = idx;
-            });
-        });
-    }
+        // rows directly below it. This listener comes before the one of the
+        // row action buttons, so a button acts on the row it selected.
+        const tr = e.target.closest ? e.target.closest('tr[data-row-index]') : null;
+        if (!tr || planIndexOf(tr) < 0) return;
+        const idx = parseInt(tr.getAttribute('data-row-index'), 10);
+        if (selectedRowIdx === idx) return;
+        // Update class on previously selected row without full
+        // re-render to avoid clobbering an in-progress edit.
+        tableBody.querySelectorAll('tr.row-selected').forEach(prev => prev.classList.remove('row-selected'));
+        tr.classList.add('row-selected');
+        selectedRowIdx = idx;
+    });
 
     function handleCellEdit(e) {
         const span = e.target;
@@ -6724,8 +7056,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // Check an edited value against its column type and mark the cell when the
     // column cannot store it. Types whose text format only Postgres can judge
     // (timestamps, JSON, enums, ...) are sent to the database for a cast test.
+    // `td` is null for a cell outside the DOM; its mark is kept by key.
     function checkCellValue(td, key, value) {
-        const colMeta = columns.find(c => c.name === td.getAttribute('data-col'));
+        const colName = colNameOfKey(key);
+        const colMeta = columns.find(c => c.name === colName);
         const result = colMeta ? validateCellValue(value, colMeta.fullType || colMeta.dataType) : { state: 'valid' };
         if (result.state === 'unknown') {
             const requestId = ++validationSeq;
@@ -6773,11 +7107,27 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function findCellByKey(key) {
         const parts = key.split(':');
-        const colName = parts[0] === 'ins' || parts[0] === 'dup' ? parts.slice(2).join(':') : parts.slice(1).join(':');
+        const colName = colNameOfKey(key);
         const rowSelector = parts[0] === 'ins' ? `[data-insert="${parts[1]}"]`
             : parts[0] === 'dup' ? `[data-dup="${parts[1]}"]`
             : `[data-row="${parts[0]}"]`;
         return tableBody.querySelector(`td${rowSelector}[data-col="${cssEscape(colName)}"]`);
+    }
+
+    // The column of a cell key: `12:name`, `ins:0:name` or `dup:1:name`.
+    function colNameOfKey(key) {
+        const parts = String(key).split(':');
+        return parts[0] === 'ins' || parts[0] === 'dup' ? parts.slice(2).join(':') : parts.slice(1).join(':');
+    }
+
+    // Where the cell of a key stands in the display, in the DOM or not.
+    function coordsOfKey(key) {
+        const parts = String(key).split(':');
+        const r = parts[0] === 'ins' ? planIndexByInsert.get(parseInt(parts[1], 10))
+            : parts[0] === 'dup' ? planIndexByDup.get(parseInt(parts[1], 10))
+            : planIndexByRow.get(parseInt(parts[0], 10));
+        const c = columns.findIndex(col => col.name === colNameOfKey(key));
+        return r === undefined || c < 0 ? null : { r, c };
     }
 
     function cssEscape(value) {
@@ -6797,13 +7147,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             next.set(`${prefix}:${shifted}:${parts.slice(2).join(':')}`, reason);
         }
         invalidCells = next;
-    }
-
-    function hasModifications(rowIdx) {
-        for (const key of modifiedCells.keys()) {
-            if (key.startsWith(`${rowIdx}:`)) return true;
-        }
-        return false;
     }
 
     // Global functions for inline handlers
@@ -6984,10 +7327,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         updateRowCount();
         recordEditHistory();
 
-        const selector = anchor == null
-            ? 'tr.row-inserted'
-            : `tr.row-inserted[data-insert-index="${insertedRows.length - 1}"]`;
-        const newTr = tableBody.querySelector(selector);
+        // The new row may be far from the rows in view: scroll it into the DOM.
+        const planIndex = planIndexByInsert.get(insertedRows.length - 1);
+        if (planIndex !== undefined) ensureRowRendered(planIndex);
+        const newTr = planIndex !== undefined ? rowElementAt(planIndex) : null;
         if (newTr && newTr.scrollIntoView) {
             newTr.scrollIntoView({ block: 'nearest', behavior: 'auto' });
         }
@@ -7035,6 +7378,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const autoRefreshSelect = document.getElementById('autoRefreshSelect');
     const autoRefreshStatus = document.getElementById('autoRefreshStatus');
     const gridScroller = document.getElementById('tableWrapper');
+    // Scrolling and resizing bring other rows into view, and with them into the DOM.
+    if (gridScroller) {
+        gridScroller.addEventListener('scroll', () => renderWindow(false), { passive: true });
+    }
+    window.addEventListener('resize', () => renderWindow(false));
     const AUTO_REFRESH_RETRY_MS = 1000;
     let autoRefreshSeconds = 0;
     let autoRefreshTimer = null;
@@ -7206,7 +7554,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             gridScroller.scrollTop = state.scrollTop;
             gridScroller.scrollLeft = state.scrollLeft;
         }
-        const rowCount = tableBody.rows.length;
+        // The rows at the restored position have to be in the DOM before the
+        // selection is marked on them.
+        renderWindow(false);
+        const rowCount = renderPlan.length;
         if (state.anchor && state.focus && Math.max(state.anchor.r, state.focus.r) < rowCount) {
             rangeAnchor = state.anchor;
             rangeFocus = state.focus;
@@ -8144,11 +8495,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return formatIdentifier(colName);
     }
 
+    // Text for an HTML element's content. A plain replace, not a DOM round trip:
+    // the grid escapes every cell it renders.
     function escapeHtml(text) {
         if (text === null || text === undefined) return '';
-        const div = document.createElement('div');
-        div.textContent = String(text);
-        return div.innerHTML;
+        return String(text).replace(/[&<>]/g, ch => (ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : '&gt;'));
     }
 
     function escapeAttr(text) {
@@ -8353,8 +8704,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     function getDisplayedRowIndices() {
         // Returns array of original row indices in current display order
-        if (Array.isArray(displayedRows) && displayedRows.length > 0) {
-            return displayedRows.map(r => r._originalIndex);
+        if (displayedOrder.length > 0) {
+            return displayedOrder.slice();
         }
         return allRows.map((_, i) => i);
     }
@@ -9157,6 +9508,7 @@ if (typeof module !== 'undefined' && module.exports) {
         columnResizeEdgeStep,
         cssStringLiteral,
         buildColumnWidthCss,
+        buildAutoColumnWidthCss,
         remainingRowCount,
         formatExecutionTime,
         reorderColumns,
@@ -9206,6 +9558,10 @@ if (typeof module !== 'undefined' && module.exports) {
         parseSelectChain,
         selectItemColumn,
         describePendingChanges,
+        buildRenderPlan,
+        virtualRowOffset,
+        virtualRowAt,
+        virtualWindow,
         EXECUTABLE_COLUMN_TYPES,
         executableColumnType,
         executableTypeOfColumn,

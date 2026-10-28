@@ -105,7 +105,9 @@ schemas, and understands the `schema.table` notation.
 Opening a table opens a grid with the first 50 rows, the total row count and
 the time the query took. **Load More** fetches the next 50, **Load All** the
 rest. Column headers carry the name and the data type, and the comment of a
-column as a tooltip.
+column as a tooltip. Only the rows in view are drawn, so even tens of
+thousands of loaded rows scroll, sort and filter without delay; selecting,
+copying and filling still cover every row.
 
 **Auto refresh**, the drop-down with the circular-arrow icon at the right of the
 toolbar, runs the query again every 1 s, 5 s, 10 s, 30 s, 1 min, 5 min or at a
