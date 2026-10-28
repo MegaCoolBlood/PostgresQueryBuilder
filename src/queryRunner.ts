@@ -18,7 +18,8 @@ import {
 } from './resultSource';
 import { resultColumnQualifiers, selectListQualifiers } from './hiddenKeyColumns';
 import type { QueryResultRow, FieldDef } from 'pg';
-import type { QueryExecutor, QueryFn } from './dbSession';
+import type { QueryExecutor, QueryFn, SessionClient } from './dbSession';
+import { fetchRowsInBatches, type ExportTracker } from './exportProgress';
 
 /**
  * Table types from `information_schema.tables` that the extension treats as
@@ -252,6 +253,18 @@ export class QueryRunner {
                 } catch (err) {
                     await client.query('ROLLBACK');
                     throw err;
+                } finally {
+                    client.release();
+                }
+            },
+            run: async <T>(work: (client: SessionClient) => Promise<T>): Promise<T> => {
+                const pool = this.connectionManager.getPool();
+                if (!pool) {
+                    throw new Error('Not connected to database');
+                }
+                const client = await pool.connect();
+                try {
+                    return await work(client as unknown as SessionClient);
                 } finally {
                     client.release();
                 }
@@ -824,6 +837,30 @@ export class QueryRunner {
                 + 'values. Nothing was changed.'
             );
         }
+    }
+
+    /**
+     * All rows of `sql` for an export, counted first and fetched in batches
+     * through a cursor, so `tracker` can show the progress and cancel it. An
+     * executor that cannot lend out one connection runs the plain query.
+     */
+    async fetchForExport(sql: string, tracker: ExportTracker): Promise<{ rows: QueryResultRow[]; fields: FieldDef[] }> {
+        let result: { fields: FieldDef[]; rows: unknown[][] };
+        if (this.executor.run) {
+            result = await this.executor.run((client) => fetchRowsInBatches(client, sql, tracker));
+        } else {
+            tracker.report({ phase: 'fetching', done: 0, total: null });
+            const plain = await this.executor.queryPositional(sql);
+            result = { fields: plain.fields ?? [], rows: (plain.rows as unknown[][]) ?? [] };
+        }
+        tracker.throwIfCancelled();
+        const fields = uniqueFieldNames(result.fields, sql);
+        const rows = result.rows.map((rowValues) => {
+            const row: Record<string, unknown> = {};
+            fields.forEach((field, index) => { row[field.name] = rowValues[index]; });
+            return row as QueryResultRow;
+        });
+        return { rows, fields };
     }
 
     async executeSQL(sql: string): Promise<{ rows: QueryResultRow[]; fields: FieldDef[]; rowCount: number }> {

@@ -43,6 +43,11 @@ export interface QueryExecutor {
      * nothing is permanent before the user commits it.
      */
     transaction<T>(work: (query: QueryFn, joined: boolean) => Promise<T>): Promise<T>;
+    /**
+     * Run `work` on one connection that nothing else uses meanwhile, for
+     * several statements that belong together (a cursor fetched in batches).
+     */
+    run?<T>(work: (client: SessionClient) => Promise<T>): Promise<T>;
 }
 
 /** Names a session: the key it is shared under and what it is shown as. */

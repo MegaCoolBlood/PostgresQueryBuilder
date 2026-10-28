@@ -18,6 +18,11 @@
                 <span class="row-count" id="rowCount"></span>
                 <span class="loading-indicator" id="dataLoading"><span class="spinner"></span> Loading data...</span>
                 <span class="loading-indicator hidden" id="metaLoading"><span class="spinner"></span> Loading relations...</span>
+                <span class="export-progress hidden" id="exportProgress" role="status" aria-live="polite">
+                    <progress id="exportProgressBar" max="100"></progress>
+                    <span class="export-progress-text" id="exportProgressText"></span>
+                    <button class="btn btn-ghost btn-icon" id="exportProgressCancel" title="Cancel the export"><svg class="ico" aria-hidden="true"><use href="#icon-close"/></svg></button>
+                </span>
             </div>
             <div class="toolbar-right">
                 <div class="toolbar-group">

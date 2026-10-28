@@ -2398,6 +2398,15 @@ function expectsRelationMetadata(msg, sourceTable) {
     return Boolean(sourceTable);
 }
 
+// The export progress in the toolbar: the bar's value (null while the share
+// cannot be told, which leaves the bar running without one) and its text.
+function exportProgressView(msg) {
+    const raw = msg && typeof msg.percent === 'number' && isFinite(msg.percent) ? msg.percent : null;
+    const value = raw === null ? null : Math.max(0, Math.min(100, Math.floor(raw)));
+    const message = String((msg && msg.message) || 'Exporting…');
+    return { value, text: value === null ? message : `${message} · ${value}%` };
+}
+
 // Decide whether a data-load message replaces the current rows wholesale (a
 // fresh first page or a re-run query) rather than appending a "Load More" page.
 // Fresh loads must discard pending edits, since those edits are keyed by a
@@ -5201,6 +5210,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'exportSuccess':
                 changeCount.textContent = `Exported to ${msg.filePath}`;
                 setTimeout(() => { updateChangeIndicator(); }, 3000);
+                break;
+            case 'exportProgress':
+                showExportProgress(msg);
+                break;
+            case 'exportFinished':
+                hideExportProgress();
                 break;
             case 'exportLocationSelected':
                 if (msg.path) {
@@ -8221,6 +8236,41 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         vscode.postMessage({ command: 'browseExportLocation' });
     });
 
+    // Progress of an export the host is running, with a Cancel of its own; the
+    // notification of VS Code shows the same and can cancel it too.
+    const exportProgressEl = document.getElementById('exportProgress');
+    const exportProgressBar = document.getElementById('exportProgressBar');
+    const exportProgressText = document.getElementById('exportProgressText');
+    const exportProgressCancel = document.getElementById('exportProgressCancel');
+    exportProgressCancel.addEventListener('click', () => {
+        exportProgressCancel.disabled = true;
+        exportProgressText.textContent = 'Cancelling the export…';
+        vscode.postMessage({ command: 'cancelExport' });
+    });
+
+    function showExportProgress(msg) {
+        const view = exportProgressView(msg);
+        if (exportProgressEl.classList.contains('hidden')) {
+            exportProgressCancel.disabled = false;
+            exportProgressEl.classList.remove('hidden');
+        }
+        exportProgressEl.title = msg.fileName ? `Exporting to ${msg.fileName}` : 'Exporting';
+        if (view.value === null) {
+            exportProgressBar.removeAttribute('value');
+        } else {
+            exportProgressBar.value = view.value;
+        }
+        if (!exportProgressCancel.disabled) {
+            exportProgressText.textContent = view.text;
+        }
+    }
+
+    function hideExportProgress() {
+        exportProgressEl.classList.add('hidden');
+        exportProgressText.textContent = '';
+        exportProgressBar.removeAttribute('value');
+    }
+
     function openExportDialog() {
         vscode.postMessage({ command: 'getExportDefaults' });
         exportFilename.value = table || 'export';
@@ -9531,6 +9581,7 @@ if (typeof module !== 'undefined' && module.exports) {
         reorderSelectColumns,
         isFreshRowLoad,
         expectsRelationMetadata,
+        exportProgressView,
         recordFieldReadonlyAttr,
         isBackdropDismissClick,
         AUTO_REFRESH_PRESETS,

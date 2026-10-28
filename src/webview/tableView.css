@@ -56,6 +56,30 @@ body {
     display: none;
 }
 
+/* Progress of a running export, with its Cancel button */
+.export-progress {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    font-size: var(--fs-sm);
+    color: var(--c-muted);
+}
+
+.export-progress.hidden {
+    display: none;
+}
+
+.export-progress progress {
+    width: 120px;
+    height: 6px;
+    accent-color: var(--c-accent);
+}
+
+.export-progress-text {
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
 .spinner {
     display: inline-block;
     width: 12px;

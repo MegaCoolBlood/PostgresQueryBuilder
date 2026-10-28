@@ -23,6 +23,7 @@ const {
     buildConstraintOrderBy,
     isFreshRowLoad,
     expectsRelationMetadata,
+    exportProgressView,
     recordFieldReadonlyAttr,
     isBackdropDismissClick,
     AUTO_REFRESH_PRESETS,
@@ -524,6 +525,31 @@ test('the relations indicator is hidden until a load that brings relations shows
     assert.equal(shows.length, 1, 'only handleRowsLoaded may show the indicator');
     const handler = js.slice(js.indexOf('    function handleRowsLoaded(msg) {'), js.indexOf('    let fkLoaded = false;'));
     assert.match(handler, /if \(expectsRelationMetadata\(msg, caps\.table\)\) \{\s*fkLoaded = false;\s*refsLoaded = false;\s*metaLoading\.classList\.remove\('hidden'\);/);
+});
+
+// ===== 3.5.0: progress bar of an export =====
+
+test('exportProgressView: the bar shows whole percents, or runs without a value while unknown', () => {
+    assert.deepEqual(exportProgressView({ percent: 37.8, message: 'Fetching rows: 12,000 of 30,000' }), { value: 37, text: 'Fetching rows: 12,000 of 30,000 · 37%' });
+    assert.deepEqual(exportProgressView({ percent: null, message: 'Counting rows…' }), { value: null, text: 'Counting rows…' });
+    assert.deepEqual(exportProgressView({ percent: 140, message: 'x' }), { value: 100, text: 'x · 100%' });
+    assert.deepEqual(exportProgressView({}), { value: null, text: 'Exporting…' });
+    assert.deepEqual(exportProgressView(undefined), { value: null, text: 'Exporting…' });
+});
+
+test('the toolbar has a hidden export progress with a Cancel the host understands', () => {
+    const html = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.html'), 'utf8');
+    assert.match(html, /<span class="export-progress hidden" id="exportProgress" role="status" aria-live="polite">\s*<progress id="exportProgressBar" max="100"><\/progress>/);
+    assert.match(html, /<button class="btn btn-ghost btn-icon" id="exportProgressCancel" title="Cancel the export"><svg class="ico" aria-hidden="true"><use href="#icon-close"\/><\/svg><\/button>/);
+    const js = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    assert.match(js, /case 'exportProgress':\s*showExportProgress\(msg\);/);
+    assert.match(js, /case 'exportFinished':\s*hideExportProgress\(\);/);
+    assert.ok(js.includes("vscode.postMessage({ command: 'cancelExport' })"));
+    const host = fs.readFileSync(path.join(__dirname, '../../../src/tableWebView.ts'), 'utf8');
+    assert.ok(host.includes('cancelExport: this.handleCancelExport'));
+    assert.ok(host.includes("command: 'exportProgress'") && host.includes("command: 'exportFinished'"));
+    const css = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.css'), 'utf8');
+    assert.match(css, /\.export-progress progress \{[^}]*accent-color: var\(--c-accent\);/);
 });
 
 // ===== 2.1.5: Single Record View respects read-only views =====

@@ -256,6 +256,11 @@ optional sheet holding the executed SQL, as JSON, as XML or as `INSERT`
 statements with a batch size of your choice. Your choices per format can be
 kept as the default.
 
+While it runs, a bar in the toolbar and a notification show how far it has
+come: the rows are counted first, then fetched in batches and written, so the
+percentage is real. Both have a **Cancel**, which also stops the query on the
+server; a cancelled export writes no file.
+
 ---
 
 ## Bookmarked queries
@@ -369,7 +374,9 @@ fields wherever it comes from.
   of the dialogs stops it at that query. A selection that holds an
   instruction — or whose first query has one on the lines right above it —
   runs statement by statement like *Execute File*. Every export is listed with
-  its row count and file in the *PostgreSQL Messages* output.
+  its row count and file in the *PostgreSQL Messages* output, and while one
+  runs, the notification of the run shows how many of its rows are fetched and
+  written.
 - **Writing an instruction without typing it.** **Add Export Instruction** —
   in the context menu of a SQL file, as the light bulb on the first line of a
   query, or with `Ctrl+.` anywhere in it — opens the export dialog of the

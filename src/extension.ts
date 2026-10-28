@@ -395,7 +395,7 @@ export function activate(context: vscode.ExtensionContext) {
             {
                 savedDefaults: (format) => exportService.getDefaults()[format],
                 chooseSettings: (request) => tableWebViewManager.openExportDialog(request),
-                write: (rows, columns, options) => exportService.exportData(rows, columns, options)
+                write: (rows, columns, options, progress) => exportService.exportData(rows, columns, options, progress)
             }
         );
         context.subscriptions.push(sqlFileSessions);

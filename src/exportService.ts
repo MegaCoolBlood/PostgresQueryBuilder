@@ -2,6 +2,32 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { escapeSqlLiteral, isJsonColumnType, pgColumnValueToText } from './sqlUtils';
+import type { ExportProgressSink } from './exportProgress';
+
+/** Rows written between two progress reports, and a breath for the extension host. */
+const WRITE_CHUNK = 1000;
+
+const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+/**
+ * Call `each` for every row, reporting the progress and letting the extension
+ * host breathe every {@link WRITE_CHUNK} rows; a cancelled export stops there.
+ */
+async function forEachRow<T>(rows: T[], progress: ExportProgressSink | undefined, each: (row: T) => void): Promise<void> {
+    const total = rows.length;
+    progress?.report({ phase: 'writing', done: 0, total });
+    for (let i = 0; i < total; i++) {
+        each(rows[i]);
+        if ((i + 1) % WRITE_CHUNK === 0 && i + 1 < total) {
+            progress?.report({ phase: 'writing', done: i + 1, total });
+            await yieldToEventLoop();
+            progress?.throwIfCancelled();
+        }
+    }
+    progress?.report({ phase: 'writing', done: total, total });
+    progress?.throwIfCancelled();
+    progress?.report({ phase: 'saving' });
+}
 
 export interface ExportOptions {
     format: 'insert' | 'csv' | 'json' | 'xml' | 'excel';
@@ -154,29 +180,35 @@ export class ExportService {
         this.context.globalState.update('exportSaveLocation', location);
     }
 
-    async exportData(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
+    /**
+     * Write `rows` to `options.filePath` in the chosen format. With `progress`,
+     * the rows written are reported and the export can be cancelled until the
+     * file is saved; a cancelled export throws ExportCancelledError and leaves
+     * no file behind.
+     */
+    async exportData(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions, progress?: ExportProgressSink): Promise<void> {
         // A target named in a SQL file may point into a folder that does not exist yet.
         await fs.promises.mkdir(path.dirname(options.filePath), { recursive: true });
         switch (options.format) {
             case 'csv':
-                await this.exportCsv(rows, columns, options);
+                await this.exportCsv(rows, columns, options, progress);
                 break;
             case 'json':
-                await this.exportJson(rows, columns, options);
+                await this.exportJson(rows, columns, options, progress);
                 break;
             case 'xml':
-                await this.exportXml(rows, columns, options);
+                await this.exportXml(rows, columns, options, progress);
                 break;
             case 'insert':
-                await this.exportInsert(rows, columns, options);
+                await this.exportInsert(rows, columns, options, progress);
                 break;
             case 'excel':
-                await this.exportExcel(rows, columns, options);
+                await this.exportExcel(rows, columns, options, progress);
                 break;
         }
     }
 
-    private async exportCsv(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
+    private async exportCsv(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions, progress?: ExportProgressSink): Promise<void> {
         const separator = options.csvSeparator || ',';
         const quoteStrings = options.csvQuoteStrings !== false;
         const includeHeaders = options.csvIncludeHeaders !== false;
@@ -188,14 +220,14 @@ export class ExportService {
             lines.push(columns.map(c => this.csvEscape(c.name, separator, quoteStrings)).join(separator));
         }
 
-        for (const row of rows) {
+        await forEachRow(rows, progress, (row) => {
             const values = columns.map(col => {
                 const text = pgColumnValueToText(row[col.name], col.dataType);
                 if (text === null) return '';
                 return this.csvEscape(text, separator, quoteStrings);
             });
             lines.push(values.join(separator));
-        }
+        });
 
         fs.writeFileSync(options.filePath, lines.join(lineEnding), 'utf8');
     }
@@ -207,27 +239,28 @@ export class ExportService {
         return value;
     }
 
-    private async exportJson(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
+    private async exportJson(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions, progress?: ExportProgressSink): Promise<void> {
         const pretty = options.jsonPretty !== false;
 
-        const data = rows.map(row => {
+        const data: Record<string, unknown>[] = [];
+        await forEachRow(rows, progress, (row) => {
             const obj: Record<string, unknown> = {};
             columns.forEach(col => { obj[col.name] = jsonExportValue(row[col.name]); });
-            return obj;
+            data.push(obj);
         });
 
         const content = pretty ? JSON.stringify(data, null, 2) : JSON.stringify(data);
         fs.writeFileSync(options.filePath, content, 'utf8');
     }
 
-    private async exportXml(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
+    private async exportXml(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions, progress?: ExportProgressSink): Promise<void> {
         const rootElement = options.xmlRootElement || 'data';
         const rowElement = options.xmlRowElement || 'row';
 
         let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
         xml += `<${rootElement}>\n`;
 
-        for (const row of rows) {
+        await forEachRow(rows, progress, (row) => {
             xml += `  <${rowElement}>\n`;
             for (const col of columns) {
                 const escaped = this.xmlEscape(pgColumnValueToText(row[col.name], col.dataType) ?? '');
@@ -235,7 +268,7 @@ export class ExportService {
                 xml += `    <${tagName}>${escaped}</${tagName}>\n`;
             }
             xml += `  </${rowElement}>\n`;
-        }
+        });
 
         xml += `</${rootElement}>\n`;
         fs.writeFileSync(options.filePath, xml, 'utf8');
@@ -259,7 +292,7 @@ export class ExportService {
         return tag;
     }
 
-    private async exportInsert(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
+    private async exportInsert(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions, progress?: ExportProgressSink): Promise<void> {
         const tableName = options.insertTableName || 'table_name';
         const batchSize = options.insertBatchSize || 1;
 
@@ -269,21 +302,21 @@ export class ExportService {
             options.insertConflictColumns || [],
             columns.map(c => c.name)
         );
-        const lines: string[] = [];
+        const tuples: string[] = [];
+        await forEachRow(rows, progress, (row) => {
+            const values = columns.map(col => this.formatSqlValue(row[col.name], col.dataType));
+            tuples.push(`(${values.join(', ')})`);
+        });
 
+        const lines: string[] = [];
         if (batchSize > 1) {
-            for (let i = 0; i < rows.length; i += batchSize) {
-                const batch = rows.slice(i, i + batchSize);
-                const valuesList = batch.map(row => {
-                    const values = columns.map(col => this.formatSqlValue(row[col.name], col.dataType));
-                    return `(${values.join(', ')})`;
-                });
+            for (let i = 0; i < tuples.length; i += batchSize) {
+                const valuesList = tuples.slice(i, i + batchSize);
                 lines.push(`INSERT INTO ${tableName} (${colNames}) VALUES\n${valuesList.join(',\n')}${onConflict};\n`);
             }
         } else {
-            for (const row of rows) {
-                const values = columns.map(col => this.formatSqlValue(row[col.name], col.dataType));
-                lines.push(`INSERT INTO ${tableName} (${colNames}) VALUES (${values.join(', ')})${onConflict};`);
+            for (const tuple of tuples) {
+                lines.push(`INSERT INTO ${tableName} (${colNames}) VALUES ${tuple}${onConflict};`);
             }
         }
 
@@ -327,7 +360,7 @@ export class ExportService {
         return formatSqlLiteralValue(value, dataType);
     }
 
-    private async exportExcel(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions): Promise<void> {
+    private async exportExcel(rows: ExportRow[], columns: { name: string; dataType: string }[], options: ExportOptions, progress?: ExportProgressSink): Promise<void> {
         const ExcelJS = require('exceljs');
         const workbook = new ExcelJS.Workbook();
         const sheetName = options.excelSheetName || 'Data';
@@ -339,7 +372,7 @@ export class ExportService {
             headerRow.font = { bold: true };
         }
 
-        for (const row of rows) {
+        await forEachRow(rows, progress, (row) => {
             const values = columns.map(col => excelCellValue(row[col.name], col.dataType));
             const added = worksheet.addRow(values);
             values.forEach((v, i) => {
@@ -348,7 +381,7 @@ export class ExportService {
                     added.getCell(i + 1).numFmt = numFmt;
                 }
             });
-        }
+        });
 
         worksheet.columns.forEach((column: any) => {
             let maxLength = 10;

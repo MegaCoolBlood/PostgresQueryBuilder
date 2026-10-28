@@ -23,6 +23,7 @@ import type { DbSession, DbSessionManager, DbSessionRef } from './dbSession';
 import { resetSessionWithConfirmation, type QueryViewLoad, type ViewerPlacement } from './sqlFileSession';
 import { executableColumnType, executableTypePickItems, type ExecutableValueRunner } from './executableColumns';
 import { exportDialogChoiceFrom, type ExportDialogChoice, type ExportDialogRequest } from './exportInstructions';
+import { ExportCancelledError, ExportTracker, notificationProgress } from './exportProgress';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -64,6 +65,8 @@ interface PanelSession {
     onExportChoice?: (choice: ExportDialogChoice | undefined) => void;
     /** Set for an Export tab: why a choice cannot be taken; the dialog then stays open. */
     validateExportChoice?: (choice: ExportDialogChoice) => string | undefined;
+    /** The export this panel is running, so its Cancel button can stop it. */
+    runningExport?: ExportTracker;
     disposed: boolean;
 }
 
@@ -423,6 +426,8 @@ export class TableWebViewManager {
 
         panel.onDidDispose(() => {
             session.disposed = true;
+            // Nobody is left to see the file of an export the panel started.
+            session.runningExport?.cancel();
             settleFirstLoad(session, { status: 'closed' });
             this.sessions.delete(id);
             if (dbSessions && session.dbSessionRef) {
@@ -697,6 +702,7 @@ export class TableWebViewManager {
         getExportDefaults: this.handleGetExportDefaults,
         saveExportDefaults: this.handleSaveExportDefaults,
         exportData: this.handleExportData,
+        cancelExport: this.handleCancelExport,
         selectConnection: this.handleSelectConnection,
         validateValue: this.handleValidateValue,
         openCellInEditor: this.handleOpenCellInEditor,
@@ -1715,33 +1721,71 @@ export class TableWebViewManager {
         });
 
         if (!uri) return;
+        if (session.runningExport) {
+            vscode.window.showWarningMessage('An export of this Data Viewer is still running; wait for it or cancel it first.');
+            return;
+        }
+        if (!await this.connectionManager.ensureConnected()) return;
 
+        const fileName = path.basename(uri.fsPath);
         try {
-            // Fetch ALL rows from database (not limited by page size)
-            let exportRows: any[];
-            if (message.sql) {
-                if (!await this.connectionManager.ensureConnected()) return;
-                const result = await queryRunner.executeSQL(message.sql);
-                exportRows = result.rows;
-            } else {
-                if (!await this.connectionManager.ensureConnected()) return;
-                // Fallback: fetch all from table
-                const totalCount = await queryRunner.getRowCount(schema, table);
-                exportRows = await queryRunner.fetchRows(schema, table, 0, totalCount);
-            }
-
-            await this.exportService.exportData(
-                exportRows,
-                message.columns,
-                { ...opts, filePath: uri.fsPath }
+            const exported = await vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Notification, title: `Exporting to ${fileName}`, cancellable: true },
+                async (progress, token) => {
+                    const toNotification = notificationProgress(progress);
+                    const tracker = new ExportTracker({
+                        cancelBackend: (pid) => this.cancelBackend(pid),
+                        onChange: (state) => {
+                            toNotification(state);
+                            this.post(session, { command: 'exportProgress', ...state, fileName });
+                        }
+                    });
+                    session.runningExport = tracker;
+                    token.onCancellationRequested(() => tracker.cancel());
+                    let exportRows: any[];
+                    if (message.sql) {
+                        // Only one statement passed the refusal above; without its semicolon.
+                        const statement = splitSqlStatements(message.sql)[0] ?? message.sql;
+                        exportRows = (await queryRunner.fetchForExport(statement, tracker)).rows;
+                    } else {
+                        // Fallback: fetch all from table
+                        tracker.report({ phase: 'fetching', done: 0, total: null });
+                        const totalCount = await queryRunner.getRowCount(schema, table);
+                        exportRows = await queryRunner.fetchRows(schema, table, 0, totalCount);
+                        tracker.throwIfCancelled();
+                    }
+                    await this.exportService.exportData(exportRows, message.columns, { ...opts, filePath: uri.fsPath }, tracker);
+                    return exportRows.length;
+                }
             );
             this.post(session, {
                 command: 'exportSuccess',
                 filePath: uri.fsPath
             });
-            vscode.window.showInformationMessage(`Exported ${exportRows.length} rows to ${path.basename(uri.fsPath)}`);
+            vscode.window.showInformationMessage(`Exported ${exported} rows to ${fileName}`);
         } catch (exportErr: unknown) {
-            vscode.window.showErrorMessage(`Export failed: ${getErrorMessage(exportErr)}`);
+            if (exportErr instanceof ExportCancelledError) {
+                vscode.window.showInformationMessage(`Export to ${fileName} cancelled; no file was written.`);
+            } else {
+                vscode.window.showErrorMessage(`Export failed: ${getErrorMessage(exportErr)}`);
+            }
+        } finally {
+            session.runningExport = undefined;
+            this.post(session, { command: 'exportFinished' });
+        }
+    }
+
+    /** Cancel button of the export progress bar in the toolbar. */
+    private handleCancelExport(ctx: MessageContext): void {
+        ctx.session.runningExport?.cancel();
+    }
+
+    /** Ask the server to cancel the statement a backend process is running. */
+    private async cancelBackend(pid: number): Promise<void> {
+        try {
+            await this.connectionManager.query('SELECT pg_cancel_backend($1)', [pid]);
+        } catch (err) {
+            Logger.error('TableWebViewManager.cancelBackend', err);
         }
     }
 

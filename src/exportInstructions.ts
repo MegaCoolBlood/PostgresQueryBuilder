@@ -1,6 +1,7 @@
 import * as path from 'path';
 import type { DbSessionRef } from './dbSession';
 import type { ExportOptions, ExportRow } from './exportService';
+import type { ExportProgressSink } from './exportProgress';
 
 /** The export formats, as ExportService names them. */
 export type ExportFormat = ExportOptions['format'];
@@ -515,5 +516,5 @@ export interface QueryExporter {
     savedDefaults(format: ExportFormat): Partial<ExportSettings> | undefined;
     /** Open the Export tab; undefined when it was cancelled or closed. */
     chooseSettings(request: ExportDialogRequest): Promise<ExportDialogChoice | undefined>;
-    write(rows: ExportRow[], columns: Array<{ name: string; dataType: string }>, options: ExportOptions): Promise<void>;
+    write(rows: ExportRow[], columns: Array<{ name: string; dataType: string }>, options: ExportOptions, progress?: ExportProgressSink): Promise<void>;
 }

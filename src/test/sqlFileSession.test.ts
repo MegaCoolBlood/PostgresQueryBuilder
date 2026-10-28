@@ -903,9 +903,27 @@ const ORDERS_RESULT = {
     rows: [[1, 'Alice'], [2, 'Bob']],
     fields: [{ name: 'id', dataTypeID: 23 }, { name: 'name', dataTypeID: 25 }]
 };
+/** What an export of ORDERS runs: counted, then fetched through a cursor in its own transaction. */
+const ORDERS_EXPORT = [
+    'BEGIN',
+    'SET LOCAL cursor_tuple_fraction = 1',
+    'SAVEPOINT pqb_export_count',
+    `SELECT count(*) FROM (\n${ORDERS}\n) AS _pqb_export_count`,
+    'RELEASE SAVEPOINT pqb_export_count',
+    `DECLARE pqb_export NO SCROLL CURSOR FOR\n${ORDERS}\n`,
+    'FETCH FORWARD 500 FROM pqb_export',
+    'CLOSE pqb_export',
+    'COMMIT'
+];
+/** Answers the count and the FETCH of an export of `query` with `result`. */
+const exportAnswers = (query: string, result: typeof ORDERS_RESULT) => (_c: FakeClient, sql: string) => {
+    if (sql === `SELECT count(*) FROM (\n${query}\n) AS _pqb_export_count`) return { rows: [[String(result.rows.length)]], fields: [] };
+    if (sql.startsWith('FETCH FORWARD ')) return result;
+    return undefined;
+};
 const exportingSessions = (exporter: any, onQuery?: (c: FakeClient, sql: string) => unknown) => createFileSessions({
     exporter,
-    onQuery: onQuery ?? ((_c, sql) => sql === ORDERS ? ORDERS_RESULT : undefined),
+    onQuery: onQuery ?? exportAnswers(ORDERS, ORDERS_RESULT),
     poolQuery: async (sql) => sql.includes('pg_type') ? { rows: [{ oid: 23, typname: 'int4' }, { oid: 25, typname: 'text' }] } : { rows: [] }
 });
 
@@ -927,9 +945,9 @@ test('Execute File writes a query under an @export instruction to its file inste
 
     await fileSessions.executeFile(editor as any);
 
-    assert.deepEqual(events, [`run:${DO_BLOCK}`, `run:${ORDERS}`, 'view:SELECT * FROM customers']);
+    assert.deepEqual(events, [`run:${DO_BLOCK}`, ...ORDERS_EXPORT.map((sql) => `run:${sql}`), 'view:SELECT * FROM customers']);
     assert.deepEqual(opened.map((o) => o.sql), ['SELECT * FROM customers'], 'only the query without instruction is shown');
-    assert.deepEqual(clients[0].configs[1], { text: ORDERS, rowMode: 'array' });
+    assert.deepEqual(clients[0].configs.find((c) => typeof c !== 'string' && c.text.startsWith('FETCH')), { text: 'FETCH FORWARD 500 FROM pqb_export', rowMode: 'array' });
     const target = path.join(dir, 'exports', 'payroll.csv');
     assert.deepEqual(exporter.written, [{
         rows: [{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }],
@@ -980,9 +998,10 @@ test('without file= a save dialog asks where the export goes, and its Cancel can
     assert.deepEqual(exporter.written[0].options, { format: 'json', jsonPretty: false, jsonArrayWrapper: true, filePath: path.join(dir, 'chosen.json') });
 
     answers.push(undefined);
+    const ranBefore = clients[0].queries.length;
     await fileSessions.executeFile(editor as any);
     assert.equal(exporter.written.length, 1);
-    assert.equal(clients[0].queries.length, 1, 'the query does not run for a cancelled export');
+    assert.equal(clients[0].queries.length, ranBefore, 'the query does not run for a cancelled export');
     assert.equal(infos[1][0], 'Execute File was cancelled after 0 of 1 statements; the rest did not run.');
 });
 
@@ -1051,8 +1070,8 @@ test('a wrong instruction stops Execute File before anything runs and shows its 
 test('an export whose query fails stops the run at that statement', async (t) => {
     const errors = recordWindowCalls(t, 'showErrorMessage');
     const exporter = fakeExporter();
-    const { fileSessions, opened } = exportingSessions(exporter, (_c, sql) => {
-        if (sql === ORDERS) throw new Error('relation "orders" does not exist');
+    const { fileSessions, opened, clients } = exportingSessions(exporter, (_c, sql) => {
+        if (sql.includes(ORDERS)) throw new Error('relation "orders" does not exist');
         return undefined;
     });
     t.after(() => fileSessions.dispose());
@@ -1063,6 +1082,7 @@ test('an export whose query fails stops the run at that statement', async (t) =>
     assert.equal(exporter.written.length, 0);
     assert.equal(opened.length, 0);
     assert.equal(errors[0][0], `Execute File stopped at statement 2 of 3 (line ${EXPORT_LINE + 2}); the statement before it ran: relation "orders" does not exist`);
+    assert.equal(clients[0].queries.at(-1), 'ROLLBACK', 'the transaction of the export is rolled back');
 });
 
 test('Execute Selection exports a selected query whose instruction stands above the selection', async (t) => {
@@ -1091,8 +1111,68 @@ test('Execute Selection over several statements with an instruction runs them on
 
     await fileSessions.execute(editor as any);
 
-    assert.deepEqual(clients[0].queries, [DO_BLOCK, ORDERS], 'not as one batch');
+    assert.deepEqual(clients[0].queries, [DO_BLOCK, ...ORDERS_EXPORT], 'not as one batch');
     assert.equal(exporter.written.length, 1);
+});
+
+test('the notification of Execute File tells how far an export has come', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const reports: string[] = [];
+    recordWindowCalls(t, 'withProgress', (_options: any, task: any) => task(
+        { report: (value: any) => { if (value.message) reports.push(value.message); } },
+        { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) }
+    ));
+    const exporter = fakeExporter();
+    // The writing reports through the tracker it is handed, as the export service does.
+    exporter.write = async function (rows: any[], columns: any[], opts: any, progress?: any) {
+        this.written.push({ rows, columns, options: opts });
+        progress.report({ phase: 'writing', done: rows.length, total: rows.length });
+        progress.report({ phase: 'saving' });
+    };
+    const { fileSessions } = exportingSessions(exporter);
+    t.after(() => fileSessions.dispose());
+    const { editor } = savedFile(t, createEditor(EXPORT_SCRIPT, 0));
+
+    await fileSessions.executeFile(editor as any);
+
+    assert.deepEqual(reports.filter((r) => r.startsWith('statement 2 of 3')), [
+        'statement 2 of 3',
+        'statement 2 of 3 · Counting rows…',
+        'statement 2 of 3 · Fetching rows: 0 of 2 (0%)',
+        'statement 2 of 3 · Fetching rows: 2 of 2 (60%)',
+        'statement 2 of 3 · Writing rows: 2 of 2 (95%)',
+        'statement 2 of 3 · Saving the file… (95%)'
+    ]);
+});
+
+test('Cancel while an export fetches its rows stops it, rolls its transaction back and writes nothing', async (t) => {
+    const infos = recordWindowCalls(t, 'showInformationMessage');
+    const control = controllableCancel(t);
+    const exporter = fakeExporter();
+    const answer = exportAnswers(ORDERS, ORDERS_RESULT);
+    let release: () => void = () => undefined;
+    const { fileSessions, clients, poolQueries } = exportingSessions(exporter, async (c, sql) => {
+        if (sql.startsWith('FETCH')) {
+            // The server is still sending rows when Cancel is pressed.
+            await new Promise<void>((resolve) => { release = resolve; });
+            throw Object.assign(new Error('canceling statement due to user request'), { code: '57014' });
+        }
+        return answer(c, sql);
+    });
+    t.after(() => fileSessions.dispose());
+    const { editor } = savedFile(t, createEditor(`-- @export csv file=o.csv\n${ORDERS};`, 0));
+
+    const run = fileSessions.executeFile(editor as any);
+    while (!clients[0]?.queries.some((q) => q.startsWith('FETCH'))) await tick();
+    control.cancel();
+    await tick();
+    release();
+    await run;
+
+    assert.ok(poolQueries.some((q) => q.sql === 'SELECT pg_cancel_backend($1)' && (q.params as number[])[0] === 4711), 'the running FETCH is cancelled on the server');
+    assert.equal(clients[0].queries.at(-1), 'ROLLBACK');
+    assert.equal(exporter.written.length, 0);
+    assert.equal(infos[0][0], 'Execute File was cancelled after 0 of 1 statements; the rest did not run.');
 });
 
 test('a selection without an instruction still runs as one batch', async (t) => {

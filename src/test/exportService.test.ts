@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { ExportService, ExportOptions, excelCellValue, excelNumberFormat, EXCEL_DATE_FORMAT, EXCEL_TIMESTAMP_FORMAT } from '../exportService';
+import { ExportCancelledError } from '../exportProgress';
 
 function createMockContext() {
     const store: Record<string, any> = {};
@@ -1127,6 +1128,72 @@ test('Excel export writes a timestamptz column as date cells with a timestamp fo
         const cell = workbook.getWorksheet('Data').getRow(1).getCell(1);
         assert.ok(cell.value instanceof Date, 'expected a date cell, not text');
         assert.equal(cell.numFmt, EXCEL_TIMESTAMP_FORMAT);
+    } finally {
+        fs.unlinkSync(filePath);
+    }
+});
+
+// ===== 3.5.0: progress and Cancel while writing =====
+
+const manyRows = (n: number) => Array.from({ length: n }, (_, i) => ({ id: i + 1, name: `row ${i + 1}`, amount: i }));
+
+function recordingProgress(cancelAfter?: number) {
+    const updates: Array<{ phase: string; done?: number; total?: number | null }> = [];
+    let cancelled = false;
+    return {
+        updates,
+        report(update: { phase: string; done?: number; total?: number | null }) {
+            updates.push(update);
+            if (cancelAfter !== undefined && update.phase === 'writing' && (update.done ?? 0) >= cancelAfter) cancelled = true;
+        },
+        throwIfCancelled() {
+            if (cancelled) throw new ExportCancelledError();
+        }
+    };
+}
+
+for (const format of ['csv', 'json', 'xml', 'insert', 'excel'] as const) {
+    test(`a ${format} export reports the rows it has written every thousand rows`, async () => {
+        const service = new ExportService(createMockContext());
+        const filePath = getTempFile(format === 'excel' ? '.xlsx' : '.out');
+        const progress = recordingProgress();
+        try {
+            await service.exportData(manyRows(2500), sampleColumns, { format, filePath, insertTableName: 't' }, progress as any);
+            assert.ok(fs.existsSync(filePath));
+        } finally {
+            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        }
+        assert.deepEqual(progress.updates, [
+            { phase: 'writing', done: 0, total: 2500 },
+            { phase: 'writing', done: 1000, total: 2500 },
+            { phase: 'writing', done: 2000, total: 2500 },
+            { phase: 'writing', done: 2500, total: 2500 },
+            { phase: 'saving' }
+        ]);
+    });
+}
+
+test('a cancelled export stops writing and leaves no file behind', async () => {
+    const service = new ExportService(createMockContext());
+    const filePath = getTempFile('.csv');
+    const progress = recordingProgress(1000);
+    await assert.rejects(
+        service.exportData(manyRows(5000), sampleColumns, { format: 'csv', filePath }, progress as any),
+        ExportCancelledError
+    );
+    assert.equal(fs.existsSync(filePath), false);
+    assert.deepEqual(progress.updates.at(-1), { phase: 'writing', done: 1000, total: 5000 }, 'stopped at the first breath');
+});
+
+test('INSERT batches stay the same when written in chunks', async () => {
+    const service = new ExportService(createMockContext());
+    const filePath = getTempFile('.sql');
+    try {
+        await service.exportData(manyRows(2001), sampleColumns, { format: 'insert', filePath, insertTableName: 't', insertBatchSize: 1000 }, recordingProgress() as any);
+        const content = fs.readFileSync(filePath, 'utf8');
+        assert.equal((content.match(/INSERT INTO t/g) || []).length, 3);
+        assert.ok(content.includes("(1000, 'row 1000', 999);\n"), 'a batch ends with its 1000th row');
+        assert.ok(content.endsWith("VALUES\n(2001, 'row 2001', 2000);\n"));
     } finally {
         fs.unlinkSync(filePath);
     }

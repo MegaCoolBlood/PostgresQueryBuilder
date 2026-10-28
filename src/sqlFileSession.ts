@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { QueryArrayResult, QueryResult } from 'pg';
+import type { FieldDef, QueryResult } from 'pg';
 import type { ConnectionManager } from './connectionManager';
-import type { DbSession, DbSessionManager, DbSessionRef, SessionNotice } from './dbSession';
+import type { DbSession, DbSessionManager, DbSessionRef, SessionClient, SessionNotice } from './dbSession';
+import { ExportCancelledError, ExportTracker, fetchRowsInBatches } from './exportProgress';
 import { isModifyingSql, type ModifyHistoryStore } from './modifyHistoryStore';
 import { getErrorMessage, Logger } from './logger';
 import { uniqueFieldNames } from './queryRunner';
@@ -384,6 +385,17 @@ export type OpenQueryView = (
 /** Thrown inside the session when Cancel was pressed before the statement got its turn. */
 class CancelledBeforeStart extends Error {}
 
+/** Run `work` on `client`, collecting what the server says meanwhile into `notices`. */
+async function withNotices<T>(client: SessionClient, notices: SessionNotice[], work: () => Promise<T>): Promise<T> {
+    const collect = (notice: SessionNotice): void => { notices.push(notice); };
+    client.on('notice', collect);
+    try {
+        return await work();
+    } finally {
+        client.removeListener('notice', collect);
+    }
+}
+
 /**
  * Runs statements of one command on a session, so that Cancel only ever
  * reaches them: a statement that has not had its turn yet is skipped, the one
@@ -410,9 +422,7 @@ class CancellableRun {
         }
     }
 
-    run(session: DbSession, sql: string, notices: SessionNotice[]): Promise<QueryResult | QueryResult[]>;
-    run(session: DbSession, sql: { text: string; rowMode: 'array' }, notices: SessionNotice[]): Promise<QueryArrayResult>;
-    run(session: DbSession, sql: string | { text: string; rowMode: 'array' }, notices: SessionNotice[]): Promise<QueryResult | QueryResult[] | QueryArrayResult> {
+    run(session: DbSession, sql: string, notices: SessionNotice[]): Promise<QueryResult | QueryResult[]> {
         return session.run(async (client) => {
             if (this.cancelled) {
                 throw new CancelledBeforeStart();
@@ -421,9 +431,7 @@ class CancellableRun {
             client.on('notice', collect);
             this.runningPid = client.processID ?? null;
             try {
-                return typeof sql === 'string'
-                    ? await client.query(sql) as QueryResult | QueryResult[]
-                    : await client.query(sql);
+                return await client.query(sql) as QueryResult | QueryResult[];
             } finally {
                 this.runningPid = null;
                 client.removeListener('notice', collect);
@@ -675,7 +683,8 @@ export class SqlFileSessions implements vscode.Disposable {
 
                     if (statement.instruction) {
                         const line = document.positionAt(statement.start).line;
-                        const outcome = await this.exportQuery(statement.instruction, sql, line, document, ref, session, runner, notices);
+                        const outcome = await this.exportQuery(statement.instruction, sql, line, document, ref, session, runner, notices,
+                            (message) => progress.report({ message: `statement ${index + 1} of ${total} · ${message}` }));
                         if (outcome.status === 'cancelled') {
                             return { reason: 'cancelled', index };
                         }
@@ -763,7 +772,8 @@ export class SqlFileSessions implements vscode.Disposable {
      * the file its instruction names, instead of showing it. With `dialog` the
      * export dialog of the Data Viewer chooses format, file and options first;
      * without `file=` a save dialog asks for the target, and an existing file
-     * is only overwritten after asking. Every Cancel cancels the run.
+     * is only overwritten after asking. Every Cancel cancels the run. How far
+     * the export has come is told to `report`, as one line of text.
      */
     private async exportQuery(
         instruction: ExportInstruction,
@@ -773,7 +783,8 @@ export class SqlFileSessions implements vscode.Disposable {
         ref: DbSessionRef,
         session: DbSession,
         runner: CancellableRun,
-        notices: SessionNotice[]
+        notices: SessionNotice[],
+        report: (message: string) => void = () => undefined
     ): Promise<{ status: 'exported'; query: ExportedQuery } | { status: 'cancelled' } | { status: 'failed'; error: unknown }> {
         const exporter = this.exporter;
         if (!exporter) {
@@ -833,11 +844,21 @@ export class SqlFileSessions implements vscode.Disposable {
             return { status: 'cancelled' };
         }
 
-        let result: QueryArrayResult;
+        const tracker = new ExportTracker({
+            cancelBackend: (pid) => this.cancelBackend(pid),
+            onChange: (state) => report(state.percent === null ? state.message : `${state.message} (${Math.floor(state.percent)}%)`)
+        });
+        void runner.whenCancelled.then(() => tracker.cancel());
+        let result: { fields: FieldDef[]; rows: unknown[][] };
         try {
-            result = await runner.run(session, { text: sql, rowMode: 'array' }, notices);
+            if (runner.cancelled) {
+                return { status: 'cancelled' };
+            }
+            // Only a query (isResultQuery) gets this far, so it can have a cursor:
+            // counted and fetched in batches, so the progress can be shown.
+            result = await session.run((client) => withNotices(client, notices, () => fetchRowsInBatches(client, sql, tracker)));
         } catch (err: unknown) {
-            if (err instanceof CancelledBeforeStart || runner.cancelled) {
+            if (err instanceof ExportCancelledError || runner.cancelled) {
                 return { status: 'cancelled' };
             }
             return { status: 'failed', error: err };
@@ -851,8 +872,11 @@ export class SqlFileSessions implements vscode.Disposable {
             return row;
         });
         try {
-            await exporter.write(rows, columns, { ...settings, filePath: target });
+            await exporter.write(rows, columns, { ...settings, filePath: target }, tracker);
         } catch (err: unknown) {
+            if (err instanceof ExportCancelledError) {
+                return { status: 'cancelled' };
+            }
             return { status: 'failed', error: new Error(`Writing ${target} failed: ${getErrorMessage(err)}`) };
         }
         this.messages.appendLine(formatExportMessage(ref.label, line, rows.length, target));

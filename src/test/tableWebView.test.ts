@@ -2045,3 +2045,109 @@ test('an answer of an export dialog in an ordinary Data Viewer is ignored', asyn
     const { send } = await openCustomQueryPanel();
     await send({ command: 'exportDialogResult', options: { format: 'csv' } });
 });
+
+// ===== 3.5.0: a progress bar for exports =====
+
+/** A Data Viewer on a session that serves `rows` through the export cursor; FETCH waits for `gate` when given. */
+async function openExportingPanel(rows: number[], gate?: Promise<void>) {
+    const fields = [{ name: 'n', dataTypeID: 23 }];
+    const { dbSessions, clients } = createSessionManager(async (sql) => {
+        if (sql.startsWith('SELECT count(*) FROM (')) return { rows: [[String(rows.length)]], fields: [] };
+        if (sql.startsWith('FETCH FORWARD')) {
+            if (gate) await gate;
+            return { rows: rows.map((n) => [n]), fields };
+        }
+        return { rows: [], fields };
+    });
+    const cancels: unknown[][] = [];
+    const { manager } = createManager({
+        dbSessions,
+        connection: { query: async (sql: string, params?: unknown[]) => { if (sql.includes('pg_cancel_backend')) cancels.push(params ?? []); return { rows: [], fields: [] }; } }
+    });
+    const panel = await withPanel(() => manager.openQueryView('SELECT n FROM t', 'Numbers'));
+    return { panel, clients, cancels, send: (m: any) => panel.state.onMessage(m) };
+}
+
+/** Replace the window functions an export uses for one test. */
+function stubExportWindow(t: { after(fn: () => void): void }, target: string) {
+    const window = vscodeStub.window as any;
+    const originals = { ...window };
+    const calls = { progress: [] as any[], reports: [] as any[], infos: [] as string[], warnings: [] as string[], cancel: () => undefined as void };
+    window.showSaveDialog = async () => ({ fsPath: target });
+    window.showInformationMessage = async (m: string) => { calls.infos.push(m); };
+    window.showWarningMessage = async (m: string) => { calls.warnings.push(m); };
+    window.withProgress = (options: any, task: any) => {
+        calls.progress.push(options);
+        return task(
+            { report: (v: any) => calls.reports.push(v) },
+            { isCancellationRequested: false, onCancellationRequested: (listener: () => void) => { calls.cancel = listener; return { dispose() {} }; } }
+        );
+    };
+    t.after(() => Object.assign(window, originals));
+    return calls;
+}
+
+const exportMessage = (sql: string) => ({ command: 'exportData', sql, options: { format: 'csv', filename: 'numbers.csv', csvLineEnding: 'lf' }, columns: [{ name: 'n', dataType: 'int4' }] });
+
+test('an export of the Data Viewer shows its progress in a notification and in the toolbar', async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pqb-export-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const target = path.join(dir, 'numbers.csv');
+    const calls = stubExportWindow(t, target);
+    const { panel, clients, send } = await openExportingPanel([1, 2, 3]);
+    panel.posted.length = 0;
+
+    await send(exportMessage('SELECT n FROM t;'));
+
+    assert.equal(fs.readFileSync(target, 'utf8'), 'n\n1\n2\n3');
+    assert.deepEqual(calls.progress, [{ location: vscodeStub.ProgressLocation.Notification, title: 'Exporting to numbers.csv', cancellable: true }]);
+    assert.ok(userQueries(clients[0]).includes('DECLARE pqb_export NO SCROLL CURSOR FOR\nSELECT n FROM t\n'), 'fetched through a cursor on the session of the panel');
+    const toolbar = panel.posted.filter((m: any) => m.command === 'exportProgress');
+    assert.deepEqual(toolbar.map((m: any) => [m.percent, m.message]), [
+        [null, 'Counting rows…'],
+        [0, 'Fetching rows: 0 of 3'],
+        [60, 'Fetching rows: 3 of 3'],
+        [60, 'Writing rows: 0 of 3'],
+        [95, 'Writing rows: 3 of 3'],
+        [95, 'Saving the file…']
+    ]);
+    assert.ok(toolbar.every((m: any) => m.fileName === 'numbers.csv'));
+    assert.deepEqual(calls.reports.map((r: any) => r.increment ?? 0), [0, 0, 60, 0, 35, 0], 'the notification grows with the bar');
+    assert.deepEqual(panel.posted.slice(-2).map((m: any) => m.command), ['exportSuccess', 'exportFinished']);
+    assert.deepEqual(calls.infos, ['Exported 3 rows to numbers.csv']);
+});
+
+for (const how of ['the Cancel button of the toolbar', 'the Cancel of the notification', 'closing the panel'] as const) {
+    test(`an export is cancelled by ${how}, on the server too, and writes no file`, async (t) => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pqb-export-'));
+        t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+        const target = path.join(dir, 'numbers.csv');
+        const calls = stubExportWindow(t, target);
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        const { panel, clients, cancels, send } = await openExportingPanel([1, 2, 3], gate);
+
+        const exporting = send(exportMessage('SELECT n FROM t'));
+        while (!clients[0]?.queries.some((q: string) => q.startsWith('FETCH'))) await new Promise((resolve) => setImmediate(resolve));
+        if (how === 'closing the panel') {
+            panel.dispose();
+        } else {
+            await send(exportMessage('SELECT n FROM t'));
+            assert.deepEqual(calls.warnings, ['An export of this Data Viewer is still running; wait for it or cancel it first.']);
+            if (how === 'the Cancel button of the toolbar') await send({ command: 'cancelExport' });
+            else calls.cancel();
+        }
+        await new Promise((resolve) => setImmediate(resolve));
+        release();
+        await exporting;
+
+        assert.deepEqual(cancels, [[900]], 'the running FETCH is cancelled on the server');
+        assert.equal(clients[0].queries.at(-1), 'ROLLBACK');
+        assert.equal(fs.existsSync(target), false);
+        assert.deepEqual(calls.infos, ['Export to numbers.csv cancelled; no file was written.']);
+        if (how !== 'closing the panel') {
+            assert.equal(panel.posted.at(-1).command, 'exportFinished', 'the toolbar hides its bar');
+            assert.ok(!panel.posted.some((m: any) => m.command === 'exportSuccess'));
+        }
+    });
+}
