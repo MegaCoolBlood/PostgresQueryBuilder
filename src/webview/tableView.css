@@ -943,6 +943,36 @@ td.has-exec-btn > .exec-btn {
     transform: translateY(-50%);
 }
 
+/* A value with line breaks is clipped to its first line, which may even be
+   empty. A chip with the line count in the top right corner tells that the cell
+   holds more; it is drawn by CSS, so it is never copied, edited or exported. */
+td.cell-multiline {
+    position: relative;
+    padding-right: var(--sp-6);
+}
+
+td.cell-multiline:not(.cell-fill-preview)::after {
+    content: "\21B5" attr(data-lines);
+    position: absolute;
+    top: var(--sp-1);
+    right: 2px;
+    padding: 0 2px;
+    font-size: var(--fs-xs);
+    line-height: 1.3;
+    color: var(--c-info);
+    background: color-mix(in srgb, var(--c-info) 20%, transparent);
+    border-radius: var(--radius);
+    pointer-events: none;
+}
+
+td.cell-multiline.has-fk-btn {
+    padding-right: calc(var(--sp-6) * 2);
+}
+
+td.cell-multiline.has-fk-btn:not(.cell-fill-preview)::after {
+    right: var(--sp-6);
+}
+
 .exec-btn.is-executed {
     color: var(--c-success);
 }

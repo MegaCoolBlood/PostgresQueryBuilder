@@ -26,6 +26,8 @@ const {
     exportProgressView,
     recordFieldReadonlyAttr,
     isRecordFieldEdited,
+    multilineCellInfo,
+    multilineCellHint,
     isBackdropDismissClick,
     AUTO_REFRESH_PRESETS,
     autoRefreshOptions,
@@ -601,6 +603,62 @@ test('the Single Record View writes a field back on blur only when its text chan
     assert.ok(guard > 0, 'blur handler must compare against the shown text');
     assert.ok(apply > guard, 'the comparison must come before applyRecordEdit');
     assert.match(body, /const shownText = textarea\.value;/);
+});
+
+// ===== 3.5.1: A cell holding a multi-line value is marked =====
+
+test('multilineCellInfo marks nothing for one line, NULL or an empty value', () => {
+    assert.equal(multilineCellInfo('some text'), null);
+    assert.equal(multilineCellInfo(''), null);
+    assert.equal(multilineCellInfo(null), null);
+    assert.equal(multilineCellInfo(undefined), null);
+});
+
+test('multilineCellInfo counts the lines of a value that starts with a line break', () => {
+    const info = multilineCellInfo('\nsome text');
+    assert.ok(info);
+    assert.equal(info.lines, 2);
+    assert.equal(info.hint, multilineCellHint(2));
+});
+
+test('multilineCellInfo counts LF, CRLF and CR line breaks and a trailing one', () => {
+    assert.equal(multilineCellInfo('a\nb\nc')!.lines, 3);
+    assert.equal(multilineCellInfo('a\r\nb')!.lines, 2);
+    assert.equal(multilineCellInfo('a\rb')!.lines, 2);
+    assert.equal(multilineCellInfo('a\n')!.lines, 2);
+});
+
+test('multilineCellHint names the line count and the ways to read the whole value', () => {
+    const hint = multilineCellHint(3);
+    assert.match(hint, /3 lines/);
+    assert.match(hint, /row number/);
+    assert.match(hint, /full record/);
+});
+
+test('loaded grid cells carry the multi-line marker and keep it current after an edit', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    const rowHtml = src.slice(src.indexOf('function loadedRowHtml('), src.indexOf('function applyCharBudget('));
+    assert.match(rowHtml, /multilineCellInfo\(cellToString\(currentVal\)\)/);
+    assert.match(rowHtml, /cell-multiline/);
+    assert.match(rowHtml, /data-lines="\$\{multiline\.lines\}"/);
+    assert.match(rowHtml, /invalidReason \|\| \(multiline \? multiline\.hint : ''\)/, 'a validation message wins the tooltip');
+
+    const edit = src.slice(src.indexOf('function handleCellEdit('), src.indexOf('updateChangeIndicator();', src.indexOf('function handleCellEdit(')));
+    assert.match(edit, /applyMultilineMarker\(td, /);
+
+    const validity = src.slice(src.indexOf('function setCellValidity('), src.indexOf('function applyMultilineMarker('));
+    assert.match(validity, /multilineCellHint\(lines\)/, 'clearing a validation error restores the multi-line tooltip');
+});
+
+test('the multi-line marker is drawn by CSS from the line count and leaves the fill preview alone', () => {
+    const css = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.css'), 'utf8');
+    const rule = css.match(/td\.cell-multiline:not\(\.cell-fill-preview\)::after \{([^}]*)\}/);
+    assert.ok(rule, 'marker rule missing');
+    assert.match(rule[1], /content: "\\21B5" attr\(data-lines\);/);
+    assert.match(rule[1], /position: absolute;/);
+    assert.match(rule[1], /pointer-events: none;/);
+    assert.match(css, /td\.cell-multiline \{[^}]*position: relative;[^}]*padding-right: var\(--sp-6\);/);
+    assert.match(css, /td\.cell-multiline\.has-fk-btn:not\(\.cell-fill-preview\)::after \{[^}]*right: var\(--sp-6\);/);
 });
 
 test('isBackdropDismissClick closes a dialog when press and release are both on the backdrop', () => {

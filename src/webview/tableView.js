@@ -2433,6 +2433,20 @@ function isRecordFieldEdited(shownText, currentText) {
     return String(currentText == null ? '' : currentText) !== String(shownText == null ? '' : shownText);
 }
 
+// The grid clips every cell to one line, so a value with line breaks looks
+// like its first line alone — and like an empty cell when it starts with one.
+// Such a cell is marked with its line count; null when the value is one line.
+function multilineCellInfo(text) {
+    if (text === null || text === undefined) return null;
+    const lines = String(text).split(/\r\n|\r|\n/).length;
+    if (lines < 2) return null;
+    return { lines, hint: multilineCellHint(lines) };
+}
+
+function multilineCellHint(lines) {
+    return `This value has ${lines} lines. Drag the row taller at its row number, or open the full record, to read all of them.`;
+}
+
 // Whether a click on a dialog's backdrop should close the dialog. A press
 // inside the dialog that is released over the backdrop (resizing a text box,
 // selecting text) still fires a `click` on the backdrop, the nearest element
@@ -6793,7 +6807,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 ? executableButtonHtml(cc.execType, executedValues.get(executableMarkKey(cc.name, cellToString(currentVal))))
                 : '';
             const cellExtraClass = (fkBtn ? ' has-fk-btn' : '') + (execBtn ? ' has-exec-btn' : '');
-            html += `<td class="${cellClass}${cellExtraClass}" ${invalidReason ? `title="${escapeAttr(invalidReason)}"` : ''} data-row="${idx}" data-col="${cc.attr}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}">${execBtn}<span class="${spanClass}" contenteditable="false">${displayVal}</span>${fkBtn}</td>`;
+            const multiline = currentVal === null || cc.numeric ? null : multilineCellInfo(cellToString(currentVal));
+            const multilineAttrs = multiline ? ` data-lines="${multiline.lines}"` : '';
+            const cellTitle = invalidReason || (multiline ? multiline.hint : '');
+            html += `<td class="${cellClass}${cellExtraClass}${multiline ? ' cell-multiline' : ''}"${multilineAttrs} ${cellTitle ? `title="${escapeAttr(cellTitle)}"` : ''} data-row="${idx}" data-col="${cc.attr}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}">${execBtn}<span class="${spanClass}" contenteditable="false">${displayVal}</span>${fkBtn}</td>`;
         });
         return html + '</tr>';
     }
@@ -7005,6 +7022,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (finalValue === null) {
             span.innerHTML = '<span class="null-value">NULL</span>';
         }
+        applyMultilineMarker(td, finalValue === null || isNumeric ? null : finalValue);
 
         updateChangeIndicator();
         recordEditHistory();
@@ -7117,10 +7135,24 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         if (td) {
             td.classList.toggle('cell-invalid', !!reason);
+            const lines = Number(td.getAttribute('data-lines')) || 0;
             if (reason) td.setAttribute('title', reason);
+            else if (lines > 1) td.setAttribute('title', multilineCellHint(lines));
             else td.removeAttribute('title');
         }
         updateChangeIndicator();
+    }
+
+    // Mark or unmark a loaded cell as holding a value with line breaks, after
+    // its value changed in place. A validation message keeps the tooltip.
+    function applyMultilineMarker(td, text) {
+        const multiline = multilineCellInfo(text);
+        td.classList.toggle('cell-multiline', !!multiline);
+        if (multiline) td.setAttribute('data-lines', String(multiline.lines));
+        else td.removeAttribute('data-lines');
+        if (td.classList.contains('cell-invalid')) return;
+        if (multiline) td.setAttribute('title', multiline.hint);
+        else td.removeAttribute('title');
     }
 
     function handleValidationResult(msg) {
@@ -9600,6 +9632,8 @@ if (typeof module !== 'undefined' && module.exports) {
         exportProgressView,
         recordFieldReadonlyAttr,
         isRecordFieldEdited,
+        multilineCellInfo,
+        multilineCellHint,
         isBackdropDismissClick,
         AUTO_REFRESH_PRESETS,
         formatAutoRefreshInterval,
