@@ -279,16 +279,46 @@ export function withoutTag(tags: string[] | undefined, tag: string): string[] {
     return normalizeTags((tags ?? []).filter(t => normalizeTag(t).toLowerCase() !== key));
 }
 
+/** Key order of a query in the workspace file; unknown keys follow these. */
+const WORKSPACE_QUERY_KEY_ORDER: readonly string[] = ['id', 'name', 'sql', 'parameters', 'schema', 'table', 'tags'];
+
 /**
- * Strip volatile fields before writing a query to the committable workspace
- * file. `lastUsed` changes on every run and would otherwise create noisy git
- * diffs; `scope` is implied by where the query is stored.
+ * Shape a query for the committable workspace file. `lastUsed` changes on every
+ * run and `scope` is implied by where the query is stored, so both are dropped.
+ * The keys are written in one fixed order, whatever order the object was built
+ * in, so saving an unchanged query never produces a git diff.
  */
 export function serializeWorkspaceQuery(query: SavedQuery): SavedQuery {
-    const clean: SavedQuery = { ...query };
-    delete clean.lastUsed;
-    delete clean.scope;
-    return clean;
+    const source = query as unknown as Record<string, unknown>;
+    const clean: Record<string, unknown> = {};
+    for (const key of [...WORKSPACE_QUERY_KEY_ORDER, ...Object.keys(source)]) {
+        if (key in clean || key === 'lastUsed' || key === 'scope' || source[key] === undefined) {
+            continue;
+        }
+        clean[key] = key === 'parameters' ? normalizeParameters(source[key]) : source[key];
+    }
+    return clean as unknown as SavedQuery;
+}
+
+/** Whether two file texts differ in more than their line endings. */
+export function fileContentDiffers(current: string | undefined, next: string): boolean {
+    return current === undefined || current.replace(/\r\n/g, '\n') !== next.replace(/\r\n/g, '\n');
+}
+
+/**
+ * The line ending a file uses, judged by its first line break: a file checked
+ * out with CRLF (Git `core.autocrlf`, a Windows editor) is written back with
+ * CRLF. A new or single-line file gets LF.
+ */
+export function detectLineEnding(text: string | undefined): '\r\n' | '\n' {
+    const i = text ? text.indexOf('\n') : -1;
+    return i > 0 && text![i - 1] === '\r' ? '\r\n' : '\n';
+}
+
+/** `text` with every line break written as `eol`. */
+export function withLineEnding(text: string, eol: '\r\n' | '\n'): string {
+    const lf = text.replace(/\r\n/g, '\n');
+    return eol === '\n' ? lf : lf.replace(/\n/g, '\r\n');
 }
 
 export function normalizeSavedQueries(raw: unknown): SavedQuery[] {
@@ -618,12 +648,31 @@ export class SavedQueryStore {
             version: FILE_VERSION,
             queries: this.workspaceQueries.map(serializeWorkspaceQuery)
         };
-        const json = JSON.stringify(payload, null, 2) + '\n';
+        // JSON.stringify escapes line breaks inside values, so only the file's
+        // own line breaks are affected by keeping its line ending.
+        const current = this.readWorkspaceFileText();
+        const json = withLineEnding(JSON.stringify(payload, null, 2) + '\n', detectLineEnding(current));
+        // Recording a run only changes `lastUsed`, which is not written, so
+        // leave the file alone instead of rewriting identical content.
+        if (!fileContentDiffers(current, json)) {
+            return;
+        }
         this.suppressWatcher = true;
         try {
             await vscode.workspace.fs.writeFile(this.workspaceFileUri, Buffer.from(json, 'utf8'));
         } finally {
             setTimeout(() => { this.suppressWatcher = false; }, 250);
+        }
+    }
+
+    private readWorkspaceFileText(): string | undefined {
+        if (!this.workspaceFileUri) {
+            return undefined;
+        }
+        try {
+            return fs.readFileSync(this.workspaceFileUri.fsPath, 'utf8');
+        } catch {
+            return undefined;
         }
     }
 

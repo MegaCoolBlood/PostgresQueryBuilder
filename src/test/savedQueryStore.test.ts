@@ -1,6 +1,10 @@
 import './helpers/vscodeMock';
+import { vscodeStub } from './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
     SavedQueryStore,
     parseQueryPlaceholders,
@@ -13,6 +17,9 @@ import {
     normalizeSavedQueries,
     sortSavedQueries,
     serializeWorkspaceQuery,
+    fileContentDiffers,
+    detectLineEnding,
+    withLineEnding,
     SavedQuery,
     SavedQueryParameter,
     normalizeTag,
@@ -259,6 +266,142 @@ test('serializeWorkspaceQuery keeps schema and table', () => {
         id: '1', name: 'x', sql: 'SELECT 1', parameters: [], schema: 'public', table: 't', lastUsed: 42
     });
     assert.deepEqual(serialized, { id: '1', name: 'x', sql: 'SELECT 1', parameters: [], schema: 'public', table: 't' });
+});
+
+test('serializeWorkspaceQuery writes the keys in one fixed order, whatever order they were built in', () => {
+    const asCreated = serializeWorkspaceQuery({
+        name: 'x', sql: 'SELECT :a', parameters: [{ kind: 'number', name: 'a' } as SavedQueryParameter],
+        schema: 'public', table: 't', tags: ['Reports'], lastUsed: 1, id: '1'
+    } as SavedQuery);
+    const asLoaded = serializeWorkspaceQuery(normalizeSavedQuery(JSON.parse(JSON.stringify(asCreated)))!);
+    assert.deepEqual(Object.keys(asCreated), ['id', 'name', 'sql', 'parameters', 'schema', 'table', 'tags']);
+    assert.deepEqual(Object.keys(asCreated.parameters[0]), ['name', 'kind']);
+    assert.equal(JSON.stringify(asLoaded), JSON.stringify(asCreated));
+});
+
+test('serializeWorkspaceQuery keeps unknown keys after the known ones', () => {
+    const serialized = serializeWorkspaceQuery({ extra: 1, id: '1', name: 'x', sql: 'SELECT 1', parameters: [] } as any);
+    assert.deepEqual(Object.keys(serialized), ['id', 'name', 'sql', 'parameters', 'extra']);
+});
+
+test('fileContentDiffers ignores line endings but not content', () => {
+    assert.equal(fileContentDiffers('{\n}\n', '{\n}\n'), false);
+    assert.equal(fileContentDiffers('{\r\n}\r\n', '{\n}\n'), false);
+    assert.equal(fileContentDiffers('{\n "a": 1\n}\n', '{\n "a": 2\n}\n'), true);
+    assert.equal(fileContentDiffers(undefined, '{}\n'), true);
+});
+
+test('detectLineEnding follows the first line break and defaults to LF', () => {
+    assert.equal(detectLineEnding('{\r\n}\r\n'), '\r\n');
+    assert.equal(detectLineEnding('{\n}\n'), '\n');
+    assert.equal(detectLineEnding('{\r\n}\n'), '\r\n');
+    assert.equal(detectLineEnding('{}'), '\n');
+    assert.equal(detectLineEnding(''), '\n');
+    assert.equal(detectLineEnding(undefined), '\n');
+});
+
+test('withLineEnding rewrites every line break and leaves escaped ones in values alone', () => {
+    const json = JSON.stringify({ sql: 'SELECT 1\r\nFROM t\n' }, null, 2) + '\n';
+    const crlf = withLineEnding(json, '\r\n');
+    assert.equal(crlf, '{\r\n  "sql": "SELECT 1\\r\\nFROM t\\n"\r\n}\r\n');
+    assert.equal(withLineEnding(crlf, '\n'), json);
+    assert.equal(withLineEnding(crlf, '\r\n'), crlf);
+});
+
+// ===== Workspace queries file =====
+
+/**
+ * Point the `vscode` stub at a throwaway folder and back its `workspace.fs`
+ * with the real file system; returns the file path and a write counter.
+ */
+function useTempWorkspace(t: any): { file: string; writes: () => number } {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pgqb-queries-'));
+    const originalFolders = vscodeStub.workspace.workspaceFolders;
+    const originalFs = vscodeStub.workspace.fs;
+    const originalJoinPath = vscodeStub.Uri.joinPath;
+    let writeCount = 0;
+
+    vscodeStub.workspace.workspaceFolders = [{ uri: { fsPath: root, path: root } }];
+    vscodeStub.workspace.fs = {
+        async writeFile(uri: any, content: Uint8Array) { writeCount++; fs.writeFileSync(uri.fsPath, content); },
+        async readFile(uri: any) { return fs.readFileSync(uri.fsPath); },
+        async createDirectory(uri: any) { fs.mkdirSync(uri.fsPath, { recursive: true }); }
+    } as any;
+    vscodeStub.Uri.joinPath = (base: any, ...segs: string[]) => {
+        const joined = path.join(base.fsPath, ...segs);
+        return { fsPath: joined, path: joined };
+    };
+
+    t.after(() => {
+        vscodeStub.workspace.workspaceFolders = originalFolders;
+        vscodeStub.workspace.fs = originalFs;
+        vscodeStub.Uri.joinPath = originalJoinPath;
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+    return { file: path.join(root, 'postgres-query-builder.queries.json'), writes: () => writeCount };
+}
+
+test('running a new workspace query leaves the queries file unchanged', async (t) => {
+    const ws = useTempWorkspace(t);
+    const created = await new SavedQueryStore(createMockContext()).add({
+        name: 'Open orders', sql: 'SELECT * FROM o WHERE s = :s',
+        parameters: [{ name: 's', kind: 'text' }], schema: 'public', table: 'o', tags: ['Reports']
+    }, 'workspace');
+    const afterCreate = fs.readFileSync(ws.file, 'utf8');
+    const written = JSON.parse(afterCreate).queries[0];
+    assert.deepEqual(Object.keys(written), ['id', 'name', 'sql', 'parameters', 'schema', 'table', 'tags']);
+
+    // The file is read back as on the next start, then the query is run.
+    const writesBefore = ws.writes();
+    await new SavedQueryStore(createMockContext()).touch(created.id);
+    assert.equal(fs.readFileSync(ws.file, 'utf8'), afterCreate);
+    assert.equal(ws.writes(), writesBefore, 'an unchanged file is not written again');
+});
+
+test('a queries file checked out with CRLF line endings is not rewritten by a run', async (t) => {
+    const ws = useTempWorkspace(t);
+    const created = await new SavedQueryStore(createMockContext()).add({
+        name: 'Q', sql: 'SELECT 1', parameters: []
+    }, 'workspace');
+    const crlf = fs.readFileSync(ws.file, 'utf8').replace(/\n/g, '\r\n');
+    fs.writeFileSync(ws.file, crlf);
+
+    const writesBefore = ws.writes();
+    await new SavedQueryStore(createMockContext()).touch(created.id);
+    assert.equal(ws.writes(), writesBefore);
+    assert.equal(fs.readFileSync(ws.file, 'utf8'), crlf);
+});
+
+test('editing a workspace query still writes the queries file', async (t) => {
+    const ws = useTempWorkspace(t);
+    const store = new SavedQueryStore(createMockContext());
+    const created = await store.add({ name: 'Q', sql: 'SELECT 1', parameters: [] }, 'workspace');
+    await store.update(created.id, { name: 'Renamed' });
+    assert.equal(JSON.parse(fs.readFileSync(ws.file, 'utf8')).queries[0].name, 'Renamed');
+});
+
+test('editing a query in a CRLF queries file keeps CRLF and changes only the edited line', async (t) => {
+    const ws = useTempWorkspace(t);
+    const store = new SavedQueryStore(createMockContext());
+    const created = await store.add({ name: 'Q', sql: 'SELECT 1', parameters: [] }, 'workspace');
+    await store.add({ name: 'Other', sql: 'SELECT 2', parameters: [] }, 'workspace');
+    const before = fs.readFileSync(ws.file, 'utf8').replace(/\n/g, '\r\n');
+    fs.writeFileSync(ws.file, before);
+
+    await new SavedQueryStore(createMockContext()).update(created.id, { name: 'Renamed' });
+    const after = fs.readFileSync(ws.file, 'utf8');
+    assert.equal(after.replace(/\r\n/g, '').includes('\n'), false, 'no bare LF is written');
+    const beforeLines = before.split('\r\n');
+    const afterLines = after.split('\r\n');
+    assert.equal(afterLines.length, beforeLines.length);
+    const changed = afterLines.filter((line, i) => line !== beforeLines[i]);
+    assert.deepEqual(changed, ['      "name": "Renamed",']);
+});
+
+test('a new queries file is written with LF', async (t) => {
+    const ws = useTempWorkspace(t);
+    await new SavedQueryStore(createMockContext()).add({ name: 'Q', sql: 'SELECT 1', parameters: [] }, 'workspace');
+    assert.equal(fs.readFileSync(ws.file, 'utf8').includes('\r'), false);
 });
 
 // ===== SavedQueryStore =====
