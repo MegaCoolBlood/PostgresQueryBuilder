@@ -2435,7 +2435,7 @@ function isRecordFieldEdited(shownText, currentText) {
 
 // The grid clips every cell to one line, so a value with line breaks looks
 // like its first line alone — and like an empty cell when it starts with one.
-// Such a cell is marked with its line count; null when the value is one line.
+// Such a cell gets a button with its line count; null when it is one line.
 function multilineCellInfo(text) {
     if (text === null || text === undefined) return null;
     const lines = String(text).split(/\r\n|\r|\n/).length;
@@ -2444,7 +2444,22 @@ function multilineCellInfo(text) {
 }
 
 function multilineCellHint(lines) {
-    return `This value has ${lines} lines. Drag the row taller at its row number, or open the full record, to read all of them.`;
+    return `This value has ${lines} lines. Click to show all of them; click again to show one line.`;
+}
+
+// The button in a multi-line cell that opens its row to the full value.
+function multilineButtonHtml(lines) {
+    const n = Math.max(2, Math.floor(Number(lines)) || 2);
+    return `<button class="lines-btn" data-lines="${n}" title="${multilineCellHint(n)}">&#8629;${n}</button>`;
+}
+
+// The content height a row gets when the line button of one of its cells is
+// pressed: tall enough for that cell's whole value (within the limit a row can
+// be dragged to), or back to one line when the value already shows in full.
+function toggledRowContentHeight(currentHeight, neededHeight, defaultHeight, maxHeight) {
+    const target = Math.min(maxHeight, Math.max(defaultHeight, Math.ceil(Number(neededHeight) || 0)));
+    if (target <= defaultHeight) return defaultHeight;
+    return (Number(currentHeight) || defaultHeight) >= target ? defaultHeight : target;
 }
 
 // Whether a click on a dialog's backdrop should close the dialog. A press
@@ -4496,7 +4511,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             e.preventDefault();
             return;
         }
-        // The run button of an executable cell is a button, not a cell to select.
+        // The run and line buttons of a cell are buttons, not a cell to select.
+        // The line button does not take the focus from the grid either.
+        if (e.target.closest && e.target.closest('.lines-btn')) {
+            e.preventDefault();
+            return;
+        }
         if (e.target.closest && e.target.closest('.exec-btn')) return;
         const td = e.target.closest('td[data-col]');
         if (!td || td.parentElement.parentElement !== tableBody) return;
@@ -4623,7 +4643,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     // Double-click a cell to edit it: the previous single-click behaviour.
     tableBody.addEventListener('dblclick', (e) => {
-        if (e.target.closest && e.target.closest('.fk-btn, .exec-btn')) return;
+        if (e.target.closest && e.target.closest('.fk-btn, .exec-btn, .lines-btn')) return;
         const editable = editableElementOf(e.target);
         if (!editable) return;
         enterCellEditMode(editable, e);
@@ -6808,9 +6828,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 : '';
             const cellExtraClass = (fkBtn ? ' has-fk-btn' : '') + (execBtn ? ' has-exec-btn' : '');
             const multiline = currentVal === null || cc.numeric ? null : multilineCellInfo(cellToString(currentVal));
-            const multilineAttrs = multiline ? ` data-lines="${multiline.lines}"` : '';
-            const cellTitle = invalidReason || (multiline ? multiline.hint : '');
-            html += `<td class="${cellClass}${cellExtraClass}${multiline ? ' cell-multiline' : ''}"${multilineAttrs} ${cellTitle ? `title="${escapeAttr(cellTitle)}"` : ''} data-row="${idx}" data-col="${cc.attr}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}">${execBtn}<span class="${spanClass}" contenteditable="false">${displayVal}</span>${fkBtn}</td>`;
+            const linesBtn = multiline ? multilineButtonHtml(multiline.lines) : '';
+            html += `<td class="${cellClass}${cellExtraClass}${multiline ? ' cell-multiline' : ''}" ${invalidReason ? `title="${escapeAttr(invalidReason)}"` : ''} data-row="${idx}" data-col="${cc.attr}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}">${execBtn}<span class="${spanClass}" contenteditable="false">${displayVal}</span>${linesBtn}${fkBtn}</td>`;
         });
         return html + '</tr>';
     }
@@ -6951,6 +6970,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     });
 
     tableBody.addEventListener('click', (e) => {
+        const linesBtn = e.target.closest ? e.target.closest('.lines-btn') : null;
+        if (linesBtn && tableBody.contains(linesBtn)) {
+            toggleRowLines(linesBtn);
+            return;
+        }
         const fkBtn = e.target.closest ? e.target.closest('.fk-btn') : null;
         if (fkBtn && tableBody.contains(fkBtn)) {
             vscode.postMessage({
@@ -7135,24 +7159,49 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         if (td) {
             td.classList.toggle('cell-invalid', !!reason);
-            const lines = Number(td.getAttribute('data-lines')) || 0;
             if (reason) td.setAttribute('title', reason);
-            else if (lines > 1) td.setAttribute('title', multilineCellHint(lines));
             else td.removeAttribute('title');
         }
         updateChangeIndicator();
     }
 
-    // Mark or unmark a loaded cell as holding a value with line breaks, after
-    // its value changed in place. A validation message keeps the tooltip.
+    // Add, update or remove the line button of a loaded cell after its value
+    // changed in place.
     function applyMultilineMarker(td, text) {
         const multiline = multilineCellInfo(text);
         td.classList.toggle('cell-multiline', !!multiline);
-        if (multiline) td.setAttribute('data-lines', String(multiline.lines));
-        else td.removeAttribute('data-lines');
-        if (td.classList.contains('cell-invalid')) return;
-        if (multiline) td.setAttribute('title', multiline.hint);
-        else td.removeAttribute('title');
+        const existing = td.querySelector(':scope > .lines-btn');
+        if (existing) existing.remove();
+        if (!multiline) return;
+        const span = td.querySelector(':scope > .cell-content');
+        if (span) span.insertAdjacentHTML('afterend', multilineButtonHtml(multiline.lines));
+    }
+
+    // Open the row to the full value of the cell whose line button was pressed,
+    // or back to one line when it already shows in full. Uses the same per-row
+    // height as dragging the row's handle, so the two work together.
+    function toggleRowLines(btn) {
+        const td = btn.closest('td');
+        const tr = td ? td.parentElement : null;
+        const span = td ? td.querySelector(':scope > .cell-content') : null;
+        const entry = tr ? renderPlan[planIndexOf(tr)] : null;
+        if (!span || !entry) return;
+        const key = planRowKey(entry);
+        const h = toggledRowContentHeight(
+            rowContentHeights.get(key) || DEFAULT_ROW_CONTENT_H,
+            span.scrollHeight,
+            DEFAULT_ROW_CONTENT_H,
+            MAX_ROW_CONTENT_H
+        );
+        if (h > DEFAULT_ROW_CONTENT_H) {
+            rowContentHeights.set(key, h);
+            tr.style.setProperty('--row-content-max-h', h + 'px');
+        } else {
+            rowContentHeights.delete(key);
+            tr.style.removeProperty('--row-content-max-h');
+        }
+        // The spacers below have to account for the new height.
+        renderWindow(true);
     }
 
     function handleValidationResult(msg) {
@@ -8515,7 +8564,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         td.childNodes.forEach(node => {
             if (node.nodeType === Node.TEXT_NODE) {
                 text += node.textContent;
-            } else if (node.nodeType === Node.ELEMENT_NODE && !node.classList.contains('fk-btn') && !node.classList.contains('exec-btn')) {
+            } else if (node.nodeType === Node.ELEMENT_NODE && !node.classList.contains('fk-btn') && !node.classList.contains('exec-btn') && !node.classList.contains('lines-btn')) {
                 text += node.textContent;
             }
         });
@@ -9634,6 +9683,8 @@ if (typeof module !== 'undefined' && module.exports) {
         isRecordFieldEdited,
         multilineCellInfo,
         multilineCellHint,
+        multilineButtonHtml,
+        toggledRowContentHeight,
         isBackdropDismissClick,
         AUTO_REFRESH_PRESETS,
         formatAutoRefreshInterval,

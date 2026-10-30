@@ -28,6 +28,8 @@ const {
     isRecordFieldEdited,
     multilineCellInfo,
     multilineCellHint,
+    multilineButtonHtml,
+    toggledRowContentHeight,
     isBackdropDismissClick,
     AUTO_REFRESH_PRESETS,
     autoRefreshOptions,
@@ -628,37 +630,84 @@ test('multilineCellInfo counts LF, CRLF and CR line breaks and a trailing one', 
     assert.equal(multilineCellInfo('a\n')!.lines, 2);
 });
 
-test('multilineCellHint names the line count and the ways to read the whole value', () => {
+test('multilineCellHint names the line count and what a click does', () => {
     const hint = multilineCellHint(3);
     assert.match(hint, /3 lines/);
-    assert.match(hint, /row number/);
-    assert.match(hint, /full record/);
+    assert.match(hint, /Click to show all of them/);
+    assert.match(hint, /click again to show one line/);
 });
 
-test('loaded grid cells carry the multi-line marker and keep it current after an edit', () => {
+test('multilineButtonHtml is a button with the line count and its hint', () => {
+    const html = multilineButtonHtml(3);
+    assert.match(html, /^<button class="lines-btn" data-lines="3" title="[^"]*3 lines[^"]*">&#8629;3<\/button>$/);
+    assert.ok(!/onclick/i.test(html), 'events are wired by delegation, the CSP blocks inline handlers');
+    assert.match(multilineButtonHtml('7'), /data-lines="7"/);
+    assert.match(multilineButtonHtml('x'), /data-lines="2"/, 'never anything but a number in the markup');
+});
+
+test('toggledRowContentHeight opens a one-line row to the full value', () => {
+    assert.equal(toggledRowContentHeight(20, 60, 20, 600), 60);
+    assert.equal(toggledRowContentHeight(20, 59.2, 20, 600), 60, 'rounded up so the last line is not cut');
+});
+
+test('toggledRowContentHeight opens a row dragged only part way to the full value', () => {
+    assert.equal(toggledRowContentHeight(40, 80, 20, 600), 80);
+});
+
+test('toggledRowContentHeight folds a row back to one line when the value already shows in full', () => {
+    assert.equal(toggledRowContentHeight(80, 80, 20, 600), 20);
+    assert.equal(toggledRowContentHeight(200, 80, 20, 600), 20);
+});
+
+test('toggledRowContentHeight stays within the limit a row can be dragged to', () => {
+    assert.equal(toggledRowContentHeight(20, 5000, 20, 600), 600);
+    assert.equal(toggledRowContentHeight(600, 5000, 20, 600), 20);
+});
+
+test('toggledRowContentHeight keeps one line when there is nothing more to show', () => {
+    assert.equal(toggledRowContentHeight(20, 18, 20, 600), 20);
+    assert.equal(toggledRowContentHeight(undefined, NaN, 20, 600), 20);
+});
+
+test('loaded grid cells carry the line button and keep it current after an edit', () => {
     const src = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
     const rowHtml = src.slice(src.indexOf('function loadedRowHtml('), src.indexOf('function applyCharBudget('));
     assert.match(rowHtml, /multilineCellInfo\(cellToString\(currentVal\)\)/);
     assert.match(rowHtml, /cell-multiline/);
-    assert.match(rowHtml, /data-lines="\$\{multiline\.lines\}"/);
-    assert.match(rowHtml, /invalidReason \|\| \(multiline \? multiline\.hint : ''\)/, 'a validation message wins the tooltip');
+    assert.match(rowHtml, /<\/span>\$\{linesBtn\}\$\{fkBtn\}<\/td>/, 'the button sits outside the editable text');
 
     const edit = src.slice(src.indexOf('function handleCellEdit('), src.indexOf('updateChangeIndicator();', src.indexOf('function handleCellEdit(')));
     assert.match(edit, /applyMultilineMarker\(td, /);
-
-    const validity = src.slice(src.indexOf('function setCellValidity('), src.indexOf('function applyMultilineMarker('));
-    assert.match(validity, /multilineCellHint\(lines\)/, 'clearing a validation error restores the multi-line tooltip');
+    const marker = src.slice(src.indexOf('function applyMultilineMarker('), src.indexOf('function toggleRowLines('));
+    assert.match(marker, /multilineButtonHtml\(multiline\.lines\)/);
+    assert.match(marker, /\.lines-btn'\)/);
 });
 
-test('the multi-line marker is drawn by CSS from the line count and leaves the fill preview alone', () => {
+test('pressing the line button opens the row through the per-row height of the row handle', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    const toggle = src.slice(src.indexOf('function toggleRowLines('), src.indexOf('function handleValidationResult('));
+    assert.match(toggle, /toggledRowContentHeight\(/);
+    assert.match(toggle, /span\.scrollHeight/);
+    assert.match(toggle, /rowContentHeights\.set\(key, h\)/);
+    assert.match(toggle, /rowContentHeights\.delete\(key\)/);
+    assert.match(toggle, /renderWindow\(true\)/);
+
+    assert.match(src, /closest\('\.lines-btn'\)[\s\S]{0,120}toggleRowLines\(linesBtn\)/, 'click is wired by delegation');
+    assert.match(src, /closest\('\.fk-btn, \.exec-btn, \.lines-btn'\)\) return;/, 'a double-click on it does not edit the cell');
+    assert.match(src, /closest\('\.lines-btn'\)\) \{\s*e\.preventDefault\(\);\s*return;/, 'pressing it neither selects the cell nor takes the focus');
+    assert.match(src, /!node\.classList\.contains\('lines-btn'\)/, 'its text is never copied with the cell');
+});
+
+test('the line button is styled from tokens and makes room for itself', () => {
     const css = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.css'), 'utf8');
-    const rule = css.match(/td\.cell-multiline:not\(\.cell-fill-preview\)::after \{([^}]*)\}/);
-    assert.ok(rule, 'marker rule missing');
-    assert.match(rule[1], /content: "\\21B5" attr\(data-lines\);/);
+    const rule = css.match(/\n\.lines-btn \{([^}]*)\}/);
+    assert.ok(rule, 'button rule missing');
     assert.match(rule[1], /position: absolute;/);
-    assert.match(rule[1], /pointer-events: none;/);
+    assert.match(rule[1], /cursor: pointer;/);
+    assert.match(rule[1], /color: var\(--c-info\);/);
+    assert.match(css, /\.lines-btn:hover \{/);
     assert.match(css, /td\.cell-multiline \{[^}]*position: relative;[^}]*padding-right: var\(--sp-6\);/);
-    assert.match(css, /td\.cell-multiline\.has-fk-btn:not\(\.cell-fill-preview\)::after \{[^}]*right: var\(--sp-6\);/);
+    assert.match(css, /td\.cell-multiline\.has-fk-btn > \.lines-btn \{[^}]*right: var\(--sp-6\);/);
 });
 
 test('isBackdropDismissClick closes a dialog when press and release are both on the backdrop', () => {
