@@ -25,6 +25,7 @@ const {
     expectsRelationMetadata,
     exportProgressView,
     recordFieldReadonlyAttr,
+    isRecordFieldEdited,
     isBackdropDismissClick,
     AUTO_REFRESH_PRESETS,
     autoRefreshOptions,
@@ -565,6 +566,41 @@ test('recordFieldReadonlyAttr marks fields readonly when the view is read-only',
 test('recordFieldReadonlyAttr marks fields readonly for rows pending deletion', () => {
     assert.equal(recordFieldReadonlyAttr(true, false), 'readonly');
     assert.equal(recordFieldReadonlyAttr(true, true), 'readonly');
+});
+
+// ===== 3.5.1: Clicking or resizing a Single Record View field is no edit =====
+
+test('isRecordFieldEdited is false while the text is the one the field showed', () => {
+    assert.equal(isRecordFieldEdited('hello', 'hello'), false);
+    assert.equal(isRecordFieldEdited('', ''), false);
+    assert.equal(isRecordFieldEdited('line 1\nline 2', 'line 1\nline 2'), false);
+    assert.equal(isRecordFieldEdited('1 234,5', '1 234,5'), false);
+});
+
+test('isRecordFieldEdited treats a missing text as an empty one', () => {
+    assert.equal(isRecordFieldEdited(null, ''), false);
+    assert.equal(isRecordFieldEdited(undefined, ''), false);
+    assert.equal(isRecordFieldEdited('', null), false);
+});
+
+test('isRecordFieldEdited is true once the text differs, including only by whitespace', () => {
+    assert.equal(isRecordFieldEdited('hello', 'hello!'), true);
+    assert.equal(isRecordFieldEdited('', 'x'), true);
+    assert.equal(isRecordFieldEdited('x', ''), true);
+    assert.equal(isRecordFieldEdited('a', 'a '), true);
+});
+
+test('the Single Record View writes a field back on blur only when its text changed', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    const start = src.indexOf('function wireRecordDialogListeners(');
+    assert.ok(start > 0, 'wireRecordDialogListeners not found');
+    const body = src.slice(start, src.indexOf("const resetBtn = rowEl.querySelector('.record-reset-btn')", start));
+    const blur = body.slice(body.indexOf("textarea.addEventListener('blur'"));
+    const guard = blur.indexOf('isRecordFieldEdited(shownText, textarea.value)');
+    const apply = blur.indexOf('applyRecordEdit(');
+    assert.ok(guard > 0, 'blur handler must compare against the shown text');
+    assert.ok(apply > guard, 'the comparison must come before applyRecordEdit');
+    assert.match(body, /const shownText = textarea\.value;/);
 });
 
 test('isBackdropDismissClick closes a dialog when press and release are both on the backdrop', () => {

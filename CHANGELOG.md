@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.5.1
+
+- **Clicking or resizing a field of the Single Record View no longer counts as a change:** Leaving a field of the *Single Record View* wrote its text back to the row even when nothing had been typed, and the text a field shows is not always the stored value exactly — an empty string comes back as NULL, Windows line breaks as plain ones, and a leading line break is dropped. So a click into such a field, or dragging its corner to make it larger, marked the field as *modified*, added a pending change to the grid and a step to *Undo*. A field is now only written back when its text was actually changed, and resizing or clicking leaves the record untouched.
+
 ## 3.5.0
 
 - **Columns whose values can be run:** A query can build the next step itself — `'SELECT pg_terminate_backend(' || pid || ');'` next to every blocking session, a link to the ticket of a row, the path of a log file — but the Data Viewer could only show that text, so it had to be copied out of the cell and pasted wherever it was meant to run. A column whose alias starts with a prefix now runs its values: every cell gets a button at its left edge, its context menu offers the same action, and the header shows an icon telling what a click does. `sql_` opens the query in a new Data Viewer that shares the database session of this one, `pgsql_` runs the statement in the session of this Data Viewer (its messages go to *PostgreSQL Messages*, data changes to the *Modify History*), `psql_` sends it to the psql console of the connection, `ps_` runs it in a PowerShell terminal, `url_` opens the link in the browser, `file_` opens the file in the editor and `copy_` copies the value to the clipboard.

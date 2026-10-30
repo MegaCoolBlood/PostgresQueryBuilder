@@ -2425,6 +2425,14 @@ function recordFieldReadonlyAttr(isDeleted, readOnly) {
     return (isDeleted || readOnly) ? 'readonly' : '';
 }
 
+// Whether leaving a Single Record View field is an edit. Only a changed text
+// counts: a textarea does not hand every value back exactly as it was given
+// (an empty string reads back as NULL, CR LF as LF, a leading line break is
+// dropped), so focusing or resizing a field alone must not write its text back.
+function isRecordFieldEdited(shownText, currentText) {
+    return String(currentText == null ? '' : currentText) !== String(shownText == null ? '' : shownText);
+}
+
 // Whether a click on a dialog's backdrop should close the dialog. A press
 // inside the dialog that is released over the backdrop (resizing a text box,
 // selecting text) still fires a `click` on the backdrop, the nearest element
@@ -8986,6 +8994,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const colName = rowEl.getAttribute('data-col');
             const textarea = rowEl.querySelector('.record-value');
             if (!textarea) return;
+            // The text as the field shows it, read back through the textarea
+            // so it compares like for like with what the user leaves behind.
+            const shownText = textarea.value;
+            const shownAsNull = textarea.classList.contains('is-null');
 
             textarea.addEventListener('focus', () => {
                 textarea.classList.remove('is-null');
@@ -9009,6 +9021,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             });
 
             textarea.addEventListener('blur', () => {
+                if (!isRecordFieldEdited(shownText, textarea.value)) {
+                    textarea.classList.toggle('is-null', shownAsNull);
+                    return;
+                }
                 applyRecordEdit(idx, colName, textarea.value);
                 // Re-render to refresh modified badges, reset buttons, displayed value
                 renderRecordDialog({ preserveScroll: true });
@@ -9583,6 +9599,7 @@ if (typeof module !== 'undefined' && module.exports) {
         expectsRelationMetadata,
         exportProgressView,
         recordFieldReadonlyAttr,
+        isRecordFieldEdited,
         isBackdropDismissClick,
         AUTO_REFRESH_PRESETS,
         formatAutoRefreshInterval,
