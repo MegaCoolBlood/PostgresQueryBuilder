@@ -2965,3 +2965,53 @@ test('an integer FOR range (1..n) is not treated as a qualified name', () => {
     const out = formatSql(qualifiedBody('FOR i IN 1..v_max LOOP\nNULL;\nEND LOOP;'));
     assert.ok(out.includes('  FOR i IN 1..v_max LOOP\n    NULL;\n  END LOOP;'), out);
 });
+
+// ===== 3.5.1: IS [NOT] DISTINCT FROM is a comparison, not a FROM clause =====
+
+test('IS NOT DISTINCT FROM in a WHERE condition stays on the line of its AND', () => {
+    const src = `UPDATE bos_mit_sondertage
+SET mst_gueltig = 'J'
+WHERE mst_mit_id = (r_lbe ->> 'mst_mit_id')::INTEGER
+  AND NULLIF(TRIM(mst_vorgang), '') IS NOT DISTINCT FROM NULLIF(TRIM(r_lbe ->> 'mst_vorgang'), '')
+  AND mst_vereinbart_bis IS NOT DISTINCT FROM NULLIF(r_lbe ->> 'mst_vereinbart_bis', '')::TIMESTAMP
+  AND mst_source = 'T';`;
+    const result = formatSqlChecked(src);
+    assert.equal(result.ok, true, result.reason);
+    assert.equal(result.text, [
+        'UPDATE bos_mit_sondertage',
+        'SET',
+        "  mst_gueltig = 'J'",
+        "WHERE mst_mit_id = (r_lbe->>'mst_mit_id')::INTEGER",
+        "  AND NULLIF(TRIM(mst_vorgang), '') IS NOT DISTINCT FROM NULLIF(TRIM(r_lbe->>'mst_vorgang'), '')",
+        "  AND mst_vereinbart_bis IS NOT DISTINCT FROM NULLIF(r_lbe->>'mst_vereinbart_bis', '')::TIMESTAMP",
+        "  AND mst_source = 'T';"
+    ].join('\n'));
+    assert.equal(formatSql(result.text), result.text, 'idempotent');
+});
+
+test('IS DISTINCT FROM in an IF condition and a statement of a PL/pgSQL body is not split', () => {
+    const out = formatSql(qualifiedBody('IF pi_x IS DISTINCT FROM 1 THEN\nUPDATE t SET a = 1 WHERE b IS NOT DISTINCT FROM pi_x AND c = 2;\nEND IF;'));
+    assert.ok(out.includes('  IF pi_x IS DISTINCT FROM 1 THEN\n'), out);
+    assert.ok(out.includes('    WHERE b IS NOT DISTINCT FROM pi_x\n      AND c = 2;'), out);
+    assert.ok(!/^\s*FROM (1|pi_x)\b/m.test(out), out);
+    assert.equal(formatSql(out), out, 'idempotent');
+});
+
+test('IS DISTINCT FROM in a SELECT list does not end the list, the real FROM still does', () => {
+    const out = formatSql('select a is distinct from b as d, c from t where a is not distinct from b;');
+    assert.equal(out, 'SELECT a IS DISTINCT FROM b AS d, c\nFROM t\nWHERE a IS NOT DISTINCT FROM b;');
+    assert.equal(formatSql(out), out, 'idempotent');
+});
+
+test('a comment between DISTINCT and FROM does not hide the comparison', () => {
+    const out = formatSql('SELECT x FROM t WHERE a IS NOT DISTINCT /* null-safe */ FROM b;');
+    assert.ok(out.includes('WHERE a IS NOT DISTINCT /* null-safe */ FROM b;'), out);
+});
+
+test('SELECT DISTINCT and FROM inside EXTRACT / SUBSTRING keep their layout', () => {
+    assert.equal(formatSql('select distinct a from t;'), 'SELECT DISTINCT a\nFROM t;');
+    assert.equal(
+        formatSql('select EXTRACT(YEAR from d), SUBSTRING(s from 2) from t;'),
+        'SELECT EXTRACT(YEAR FROM d), SUBSTRING(s FROM 2)\nFROM t;'
+    );
+});

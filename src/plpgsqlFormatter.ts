@@ -723,6 +723,8 @@ interface Tok {
     text: string;
     /** Count of newline characters in the whitespace preceding this token. */
     nlBefore: number;
+    /** The FROM of `IS [NOT] DISTINCT FROM`: a comparison operator, not a clause. */
+    operatorFrom?: boolean;
 }
 
 interface TokMeta {
@@ -977,6 +979,29 @@ function markQualifiedNames(toks: Tok[]): Tok[] {
         const w = t.text.toLowerCase();
         if (!KEYWORDS.has(w) || DATATYPES.has(w)) return t;
         return { ...t, type: 'name' };
+    });
+}
+
+/**
+ * Mark the FROM of `a IS [NOT] DISTINCT FROM b`. It belongs to the comparison,
+ * so every test for a FROM clause must pass it by — otherwise the condition is
+ * cut in two and its second half starts a line of its own as if it were a
+ * clause. Comments between the words are skipped.
+ */
+function markDistinctFrom(toks: Tok[]): Tok[] {
+    const isComment = (t: Tok) => t.type === 'lineComment' || t.type === 'blockComment';
+    const prevWord = (idx: number): { word: string; at: number } | null => {
+        let j = idx - 1;
+        while (j >= 0 && isComment(toks[j])) j--;
+        return j >= 0 && toks[j].type === 'word' ? { word: toks[j].text.toLowerCase(), at: j } : null;
+    };
+    return toks.map((t, i) => {
+        if (t.type !== 'word' || t.text.toLowerCase() !== 'from') return t;
+        const distinct = prevWord(i);
+        if (!distinct || distinct.word !== 'distinct') return t;
+        let before = prevWord(distinct.at);
+        if (before && before.word === 'not') before = prevWord(before.at);
+        return before && before.word === 'is' ? { ...t, operatorFrom: true } : t;
     });
 }
 
@@ -1775,6 +1800,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     const typeAliases = buildTypePhraseAliases(normalizeDataTypeAliasTable(opt.dataTypeAliases as Record<string, unknown>));
     let toks = opt.normalizeDataTypes ? normalizeTypePhrases(tokenize(input), typeAliases) : tokenize(input);
     toks = markQualifiedNames(toks);
+    toks = markDistinctFrom(toks);
     if (opt.replaceDashesInBlockComments) {
         toks = toks.map(t => t.type === 'blockComment' ? { ...t, text: replaceBlockCommentDashes(t.text) } : t);
     }
@@ -1920,7 +1946,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 if (tk.text === ';') break;
                 if (tk.type !== 'word') continue;
                 const w = tk.text.toLowerCase();
-                if (isEnd(w)) break;
+                if (!tk.operatorFrom && isEnd(w)) break;
                 if (w === 'between') between++;
                 else if (w === 'or') ops.push(k);
                 else if (w === 'and') { if (between > 0) between--; else ops.push(k); }
@@ -1978,7 +2004,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             if (w === 'between') top.between++;
             else if (w === 'or') top.hasOr = true;
             else if (w === 'and') { if (top.between > 0) top.between--; else top.ands.push(i); }
-            else if (CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w)
+            else if ((CLAUSE_NEWLINE.has(w) && !tk.operatorFrom) || JOIN_WORDS.has(w)
                 || w === 'on' || w === 'when' || w === 'then' || w === 'else'
                 || w === 'loop' || w === 'into' || w === 'using') {
                 finalize(top);
@@ -2249,7 +2275,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         if (t.text === ';' || t.text === ')') return true;
         if (t.type !== 'word') return false;
         const w = t.text.toLowerCase();
-        return CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w) || w === 'into';
+        return (CLAUSE_NEWLINE.has(w) && !t.operatorFrom) || JOIN_WORDS.has(w) || w === 'into';
     };
 
     const nearestBegin = (): BlockFrame | null => {
@@ -2392,7 +2418,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             else if (d === 0 && b === 0) {
                 if (tk.text === ',') return true;
                 if (tk.text === ';') return false;
-                if (tk.type === 'word') {
+                if (tk.type === 'word' && !tk.operatorFrom) {
                     const w = tk.text.toLowerCase();
                     if (CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w) || w === 'into' || w === 'from') return false;
                 }
@@ -2415,7 +2441,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             // its own leading newline must not count as a break inside the list.
             if (d === 0 && b === 0) {
                 if (tk.text === ')' || tk.text === ';') break;
-                if (tk.type === 'word') {
+                if (tk.type === 'word' && !tk.operatorFrom) {
                     const w = tk.text.toLowerCase();
                     // `loop` ends a cursor `FOR … IN <query> LOOP`, so the list must
                     // not run on into the loop body (whose newlines would otherwise be
@@ -2586,7 +2612,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             const acc = stack[stack.length - 1];
             // A statement / list / clause boundary ends the current chain.
             if (tk.text === ';' || tk.text === ',') { finalize(acc); continue; }
-            if (tk.type === 'word') {
+            if (tk.type === 'word' && !tk.operatorFrom) {
                 const w = tk.text.toLowerCase();
                 if (CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w) || w === 'into') { finalize(acc); continue; }
             }
@@ -3203,7 +3229,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             }
 
             // SQL clause keywords (only inside an actual SQL context)
-            if (CLAUSE_NEWLINE.has(w) && inSql) {
+            if (CLAUSE_NEWLINE.has(w) && inSql && !t.operatorFrom) {
                 joinRiver = false;
                 const clauseIndent = blockIndent + pd;
                 popLists(pd);
