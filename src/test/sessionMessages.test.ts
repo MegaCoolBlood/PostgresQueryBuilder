@@ -3,14 +3,18 @@ import { vscodeStub } from './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import {
     MESSAGES_VIEW_ID,
+    MessageSpool,
     SessionMessageLog,
     SessionMessagesView,
     exportMessage,
     formatSessionMessage,
     messageTone,
+    messagesCountText,
+    messagesFileName,
     messagesViewState,
     noticeMessage
 } from '../sessionMessages';
@@ -77,12 +81,13 @@ test('the tabs sharing a session write into the same log', () => {
     assert.deepEqual(log.get(FILE.key)?.messages.map((m) => m.text), ['from the file', 'from the viewer']);
 });
 
-test('a log keeps only its newest messages', () => {
-    const log = new SessionMessageLog(3);
+test('a log keeps only its newest messages for the panel, but counts them all', () => {
+    const log = new SessionMessageLog({ limit: 3 });
     for (const text of ['1', '2', '3', '4', '5']) {
         log.append(FILE, noticeMessage('f', { message: text }, AT));
     }
     assert.deepEqual(log.get(FILE.key)?.messages.map((m) => m.text), ['3', '4', '5']);
+    assert.equal(log.get(FILE.key)?.total, 5);
 });
 
 test('clearing empties one log and discarding forgets it, each telling only about that session', () => {
@@ -114,14 +119,121 @@ test('the panel is told the session it shows and the tone of each message', () =
     const state = messagesViewState(FILE, log.get(FILE.key));
     assert.equal(state.label, 'payroll.sql');
     assert.equal(state.messages[0].tone, 'danger');
-    assert.deepEqual(messagesViewState(TAB, undefined), { label: 'View Data: SELECT 1', messages: [] });
-    assert.deepEqual(messagesViewState(undefined, undefined), { label: null, messages: [] });
+    assert.equal(state.countText, '1 message');
+    assert.deepEqual(messagesViewState(TAB, undefined), { label: 'View Data: SELECT 1', messages: [], total: 0, countText: '0 messages' });
+    assert.deepEqual(messagesViewState(undefined, undefined), { label: null, messages: [], total: 0, countText: '' });
+});
+
+test('the count tells when the panel no longer shows every message', () => {
+    assert.equal(messagesCountText(12, 12), '12 messages');
+    assert.equal(messagesCountText(2000, 5234), 'last 2000 of 5234 messages');
+    const log = new SessionMessageLog({ limit: 2 });
+    for (const text of ['1', '2', '3']) log.append(FILE, noticeMessage('f', { message: text }, AT));
+    assert.equal(messagesViewState(FILE, log.get(FILE.key)).countText, 'last 2 of 3 messages');
+});
+
+// ===== messagesFileName =====
+
+test('Save suggests a file named after the session and the day', () => {
+    assert.equal(messagesFileName('payroll.sql', AT), 'payroll-messages-2026-11-03.log');
+    assert.equal(messagesFileName('View Data: SELECT * FROM a', AT), 'View_Data_SELECT_FROM_a-messages-2026-11-03.log');
+    assert.equal(messagesFileName('???', AT), 'session-messages-2026-11-03.log');
+});
+
+// ===== saving every message =====
+
+function tempRoot(t: { after(fn: () => void): void }): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pqb-msg-test-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    return root;
+}
+
+test('Save writes every message of the session, also those the panel no longer keeps', async (t) => {
+    const root = tempRoot(t);
+    const log = new SessionMessageLog({ limit: 2, spoolRoot: root });
+    t.after(() => log.dispose());
+    for (let i = 1; i <= 5; i++) {
+        log.append(FILE, noticeMessage('payroll.sql', { message: `step ${i}`, hint: i === 5 ? 'last' : undefined }, AT));
+    }
+    log.append(TAB, noticeMessage('tab', { message: 'another session' }, AT));
+    const target = path.join(root, 'saved.log');
+
+    const count = await log.saveTo(FILE.key, target);
+
+    assert.equal(count, 5);
+    assert.equal(log.get(FILE.key)?.messages.length, 2);
+    assert.equal(fs.readFileSync(target, 'utf8'), [1, 2, 3, 4].map((i) => `[09:05:07] payroll.sql — NOTICE: step ${i}\n`).join('')
+        + '[09:05:07] payroll.sql — NOTICE: step 5\n    HINT: last\n');
+});
+
+test('Save after Clear writes only what came after it', async (t) => {
+    const root = tempRoot(t);
+    const log = new SessionMessageLog({ limit: 2, spoolRoot: root });
+    t.after(() => log.dispose());
+    for (let i = 1; i <= 3; i++) log.append(FILE, noticeMessage('f', { message: `old ${i}` }, AT));
+    log.clear(FILE.key);
+    log.append(FILE, noticeMessage('f', { message: 'new' }, AT));
+    const target = path.join(root, 'saved.log');
+
+    assert.equal(await log.saveTo(FILE.key, target), 1);
+    assert.equal(fs.readFileSync(target, 'utf8'), '[09:05:07] f — NOTICE: new\n');
+});
+
+test('the spool file of a session is deleted with its log, and the folder with the extension', async (t) => {
+    const root = tempRoot(t);
+    const log = new SessionMessageLog({ spoolRoot: root });
+    log.append(FILE, noticeMessage('f', { message: 'a' }, AT));
+    log.append(TAB, noticeMessage('t', { message: 'b' }, AT));
+    await log.idle();
+    const [folder] = fs.readdirSync(root);
+    assert.match(folder, /^pqb-messages-/);
+    assert.equal(fs.readdirSync(path.join(root, folder)).length, 2);
+
+    log.discard(TAB.key);
+    await log.idle();
+    assert.equal(fs.readdirSync(path.join(root, folder)).length, 1);
+
+    log.dispose();
+    assert.deepEqual(fs.readdirSync(root), []);
+});
+
+test('a log without a spool saves the messages it keeps', async (t) => {
+    const root = tempRoot(t);
+    const log = new SessionMessageLog({ limit: 1 });
+    log.append(FILE, noticeMessage('f', { message: 'a' }, AT));
+    log.append(FILE, noticeMessage('f', { message: 'b' }, AT));
+    const target = path.join(root, 'saved.log');
+    await log.saveTo(FILE.key, target);
+    assert.equal(fs.readFileSync(target, 'utf8'), '[09:05:07] f — NOTICE: b\n');
+});
+
+// ===== MessageSpool =====
+
+test('a spool keeps the order of its messages and drops what Clear came after', async (t) => {
+    const root = tempRoot(t);
+    const spool = new MessageSpool(path.join(root, 'spool.log'));
+    for (let i = 0; i < 1000; i++) spool.write(`${i}\n`);
+    spool.truncate();
+    spool.write('after clear\n');
+    spool.write('and more\n');
+    await spool.idle();
+    assert.equal(fs.readFileSync(spool.filePath, 'utf8'), 'after clear\nand more\n');
+
+    for (let i = 0; i < 3; i++) spool.write(`${i}\n`);
+    const target = path.join(root, 'copy.log');
+    await spool.copyTo(target);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'after clear\nand more\n0\n1\n2\n');
+
+    spool.remove();
+    spool.write('ignored\n');
+    await spool.idle();
+    assert.equal(fs.existsSync(spool.filePath), false);
 });
 
 // ===== SessionMessagesView =====
 
-function resolveView() {
-    const view = new SessionMessagesView(new SessionMessageLog());
+function resolveView(log: SessionMessageLog = new SessionMessageLog()) {
+    const view = new SessionMessagesView(log);
     const posted: any[] = [];
     let handler: (msg: any) => void = () => undefined;
     const shownWithFocus: boolean[] = [];
@@ -220,6 +332,50 @@ test('Copy puts the shown log on the clipboard as text', async (t) => {
     assert.deepEqual(copied, ['[09:05:07] payroll.sql — NOTICE: a\n    HINT: h']);
 });
 
+test('Copy puts every message of the session on the clipboard, like Save, not only those shown', async (t) => {
+    const root = tempRoot(t);
+    const copied: string[] = [];
+    const statusMessages: unknown[] = [];
+    const originalCopy = vscodeStub.env.clipboard.writeText;
+    const originalStatus = vscodeStub.window.setStatusBarMessage;
+    vscodeStub.env.clipboard.writeText = (text: string) => { copied.push(text); return Promise.resolve(); };
+    vscodeStub.window.setStatusBarMessage = (...args: any[]) => { statusMessages.push(args[0]); return { dispose() {} }; };
+    t.after(() => {
+        vscodeStub.env.clipboard.writeText = originalCopy;
+        vscodeStub.window.setStatusBarMessage = originalStatus;
+    });
+    const resolved = resolveView(new SessionMessageLog({ limit: 2, spoolRoot: root }));
+    t.after(() => resolved.view.dispose());
+    resolved.view.show(FILE);
+    for (let i = 1; i <= 5; i++) {
+        resolved.view.append(FILE, noticeMessage('payroll.sql', { message: `step ${i}` }, AT));
+    }
+    assert.equal(resolved.last().state.messages.length, 2, 'the panel shows only the newest');
+
+    resolved.send({ type: 'copy' });
+    for (let i = 0; i < 20 && copied.length === 0; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    assert.deepEqual(copied, [[1, 2, 3, 4, 5].map((i) => `[09:05:07] payroll.sql — NOTICE: step ${i}`).join('\n')]);
+    assert.deepEqual(statusMessages, ['Copied 5 messages.']);
+    const saved = path.join(root, 'saved.log');
+    await resolved.view.log.saveTo(FILE.key, saved);
+    assert.equal(fs.readFileSync(saved, 'utf8'), `${copied[0]}\n`, 'Copy and Save hold the same lines');
+});
+
+test('Copy offers nothing for a session without messages', async (t) => {
+    const copied: string[] = [];
+    const original = vscodeStub.env.clipboard.writeText;
+    vscodeStub.env.clipboard.writeText = (text: string) => { copied.push(text); return Promise.resolve(); };
+    t.after(() => { vscodeStub.env.clipboard.writeText = original; });
+    const { view, send } = resolveView();
+    view.show(FILE);
+    send({ type: 'copy' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(copied, []);
+});
+
 test('reveal switches to the log and brings the panel into view without taking the focus', () => {
     const resolved = resolveView();
     resolved.view.reveal(TAB);
@@ -240,13 +396,58 @@ test('reveal opens a panel that was never shown through its focus command, keepi
     assert.equal(view.shownSession?.key, FILE.key);
 });
 
-test('the panel offers Copy and Clear as labelled buttons and escapes what it shows', () => {
+test('the panel offers Copy, Save and Clear as labelled buttons and escapes what it shows', () => {
     const { html } = resolveView();
     assert.match(html, /<button class="btn btn-sm" id="copyBtn"[^>]*>.*#icon-copy.*Copy<\/button>/);
+    assert.match(html, /<button class="btn btn-sm" id="saveBtn"[^>]*>.*#icon-save.*Save<\/button>/);
     assert.match(html, /<button class="btn btn-sm" id="clearBtn"[^>]*>.*#icon-trash.*Clear<\/button>/);
     assert.match(html, /Content-Security-Policy/);
     assert.match(html, /escapeHtml\(m\.text\)/);
     assert.match(html, /escapeHtml\(d\)/);
+});
+
+test('Save in the panel asks for a file and writes every message of the shown session to it', async (t) => {
+    const root = tempRoot(t);
+    const target = path.join(root, 'payroll.log');
+    const dialogs: any[] = [];
+    const statusMessages: unknown[] = [];
+    const originalDialog = vscodeStub.window.showSaveDialog;
+    const originalStatus = vscodeStub.window.setStatusBarMessage;
+    vscodeStub.window.showSaveDialog = (options?: any) => { dialogs.push(options); return Promise.resolve({ fsPath: target }); };
+    vscodeStub.window.setStatusBarMessage = (...args: any[]) => { statusMessages.push(args[0]); return { dispose() {} }; };
+    t.after(() => {
+        vscodeStub.window.showSaveDialog = originalDialog;
+        vscodeStub.window.setStatusBarMessage = originalStatus;
+    });
+    const resolved = resolveView(new SessionMessageLog({ limit: 1, spoolRoot: root }));
+    t.after(() => resolved.view.dispose());
+    resolved.view.show(FILE);
+    resolved.view.append(FILE, noticeMessage('payroll.sql', { message: 'first' }, AT));
+    resolved.view.append(FILE, noticeMessage('payroll.sql', { message: 'second' }, AT));
+    assert.equal(resolved.last().state.countText, 'last 1 of 2 messages');
+
+    resolved.send({ type: 'save' });
+    for (let i = 0; i < 20 && statusMessages.length === 0; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    assert.match(dialogs[0].defaultUri.fsPath, /payroll-messages-\d{4}-\d{2}-\d{2}\.log$/);
+    assert.equal(fs.readFileSync(target, 'utf8'), '[09:05:07] payroll.sql — NOTICE: first\n[09:05:07] payroll.sql — NOTICE: second\n');
+    assert.deepEqual(statusMessages, [`Saved 2 messages to ${target}.`]);
+});
+
+test('Save in the panel writes nothing when the dialog is cancelled or the log is empty', async (t) => {
+    let asked = 0;
+    const original = vscodeStub.window.showSaveDialog;
+    vscodeStub.window.showSaveDialog = () => { asked++; return Promise.resolve(undefined); };
+    t.after(() => { vscodeStub.window.showSaveDialog = original; });
+    const { view, send } = resolveView();
+    view.show(FILE);
+    send({ type: 'save' });
+    view.append(FILE, noticeMessage('f', { message: 'a' }, AT));
+    send({ type: 'save' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(asked, 1, 'an empty log offers nothing to save');
 });
 
 // ===== Manifest and wiring =====
@@ -263,6 +464,7 @@ test('the manifest puts the messages view into a panel of its own', () => {
 test('the extension ends a log with its session and follows the active tab', () => {
     const source = fs.readFileSync(path.join(ROOT, 'src', 'extension.ts'), 'utf8');
     assert.match(source, /registerWebviewViewProvider\(SessionMessagesView\.viewType, messagesView\)/);
+    assert.match(source, /new SessionMessageLog\(\{ spoolRoot: os\.tmpdir\(\) \}\)/, 'every message is spooled, so Save can write all of them');
     assert.match(source, /dbSessions\.onDidChange\(\(key\) => \{\s*if \(!dbSessions\.get\(key\)\) messagesView\.log\.discard\(key\);/);
     assert.match(source, /onDidChangeActiveTextEditor\(showLogOfEditor\)/);
     assert.match(source, /onDidFocusSession\(\(ref\) => messagesView\.show\(ref\)\)/);

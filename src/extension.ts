@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
 import { ConnectionManager } from './connectionManager';
 import { TableExplorerProvider } from './tableExplorer';
 import { TableWebViewManager } from './tableWebView';
@@ -367,8 +368,9 @@ export function activate(context: vscode.ExtensionContext) {
 
         // Every Data Viewer tab and every SQL file that runs statements gets a
         // database session of its own, kept until the last tab using it closes.
-        // What the server says goes to the log of that session, which ends with it.
-        const messagesView = new SessionMessagesView(new SessionMessageLog());
+        // What the server says goes to the log of that session, which ends with it;
+        // every message is also spooled to a temporary file, so Save writes all of them.
+        const messagesView = new SessionMessagesView(new SessionMessageLog({ spoolRoot: os.tmpdir() }));
         const dbSessions = new DbSessionManager({
             openClient: () => connectionManager.openSessionClient(),
             generation: () => connectionManager.getConnectionGeneration(),

@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import type { DbSessionRef, SessionNotice } from './dbSession';
 import { getErrorMessage, Logger } from './logger';
 import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
@@ -10,7 +13,7 @@ export const MESSAGES_PANEL_NAME = 'PostgreSQL Messages';
 /** The webview view of that panel. */
 export const MESSAGES_VIEW_ID = 'postgresSessionMessages';
 
-/** A log keeps this many messages; older ones are dropped. */
+/** The panel keeps this many messages of a log; *Save* writes all of them. */
 export const MAX_MESSAGES_PER_LOG = 2000;
 
 /** One entry of a session's log. */
@@ -81,30 +84,145 @@ export function messageTone(severity: string): MessageTone {
 export interface SessionLog {
     key: string;
     label: string;
+    /** The newest messages, at most the limit of the log. */
     messages: SessionMessage[];
+    /** Every message since the log began or was cleared, including those no longer kept. */
+    total: number;
+}
+
+type SpoolOperation = { kind: 'append'; text: string } | { kind: 'truncate' } | { kind: 'remove' };
+
+/**
+ * A file that receives every message of one log, so *Save* can write more of
+ * them than the panel keeps. Writes are queued and run one after the other,
+ * consecutive messages in one write, so a flood of `RAISE NOTICE` neither
+ * blocks the extension host nor reorders the file.
+ */
+export class MessageSpool {
+    private operations: SpoolOperation[] = [];
+    private running?: Promise<void>;
+    private removed = false;
+
+    constructor(readonly filePath: string) {}
+
+    write(text: string): void {
+        if (this.removed) return;
+        const last = this.operations[this.operations.length - 1];
+        if (last?.kind === 'append') {
+            last.text += text;
+        } else {
+            this.operations.push({ kind: 'append', text });
+        }
+        this.pump();
+    }
+
+    /** Empty the file; what was still waiting to be written is dropped as well. */
+    truncate(): void {
+        if (this.removed) return;
+        this.operations = [{ kind: 'truncate' }];
+        this.pump();
+    }
+
+    /** Delete the file; nothing is written to it any more. */
+    remove(): void {
+        if (this.removed) return;
+        this.removed = true;
+        this.operations = [{ kind: 'remove' }];
+        this.pump();
+    }
+
+    /** Settles once everything queued so far has reached the file. */
+    async idle(): Promise<void> {
+        while (this.running) {
+            await this.running;
+        }
+    }
+
+    /** Write the whole file to `target`, after everything queued has reached it. */
+    async copyTo(target: string): Promise<void> {
+        await this.idle();
+        if (fs.existsSync(this.filePath)) {
+            await fs.promises.copyFile(this.filePath, target);
+        } else {
+            await fs.promises.writeFile(target, '', 'utf8');
+        }
+    }
+
+    /** The whole file, after everything queued has reached it. */
+    async read(): Promise<string> {
+        await this.idle();
+        return fs.existsSync(this.filePath) ? fs.promises.readFile(this.filePath, 'utf8') : '';
+    }
+
+    private pump(): void {
+        if (this.running) return;
+        this.running = (async () => {
+            while (this.operations.length > 0) {
+                const operation = this.operations.shift() as SpoolOperation;
+                try {
+                    if (operation.kind === 'append') {
+                        await fs.promises.appendFile(this.filePath, operation.text, 'utf8');
+                    } else if (operation.kind === 'truncate') {
+                        await fs.promises.writeFile(this.filePath, '', 'utf8');
+                    } else {
+                        await fs.promises.rm(this.filePath, { force: true });
+                    }
+                } catch (err: unknown) {
+                    Logger.error('MessageSpool.pump', err);
+                }
+            }
+        })().finally(() => {
+            this.running = undefined;
+            if (this.operations.length > 0) this.pump();
+        });
+    }
+}
+
+export interface SessionMessageLogOptions {
+    /** How many messages a log keeps for the panel; default {@link MAX_MESSAGES_PER_LOG}. */
+    limit?: number;
+    /**
+     * The folder in which a temporary folder for the spool files is made on
+     * the first message, e.g. `os.tmpdir()`. Without it nothing is spooled and
+     * *Save* writes only the messages the log keeps.
+     */
+    spoolRoot?: string;
 }
 
 /**
  * One log per database session, under the session's key: the tabs and files
  * sharing a session share its log. A log is created by its first message and
- * lives until it is discarded — when the session ends.
+ * lives until it is discarded — when the session ends. It keeps the newest
+ * messages for the panel and spools every message to a file of its own.
  */
 export class SessionMessageLog {
     private readonly logs = new Map<string, SessionLog>();
+    private readonly spools = new Map<string, MessageSpool>();
+    /** Spools of discarded logs whose file is still being deleted. */
+    private readonly retiring = new Set<MessageSpool>();
     private readonly listeners = new Set<(key: string) => void>();
+    private readonly limit: number;
+    private readonly spoolRoot?: string;
+    private spoolDir?: string;
+    private spoolCounter = 0;
 
-    constructor(private readonly limit: number = MAX_MESSAGES_PER_LOG) {}
+    constructor(options: SessionMessageLogOptions = {}) {
+        this.limit = options.limit ?? MAX_MESSAGES_PER_LOG;
+        this.spoolRoot = options.spoolRoot;
+    }
 
     append(ref: DbSessionRef, message: SessionMessage): void {
         let log = this.logs.get(ref.key);
         if (!log) {
-            log = { key: ref.key, label: ref.label, messages: [] };
+            log = { key: ref.key, label: ref.label, messages: [], total: 0 };
             this.logs.set(ref.key, log);
         }
         log.messages.push(message);
+        log.total++;
         if (log.messages.length > this.limit) {
             log.messages.splice(0, log.messages.length - this.limit);
         }
+        this.spoolOf(ref.key)?.write(`${formatSessionMessage(message)}\n`);
         this.emit(ref.key);
     }
 
@@ -115,16 +233,60 @@ export class SessionMessageLog {
     /** Empty the log of `key`, which stays for further messages. */
     clear(key: string): void {
         const log = this.logs.get(key);
-        if (!log || log.messages.length === 0) return;
+        if (!log || log.total === 0) return;
         log.messages = [];
+        log.total = 0;
+        this.spools.get(key)?.truncate();
         this.emit(key);
     }
 
     /** Forget the log of `key` entirely, because its session has ended. */
     discard(key: string): void {
+        const spool = this.spools.get(key);
+        if (spool) {
+            spool.remove();
+            this.spools.delete(key);
+            this.retiring.add(spool);
+            void spool.idle().then(() => this.retiring.delete(spool));
+        }
         if (this.logs.delete(key)) {
             this.emit(key);
         }
+    }
+
+    /**
+     * Write every message of the log of `key` — not only those it keeps — to
+     * `target`, one per line as they are copied. Returns how many were written.
+     */
+    async saveTo(key: string, target: string): Promise<number> {
+        const log = this.logs.get(key);
+        const spool = this.spools.get(key);
+        if (spool) {
+            await spool.copyTo(target);
+        } else {
+            await fs.promises.writeFile(target, this.keptText(log), 'utf8');
+        }
+        return log?.total ?? 0;
+    }
+
+    /**
+     * Every message of the log of `key` — not only those it keeps — as text,
+     * one per line as *Save* writes them.
+     */
+    async readAll(key: string): Promise<{ text: string; count: number }> {
+        const log = this.logs.get(key);
+        const spool = this.spools.get(key);
+        const text = spool ? await spool.read() : this.keptText(log);
+        return { text, count: log?.total ?? 0 };
+    }
+
+    private keptText(log: SessionLog | undefined): string {
+        return (log?.messages ?? []).map((m) => `${formatSessionMessage(m)}\n`).join('');
+    }
+
+    /** Settles once every spool — also one being deleted — has done what it was given. */
+    async idle(): Promise<void> {
+        await Promise.all([...this.spools.values(), ...this.retiring].map((spool) => spool.idle()));
     }
 
     onDidChange(listener: (key: string) => void): { dispose(): void } {
@@ -132,11 +294,59 @@ export class SessionMessageLog {
         return { dispose: () => { this.listeners.delete(listener); } };
     }
 
+    /** Forget every log and delete the spool files. */
+    dispose(): void {
+        for (const spool of this.spools.values()) {
+            spool.remove();
+        }
+        this.logs.clear();
+        this.spools.clear();
+        this.retiring.clear();
+        this.listeners.clear();
+        if (this.spoolDir) {
+            try {
+                fs.rmSync(this.spoolDir, { recursive: true, force: true });
+            } catch (err: unknown) {
+                Logger.error('SessionMessageLog.dispose', err);
+            }
+            this.spoolDir = undefined;
+        }
+    }
+
+    private spoolOf(key: string): MessageSpool | undefined {
+        const existing = this.spools.get(key);
+        if (existing || !this.spoolRoot) return existing;
+        try {
+            this.spoolDir ??= fs.mkdtempSync(path.join(this.spoolRoot, 'pqb-messages-'));
+        } catch (err: unknown) {
+            // Without a spool the log still shows and saves what it keeps.
+            Logger.error('SessionMessageLog.spoolOf', err);
+            return undefined;
+        }
+        const spool = new MessageSpool(path.join(this.spoolDir, `session-${++this.spoolCounter}.log`));
+        this.spools.set(key, spool);
+        return spool;
+    }
+
     private emit(key: string): void {
         for (const listener of [...this.listeners]) {
             listener(key);
         }
     }
+}
+
+/**
+ * The name *Save* suggests for the log of the session `label`, e.g.
+ * `payroll-messages-2026-11-03.log` for `payroll.sql`.
+ */
+export function messagesFileName(label: string, now: Date = new Date()): string {
+    const base = label
+        .replace(/\.(sql|pgsql|psql)$/i, '')
+        .replace(/[\\/:*?"<>|\s]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 60) || 'session';
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    return `${base}-messages-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}.log`;
 }
 
 /** Where the statements of a session report what the server said. */
@@ -151,12 +361,26 @@ export interface MessagesViewState {
     /** The session shown, or null while no SQL file or Data Viewer has been active. */
     label: string | null;
     messages: Array<SessionMessage & { tone: MessageTone }>;
+    /** Every message of the log, of which `messages` are the newest. */
+    total: number;
+    /** E.g. `12 messages`, or `last 2000 of 5234 messages` once the panel no longer shows them all. */
+    countText: string;
+}
+
+/** How many messages the panel shows, and of how many when it no longer shows all of them. */
+export function messagesCountText(shown: number, total: number): string {
+    const noun = total === 1 ? 'message' : 'messages';
+    return shown < total ? `last ${shown} of ${total} ${noun}` : `${total} ${noun}`;
 }
 
 export function messagesViewState(shown: DbSessionRef | undefined, log: SessionLog | undefined): MessagesViewState {
+    const messages = log?.messages ?? [];
+    const total = log?.total ?? 0;
     return {
         label: shown ? shown.label : null,
-        messages: (log?.messages ?? []).map((message) => ({ ...message, tone: messageTone(message.severity) }))
+        messages: messages.map((message) => ({ ...message, tone: messageTone(message.severity) })),
+        total,
+        countText: shown ? messagesCountText(messages.length, total) : ''
     };
 }
 
@@ -222,6 +446,8 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
                 if (this.shown) this.log.clear(this.shown.key);
             } else if (message.type === 'copy') {
                 void this.copy();
+            } else if (message.type === 'save') {
+                void this.save();
             }
         });
     }
@@ -229,14 +455,37 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
     dispose(): void {
         this.subscription.dispose();
         this.view = undefined;
+        this.log.dispose();
     }
 
-    private async copy(): Promise<void> {
-        const messages = this.shown ? this.log.get(this.shown.key)?.messages ?? [] : [];
-        if (messages.length === 0) return;
+    /** Write every message of the shown log to a file the user picks. */
+    private async save(): Promise<void> {
+        const shown = this.shown;
+        if (!shown || !this.log.get(shown.key)?.total) return;
+        const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir();
+        const uri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file(path.join(folder, messagesFileName(shown.label))),
+            filters: { 'Log Files': ['log', 'txt'] },
+            title: `Save the Messages of ${shown.label}`
+        });
+        if (!uri) return;
         try {
-            await vscode.env.clipboard.writeText(messages.map(formatSessionMessage).join('\n'));
-            vscode.window.setStatusBarMessage(`Copied ${messages.length} ${messages.length === 1 ? 'message' : 'messages'}.`, 3000);
+            const count = await this.log.saveTo(shown.key, uri.fsPath);
+            vscode.window.setStatusBarMessage(`Saved ${count} ${count === 1 ? 'message' : 'messages'} to ${uri.fsPath}.`, 5000);
+        } catch (err: unknown) {
+            Logger.error('SessionMessagesView.save', err);
+            vscode.window.showErrorMessage(`Saving the messages failed: ${getErrorMessage(err)}`);
+        }
+    }
+
+    /** Put every message of the shown log on the clipboard, as *Save* writes them. */
+    private async copy(): Promise<void> {
+        const shown = this.shown;
+        if (!shown || !this.log.get(shown.key)?.total) return;
+        try {
+            const { text, count } = await this.log.readAll(shown.key);
+            await vscode.env.clipboard.writeText(text.replace(/\n$/, ''));
+            vscode.window.setStatusBarMessage(`Copied ${count} ${count === 1 ? 'message' : 'messages'}.`, 3000);
         } catch (err: unknown) {
             Logger.error('SessionMessagesView.copy', err);
             vscode.window.showErrorMessage(`Copying the messages failed: ${getErrorMessage(err)}`);
@@ -273,7 +522,8 @@ body { padding: 0; display: flex; flex-direction: column; }
 <div class="toolbar">
     <div class="session"><span class="session-label" id="label"></span><span class="count" id="count"></span></div>
     <div class="toolbar-group">
-        <button class="btn btn-sm" id="copyBtn" title="Copy the messages of this session to the clipboard">${icon('copy')}Copy</button>
+        <button class="btn btn-sm" id="copyBtn" title="Copy every message of this session to the clipboard, including those the panel no longer shows">${icon('copy')}Copy</button>
+        <button class="btn btn-sm" id="saveBtn" title="Save every message of this session to a file, including those the panel no longer shows">${icon('save')}Save</button>
         <button class="btn btn-sm" id="clearBtn" title="Clear the messages of this session">${icon('trash')}Clear</button>
     </div>
 </div>
@@ -284,8 +534,10 @@ const listEl = document.getElementById('list');
 const labelEl = document.getElementById('label');
 const countEl = document.getElementById('count');
 const copyBtn = document.getElementById('copyBtn');
+const saveBtn = document.getElementById('saveBtn');
 const clearBtn = document.getElementById('clearBtn');
 copyBtn.addEventListener('click', () => vscode.postMessage({ type: 'copy' }));
+saveBtn.addEventListener('click', () => vscode.postMessage({ type: 'save' }));
 clearBtn.addEventListener('click', () => vscode.postMessage({ type: 'clear' }));
 
 ${WEBVIEW_ESCAPE_HTML_JS}
@@ -299,9 +551,10 @@ function render(key, state) {
     const messages = state.messages || [];
     labelEl.textContent = state.label ? 'Session of ' + state.label : 'No session';
     labelEl.title = state.label ? 'The database session of ' + state.label + ' and every tab sharing it' : '';
-    countEl.textContent = state.label ? messages.length + ' ' + (messages.length === 1 ? 'message' : 'messages') : '';
-    copyBtn.disabled = messages.length === 0;
-    clearBtn.disabled = messages.length === 0;
+    countEl.textContent = state.countText || '';
+    copyBtn.disabled = !state.total;
+    saveBtn.disabled = !state.total;
+    clearBtn.disabled = !state.total;
     if (!state.label) {
         listEl.innerHTML = '<div class="empty">Open a SQL file or a Data Viewer tab to see the messages of its database session.</div>';
         return;
