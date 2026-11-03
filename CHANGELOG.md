@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.5.2
+
+- **Every database session has a log of its own, in a panel of its own:** The *PostgreSQL Messages* output collected the `RAISE NOTICE`, `INFO` and `WARNING` messages, the errors of failed statements and the `-- @export` results of every SQL file and every Data Viewer in one long list, so with a few scripts and tabs open it took reading the source in front of every line to find what belonged to the tab you were looking at. *PostgreSQL Messages* is now a panel of its own next to *Problems* and *Terminal*, and it keeps one log per database session: a SQL file and the Data Viewers opened from it run on the same session and therefore write into the same log, while a Data Viewer opened on its own has a log of its own. Switching to a SQL file or a Data Viewer tab shows the log of its session and nothing else; the header names the session, and *Copy* and *Clear* act on that log only. As before, the panel comes into view by itself — without taking the focus — when a statement sends messages or a run exports several queries. A log lives as long as its session and is gone once the last tab using that session is closed.
+
 ## 3.5.1
 
 - **Clicking or resizing a field of the Single Record View no longer counts as a change:** Leaving a field of the *Single Record View* wrote its text back to the row even when nothing had been typed, and the text a field shows is not always the stored value exactly — an empty string comes back as NULL, Windows line breaks as plain ones, and a leading line break is dropped. So a click into such a field, or dragging its corner to make it larger, marked the field as *modified*, added a pending change to the grid and a step to *Undo*. A field is now only written back when its text was actually changed, and resizing or clicking leaves the record untouched.

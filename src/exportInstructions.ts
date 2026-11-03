@@ -417,12 +417,6 @@ export function exportSettingsFor(
     return settings;
 }
 
-/** One line for the messages output telling what was exported where. */
-export function formatExportMessage(label: string, line: number, rows: number, filePath: string, now: Date = new Date()): string {
-    const time = now.toTimeString().slice(0, 8);
-    return `[${time}] ${label} — EXPORT: line ${line + 1}, ${rows} ${rows === 1 ? 'row' : 'rows'} to ${filePath}`;
-}
-
 /** What the Export tab is opened with. */
 export interface ExportDialogRequest {
     title: string;

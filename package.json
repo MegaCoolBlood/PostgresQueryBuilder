@@ -2,7 +2,7 @@
   "name": "postgres-query-booster",
   "displayName": "PostgreSQL Query Booster",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "3.5.1",
+  "version": "3.5.2",
   "publisher": "sirlychee",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -49,6 +49,13 @@
           "title": "PostgreSQL Query Booster",
           "icon": "images/postgres_underworld_crown_mono.svg"
         }
+      ],
+      "panel": [
+        {
+          "id": "postgresQueryBoosterMessages",
+          "title": "PostgreSQL Messages",
+          "icon": "images/postgres_underworld_crown_mono.svg"
+        }
       ]
     },
     "views": {
@@ -74,6 +81,14 @@
           "id": "postgresSavedQueries",
           "name": "Bookmarked Queries",
           "icon": "$(bookmark)"
+        }
+      ],
+      "postgresQueryBoosterMessages": [
+        {
+          "id": "postgresSessionMessages",
+          "name": "Messages",
+          "type": "webview",
+          "icon": "$(output)"
         }
       ]
     },

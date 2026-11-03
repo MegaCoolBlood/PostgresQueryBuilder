@@ -18,7 +18,8 @@ import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore, onDidChangeTableAliases } from './tableStatementDrop';
 import { ViewDataFromSelect } from './viewDataFromSelect';
 import { DbSessionManager } from './dbSession';
-import { MESSAGES_CHANNEL_NAME, SqlFileSessions, formatServerMessage } from './sqlFileSession';
+import { SqlFileSessions, messageLogRefFor } from './sqlFileSession';
+import { SessionMessageLog, SessionMessagesView, noticeMessage } from './sessionMessages';
 import { Logger, getErrorMessage, getErrorStack } from './logger';
 import { formatSqlChecked } from './plpgsqlFormatter';
 import { formatOptionsToRepoConfig } from './repoFormatConfig';
@@ -366,7 +367,8 @@ export function activate(context: vscode.ExtensionContext) {
 
         // Every Data Viewer tab and every SQL file that runs statements gets a
         // database session of its own, kept until the last tab using it closes.
-        const messagesChannel = vscode.window.createOutputChannel(MESSAGES_CHANNEL_NAME);
+        // What the server says goes to the log of that session, which ends with it.
+        const messagesView = new SessionMessagesView(new SessionMessageLog());
         const dbSessions = new DbSessionManager({
             openClient: () => connectionManager.openSessionClient(),
             generation: () => connectionManager.getConnectionGeneration(),
@@ -376,19 +378,34 @@ export function activate(context: vscode.ExtensionContext) {
                     + 'Settings made with SET or set_config and temporary tables of the old session are gone.'
                 );
             },
-            onNotice: (session, notice) => messagesChannel.appendLine(formatServerMessage(session.label, notice))
+            onNotice: (session, notice) => messagesView.append(session, noticeMessage(session.label, notice))
         });
         context.subscriptions.push(
-            messagesChannel,
+            messagesView,
+            vscode.window.registerWebviewViewProvider(SessionMessagesView.viewType, messagesView),
             { dispose: () => dbSessions.dispose() },
+            dbSessions.onDidChange((key) => {
+                if (!dbSessions.get(key)) messagesView.log.discard(key);
+            }),
             connectionManager.onConnectionChanged(() => dbSessions.disconnectAll())
         );
 
         tableWebViewManager = new TableWebViewManager(context, connectionManager, columnMappingManager, permanentConstraintManager, modifyHistoryStore, savedQueryStore, dbSessions);
+        // The messages panel shows the log of the SQL file or Data Viewer tab that is active.
+        const showLogOfEditor = (editor: vscode.TextEditor | undefined): void => {
+            if (!editor) return;
+            const ref = messageLogRefFor(editor.document, FORMATTER_LANGUAGES, (key) => messagesView.log.get(key) !== undefined);
+            if (ref) messagesView.show(ref);
+        };
+        showLogOfEditor(vscode.window.activeTextEditor);
+        context.subscriptions.push(
+            vscode.window.onDidChangeActiveTextEditor(showLogOfEditor),
+            tableWebViewManager.onDidFocusSession((ref) => messagesView.show(ref))
+        );
         sqlEditorManager = new SqlEditorManager(context, connectionManager, modifyHistoryStore);
         const exportService = new ExportService(context);
         sqlFileSessions = new SqlFileSessions(
-            dbSessions, connectionManager, messagesChannel, modifyHistoryStore,
+            dbSessions, connectionManager, messagesView, modifyHistoryStore,
             // A SELECT of a selection or file is shown in the Data Viewer, on the file's session.
             (sql, title, ref, placement) => tableWebViewManager.openQueryViewWithLoad(sql, title, ref, placement),
             // …unless an `-- @export` instruction above it sends it to a file.

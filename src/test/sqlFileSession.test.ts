@@ -22,9 +22,10 @@ import {
     tabShowsUri,
     resultValueText,
     statementErrorText,
-    MESSAGES_CHANNEL_NAME,
+    messageLogRefFor,
     type QueryViewLoad
 } from '../sqlFileSession';
+import { MESSAGES_PANEL_NAME, formatSessionMessage } from '../sessionMessages';
 
 const DO_BLOCK = [
     'DO $$',
@@ -182,6 +183,31 @@ test('formatServerMessage writes a server message with its details', () => {
     assert.equal(formatServerMessage('x', { message: 'plain' }, at), '[09:05:07] x — NOTICE: plain');
 });
 
+// ===== messageLogRefFor =====
+
+function doc(uri: string, languageId: string) {
+    return { uri: { scheme: uri.split(':')[0], toString: () => uri }, fileName: uri.replace(/^[a-z]+:\/*/, '/'), languageId };
+}
+
+test('messageLogRefFor shows the log of a SQL file that becomes the active editor', () => {
+    assert.deepEqual(
+        messageLogRefFor(doc('file:///work/payroll.sql', 'sql'), ['sql', 'pgsql'], () => false),
+        { key: 'file:file:///work/payroll.sql', label: 'payroll.sql' }
+    );
+    assert.deepEqual(messageLogRefFor(doc('untitled:Untitled-1', 'pgsql'), ['sql', 'pgsql'], () => false)?.key, 'file:untitled:Untitled-1');
+});
+
+test('messageLogRefFor keeps the panel as it is for an editor that is no SQL file', () => {
+    assert.equal(messageLogRefFor(doc('file:///work/readme.md', 'markdown'), ['sql'], () => false), undefined);
+    assert.equal(messageLogRefFor(doc('output:extension-output-1', 'log'), ['sql'], () => false), undefined);
+    assert.equal(messageLogRefFor(doc('git:///work/payroll.sql', 'sql'), ['sql'], () => false), undefined, 'a diff side has no session');
+});
+
+test('messageLogRefFor shows the log of any file whose session already has messages', () => {
+    const key = 'file:file:///work/script.txt';
+    assert.deepEqual(messageLogRefFor(doc('file:///work/script.txt', 'plaintext'), ['sql'], (k) => k === key), { key, label: 'script.txt' });
+});
+
 test('errorOffset maps the reported position into the document', () => {
     assert.equal(errorOffset({ position: '5' }, 100, 20), 104);
     assert.equal(errorOffset({ position: '1' }, 0, 20), 0);
@@ -295,11 +321,14 @@ function createFileSessions(options: {
         },
         generation: () => 1
     });
+    /** The session log: every message as its copied text, with the key of the session it went to. */
     const channel = {
         lines: [] as string[],
-        shown: 0,
-        appendLine(line: string) { this.lines.push(line); },
-        show() { this.shown++; }
+        keys: [] as string[],
+        revealed: [] as string[],
+        get shown() { return this.revealed.length; },
+        append(ref: { key: string }, message: any) { this.lines.push(formatSessionMessage(message)); this.keys.push(ref.key); },
+        reveal(ref: { key: string }) { this.revealed.push(ref.key); }
     };
     const history: Array<{ sql: string }> = [];
     const poolQueries: Array<{ sql: string; params?: unknown[] }> = [];
@@ -428,9 +457,9 @@ test('Execute Selection counts the messages of the server and shows them', async
 
     await fileSessions.execute(selecting(FILE, DO_BLOCK) as any);
 
-    assert.match(String(infos[0][0]), /The server sent 1 message, shown in the "PostgreSQL Messages" output\./);
-    assert.equal(channel.shown, 1);
-    assert.equal(MESSAGES_CHANNEL_NAME, 'PostgreSQL Messages');
+    assert.match(String(infos[0][0]), /The server sent 1 message, shown in the "PostgreSQL Messages" panel\./);
+    assert.deepEqual(channel.revealed, [`file:${URI}`], 'the panel opens on the log of the file');
+    assert.equal(MESSAGES_PANEL_NAME, 'PostgreSQL Messages');
 });
 
 test('a selection that fails puts the cursor where the server saw the error', async (t) => {
@@ -450,6 +479,7 @@ test('a selection that fails puts the cursor where the server saw the error', as
     assert.equal((editor.selection as any).active.offset, text.indexOf('DO $$') + 9);
     assert.equal(editor.revealed.length, 1);
     assert.match(channel.lines[0], /payroll\.sql — ERROR: syntax error at or near "SELEC"\n {4}HINT: check the spelling$/);
+    assert.deepEqual(channel.keys, [`file:${URI}`], 'the error goes to the log of the file, not to a shared one');
 });
 
 test('statements that change data are recorded in the Modify History', async (t) => {
@@ -835,6 +865,7 @@ test('executeOnSession returns a failure with its context and logs the details o
 
     assert.deepEqual(outcome, { status: 'failed', message: 'must be a superuser to terminate superuser process (SQL statement "x")' });
     assert.match(channel.lines.join('\n'), /Locks — ERROR: must be a superuser[\s\S]*HINT: Ask an admin\./);
+    assert.deepEqual(channel.keys, [panelRef.key], 'the error goes to the log of the session the statement ran on');
     assert.equal(errors.length, 0);
 });
 
@@ -956,6 +987,7 @@ test('Execute File writes a query under an @export instruction to its file inste
         options: { format: 'csv', csvSeparator: ';', csvIncludeHeaders: true, csvQuoteStrings: true, csvLineEnding: 'lf', filePath: target }
     }]);
     assert.ok(channel.lines.some((l) => l.endsWith(`payroll.sql — EXPORT: line ${EXPORT_LINE + 2}, 2 rows to ${target}`)), 'named by the line of the query');
+    assert.ok(channel.keys.every((key) => key === fileSessionRef(editor.document.uri, editor.document.fileName).key), 'listed in the log of the file');
     assert.equal(infos[0][0].replace(/\d+ ms/, 'N ms'),
         `Ran all 3 statements of payroll.sql in N ms; 1 query opened in the Data Viewer; 2 rows exported to ${target}.`);
 });
@@ -1190,6 +1222,6 @@ test('summarizeFileRun names a single export and points to the messages for seve
     assert.equal(summarizeFileRun('payroll.sql', 2, 0, 12, [{ rows: 1, path: 'C:\\o.csv' }]), 'Ran all 2 statements of payroll.sql in 12 ms; 1 row exported to C:\\o.csv.');
     assert.equal(
         summarizeFileRun('payroll.sql', 3, 1, 12, [{ rows: 1, path: 'a' }, { rows: 2, path: 'b' }]),
-        'Ran all 3 statements of payroll.sql in 12 ms; 1 query opened in the Data Viewer; 2 queries exported, listed in the "PostgreSQL Messages" output.'
+        'Ran all 3 statements of payroll.sql in 12 ms; 1 query opened in the Data Viewer; 2 queries exported, listed in the "PostgreSQL Messages" panel.'
     );
 });

@@ -16,6 +16,7 @@ const STYLE_OWNERS = [
     'sqlEditor.ts',
     'modifyHistoryViewProvider.ts',
     'searchViewProvider.ts',
+    'sessionMessages.ts',
     'viewDataFromSelect.ts',
     'connectionManager.ts'
 ];

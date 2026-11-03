@@ -303,6 +303,9 @@ export class TableWebViewManager {
     /** Cell values currently open in an editor tab, keyed by scratch file path. */
     private cellEditors: Map<string, CellEditorLink> = new Map();
     private cellEditorCounter = 0;
+    private readonly sessionFocus = new vscode.EventEmitter<DbSessionRef>();
+    /** A Data Viewer tab became the active one; tells the database session it runs on. */
+    readonly onDidFocusSession = this.sessionFocus.event;
 
     constructor(context: vscode.ExtensionContext, connectionManager: ConnectionManager, columnMappingManager: ColumnMappingManager, permanentConstraintManager: PermanentConstraintManager, modifyHistoryStore?: ModifyHistoryStore, savedQueryStore?: SavedQueryStore, dbSessions?: DbSessionManager) {
         this.context = context;
@@ -313,6 +316,7 @@ export class TableWebViewManager {
         this.modifyHistoryStore = modifyHistoryStore;
         this.savedQueryStore = savedQueryStore;
         this.dbSessions = dbSessions;
+        context.subscriptions.push(this.sessionFocus);
 
         // Every panel on a session shows whether it is open and who shares it.
         if (dbSessions) {
@@ -452,11 +456,18 @@ export class TableWebViewManager {
         });
         panel.onDidDispose(() => connSub.dispose());
 
-        // Auto refresh pauses while the panel is not visible.
+        // Auto refresh pauses while the panel is not visible; the messages
+        // panel follows the tab that becomes active.
         const viewStateSub = panel.onDidChangeViewState(() => {
             this.post(session, { command: 'viewStateChanged', visible: panel.visible });
+            if (panel.active && session.dbSessionRef) {
+                this.sessionFocus.fire(session.dbSessionRef);
+            }
         });
         panel.onDidDispose(() => viewStateSub.dispose());
+        if (!preserveFocus && session.dbSessionRef) {
+            this.sessionFocus.fire(session.dbSessionRef);
+        }
 
         panel.webview.onDidReceiveMessage(async (message) => {
             const handler = this.messageHandlers[message.command];

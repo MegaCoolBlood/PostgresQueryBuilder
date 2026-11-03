@@ -11,7 +11,6 @@ import {
     exportDialogChoiceFrom,
     exportPlaceholders,
     exportSettingsFor,
-    formatExportMessage,
     parseExportInstruction,
     planExportInstructions,
     resolveExportTarget
@@ -210,11 +209,6 @@ test('file= with an unknown placeholder or relative to an unsaved file is refuse
 test('an export without file= suggests a name after the SQL file and the line', () => {
     assert.equal(defaultExportFileName(VALUES, 11, 'excel'), 'payroll_line12.xlsx');
     assert.deepEqual(Object.keys(EXPORT_FILE_EXTENSIONS).sort(), ['csv', 'excel', 'insert', 'json', 'xml']);
-});
-
-test('an export is listed with its line, its rows and its file', () => {
-    assert.equal(formatExportMessage('payroll.sql', 11, 1234, 'C:\\exports\\orders.csv', NOW), '[07:05:09] payroll.sql — EXPORT: line 12, 1234 rows to C:\\exports\\orders.csv');
-    assert.match(formatExportMessage('payroll.sql', 0, 1, 'o.csv', NOW), /line 1, 1 row to/);
 });
 
 // ===== the answer of the export dialog =====

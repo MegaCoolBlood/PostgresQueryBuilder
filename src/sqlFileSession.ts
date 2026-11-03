@@ -9,13 +9,19 @@ import { isModifyingSql, type ModifyHistoryStore } from './modifyHistoryStore';
 import { getErrorMessage, Logger } from './logger';
 import { uniqueFieldNames } from './queryRunner';
 import {
+    MESSAGES_PANEL_NAME,
+    exportMessage,
+    formatSessionMessage,
+    noticeMessage,
+    type SessionMessageSink
+} from './sessionMessages';
+import {
     EXPORT_FILE_EXTENSIONS,
     defaultExportFileName,
     exportChoiceProblem,
     exportPlaceholders,
     exportSettingsFor,
     exportTargetErrors,
-    formatExportMessage,
     planExportInstructions,
     resolveExportTarget,
     type ExportFormat,
@@ -26,15 +32,29 @@ import {
     type QueryExporter
 } from './exportInstructions';
 
-/** The output channel that shows what the server says besides results. */
-export const MESSAGES_CHANNEL_NAME = 'PostgreSQL Messages';
-
 /** How an open SQL file holds its session. */
 const FILE_HOLDER = 'file';
 
 /** The session of a SQL file, shared by the Data Viewers opened from it. */
 export function fileSessionRef(uri: { toString(): string }, fileName: string): DbSessionRef {
     return { key: `file:${uri.toString()}`, label: path.basename(fileName) };
+}
+
+/**
+ * The session whose messages to show when `document` becomes the active
+ * editor: that of a SQL file on disk or not yet saved, or of any other file
+ * that already has messages. Undefined for everything else — a diff, an
+ * output, a settings file — so the panel keeps what it showed.
+ */
+export function messageLogRefFor(
+    document: { uri: { scheme?: string; toString(): string }; fileName: string; languageId: string },
+    sqlLanguages: ReadonlyArray<string>,
+    hasLog: (key: string) => boolean
+): DbSessionRef | undefined {
+    const ref = fileSessionRef(document.uri, document.fileName);
+    if (hasLog(ref.key)) return ref;
+    const scheme = document.uri.scheme ?? 'file';
+    return sqlLanguages.includes(document.languageId) && (scheme === 'file' || scheme === 'untitled') ? ref : undefined;
 }
 
 /** Bounds of the text in `[start, end)` without surrounding blanks, or null when it is blank. */
@@ -264,7 +284,7 @@ export function summarizeFileRun(label: string, total: number, opened: number, m
     const viewers = opened === 0 ? '' : `; ${opened} ${opened === 1 ? 'query' : 'queries'} opened in the Data Viewer`;
     const files = exported.length === 0 ? ''
         : exported.length === 1 ? `; ${rowsText(exported[0].rows)} exported to ${exported[0].path}`
-        : `; ${exported.length} queries exported, listed in the "${MESSAGES_CHANNEL_NAME}" output`;
+        : `; ${exported.length} queries exported, listed in the "${MESSAGES_PANEL_NAME}" panel`;
     return `Ran ${all} of ${label} in ${durationText(ms)}${viewers}${files}.`;
 }
 
@@ -297,14 +317,9 @@ export function statementErrorText(err: unknown): string {
     return `${getErrorMessage(err)}${context ? ` (${context})` : ''}`;
 }
 
-/** A server message as a line (plus its detail lines) for the messages output. */
+/** A server message as a line (plus its detail lines), as it is copied from the messages panel. */
 export function formatServerMessage(label: string, notice: SessionNotice, now: Date = new Date()): string {
-    const time = now.toTimeString().slice(0, 8);
-    const lines = [`[${time}] ${label} — ${notice.severity || 'NOTICE'}: ${notice.message ?? ''}`];
-    if (notice.detail) lines.push(`    DETAIL: ${notice.detail}`);
-    if (notice.hint) lines.push(`    HINT: ${notice.hint}`);
-    if (notice.where) lines.push(`    CONTEXT: ${notice.where.replace(/\n/g, '\n             ')}`);
-    return lines.join('\n');
+    return formatSessionMessage(noticeMessage(label, notice, now));
 }
 
 /**
@@ -461,7 +476,7 @@ export class SqlFileSessions implements vscode.Disposable {
     constructor(
         private readonly sessions: DbSessionManager,
         private readonly connectionManager: ConnectionManager,
-        private readonly messages: vscode.OutputChannel,
+        private readonly messages: SessionMessageSink,
         private readonly modifyHistoryStore?: ModifyHistoryStore,
         private readonly openQueryView?: OpenQueryView,
         private readonly exporter?: QueryExporter
@@ -546,14 +561,14 @@ export class SqlFileSessions implements vscode.Disposable {
                 vscode.window.showInformationMessage('Execute Selection was cancelled before it started; nothing ran.');
                 return;
             }
-            this.reportFailure(editor, target, ref.label, err);
+            this.reportFailure(editor, target, ref, err);
             return;
         }
 
         this.recordModifyHistory(target.sql);
         let message = summarizeExecution(Array.isArray(outcome) ? outcome : [outcome], Date.now() - started);
         if (notices.length > 0) {
-            message += this.noticesText(notices.length);
+            message += this.noticesText(ref, notices.length);
         }
         vscode.window.showInformationMessage(message);
     }
@@ -735,9 +750,9 @@ export class SqlFileSessions implements vscode.Disposable {
             }
         );
 
-        const noticeText = notices.length > 0 ? this.noticesText(notices.length) : '';
+        const noticeText = notices.length > 0 ? this.noticesText(ref, notices.length) : '';
         if (exported.length > 1) {
-            this.messages.show(true);
+            this.messages.reveal(ref);
         }
         if (!stop) {
             vscode.window.showInformationMessage(summarizeFileRun(label, total, opened, Date.now() - started, exported) + noticeText);
@@ -758,7 +773,7 @@ export class SqlFileSessions implements vscode.Disposable {
         this.reportFailure(
             editor,
             { sql: text.slice(failed.start, failed.end), start: failed.start },
-            ref.label,
+            ref,
             stop.error,
             {
                 prefix: `${command} stopped at statement ${stop.index + 1} of ${total} (line ${line})${failedIn}; ${before}`,
@@ -879,7 +894,7 @@ export class SqlFileSessions implements vscode.Disposable {
             }
             return { status: 'failed', error: new Error(`Writing ${target} failed: ${getErrorMessage(err)}`) };
         }
-        this.messages.appendLine(formatExportMessage(ref.label, line, rows.length, target));
+        this.messages.append(ref, exportMessage(ref.label, line, rows.length, target));
         return { status: 'exported', query: { rows: rows.length, path: target } };
     }
 
@@ -926,7 +941,7 @@ export class SqlFileSessions implements vscode.Disposable {
     /**
      * Run `sql` in `session` — the session of a Data Viewer — the way Execute
      * Selection runs a selection: cancellable from its notification, the
-     * messages of the server in the "PostgreSQL Messages" output, data changes
+     * messages of the server in the session's log of the "PostgreSQL Messages" panel, data changes
      * in the Modify History. It reports nothing itself; the outcome says how
      * the statement ended.
      */
@@ -951,7 +966,7 @@ export class SqlFileSessions implements vscode.Disposable {
             if (err instanceof CancelledBeforeStart) {
                 return { status: 'cancelled' };
             }
-            this.logServerError(label, err);
+            this.logServerError(session, label, err);
             return { status: 'failed', message: statementErrorText(err) };
         }
 
@@ -963,7 +978,7 @@ export class SqlFileSessions implements vscode.Disposable {
             message += ` Result: ${value}.`;
         }
         if (notices.length > 0) {
-            message += this.noticesText(notices.length);
+            message += this.noticesText(session, notices.length);
         }
         return { status: 'executed', message };
     }
@@ -1005,19 +1020,19 @@ export class SqlFileSessions implements vscode.Disposable {
     }
 
     /** Text telling where the messages of the server are, which also shows them. */
-    private noticesText(count: number): string {
-        this.messages.show(true);
-        return ` The server sent ${count} ${count === 1 ? 'message' : 'messages'}, shown in the "${MESSAGES_CHANNEL_NAME}" output.`;
+    private noticesText(ref: DbSessionRef, count: number): string {
+        this.messages.reveal(ref);
+        return ` The server sent ${count} ${count === 1 ? 'message' : 'messages'}, shown in the "${MESSAGES_PANEL_NAME}" panel.`;
     }
 
     private reportFailure(
         editor: vscode.TextEditor,
         target: StatementTarget,
-        label: string,
+        ref: DbSessionRef,
         err: unknown,
         options: { prefix?: string; revealStatement?: boolean } = {}
     ): void {
-        this.logServerError(label, err);
+        this.logServerError(ref, ref.label, err);
         // A syntax error points at its position: put the cursor there, or at
         // the start of the failed statement of a file.
         const offset = errorOffset(err, target.start, target.sql.length) ?? (options.revealStatement ? target.start : null);
@@ -1029,10 +1044,10 @@ export class SqlFileSessions implements vscode.Disposable {
         vscode.window.showErrorMessage(`${options.prefix ?? 'Execute Selection failed'}: ${statementErrorText(err)}`);
     }
 
-    /** Write a failed statement's error with its detail, hint and context to the messages output. */
-    private logServerError(label: string, err: unknown): void {
+    /** Write a failed statement's error with its detail, hint and context to the log of its session. */
+    private logServerError(ref: DbSessionRef, source: string, err: unknown): void {
         const details = (err ?? {}) as { detail?: string; hint?: string; where?: string };
-        this.messages.appendLine(formatServerMessage(label, {
+        this.messages.append(ref, noticeMessage(source, {
             severity: 'ERROR',
             message: getErrorMessage(err),
             detail: details.detail,

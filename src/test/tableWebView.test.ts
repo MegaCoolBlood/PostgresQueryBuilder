@@ -1760,6 +1760,46 @@ test('a table opened through a foreign key runs on the session of the Data Viewe
     orders.state.onDispose.forEach((dispose) => dispose());
     assert.equal(clients[0].ended, false);
 });
+
+test('a Data Viewer tab that becomes active tells the session whose messages to show', async () => {
+    const { dbSessions } = createSessionManager();
+    const { manager } = createManager({ dbSessions });
+    const focused: string[] = [];
+    manager.onDidFocusSession((ref) => focused.push(ref.key));
+
+    const orders = await withPanel(() => manager.openQueryView('SELECT 1 AS n', 'orders'));
+    const other = await withPanel(() => manager.openQueryView('SELECT 2 AS n', 'other'));
+    const customers = await withPanel(() => orders.state.onMessage({
+        command: 'openForeignKey', refSchema: 'public', refTable: 'customers', refColumn: 'id', value: 5, conditions: []
+    }));
+    assert.equal(focused.length, 3, 'a tab opened in front is active at once');
+    assert.notEqual(focused[0], focused[1], 'tabs opened on their own have a log each');
+    assert.equal(focused[2], focused[0], 'a tab opened from another shares its session, so its log');
+
+    (orders as any).active = false;
+    orders.state.onViewState();
+    assert.equal(focused.length, 3, 'a tab going to the background shows nothing');
+    (other as any).active = true;
+    other.state.onViewState();
+    assert.equal(focused[3], focused[1]);
+    (customers as any).active = true;
+    customers.state.onViewState();
+    assert.equal(focused[4], focused[0]);
+});
+
+test('a Data Viewer opened by a script beside its file leaves the messages panel on the file', async () => {
+    const { dbSessions } = createSessionManager();
+    const { manager } = createManager({ dbSessions });
+    const ref = { key: 'file:file:///work/payroll.sql', label: 'payroll.sql' };
+    dbSessions.acquire(ref, 'file');
+    const focused: string[] = [];
+    manager.onDidFocusSession((r) => focused.push(r.key));
+
+    await withPanel(async () => { await manager.openQueryViewWithLoad('SELECT 1 AS n', 'A', ref, { preserveFocus: true }); });
+    assert.deepEqual(focused, [], 'the file keeps the focus');
+    await withPanel(async () => { await manager.openQueryViewWithLoad('SELECT 2 AS n', 'B', ref); });
+    assert.deepEqual(focused, [ref.key], 'a tab on the file session shows the log of the file');
+});
 /** Open a query panel through openQueryViewWithLoad and record how its first query ends. */
 async function openTrackedPanel(manager: TableWebViewManager, ref: { key: string; label: string }) {
     let view: any;

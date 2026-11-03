@@ -321,7 +321,10 @@ fields wherever it comes from.
   The session lives until the file and every Data Viewer opened from it are
   closed; **Reset Database Session** starts it afresh. `RAISE NOTICE`, `INFO`
   and `WARNING` messages, and the details of a failed statement, appear in the
-  *PostgreSQL Messages* output; a syntax error puts the cursor where it is. A
+  *PostgreSQL Messages* panel; a syntax error puts the cursor where it is. The
+  panel keeps one log per database session — the file and the Data Viewers
+  sharing its session write into the same log — and shows the log of the SQL
+  file or Data Viewer tab that is active; a log ends with its session. A
   running statement can be cancelled from its notification; one still waiting
   for a Data Viewer query of the same session is then not run at all.
 - **Execute File** (`Ctrl+Shift+Alt+Enter`, or the run button in the editor's
@@ -374,7 +377,8 @@ fields wherever it comes from.
   of the dialogs stops it at that query. A selection that holds an
   instruction — or whose first query has one on the lines right above it —
   runs statement by statement like *Execute File*. Every export is listed with
-  its row count and file in the *PostgreSQL Messages* output, and while one
+  its row count and file in the log of the file in the *PostgreSQL Messages*
+  panel, and while one
   runs, the notification of the run shows how many of its rows are fetched and
   written.
 - **Writing an instruction without typing it.** **Add Export Instruction** —

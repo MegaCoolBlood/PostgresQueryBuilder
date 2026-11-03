@@ -283,6 +283,7 @@ test('no button label ends in an ellipsis; the tree view welcome cannot render o
         path.join(SRC, 'searchViewProvider.ts'),
         path.join(SRC, 'manageMappingsPanel.ts'),
         path.join(SRC, 'modifyHistoryViewProvider.ts'),
+        path.join(SRC, 'sessionMessages.ts'),
         path.join(SRC, 'sqlEditor.ts'),
         path.join(SRC, 'viewDataFromSelect.ts'),
         path.join(SRC, 'joinDialog.ts')
