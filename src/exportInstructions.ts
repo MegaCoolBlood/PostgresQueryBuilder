@@ -325,6 +325,8 @@ export interface ExportPlaceholders {
     date: string;
     time: string;
     file: string;
+    /** When the export runs; the clock placeholders such as `{YEAR}` are read from it. */
+    now: Date;
 }
 
 export function exportPlaceholders(now: Date, documentFileName: string): ExportPlaceholders {
@@ -332,8 +334,125 @@ export function exportPlaceholders(now: Date, documentFileName: string): ExportP
     return {
         date: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
         time: `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`,
-        file: path.basename(documentFileName, path.extname(documentFileName))
+        file: path.basename(documentFileName, path.extname(documentFileName)),
+        now
     };
+}
+
+/** The placeholders read from the clock; each takes an offset, such as `{YR-1}`. */
+export const CLOCK_PLACEHOLDERS = ['YEAR', 'YR', 'MON', 'MDAY', 'YDAY', 'WDAY', 'HOUR', 'MIN', 'SEC', 'MSEC'] as const;
+export type ClockPlaceholder = typeof CLOCK_PLACEHOLDERS[number];
+
+/** Every placeholder of `file=`, as it is offered and documented. */
+export const EXPORT_PLACEHOLDER_NAMES: ReadonlyArray<string> = ['date', 'time', 'file', ...CLOCK_PLACEHOLDERS];
+
+/** What an offset steps by: `{YR-1 MON}` is the year one month ago. */
+export const OFFSET_UNITS = ['YEAR', 'MON', 'DAY', 'HOUR', 'MIN', 'SEC', 'MSEC'] as const;
+export type OffsetUnit = typeof OFFSET_UNITS[number];
+
+/** The unit a placeholder steps by when its offset names none: `{YR-1}` is `{YR-1 YEAR}`. */
+const OWN_UNIT: Readonly<Record<ClockPlaceholder, OffsetUnit>> = {
+    YEAR: 'YEAR', YR: 'YEAR', MON: 'MON', MDAY: 'DAY', YDAY: 'DAY', WDAY: 'DAY',
+    HOUR: 'HOUR', MIN: 'MIN', SEC: 'SEC', MSEC: 'MSEC'
+};
+
+/** Further names a unit may be written with, so a placeholder's own name works as its unit. */
+const UNIT_ALIASES: Readonly<Record<string, OffsetUnit>> = { YR: 'YEAR', MDAY: 'DAY', YDAY: 'DAY', WDAY: 'DAY' };
+
+const UNIT_MS: Readonly<Partial<Record<OffsetUnit, number>>> = { HOUR: 3_600_000, MIN: 60_000, SEC: 1000, MSEC: 1 };
+
+function daysInMonth(year: number, month: number): number {
+    return new Date(year, month + 1, 0).getDate();
+}
+
+/**
+ * `now` moved by `offset` of `unit` on the calendar: a month back from
+ * 31 March is the last day of February, a day back from 1 January is
+ * 31 December, and the time of day stays.
+ */
+export function shiftClock(now: Date, offset: number, unit: OffsetUnit): Date {
+    const ms = UNIT_MS[unit];
+    if (ms !== undefined) {
+        return new Date(now.getTime() + offset * ms);
+    }
+    if (unit === 'DAY') {
+        return new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset,
+            now.getHours(), now.getMinutes(), now.getSeconds(), now.getMilliseconds());
+    }
+    const months = now.getFullYear() * 12 + now.getMonth() + (unit === 'YEAR' ? offset * 12 : offset);
+    const year = Math.floor(months / 12);
+    const month = months - year * 12;
+    return new Date(year, month, Math.min(now.getDate(), daysInMonth(year, month)),
+        now.getHours(), now.getMinutes(), now.getSeconds(), now.getMilliseconds());
+}
+
+function dayOfYear(day: Date): number {
+    return Math.round((Date.UTC(day.getFullYear(), day.getMonth(), day.getDate()) - Date.UTC(day.getFullYear(), 0, 1)) / 86_400_000) + 1;
+}
+
+/**
+ * The value of a clock placeholder at `now` moved by `offset` of `unit` —
+ * by default its own: `{YR-1}` is last year, `{MON-1}` last month (12 in
+ * January), `{MDAY-1}` the day of yesterday, and `{YR-1 MON}` the year one
+ * month ago, which in January is last year.
+ */
+export function clockPlaceholderValue(name: ClockPlaceholder, now: Date, offset = 0, unit: OffsetUnit = OWN_UNIT[name]): string {
+    const at = offset === 0 ? now : shiftClock(now, offset, unit);
+    const pad = (value: number, width = 2) => String(value).padStart(width, '0');
+    switch (name) {
+        case 'YEAR': return pad(at.getFullYear(), 4);
+        case 'YR': return pad(at.getFullYear() % 100);
+        case 'MON': return pad(at.getMonth() + 1);
+        case 'MDAY': return pad(at.getDate());
+        case 'YDAY': return pad(dayOfYear(at), 3);
+        // Monday is 1 and Sunday 7; getDay() counts from Sunday = 0.
+        case 'WDAY': return String(((at.getDay() + 6) % 7) + 1);
+        case 'HOUR': return pad(at.getHours());
+        case 'MIN': return pad(at.getMinutes());
+        case 'SEC': return pad(at.getSeconds());
+        case 'MSEC': return pad(at.getMilliseconds(), 3);
+    }
+}
+
+/**
+ * `file=` with its placeholders filled in, or why it cannot be. A name is
+ * matched in any case; a clock placeholder may add or subtract a number of
+ * its own unit (`{YR-1}`) or of another one (`{YR-1 MON}`).
+ */
+export function fillExportPlaceholders(file: string, values: ExportPlaceholders): { text: string } | { error: string } {
+    let error = '';
+    const text = file.replace(/\{(\w+)([^{}]*)\}/g, (all, name: string, rest: string) => {
+        if (error) return all;
+        const offset = rest.trim() === '' ? null : /^\s*([+-])\s*(\d+)\s*([A-Za-z]+)?\s*$/.exec(rest);
+        if (rest.trim() !== '' && !offset) {
+            error = `${all} is no placeholder; an offset is + or - and a whole number, such as {YR-1}, and may name a unit, such as {YR-1 MON}.`;
+            return all;
+        }
+        let unit: OffsetUnit | undefined;
+        if (offset?.[3]) {
+            const word = offset[3].toUpperCase();
+            unit = OFFSET_UNITS.find((u) => u === word) ?? UNIT_ALIASES[word];
+            if (!unit) {
+                error = `${all}: the unit of an offset is ${OFFSET_UNITS.slice(0, -1).join(', ')} or ${OFFSET_UNITS[OFFSET_UNITS.length - 1]}.`;
+                return all;
+            }
+        }
+        const clock = CLOCK_PLACEHOLDERS.find((c) => c === name.toUpperCase());
+        if (clock) {
+            return offset ? clockPlaceholderValue(clock, values.now, Number(offset[1] + offset[2]), unit) : clockPlaceholderValue(clock, values.now);
+        }
+        const fixed = ({ date: values.date, time: values.time, file: values.file } as Record<string, string>)[name.toLowerCase()];
+        if (fixed === undefined) {
+            error = `${all} is no placeholder; file= knows ${EXPORT_PLACEHOLDER_NAMES.map((n) => `{${n}}`).join(', ')}.`;
+            return all;
+        }
+        if (offset) {
+            error = `${all}: only the clock placeholders such as {YEAR}, {MON} or {MDAY} take an offset.`;
+            return all;
+        }
+        return fixed;
+    });
+    return error ? { error } : { text };
 }
 
 /**
@@ -348,15 +467,11 @@ export function resolveExportTarget(
     values: ExportPlaceholders,
     pathApi: path.PlatformPath = path
 ): { path: string } | { error: string } {
-    let unknown = '';
-    const filled = file.replace(/\{(\w+)\}/g, (all, name: string) => {
-        const value = (values as unknown as Record<string, string>)[name.toLowerCase()];
-        if (value === undefined && !unknown) unknown = all;
-        return value ?? all;
-    });
-    if (unknown) {
-        return { error: `${unknown} is no placeholder; file= knows {date}, {time} and {file}.` };
+    const filledIn = fillExportPlaceholders(file, values);
+    if ('error' in filledIn) {
+        return filledIn;
     }
+    const filled = filledIn.text;
     const named = pathApi.extname(filled) === '' ? filled + EXPORT_FILE_EXTENSIONS[format] : filled;
     if (pathApi.isAbsolute(named)) {
         return { path: pathApi.normalize(named) };

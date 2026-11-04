@@ -3,6 +3,7 @@ import * as path from 'path';
 import {
     EXPORT_FORMAT_NAMES,
     EXPORT_INSTRUCTION_OPTIONS,
+    EXPORT_PLACEHOLDER_NAMES,
     exportPlaceholders,
     exportTargetErrors,
     findInstructionLines,
@@ -103,15 +104,32 @@ export const EXPORT_OPTION_DOCS: Readonly<Record<ExportFormat, Readonly<Record<s
 
 export const FILE_OPTION_DOC = 'The file the result is written to. A relative path is relative to the folder of the SQL file, '
     + 'missing folders are created, and the extension of the format is added to a name without one. '
-    + '`{date}`, `{time}` and `{file}` are filled in. Without `file=` a save dialog asks each time the file runs.';
+    + 'The placeholders below are filled in; names may be written in any case. Without `file=` a save dialog asks each time the file runs.';
+
+/** How an offset on a clock placeholder works, for the explanation of `file=`. */
+export const PLACEHOLDER_OFFSET_DOC = 'A clock placeholder takes an offset: `{YR-1}` is last year, `{MON-1}` last month '
+    + '(12 in January), `{MDAY+1}` the day of tomorrow. Without a unit the offset steps by the placeholder\'s own unit; '
+    + 'after the number it may name another one — `YEAR`, `MON`, `DAY`, `HOUR`, `MIN`, `SEC` or `MSEC` — to show a part of '
+    + 'that moment: `{YEAR-1 MON}{MON-1}` is the year and month of last month, `202612` in January 2027, and '
+    + '`{MON-1 DAY}{MDAY-1}` the month and day of yesterday. A month back from 31 March is the last day of February.';
 
 export const DIALOG_DOC = 'Open the export dialog of the Data Viewer when the file runs — prefilled from this instruction and showing '
     + 'the query — to choose format, file and options then.';
 
-export const PLACEHOLDER_DOCS: Readonly<Record<keyof ExportPlaceholders, string>> = {
+export const PLACEHOLDER_DOCS: Readonly<Record<string, string>> = {
     date: 'The day the export runs, such as 2026-10-28.',
     time: 'The time the export runs, such as 135959.',
-    file: 'The name of the SQL file without its extension.'
+    file: 'The name of the SQL file without its extension.',
+    YEAR: 'The year, four digits, such as 2026.',
+    YR: 'The year, two digits, such as 26; {YR-1} is last year, {YR-1 MON} the year of last month.',
+    MON: 'The month, 01 to 12.',
+    MDAY: 'The day of the month, 01 to 31.',
+    YDAY: 'The day of the year, 001 to 366.',
+    WDAY: 'The day of the week, 1 (Monday) to 7 (Sunday).',
+    HOUR: 'The hour, 00 to 23.',
+    MIN: 'The minute, 00 to 59.',
+    SEC: 'The second, 00 to 59.',
+    MSEC: 'The millisecond, 000 to 999.'
 };
 
 /** A value as an instruction writes it: in double quotes when it holds a blank or a quote. */
@@ -463,8 +481,8 @@ export function exportInstructionCompletions(linePrefix: string, trigger?: strin
         if (key === 'file') {
             const open = value.lastIndexOf('{');
             const from = open > value.lastIndexOf('}') ? valueStart + open : linePrefix.length;
-            const items = (Object.keys(PLACEHOLDER_DOCS) as Array<keyof ExportPlaceholders>).map((name, i): AssistCompletion => ({
-                label: `{${name}}`, insertText: `{${name}}`, kind: 'placeholder', detail: PLACEHOLDER_DOCS[name], sortText: String(i)
+            const items = EXPORT_PLACEHOLDER_NAMES.map((name, i): AssistCompletion => ({
+                label: `{${name}}`, insertText: `{${name}}`, kind: 'placeholder', detail: PLACEHOLDER_DOCS[name], sortText: String(i).padStart(2, '0')
             }));
             return { from, items };
         }
@@ -549,9 +567,9 @@ export function exportInstructionHover(lineText: string, column: number): { mark
     }
     const key = word.slice(0, eq);
     if (key === 'file') {
-        const placeholders = (Object.keys(PLACEHOLDER_DOCS) as Array<keyof ExportPlaceholders>)
+        const placeholders = EXPORT_PLACEHOLDER_NAMES
             .map((name) => `- \`{${name}}\` — ${PLACEHOLDER_DOCS[name]}`).join('\n');
-        return { markdown: `**file=** — ${FILE_OPTION_DOC}\n\n${placeholders}`, ...range };
+        return { markdown: `**file=** — ${FILE_OPTION_DOC}\n\n${placeholders}\n\n${PLACEHOLDER_OFFSET_DOC}`, ...range };
     }
     const doc = format ? EXPORT_OPTION_DOCS[format][key] : undefined;
     return doc ? { markdown: optionMarkdown(key, doc), ...range } : null;

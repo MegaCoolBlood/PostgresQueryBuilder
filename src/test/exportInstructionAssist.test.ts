@@ -315,7 +315,11 @@ test('after an option come the values it takes', () => {
 
 test('file= offers the placeholders, also in the middle of a name', () => {
     const fresh = exportInstructionCompletions('-- @export csv file=', '=');
-    assert.deepEqual(fresh?.items.map((i) => i.label), ['{date}', '{time}', '{file}']);
+    assert.deepEqual(fresh?.items.map((i) => i.label), [
+        '{date}', '{time}', '{file}', '{YEAR}', '{YR}', '{MON}', '{MDAY}', '{YDAY}', '{WDAY}', '{HOUR}', '{MIN}', '{SEC}', '{MSEC}'
+    ]);
+    assert.deepEqual(fresh?.items.map((i) => i.sortText), [...fresh!.items.map((i) => i.sortText)].sort(), 'offered in this order');
+    assert.equal(fresh?.items.find((i) => i.label === '{YR}')?.detail, 'The year, two digits, such as 26; {YR-1} is last year, {YR-1 MON} the year of last month.');
     assert.equal(fresh?.from, '-- @export csv file='.length);
     const open = exportInstructionCompletions('-- @export csv file=out/{file}_{d', '{');
     assert.equal(open?.from, '-- @export csv file=out/{file}_'.length, 'the open placeholder is replaced');
@@ -338,6 +342,7 @@ test('hovering an instruction explains the word under the mouse', () => {
     assert.match(hover('csv')?.markdown ?? '', /Comma-separated values[\s\S]*`separator=`[\s\S]*`lineending=`/);
     assert.match(hover('dialog')?.markdown ?? '', /Open the export dialog/);
     assert.match(hover('file=')?.markdown ?? '', /relative to the folder of the SQL file[\s\S]*`\{date\}`/);
+    assert.match(hover('file=')?.markdown ?? '', /- `\{WDAY\}` — The day of the week, 1 \(Monday\) to 7 \(Sunday\)\.[\s\S]*`\{YR-1\}` is last year[\s\S]*`\{YEAR-1 MON\}\{MON-1\}` is the year and month of last month/);
     const sep = hover('separator=');
     assert.match(sep?.markdown ?? '', /\*\*separator=\*\* — The character written between two values\.[\s\S]*- `tab` — Tab/);
     assert.deepEqual([sep?.start, sep?.end], [line.indexOf('separator='), line.indexOf('separator=;') + 'separator=;'.length]);

@@ -365,12 +365,40 @@ fields wherever it comes from.
 
   | Format | Options |
   |--------|---------|
-  | every format | `file=` — relative to the folder of the SQL file; `{date}`, `{time}` and `{file}` (the name of the SQL file) are filled in, and the extension is added when the name has none |
+  | every format | `file=` — relative to the folder of the SQL file; the placeholders below are filled in, and the extension is added when the name has none |
   | `csv` | `separator=` (a character, or `tab`, `comma`, `semicolon`, `pipe`, `space`), `header=`, `quote=`, `lineending=crlf\|lf` |
   | `excel` | `sheet=`, `header=`, `sqlsheet=` |
   | `json` | `pretty=`, `array=` |
   | `xml` | `root=`, `row=` |
   | `insert` | `table=` (required), `batch=`, `onconflict=none\|nothing\|update`, `conflict=` (the key columns, required for `update`) |
+
+  | Placeholder | Filled in with |
+  |-------------|----------------|
+  | `{date}` / `{time}` | the day (`2026-10-28`) and time (`135959`) the export runs |
+  | `{file}` | the name of the SQL file without its extension |
+  | `{YEAR}` / `{YR}` | the year, four digits (`2026`) / two digits (`26`) |
+  | `{MON}` | the month, `01` to `12` |
+  | `{MDAY}` | the day of the month, `01` to `31` |
+  | `{YDAY}` | the day of the year, `001` to `366` (`365` outside a leap year) |
+  | `{WDAY}` | the day of the week, `1` (Monday) to `7` (Sunday) |
+  | `{HOUR}` / `{MIN}` / `{SEC}` | the clock, 24-hour, `00` to `23` / `59` / `59` |
+  | `{MSEC}` | the milliseconds, `000` to `999` |
+
+  Names may be written in any case. A clock placeholder takes an offset:
+  `{YR-1}` is last year, `{MON-1}` last month (`12` in January), `{MDAY+1}`
+  the day of tomorrow. Without a unit the offset steps by the placeholder's
+  own unit, so each one moves on its own and `{YEAR}{MON-1}` in January keeps
+  the current year. After the number an offset may name the unit to step by —
+  `YEAR`, `MON`, `DAY`, `HOUR`, `MIN`, `SEC` or `MSEC` — and the placeholder
+  then shows its part of that moment:
+
+  ```sql
+  -- @export csv file=reports/{YEAR-1 MON}-{MON-1}.csv     -- last month: 2026-12 in January 2027
+  -- @export csv file=daily/{YEAR-1 DAY}{MON-1 DAY}{MDAY-1}  -- yesterday: 20261231 on 1 January
+  ```
+
+  A month or a year back keeps the day where the month has it and takes its
+  last day otherwise: a month back from 31 March is the last day of February.
 
   Options you leave out are preset like the export dialog of the Data Viewer:
   your saved defaults for that format, otherwise the dialog's own. Without
@@ -396,7 +424,7 @@ fields wherever it comes from.
   you want to decide then, and **Insert** writes the matching `-- @export`
   line above the query, with every option of the format spelled out. On a
   query that has an instruction already, the dialog starts from it and
-  **Update** replaces it. A file name may keep `{date}`, `{time}` and `{file}`,
+  **Update** replaces it. A file name may keep its placeholders,
   an empty one means *ask each time*, and a folder inside the folder of the
   SQL file is written relative to it.
 
