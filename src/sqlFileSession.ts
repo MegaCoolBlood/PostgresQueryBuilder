@@ -461,14 +461,23 @@ export type OpenQueryView = (
 /** Thrown inside the session when Cancel was pressed before the statement got its turn. */
 class CancelledBeforeStart extends Error {}
 
-/** Run `work` on `client`, collecting what the server says meanwhile into `notices`. */
-async function withNotices<T>(client: SessionClient, notices: SessionNotice[], work: () => Promise<T>): Promise<T> {
-    const collect = (notice: SessionNotice): void => { notices.push(notice); };
-    client.on('notice', collect);
+/**
+ * How many messages the server sent during one command. Only the number is
+ * kept: the messages themselves go to the log of the session, and a script
+ * that raises a notice per row must not pile them up in memory as well.
+ */
+export interface NoticeCount {
+    count: number;
+}
+
+/** Run `work` on `client`, counting what the server says meanwhile into `notices`. */
+async function withNotices<T>(client: SessionClient, notices: NoticeCount, work: () => Promise<T>): Promise<T> {
+    const count = (): void => { notices.count++; };
+    client.on('notice', count);
     try {
         return await work();
     } finally {
-        client.removeListener('notice', collect);
+        client.removeListener('notice', count);
     }
 }
 
@@ -498,19 +507,19 @@ class CancellableRun {
         }
     }
 
-    run(session: DbSession, sql: string, notices: SessionNotice[]): Promise<QueryResult | QueryResult[]> {
+    run(session: DbSession, sql: string, notices: NoticeCount): Promise<QueryResult | QueryResult[]> {
         return session.run(async (client) => {
             if (this.cancelled) {
                 throw new CancelledBeforeStart();
             }
-            const collect = (notice: SessionNotice): void => { notices.push(notice); };
-            client.on('notice', collect);
+            const count = (): void => { notices.count++; };
+            client.on('notice', count);
             this.runningPid = client.processID ?? null;
             try {
                 return await client.query(sql) as QueryResult | QueryResult[];
             } finally {
                 this.runningPid = null;
-                client.removeListener('notice', collect);
+                client.removeListener('notice', count);
                 // The statement may end before a slow cancel request reaches
                 // the server; the session's next statement must not start
                 // until it has, or it gets cancelled instead.
@@ -603,7 +612,7 @@ export class SqlFileSessions implements vscode.Disposable {
             return;
         }
 
-        const notices: SessionNotice[] = [];
+        const notices: NoticeCount = { count: 0 };
         const started = Date.now();
         let outcome: QueryResult | QueryResult[];
         try {
@@ -631,8 +640,8 @@ export class SqlFileSessions implements vscode.Disposable {
 
         this.recordModifyHistory(target.sql);
         let message = summarizeExecution(Array.isArray(outcome) ? outcome : [outcome], Date.now() - started);
-        if (notices.length > 0) {
-            message += this.noticesText(ref, notices.length);
+        if (notices.count > 0) {
+            message += this.noticesText(ref, notices.count);
         }
         vscode.window.showInformationMessage(message);
     }
@@ -731,7 +740,7 @@ export class SqlFileSessions implements vscode.Disposable {
         const text = document.getText();
         const { ref, session } = this.acquire(document);
         const label = command === 'Execute File' ? ref.label : `the selection in ${ref.label}`;
-        const notices: SessionNotice[] = [];
+        const notices: NoticeCount = { count: 0 };
         const started = Date.now();
         const total = statements.length;
         type Stop = { reason: 'failed'; index: number; error: unknown; inViewer: boolean } | { reason: 'cancelled'; index: number };
@@ -819,7 +828,7 @@ export class SqlFileSessions implements vscode.Disposable {
             }
         );
 
-        const noticeText = notices.length > 0 ? this.noticesText(ref, notices.length) : '';
+        const noticeText = notices.count > 0 ? this.noticesText(ref, notices.count) : '';
         if (exported.length > 1) {
             this.messages.reveal(ref);
         }
@@ -867,7 +876,7 @@ export class SqlFileSessions implements vscode.Disposable {
         ref: DbSessionRef,
         session: DbSession,
         runner: CancellableRun,
-        notices: SessionNotice[],
+        notices: NoticeCount,
         report: (message: string) => void = () => undefined
     ): Promise<{ status: 'exported'; query: ExportedQuery } | { status: 'cancelled' } | { status: 'failed'; error: unknown }> {
         const exporter = this.exporter;
@@ -1015,7 +1024,7 @@ export class SqlFileSessions implements vscode.Disposable {
      * the statement ended.
      */
     async executeOnSession(session: DbSession, label: string, sql: string): Promise<StatementOutcome> {
-        const notices: SessionNotice[] = [];
+        const notices: NoticeCount = { count: 0 };
         const started = Date.now();
         let outcome: QueryResult | QueryResult[];
         try {
@@ -1047,8 +1056,8 @@ export class SqlFileSessions implements vscode.Disposable {
         if (value !== undefined) {
             message += ` Result: ${value}.`;
         }
-        if (notices.length > 0) {
-            message += this.noticesText(session, notices.length);
+        if (notices.count > 0) {
+            message += this.noticesText(session, notices.count);
         }
         return { status: 'executed', message };
     }

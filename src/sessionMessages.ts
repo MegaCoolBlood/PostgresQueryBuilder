@@ -16,6 +16,34 @@ export const MESSAGES_VIEW_ID = 'postgresSessionMessages';
 /** The panel keeps this many messages of a log; *Save* writes all of them. */
 export const MAX_MESSAGES_PER_LOG = 2000;
 
+/** *Copy* puts at most this much text on the clipboard; a larger log is saved to a file instead. */
+export const MAX_COPY_BYTES = 20 * 1024 * 1024;
+
+/**
+ * The panel keeps and shows at most this many characters of a message and of
+ * each of its detail lines; *Save* and *Copy* write them in full.
+ */
+export const MAX_KEPT_TEXT = 4000;
+
+/** `text` cut to {@link MAX_KEPT_TEXT} characters, saying how much is left out. */
+export function keptText(text: string, max: number = MAX_KEPT_TEXT): string {
+    return text.length <= max ? text : `${text.slice(0, max)}… (${text.length - max} more characters; Save writes them all)`;
+}
+
+/** The copy of a message the panel keeps: its text and details cut to {@link MAX_KEPT_TEXT}. */
+function keptMessage(message: SessionMessage): SessionMessage {
+    if (message.text.length <= MAX_KEPT_TEXT && message.details.every((d) => d.length <= MAX_KEPT_TEXT)) return message;
+    return { ...message, text: keptText(message.text), details: message.details.map((d) => keptText(d)) };
+}
+
+/** A size such as `1.5 MB` for a message. */
+export function byteSizeText(bytes: number): string {
+    if (bytes < 1024) return `${bytes} bytes`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
 /** One entry of a session's log. */
 export interface SessionMessage {
     /** Local time it arrived, `HH:MM:SS`. */
@@ -158,6 +186,16 @@ export class MessageSpool {
         return fs.existsSync(this.filePath) ? fs.promises.readFile(this.filePath, 'utf8') : '';
     }
 
+    /** How many bytes the file holds, after everything queued has reached it. */
+    async size(): Promise<number> {
+        await this.idle();
+        try {
+            return (await fs.promises.stat(this.filePath)).size;
+        } catch {
+            return 0;
+        }
+    }
+
     private pump(): void {
         if (this.running) return;
         this.running = (async () => {
@@ -227,7 +265,7 @@ export class SessionMessageLog {
             log = { key: ref.key, label: ref.label, messages: [], total: 0, errors: 0, id: ++this.logCounter };
             this.logs.set(ref.key, log);
         }
-        log.messages.push(message);
+        log.messages.push(keptMessage(message));
         log.total++;
         if (messageTone(message.severity) === 'danger') {
             log.errors++;
@@ -286,13 +324,22 @@ export class SessionMessageLog {
 
     /**
      * Every message of the log of `key` — not only those it keeps — as text,
-     * one per line as *Save* writes them.
+     * one per line as *Save* writes them. A log of more than `maxBytes` is
+     * not read at all: the text would have to be held in memory at once, and
+     * on the clipboard it also goes through the window of VS Code.
      */
-    async readAll(key: string): Promise<{ text: string; count: number }> {
+    async readAll(key: string, maxBytes: number = MAX_COPY_BYTES): Promise<{ text: string; count: number } | { tooLarge: true; bytes: number; count: number }> {
         const log = this.logs.get(key);
+        const count = log?.total ?? 0;
         const spool = this.spools.get(key);
-        const text = spool ? await spool.read() : this.keptText(log);
-        return { text, count: log?.total ?? 0 };
+        if (!spool) {
+            return { text: this.keptText(log), count };
+        }
+        const bytes = await spool.size();
+        if (bytes > maxBytes) {
+            return { tooLarge: true, bytes, count };
+        }
+        return { text: await spool.read(), count };
     }
 
     private keptText(log: SessionLog | undefined): string {
@@ -471,6 +518,8 @@ export const MESSAGES_RENDER_INTERVAL_MS = 100;
 export interface SessionMessagesViewOptions {
     /** Run `render` a little later; tests run it at once. */
     schedule?: (render: () => void) => void;
+    /** The most text *Copy* puts on the clipboard; default {@link MAX_COPY_BYTES}. */
+    maxCopyBytes?: number;
 }
 
 /**
@@ -487,9 +536,11 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
     private sent?: SentLog;
     private renderPending = false;
     private readonly schedule: (render: () => void) => void;
+    private readonly maxCopyBytes: number;
 
     constructor(readonly log: SessionMessageLog, options: SessionMessagesViewOptions = {}) {
         this.schedule = options.schedule ?? ((render) => { setTimeout(render, MESSAGES_RENDER_INTERVAL_MS); });
+        this.maxCopyBytes = options.maxCopyBytes ?? MAX_COPY_BYTES;
         // A flood of messages becomes one update every few milliseconds, not one per message.
         this.subscription = log.onDidChange((key) => {
             if (key === this.shown?.key) this.scheduleRender();
@@ -582,14 +633,27 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
         }
     }
 
-    /** Put every message of the shown log on the clipboard, as *Save* writes them. */
+    /**
+     * Put every message of the shown log on the clipboard, as *Save* writes
+     * them. A log too large for the clipboard is offered to *Save* instead.
+     */
     private async copy(): Promise<void> {
         const shown = this.shown;
         if (!shown || !this.log.get(shown.key)?.total) return;
         try {
-            const { text, count } = await this.log.readAll(shown.key);
-            await vscode.env.clipboard.writeText(text.replace(/\n$/, ''));
-            vscode.window.setStatusBarMessage(`Copied ${count} ${count === 1 ? 'message' : 'messages'}.`, 3000);
+            const all = await this.log.readAll(shown.key, this.maxCopyBytes);
+            if ('tooLarge' in all) {
+                const saveLabel = 'Save';
+                const answer = await vscode.window.showWarningMessage(
+                    `The session of ${shown.label} sent ${all.count} messages (${byteSizeText(all.bytes)}), `
+                    + `more than the clipboard can take safely (${byteSizeText(this.maxCopyBytes)}). Save them to a file instead?`,
+                    saveLabel
+                );
+                if (answer === saveLabel) await this.save();
+                return;
+            }
+            await vscode.env.clipboard.writeText(all.text.replace(/\n$/, ''));
+            vscode.window.setStatusBarMessage(`Copied ${all.count} ${all.count === 1 ? 'message' : 'messages'}.`, 3000);
         } catch (err: unknown) {
             Logger.error('SessionMessagesView.copy', err);
             vscode.window.showErrorMessage(`Copying the messages failed: ${getErrorMessage(err)}`);

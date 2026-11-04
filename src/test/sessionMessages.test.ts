@@ -7,11 +7,15 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
     MESSAGES_VIEW_ID,
+    MAX_COPY_BYTES,
+    MAX_KEPT_TEXT,
     MessageSpool,
     SessionMessageLog,
     SessionMessagesView,
+    byteSizeText,
     exportMessage,
     formatSessionMessage,
+    keptText,
     messageTone,
     messagesCountText,
     messagesFileName,
@@ -758,4 +762,87 @@ test('the error and warning icons exist in the sprite', () => {
     const sprite = fs.readFileSync(path.join(ROOT, 'src', 'webview', 'icons.svg'), 'utf8');
     assert.match(sprite, /<symbol id="icon-error" viewBox="0 0 16 16">/);
     assert.match(sprite, /<symbol id="icon-warning" viewBox="0 0 16 16">/);
+});
+
+// ===== a long run with many or large messages =====
+
+test('keptText cuts a long text and says how much is left out', () => {
+    assert.equal(keptText('short', 10), 'short');
+    assert.equal(keptText('x'.repeat(12), 10), `${'x'.repeat(10)}… (2 more characters; Save writes them all)`);
+    assert.equal(MAX_KEPT_TEXT, 4000);
+});
+
+test('the panel keeps a huge message cut short, while Save writes it in full', async (t) => {
+    const root = tempRoot(t);
+    const log = new SessionMessageLog({ spoolRoot: root });
+    t.after(() => log.dispose());
+    const huge = 'y'.repeat(MAX_KEPT_TEXT + 500);
+    log.append(FILE, noticeMessage('f', { message: huge, detail: huge }, AT));
+
+    const kept = log.get(FILE.key)!.messages[0];
+    assert.equal(kept.text, keptText(huge));
+    assert.equal(kept.details[0], `DETAIL: ${huge}`.slice(0, MAX_KEPT_TEXT) + '… (508 more characters; Save writes them all)');
+    const target = path.join(root, 'saved.log');
+    await log.saveTo(FILE.key, target);
+    assert.equal(fs.readFileSync(target, 'utf8'), `[09:05:07] f — NOTICE: ${huge}\n    DETAIL: ${huge}\n`);
+});
+
+test('a log too large for the clipboard is not read, and Copy offers Save instead', async (t) => {
+    const root = tempRoot(t);
+    const copied: string[] = [];
+    const warnings: unknown[][] = [];
+    const dialogs: unknown[] = [];
+    const originals = { copy: vscodeStub.env.clipboard.writeText, warn: vscodeStub.window.showWarningMessage, dialog: vscodeStub.window.showSaveDialog };
+    vscodeStub.env.clipboard.writeText = (text: string) => { copied.push(text); return Promise.resolve(); };
+    vscodeStub.window.showWarningMessage = ((...args: unknown[]) => { warnings.push(args); return Promise.resolve('Save'); }) as any;
+    vscodeStub.window.showSaveDialog = (options?: any) => { dialogs.push(options); return Promise.resolve(undefined); };
+    t.after(() => {
+        vscodeStub.env.clipboard.writeText = originals.copy;
+        vscodeStub.window.showWarningMessage = originals.warn;
+        vscodeStub.window.showSaveDialog = originals.dialog;
+    });
+    const log = new SessionMessageLog({ spoolRoot: root });
+    const view = new SessionMessagesView(log, { schedule: (render) => render(), maxCopyBytes: 200 });
+    t.after(() => view.dispose());
+    view.show(FILE);
+    for (let i = 0; i < 10; i++) view.append(FILE, noticeMessage('payroll.sql', { message: `step ${i}` }, AT));
+
+    assert.deepEqual(await log.readAll(FILE.key, 200), { tooLarge: true, bytes: 10 * '[09:05:07] payroll.sql — NOTICE: step 0\n'.length + 20, count: 10 });
+    await (view as any).copy();
+
+    assert.deepEqual(copied, [], 'nothing went to the clipboard');
+    assert.equal(warnings.length, 1);
+    assert.match(String(warnings[0][0]), /^The session of payroll\.sql sent 10 messages \(\d+ bytes\), more than the clipboard can take safely \(200 bytes\)\. Save them to a file instead\?$/);
+    assert.equal(warnings[0][1], 'Save');
+    assert.equal(dialogs.length, 1, 'Save opens its dialog');
+});
+
+test('byteSizeText names a size in the unit that suits it', () => {
+    assert.equal(byteSizeText(512), '512 bytes');
+    assert.equal(byteSizeText(1536), '1.5 KB');
+    assert.equal(byteSizeText(20 * 1024 * 1024), '20.0 MB');
+    assert.equal(byteSizeText(3 * 1024 * 1024 * 1024), '3.0 GB');
+    assert.equal(MAX_COPY_BYTES, 20 * 1024 * 1024);
+});
+
+test('a flood of messages keeps the panel and its log at their limit', async (t) => {
+    const root = tempRoot(t);
+    let posts = 0;
+    const pending: Array<() => void> = [];
+    const log = new SessionMessageLog({ limit: 50, spoolRoot: root });
+    const view = new SessionMessagesView(log, { schedule: (render) => pending.push(render) });
+    t.after(() => view.dispose());
+    view.resolveWebviewView({ webview: { options: {}, html: '', cspSource: 'x', postMessage: () => { posts++; return Promise.resolve(true); }, onDidReceiveMessage: () => ({ dispose() {} }) }, visible: true } as any, {} as any, {} as any);
+    view.show(FILE);
+    for (let i = 0; i < 20_000; i++) {
+        view.append(FILE, noticeMessage('f', { message: `row ${i}` }, AT));
+        if (i % 1000 === 999) pending.splice(0).forEach((render) => render());
+    }
+    await log.idle();
+    assert.equal(log.get(FILE.key)?.messages.length, 50);
+    assert.equal(log.get(FILE.key)?.total, 20_000);
+    assert.ok(posts <= 21, `the panel was updated ${posts} times, not once per message`);
+    const saved = path.join(root, 'all.log');
+    assert.equal(await log.saveTo(FILE.key, saved), 20_000);
+    assert.equal(fs.readFileSync(saved, 'utf8').split('\n').length - 1, 20_000);
 });

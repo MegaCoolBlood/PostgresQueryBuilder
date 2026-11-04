@@ -1344,3 +1344,21 @@ test('a statement run for a Data Viewer shows how long it has been running', asy
     assert.deepEqual(reports.map((r) => r.message), ['0 s elapsed', '12 s elapsed']);
     assert.equal(clock.ticks.length, 0);
 });
+
+// ===== many messages in one run =====
+
+test('a run counts the messages of the server without keeping them', async (t) => {
+    const infos = recordWindowCalls(t, 'showInformationMessage');
+    const { fileSessions, channel } = createFileSessions({
+        onQuery: (client) => { for (let i = 0; i < 10_000; i++) client.emit('notice', { severity: 'NOTICE', message: `row ${i}` }); }
+    });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.execute(selecting(FILE, DO_BLOCK) as any);
+
+    assert.match(String(infos[0][0]), /The server sent 10000 messages, shown in the "PostgreSQL Messages" panel\./);
+    assert.equal(channel.revealed.length, 1);
+    // The messages reach the log through the session; a run only counts them.
+    const source = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'src', 'sqlFileSession.ts'), 'utf8');
+    assert.doesNotMatch(source, /notices\.push\(|SessionNotice\[\]/, 'no run collects the messages of the server');
+});
