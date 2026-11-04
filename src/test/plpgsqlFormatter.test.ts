@@ -3095,3 +3095,103 @@ test('the SET of every form of UPDATE is still the clause of its assignments', (
             .includes('  UPDATE\n  SET\n    amount = s.amount,\n    paid = s.paid\n')
     );
 });
+
+// ===== CREATE TRIGGER =====
+
+test('a trigger gets one clause per line and keeps its events together with their OR', () => {
+    const src = 'CREATE OR REPLACE TRIGGER trg_t_xxx_before_row BEFORE DELETE OR UPDATE OF x_status, x_hours, x_id ON table_x FOR EACH ROW EXECUTE FUNCTION trigger_fct_t_x_before_row();';
+    const result = formatSqlChecked(src);
+    assert.equal(result.ok, true, result.reason);
+    assert.equal(result.text, [
+        'CREATE OR REPLACE TRIGGER trg_t_xxx_before_row',
+        '  BEFORE DELETE OR UPDATE OF x_status, x_hours, x_id',
+        '  ON table_x',
+        '  FOR EACH ROW',
+        '  EXECUTE FUNCTION trigger_fct_t_x_before_row();'
+    ].join('\n'));
+    assert.equal(formatSql(result.text), result.text, 'idempotent');
+});
+
+test('a short trigger gets the clause layout as well', () => {
+    assert.equal(
+        formatSql('CREATE TRIGGER trg BEFORE UPDATE ON wages FOR EACH ROW EXECUTE FUNCTION f();'),
+        'CREATE TRIGGER trg\n  BEFORE UPDATE\n  ON wages\n  FOR EACH ROW\n  EXECUTE FUNCTION f();'
+    );
+    assert.equal(
+        formatSql('CREATE TRIGGER trg INSTEAD OF INSERT ON v_wages FOR EACH ROW EXECUTE FUNCTION payroll.f();'),
+        'CREATE TRIGGER trg\n  INSTEAD OF INSERT\n  ON v_wages\n  FOR EACH ROW\n  EXECUTE FUNCTION payroll.f();'
+    );
+});
+
+test('REFERENCING, WHEN and the arguments of the function each stay on one line', () => {
+    assert.equal(
+        formatSql('CREATE TRIGGER trg AFTER INSERT OR UPDATE OR DELETE ON wages REFERENCING NEW TABLE AS new_rows OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION f();'),
+        [
+            'CREATE TRIGGER trg',
+            '  AFTER INSERT OR UPDATE OR DELETE',
+            '  ON wages',
+            '  REFERENCING NEW TABLE AS new_rows OLD TABLE AS old_rows',
+            '  FOR EACH STATEMENT',
+            '  EXECUTE FUNCTION f();'
+        ].join('\n')
+    );
+    const out = formatSql("CREATE TRIGGER trg BEFORE UPDATE ON wages FOR EACH ROW WHEN (OLD.amount IS DISTINCT FROM NEW.amount AND NEW.paid) EXECUTE PROCEDURE f('a', 1);");
+    assert.equal(out, [
+        'CREATE TRIGGER trg',
+        '  BEFORE UPDATE',
+        '  ON wages',
+        '  FOR EACH ROW',
+        '  WHEN (OLD.amount IS DISTINCT FROM NEW.amount AND NEW.paid)',
+        "  EXECUTE PROCEDURE f('a', 1);"
+    ].join('\n'));
+    assert.equal(formatSql(out), out, 'idempotent');
+});
+
+test('a constraint trigger puts FROM and its deferral on lines of their own', () => {
+    assert.equal(
+        formatSql('CREATE CONSTRAINT TRIGGER trg AFTER INSERT ON wages FROM payroll.employees NOT DEFERRABLE FOR EACH ROW EXECUTE FUNCTION f();'),
+        'CREATE CONSTRAINT TRIGGER trg\n  AFTER INSERT\n  ON wages\n  FROM payroll.employees\n  NOT DEFERRABLE\n  FOR EACH ROW\n  EXECUTE FUNCTION f();'
+    );
+    assert.ok(
+        formatSql('CREATE CONSTRAINT TRIGGER trg AFTER INSERT ON wages DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION f();')
+            .includes('\n  ON wages\n  DEFERRABLE INITIALLY DEFERRED\n  FOR EACH ROW\n')
+    );
+    assert.ok(
+        formatSql('CREATE CONSTRAINT TRIGGER trg AFTER INSERT ON wages INITIALLY IMMEDIATE FOR EACH ROW EXECUTE FUNCTION f();')
+            .includes('\n  ON wages\n  INITIALLY IMMEDIATE\n  FOR EACH ROW\n')
+    );
+});
+
+test('a trigger already laid out by clause keeps its layout', () => {
+    const src = [
+        'CREATE OR REPLACE TRIGGER trg_t_xxx_before_row',
+        '  BEFORE DELETE OR UPDATE OF x_status, x_hours, x_id',
+        '  ON table_x',
+        '  FOR EACH ROW',
+        '  EXECUTE FUNCTION trigger_fct_t_x_before_row();'
+    ].join('\n');
+    assert.equal(formatSql(src), src);
+});
+
+test('comments in a trigger stay where the author put them', () => {
+    const result = formatSqlChecked('create trigger trg\n-- keeps the history\nafter update on wages -- every change\nfor each row execute function f();\nSELECT 1;');
+    assert.equal(result.ok, true, result.reason);
+    assert.equal(result.text, [
+        'CREATE TRIGGER trg',
+        '  -- keeps the history',
+        '  AFTER UPDATE',
+        '  ON wages -- every change',
+        '  FOR EACH ROW',
+        '  EXECUTE FUNCTION f();',
+        'SELECT 1;'
+    ].join('\n'));
+});
+
+test('a trigger in a PL/pgSQL block is laid out at the level of its statement, its neighbours unchanged', () => {
+    assert.equal(
+        formatSql('DROP TRIGGER IF EXISTS trg ON wages;\nCREATE TRIGGER trg BEFORE UPDATE ON wages FOR EACH ROW EXECUTE FUNCTION f();\nCOMMENT ON TRIGGER trg ON wages IS \'x\';'),
+        "DROP TRIGGER IF EXISTS trg ON wages;\nCREATE TRIGGER trg\n  BEFORE UPDATE\n  ON wages\n  FOR EACH ROW\n  EXECUTE FUNCTION f();\nCOMMENT ON TRIGGER trg ON wages IS 'x';"
+    );
+    const out = formatSql('DO $$\nBEGIN\n    CREATE TRIGGER trg BEFORE UPDATE ON wages FOR EACH ROW EXECUTE FUNCTION f();\n    PERFORM 1;\nEND $$;');
+    assert.ok(out.includes('\n  CREATE TRIGGER trg\n    BEFORE UPDATE\n    ON wages\n    FOR EACH ROW\n    EXECUTE FUNCTION f();\n  PERFORM 1;\n'), out);
+});

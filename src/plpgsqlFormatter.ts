@@ -1898,6 +1898,60 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         return argumentGroupTable.get(fn.text);
     };
 
+    // CREATE [OR REPLACE] [CONSTRAINT] TRIGGER statements: where each one ends
+    // and where each of its clauses starts, so it is laid out one clause per
+    // line and nothing inside a clause — the `OR` between its events, the
+    // condition of WHEN, the arguments of its function — is broken.
+    const triggerStatements = new Map<number, { end: number; clauseStarts: Set<number> }>();
+    {
+        const isComment = (tk: Tok) => tk.type === 'lineComment' || tk.type === 'blockComment';
+        const nextAt = (k: number): number => {
+            let j = k + 1;
+            while (j < toks.length && isComment(toks[j])) j++;
+            return j;
+        };
+        const wordAt = (k: number): string =>
+            k >= 0 && k < toks.length && toks[k].type === 'word' ? toks[k].text.toLowerCase() : '';
+        const prevWordAt = (k: number): string => {
+            let j = k - 1;
+            while (j >= 0 && isComment(toks[j])) j--;
+            return wordAt(j);
+        };
+        for (let i = 0; i < toks.length; i++) {
+            if (wordAt(i) !== 'create') continue;
+            const depth = depths[i];
+            let k = nextAt(i);
+            if (wordAt(k) === 'or' && wordAt(nextAt(k)) === 'replace') k = nextAt(nextAt(k));
+            if (wordAt(k) === 'constraint') k = nextAt(k);
+            if (wordAt(k) !== 'trigger') continue;
+            let end = toks.length - 1;
+            for (let j = k + 1; j < toks.length; j++) {
+                if (toks[j].text === ';' && depths[j] === depth) { end = j; break; }
+            }
+            const clauseStarts = new Set<number>();
+            let timing = false, on = false;
+            for (let j = k + 1; j < end; j++) {
+                if (depths[j] !== depth) continue;
+                const w = wordAt(j);
+                if (!w) continue;
+                const before = prevWordAt(j);
+                const starts =
+                    (!timing && (w === 'before' || w === 'after' || w === 'instead'))
+                    || (timing && !on && w === 'on')
+                    || (on && (w === 'from' || w === 'referencing' || w === 'for' || w === 'when' || w === 'execute'))
+                    || (on && w === 'not' && wordAt(nextAt(j)) === 'deferrable')
+                    || (on && w === 'deferrable' && before !== 'not')
+                    || (on && w === 'initially' && before !== 'deferrable');
+                if (!starts) continue;
+                clauseStarts.add(j);
+                if (w === 'before' || w === 'after' || w === 'instead') timing = true;
+                if (w === 'on') on = true;
+            }
+            triggerStatements.set(i, { end, clauseStarts });
+            i = end;
+        }
+    }
+
     // Parens that open a CREATE FUNCTION/PROCEDURE parameter list, plus the
     // construct each such paren belongs to (for per-construct thresholds).
     const routineParenSet = new Set<number>();
@@ -2982,6 +3036,24 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                     ? applyCase(t.text, opt.keywordCase)
                     : applyCase(t.text, opt.identifierCase);
             const meta: TokMeta = { text: rendered, isKeyword: cat !== 'ident', type: 'word' };
+
+            // CREATE TRIGGER: the name on the first line, then one clause per line.
+            const trigger = w === 'create' ? triggerStatements.get(i) : undefined;
+            if (trigger) {
+                popLists(pd);
+                startLine(blockIndent, blanks);
+                for (let k = i; k <= trigger.end; k++) {
+                    const tk = toks[k];
+                    const ownLineComment = (tk.type === 'lineComment' || tk.type === 'blockComment') && tk.nlBefore > 0;
+                    if (trigger.clauseStarts.has(k) || (ownLineComment && k > i)) startLine(blockIndent + 1, 0);
+                    emitInline(tk);
+                }
+                flush();
+                pendingIndent = blockIndent;
+                lastWord = '';
+                inRoutineTrailer = false;
+                i = trigger.end; continue;
+            }
 
             // Keep a CREATE FUNCTION/PROCEDURE that the author wrote on a single line intact.
             // Exception: if the param-list threshold demands multi-line output, skip the
