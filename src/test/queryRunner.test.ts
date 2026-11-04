@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ChangeSet, QueryRunner } from '../queryRunner';
+import { ChangeSet, QueryRunner, updateDefaultColumns } from '../queryRunner';
 
 type SelectOptions = { alwaysQualifySchema: boolean; alwaysQuote: boolean };
 
@@ -1363,4 +1363,72 @@ test('preloadColumnTypes lets a fresh runner preview a duplicated jsonb string a
     await runner.preloadColumnTypes(targets);
 
     assert.equal(runner.generateSQL(targets), `INSERT INTO app.log (label) VALUES ('"abc"');`);
+});
+
+// ===== setting a column of an existing row back to its default =====
+
+test('commitChanges writes a column set back to its default as DEFAULT, not as a parameter', async () => {
+    const client = createRecordingClient();
+    const { runner } = createRunner({ options: { alwaysQualifySchema: true, alwaysQuote: false }, pool: { connect: async () => client } });
+
+    await runner.commitChanges([{
+        schema: 'leda',
+        table: 'bos_mitarbeiter',
+        identityStrategy: 'pk',
+        columnTypes: { mit_id: 'int4', mit_type: 'varchar', mit_geloescht: 'varchar' },
+        changes: {
+            updates: [
+                { primaryKey: { mit_id: 7 }, changes: { mit_type: 'EXT' }, defaults: ['mit_geloescht'] },
+                { primaryKey: { mit_id: 8 }, changes: {}, defaults: ['mit_geloescht'] }
+            ],
+            inserts: [],
+            deletes: []
+        }
+    }]);
+
+    assert.deepEqual(client.statements, [
+        { sql: 'BEGIN', params: undefined },
+        { sql: 'UPDATE leda.bos_mitarbeiter SET mit_type = $1, mit_geloescht = DEFAULT WHERE mit_id = $2', params: ['EXT', 7] },
+        { sql: 'UPDATE leda.bos_mitarbeiter SET mit_geloescht = DEFAULT WHERE mit_id = $1', params: [8] },
+        { sql: 'COMMIT', params: undefined }
+    ]);
+});
+
+test('the SQL preview shows a column set back to its default as DEFAULT', () => {
+    const { runner } = createRunner({ options: { alwaysQualifySchema: true, alwaysQuote: false } });
+    const sql = runner.generateSQL([{
+        schema: 'leda',
+        table: 'bos_mitarbeiter',
+        columnTypes: { mit_id: 'int4', mit_geloescht: 'varchar' },
+        changes: { updates: [{ primaryKey: { mit_id: 8 }, changes: {}, defaults: ['mit_geloescht', 'Order'] }], inserts: [], deletes: [] }
+    }]);
+    assert.equal(sql, 'UPDATE leda.bos_mitarbeiter SET mit_geloescht = DEFAULT, "Order" = DEFAULT WHERE mit_id = 8;');
+});
+
+test('the DEFAULT columns of an update are names only, each once, and never also given a value', () => {
+    assert.deepEqual(updateDefaultColumns({ changes: {}, defaults: ['a', 'b', 'a'] }), ['a', 'b']);
+    assert.deepEqual(updateDefaultColumns({ changes: { a: 1 }, defaults: ['a', 'b'] }), ['b'], 'a value wins over DEFAULT');
+    assert.deepEqual(updateDefaultColumns({ changes: {}, defaults: [1, null, '', { x: 1 }, 'c'] as any }), ['c']);
+    assert.deepEqual(updateDefaultColumns({ changes: {}, defaults: 'a' as any }), []);
+    assert.deepEqual(updateDefaultColumns({ changes: {} }), []);
+});
+
+test('a column name set back to its default is quoted, so it cannot carry SQL', () => {
+    const { runner } = createRunner({ options: { alwaysQualifySchema: true, alwaysQuote: false } });
+    const sql = runner.generateSQL([{
+        schema: 'app', table: 't', columnTypes: { id: 'int4' },
+        changes: { updates: [{ primaryKey: { id: 1 }, changes: {}, defaults: ['x = 1; DROP TABLE t; --'] }], inserts: [], deletes: [] }
+    }]);
+    assert.equal(sql, 'UPDATE app.t SET "x = 1; DROP TABLE t; --" = DEFAULT WHERE id = 1;');
+});
+
+test('an update with neither a value nor a DEFAULT writes nothing', async () => {
+    const client = createRecordingClient();
+    const { runner } = createRunner({ options: { alwaysQualifySchema: true, alwaysQuote: false }, pool: { connect: async () => client } });
+    await runner.commitChanges([{
+        schema: 'app', table: 't', identityStrategy: 'pk', columnTypes: { id: 'int4' },
+        changes: { updates: [{ primaryKey: { id: 1 }, changes: {}, defaults: [] }], inserts: [], deletes: [] }
+    }]);
+    assert.deepEqual(client.statements.map(s => s.sql), ['BEGIN', 'COMMIT']);
+    assert.equal(runner.generateSQL([{ schema: 'app', table: 't', changes: { updates: [{ primaryKey: { id: 1 }, changes: {} }], inserts: [], deletes: [] } }]), '');
 });

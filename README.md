@@ -178,6 +178,13 @@ warning says that its settings are gone.
   length-limited columns and arrows to step through the result.
 - Insert, duplicate and delete rows from the row toolbar. A deleted row is
   struck through until you save and can be restored until then.
+- **Reset to Default** in the context menu of a cell of an existing row sets
+  the column back to the default the table defines for it — for example
+  `mit_geloescht VARCHAR(1) DEFAULT 'N'` — for that cell or every cell of a
+  selection. The cell shows `DEFAULT` until it is saved as
+  `SET column = DEFAULT`; typing into it replaces it, *Ctrl+Z* takes it back.
+  **View Full Record** offers the same as a *Default* button per field.
+  Identity and generated columns are left out.
 - **Save** shows the generated statements before anything happens. You can edit
   them; **Execute** then runs them in one transaction that rolls back
   completely on the first error, and every `UPDATE` and `DELETE` is checked to

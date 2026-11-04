@@ -656,6 +656,7 @@ function planSeriesWrites(source, plan, valueAt, kindOfColumn) {
 // The text a cell shows while a fill drag previews the value it would receive:
 // an empty value becomes NULL, a number is displayed the way the grid shows it.
 function fillPreviewText(value, isNumeric, thousandSeparator) {
+    if (isCellDefault(value)) return 'DEFAULT';
     const text = value === null || value === undefined ? '' : String(value);
     if (text === '') return 'NULL';
     return isNumeric ? formatNumberDisplay(text, thousandSeparator) : text;
@@ -816,6 +817,8 @@ function computeScrollAdjustment(cell, view, headInset, leftInset) {
 // Deep-clone a value while preserving Map and Set instances, so a captured
 // snapshot is fully independent of the live edit state it was taken from.
 function cloneEditValue(v) {
+    // The default marker is one shared object; a copy would no longer be it.
+    if (v === CELL_DEFAULT) { return v; }
     if (v instanceof Map) { return new Map(Array.from(v, ([k, val]) => [k, cloneEditValue(val)])); }
     if (v instanceof Set) { return new Set(Array.from(v, cloneEditValue)); }
     if (Array.isArray(v)) { return v.map(cloneEditValue); }
@@ -831,6 +834,10 @@ function cloneEditValue(v) {
 // contents are order-independent (sorted); arrays keep their order because row
 // order is meaningful.
 function serializeEditValue(v) {
+    // Not JSON, so it cannot equal the text "DEFAULT" a cell may hold.
+    if (v === CELL_DEFAULT) {
+        return '<DEFAULT>';
+    }
     if (v instanceof Map) {
         return 'M{' + Array.from(v, ([k, val]) => JSON.stringify(k) + ':' + serializeEditValue(val)).sort().join(',') + '}';
     }
@@ -3027,6 +3034,23 @@ function defaultResetColumns(columnDefaults, mode) {
         .map(info => info.column);
 }
 
+// The value of a cell of a loaded row that is set back to its column default:
+// saved as `SET column = DEFAULT`. One shared object, recognised by identity,
+// so no text a user types — not even "DEFAULT" — can be taken for it.
+const CELL_DEFAULT = Object.freeze({ cellDefault: true, toString: () => 'DEFAULT' });
+
+function isCellDefault(value) {
+    return value === CELL_DEFAULT;
+}
+
+// Whether an existing row may set a column back to its default: only a default
+// the table defines (a constant or an expression such as now()). An identity
+// would hand out a new key, and a generated column is computed anyway.
+function updateDefaultAllowed(info) {
+    const kind = classifyColumnDefault(info);
+    return kind === 'constant' || kind === 'volatile';
+}
+
 // Tooltip explaining why a duplicated cell was not copied.
 function defaultCellTitle(info) {
     const kind = classifyColumnDefault(info);
@@ -3186,19 +3210,29 @@ function buildCommitTargets(caps, rows, edits) {
             const source = sources[colName];
             if (!source) { return; }
             const key = sourceInstanceKey(source);
-            if (!perTable.has(key)) { perTable.set(key, {}); }
-            perTable.get(key)[source.sourceColumn] = changed[colName];
+            if (!perTable.has(key)) { perTable.set(key, { changes: {}, defaults: [] }); }
+            const entry = perTable.get(key);
+            // A cell set back to its default is no value: the column is named
+            // apart and written as `= DEFAULT`.
+            if (isCellDefault(changed[colName])) {
+                entry.defaults.push(source.sourceColumn);
+            } else {
+                entry.changes[source.sourceColumn] = changed[colName];
+            }
         });
-        perTable.forEach((changes, key) => {
+        perTable.forEach(({ changes, defaults }, key) => {
             const plan = planFor(key);
             if (!plan || plan.identityStrategy === 'none') { return; }
             const target = targetFor(plan);
             if (rowIsMissing(plan, row)) {
+                // An INSERT leaves a column at its default by leaving it out.
                 target.changes.inserts.push(changes);
                 target.missingRowInserts = (target.missingRowInserts || 0) + 1;
                 return;
             }
-            target.changes.updates.push({ primaryKey: identityFor(plan, row), changes });
+            target.changes.updates.push(defaults.length > 0
+                ? { primaryKey: identityFor(plan, row), changes, defaults }
+                : { primaryKey: identityFor(plan, row), changes });
         });
     });
 
@@ -4369,6 +4403,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const idx = parseInt(rowAttr, 10);
             const key = `${idx}:${col}`;
             raw = modifiedCells.has(key) ? modifiedCells.get(key) : allRows[idx][col];
+            // A fill from a cell at its default sets the target cells to theirs.
+            if (isCellDefault(raw)) return CELL_DEFAULT;
         } else {
             const insAttr = td.getAttribute('data-insert');
             const dupAttr = td.getAttribute('data-dup');
@@ -5025,6 +5061,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const rowAttr = td.getAttribute('data-row');
         const insAttr = td.getAttribute('data-insert');
         const dupAttr = td.getAttribute('data-dup');
+        if (isCellDefault(value)) {
+            stageCellDefault(colName, rowAttr, insAttr, dupAttr);
+            return;
+        }
         if (rowAttr !== null) {
             if (!isColumnEditable(colName)) { return; }
             const t = applyPastedExistingCell(parseInt(rowAttr, 10), colName, value);
@@ -5041,6 +5081,31 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             entry.row[colName] = normalized;
             if (entry.defaults) { entry.defaults.delete(colName); }
             validationTargets.push({ key: `dup:${idx}:${colName}`, value: normalized });
+        }
+    }
+
+    // Fill one cell with "its default" (from a cell set back to its default): a
+    // loaded row sets the column back where it may, a new row leaves it empty so
+    // the INSERT leaves it to the database.
+    function stageCellDefault(colName, rowAttr, insAttr, dupAttr) {
+        if (rowAttr !== null) {
+            const rowIdx = parseInt(rowAttr, 10);
+            if (!canResetCellToDefault(rowIdx, colName)) return;
+            modifiedCells.set(`${rowIdx}:${colName}`, CELL_DEFAULT);
+            invalidCells.delete(`${rowIdx}:${colName}`);
+        } else if (insAttr !== null && insertedRows[parseInt(insAttr, 10)]) {
+            const idx = parseInt(insAttr, 10);
+            insertedRows[idx].row[colName] = null;
+            invalidCells.delete(`ins:${idx}:${colName}`);
+        } else if (dupAttr !== null && duplicatedRows[parseInt(dupAttr, 10)]) {
+            const idx = parseInt(dupAttr, 10);
+            const entry = duplicatedRows[idx];
+            entry.row[colName] = null;
+            if (columnDefaults.some(d => d.column === colName)) {
+                if (!entry.defaults) entry.defaults = new Set();
+                entry.defaults.add(colName);
+            }
+            invalidCells.delete(`dup:${idx}:${colName}`);
         }
     }
 
@@ -6114,6 +6179,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const idx = parseInt(rowIdx);
             const modKey = `${idx}:${colName}`;
             cellValue = modifiedCells.has(modKey) ? modifiedCells.get(modKey) : allRows[idx][colName];
+            // A cell set back to its default has no value to filter or follow yet.
+            if (isCellDefault(cellValue)) cellValue = null;
         }
 
         const items = [];
@@ -6141,6 +6208,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 if (items.length > 0) {
                     items.push({ separator: true });
                 }
+            }
+        }
+
+        // 0b. Set cells of existing rows back to their column default
+        if (rowIdx !== null) {
+            const resettable = cellsToResetFrom(td).filter(c => canResetCellToDefault(c.rowIdx, c.colName));
+            if (resettable.length > 0) {
+                items.push({
+                    label: resettable.length === 1 ? 'Reset to Default' : `Reset ${resettable.length} Cells to Default`,
+                    action: () => resetCellsToDefault(resettable)
+                });
+                items.push({ separator: true });
             }
         }
 
@@ -6769,6 +6848,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         const key = `${entry.idx}:${colName}`;
         const value = modifiedCells.has(key) ? modifiedCells.get(key) : (allRows[entry.idx] || {})[colName];
+        if (isCellDefault(value)) return 'DEFAULT';
         if (value === null) return 'NULL';
         return String(isNumericColumn(colName) ? formatNumberDisplay(value, thousandSeparator) : cellToString(value)).trim();
     }
@@ -6841,15 +6921,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const modKey = `${idx}:${cc.name}`;
             const isModifiedCell = modifiedCells.has(modKey);
             const currentVal = isModifiedCell ? modifiedCells.get(modKey) : originalVal;
+            const atDefault = isCellDefault(currentVal);
             const invalidReason = invalidCells.get(modKey);
             const cellClass = `${isModifiedCell ? 'cell-modified' : ''}${invalidReason ? ' cell-invalid' : ''}`;
-            const displayVal = currentVal === null ? '<span class="null-value">NULL</span>' : (
+            const displayVal = atDefault ? defaultMarkerHtml(cc.name) : currentVal === null ? '<span class="null-value">NULL</span>' : (
                 cc.numeric
                     ? escapeHtml(formatNumberDisplay(currentVal, thousandSeparator))
                     : escapeHtml(cellToString(currentVal))
             );
 
-            const hasValue = currentVal !== null && currentVal !== undefined;
+            const hasValue = !atDefault && currentVal !== null && currentVal !== undefined;
             const defaultCustomMapping = hasValue && cc.mappings.length
                 ? cc.mappings.find(m => evaluateMappingConditions(m, row))
                 : undefined;
@@ -6866,7 +6947,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 ? executableButtonHtml(cc.execType, executedValues.get(executableMarkKey(cc.name, cellToString(currentVal))))
                 : '';
             const cellExtraClass = (fkBtn ? ' has-fk-btn' : '') + (execBtn ? ' has-exec-btn' : '');
-            const multiline = currentVal === null || cc.numeric ? null : multilineCellInfo(cellToString(currentVal));
+            const multiline = !hasValue || cc.numeric ? null : multilineCellInfo(cellToString(currentVal));
             const linesBtn = multiline ? multilineButtonHtml(multiline.lines) : '';
             html += `<td class="${cellClass}${cellExtraClass}${multiline ? ' cell-multiline' : ''}" ${invalidReason ? `title="${escapeAttr(invalidReason)}"` : ''} data-row="${idx}" data-col="${cc.attr}" data-original="${escapeAttr(originalVal === null ? '__NULL__' : cellToString(originalVal))}">${execBtn}<span class="${spanClass}" contenteditable="false">${displayVal}</span>${linesBtn}${fkBtn}</td>`;
         });
@@ -6956,9 +7037,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // Clear the "NULL" placeholder when the user focuses a NULL cell so
     // they can immediately type a new value. Leaving the cell empty on
     // blur restores NULL via handleCellEdit (which converts '' -> null).
+    // A cell set back to its default is cleared the same way, and stays at
+    // its default when it is left without typing.
     function handleNullCellFocus(span) {
         if (span.querySelector('.null-value')) {
             span.textContent = '';
+        } else if (span.querySelector('.default-value')) {
+            span.textContent = '';
+            span.setAttribute('data-was-default', 'true');
         }
     }
 
@@ -7049,6 +7135,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const originalStr = td.getAttribute('data-original');
         const original = originalStr === '__NULL__' ? null : originalStr;
 
+        // Left without typing, a cell set back to its default stays there.
+        const wasDefault = span.getAttribute('data-was-default') === 'true';
+        span.removeAttribute('data-was-default');
+        if (wasDefault && span.textContent === '') {
+            span.innerHTML = defaultMarkerHtml(colName);
+            return;
+        }
+
         const colMeta = columns.find(c => c.name === colName);
         const isNumeric = !!colMeta && getColumnFilterType(colMeta.dataType) === 'numeric';
         let newValue = normalizeCellInput(span.textContent, isNumeric, thousandSeparator);
@@ -7125,10 +7219,69 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         applyDataRowCellEdit(e, duplicatedRows, 'data-dup');
     }
 
-    // Markup of a duplicated cell the database will fill in on save.
+    // Markup of a cell the database will fill in on save: a duplicated row that
+    // leaves the column out, or an existing row set back to the default.
     function defaultMarkerHtml(colName) {
-        const info = columnDefaults.find(d => d.column === colName);
+        const info = updateDefaultInfo(colName) || columnDefaults.find(d => d.column === colName);
         return `<span class="default-value" title="${escapeAttr(defaultCellTitle(info))}">DEFAULT</span>`;
+    }
+
+    // The default of the table column behind a result column, when an existing
+    // row may be set back to it: the column must come from the one table the
+    // defaults were loaded for, and the default be one the table defines.
+    function updateDefaultInfo(colName) {
+        const source = caps.columnSources[colName];
+        if (!source || !caps.schema || !caps.table) return null;
+        const plan = caps.tables.find(t => t.tableOid === source.tableOid);
+        if (!plan || plan.schema !== caps.schema || plan.table !== caps.table) return null;
+        const info = columnDefaults.find(d => d.column === source.sourceColumn);
+        return updateDefaultAllowed(info) ? info : null;
+    }
+
+    // Whether the cell of the loaded row `rowIdx` can be set back to its default now.
+    function canResetCellToDefault(rowIdx, colName) {
+        if (!allRows[rowIdx] || deletedRows.has(rowIdx) || !isColumnEditable(colName)) return false;
+        return !!updateDefaultInfo(colName) && !isCellDefault(modifiedCells.get(`${rowIdx}:${colName}`));
+    }
+
+    // Set cells of loaded rows back to their column default; saving writes
+    // `SET column = DEFAULT`. One undo step for all of them.
+    function resetCellsToDefault(cells) {
+        let changed = 0;
+        cells.forEach(({ rowIdx, colName }) => {
+            if (!canResetCellToDefault(rowIdx, colName)) return;
+            const modKey = `${rowIdx}:${colName}`;
+            modifiedCells.set(modKey, CELL_DEFAULT);
+            invalidCells.delete(modKey);
+            changed++;
+        });
+        if (changed === 0) return;
+        renderBody();
+        applyCellRangeHighlight();
+        updateChangeIndicator();
+        recordEditHistory();
+        if (recordDialogRowIdx >= 0 && cells.some(c => c.rowIdx === recordDialogRowIdx)) {
+            renderRecordDialog({ preserveScroll: true });
+        }
+    }
+
+    // The loaded-row cells of the selection when `td` lies inside a selection
+    // of several cells, otherwise just the cell `td`.
+    function cellsToResetFrom(td) {
+        const own = { rowIdx: parseInt(td.getAttribute('data-row'), 10), colName: td.getAttribute('data-col') };
+        const at = cellCoords(td);
+        if (!at || !rangeAnchor || !rangeFocus || isSingleCellSelection(rangeAnchor, rangeFocus)) return [own];
+        const b = rangeBounds();
+        if (at.r < b.minR || at.r > b.maxR || at.c < b.minC || at.c > b.maxC) return [own];
+        const cells = [];
+        for (let r = b.minR; r <= b.maxR; r++) {
+            const entry = renderPlan[r];
+            if (!entry || entry.kind !== 'row') continue;
+            for (let c = b.minC; c <= b.maxC && c < columns.length; c++) {
+                cells.push({ rowIdx: entry.idx, colName: columns[c].name });
+            }
+        }
+        return cells;
     }
 
     // Typing into a cell replaces the marker, so remove it as soon as the cell
@@ -7178,6 +7331,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // (timestamps, JSON, enums, ...) are sent to the database for a cast test.
     // `td` is null for a cell outside the DOM; its mark is kept by key.
     function checkCellValue(td, key, value) {
+        // The default of the column is the table's own; there is nothing to check.
+        if (isCellDefault(value)) {
+            setCellValidity(td, key, null);
+            return;
+        }
         const colName = colNameOfKey(key);
         const colMeta = columns.find(c => c.name === colName);
         const result = colMeta ? validateCellValue(value, colMeta.fullType || colMeta.dataType) : { state: 'valid' };
@@ -7336,6 +7494,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         columns.forEach(col => {
             const modKey = `${idx}:${col.name}`;
             const edited = modifiedCells.has(modKey);
+            // A cell set back to its default is left to the database in the copy too.
+            if (edited && isCellDefault(modifiedCells.get(modKey))) {
+                resetColumns = resetColumns.concat(col.name);
+                rowData[col.name] = null;
+                source[col.name] = allRows[idx][col.name];
+                return;
+            }
             const value = duplicateCellValue(edited ? modifiedCells.get(modKey) : allRows[idx][col.name], col.dataType, edited);
             rowData[col.name] = value;
             source[col.name] = value;
@@ -7413,7 +7578,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const modKey = `${idx}:${colName}`;
         const raw = modifiedCells.has(modKey) ? modifiedCells.get(modKey) : (allRows[idx] || {})[colName];
         const type = executableTypeOfColumn(colName, caps.columnSources[colName]);
-        if (!type || raw === null || raw === undefined) return null;
+        if (!type || raw === null || raw === undefined || isCellDefault(raw)) return null;
         return { colName, type, value: cellToString(raw) };
     }
 
@@ -9147,7 +9312,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             const isModified = modifiedCells.has(modKey);
             const originalVal = rowData[col.name];
             const currentVal = isModified ? modifiedCells.get(modKey) : originalVal;
-            const isNull = currentVal === null || currentVal === undefined;
+            const atDefault = isCellDefault(currentVal);
+            const isNull = !atDefault && (currentVal === null || currentVal === undefined);
 
             const isPk = primaryKeys.includes(col.name);
             const fk = foreignKeys.find(f => f.column === col.name);
@@ -9164,7 +9330,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
             // Display value: numeric columns get thousand separator format
             let displayVal;
-            if (isNull) {
+            if (isNull || atDefault) {
                 displayVal = '';
             } else if (filterType === 'numeric') {
                 displayVal = formatNumberDisplay(currentVal, thousandSeparator);
@@ -9172,22 +9338,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 displayVal = cellToString(currentVal);
             }
 
-            const lineCount = isNull ? 1 : Math.min(15, Math.max(1, displayVal.split('\n').length));
-            const charInfo = isNull ? '(NULL)' : (displayVal.length + ' chars');
+            const lineCount = isNull || atDefault ? 1 : Math.min(15, Math.max(1, displayVal.split('\n').length));
+            const charInfo = atDefault ? '(DEFAULT)' : isNull ? '(NULL)' : (displayVal.length + ' chars');
             const budget = describeCharacterBudget(isNull ? '' : displayVal, col.fullType || col.dataType);
             const budgetHtml = budget
                 ? '<span class="record-value-budget' + charBudgetStateClass(budget) + '">' + escapeHtml(budget.text) + '</span>'
                 : '';
 
             const editableAttr = recordFieldReadonlyAttr(isDeleted, !isColumnEditable(col.name));
-            const valueClass = 'record-value' + (isNull ? ' is-null' : '');
+            const valueClass = 'record-value' + (isNull || atDefault ? ' is-null' : '');
             const rowClass = 'record-row' + (isModified ? ' record-row-modified' : '');
+            const defaultInfo = atDefault ? updateDefaultInfo(col.name) : null;
 
             let actions = '';
             actions += '<button class="btn btn-sm btn-icon record-editor-btn"' +
                 ' title="Open this value in an editor tab; saving there writes it back">' +
                 icon('edit') + '</button>';
-            if (defaultMapping && !isNull) {
+            if (defaultMapping && !isNull && !atDefault) {
                 actions += '<button class="btn btn-sm record-fk-btn"' +
                     ' data-ref-schema="' + escapeAttr(defaultMapping.targetSchema) + '"' +
                     ' data-ref-table="' + escapeAttr(defaultMapping.targetTable) + '"' +
@@ -9195,7 +9362,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     ' data-value="' + escapeAttr(cellToString(currentVal)) + '"' +
                     ' title="' + escapeAttr(defaultMapping.label || (defaultMapping.targetSchema + '.' + defaultMapping.targetTable)) + '"' +
                     '>&#8599; Jump</button>';
-            } else if (fk && !isNull) {
+            } else if (fk && !isNull && !atDefault) {
                 actions += '<button class="btn btn-sm record-fk-btn"' +
                     ' data-ref-schema="' + escapeAttr(fk.refSchema) + '"' +
                     ' data-ref-table="' + escapeAttr(fk.refTable) + '"' +
@@ -9207,6 +9374,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (isModified) {
                 actions += '<button class="btn btn-sm record-reset-btn" title="Reset to original">&#8634; Reset</button>';
             }
+            if (canResetCellToDefault(idx, col.name)) {
+                const info = updateDefaultInfo(col.name);
+                actions += '<button class="btn btn-sm record-default-btn" title="' +
+                    escapeAttr('Set this field back to the default of its column (' + info.defaultExpression.trim() + ') when the changes are saved') +
+                    '">Default</button>';
+            }
 
             html += '<div class="' + rowClass + '" data-col="' + escapeAttr(col.name) + '">' +
                 '<div class="record-label">' + labelBadges + escapeHtml(col.name) +
@@ -9214,7 +9387,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 '</div>' +
                 '<div class="record-value-wrapper">' +
                     '<textarea class="' + valueClass + '" rows="' + lineCount + '" ' + editableAttr +
-                        ' placeholder="NULL">' + escapeHtml(displayVal) + '</textarea>' +
+                        ' placeholder="' + (atDefault ? 'DEFAULT' : 'NULL') + '"' +
+                        (defaultInfo ? ' title="' + escapeAttr(defaultCellTitle(defaultInfo)) + '"' : '') +
+                        '>' + escapeHtml(displayVal) + '</textarea>' +
                     '<div class="record-value-meta">' +
                         '<span class="record-value-info">' + charInfo + (isModified ? ' &middot; modified' : '') + '</span>' +
                         budgetHtml +
@@ -9338,6 +9513,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 });
             }
 
+            const defaultBtn = rowEl.querySelector('.record-default-btn');
+            if (defaultBtn) {
+                defaultBtn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    resetCellsToDefault([{ rowIdx: idx, colName }]);
+                });
+            }
+
             const fkBtn = rowEl.querySelector('.record-fk-btn');
             if (fkBtn) {
                 fkBtn.addEventListener('click', (ev) => {
@@ -9374,7 +9557,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             rowIdx: rowIdx,
             column: colName,
             dataType: colMeta ? (colMeta.dataType || '') : '',
-            value: cellToString(value),
+            value: isCellDefault(value) ? '' : cellToString(value),
             readOnly: !isColumnEditable(colName) || deletedRows.has(rowIdx),
             // Echoed back on save, so the value lands on the same record even
             // when the rows were reloaded in between.
@@ -9796,6 +9979,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
+        CELL_DEFAULT,
+        isCellDefault,
+        updateDefaultAllowed,
         hasOpenPlaceholder,
         filterPlaceholderItems,
         insertPlaceholder,

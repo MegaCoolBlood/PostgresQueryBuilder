@@ -119,9 +119,24 @@ export interface ColumnInfo {
 }
 
 export interface ChangeSet {
-    updates: Array<{ primaryKey: Record<string, any>; changes: Record<string, any> }>;
+    /**
+     * `changes` are the new values, written as parameters; `defaults` names the
+     * columns set back to their default, written as `column = DEFAULT`.
+     */
+    updates: Array<{ primaryKey: Record<string, any>; changes: Record<string, any>; defaults?: string[] }>;
     inserts: Array<Record<string, any>>;
     deletes: Array<Record<string, any>>;
+}
+
+/** The columns of an update set back to their default, without those it also gives a value. */
+export function updateDefaultColumns(update: { changes: Record<string, unknown>; defaults?: unknown }): string[] {
+    if (!Array.isArray(update.defaults)) return [];
+    const seen = new Set<string>();
+    return update.defaults.filter((col): col is string => {
+        if (typeof col !== 'string' || col === '' || seen.has(col) || Object.prototype.hasOwnProperty.call(update.changes, col)) return false;
+        seen.add(col);
+        return true;
+    });
 }
 
 /**
@@ -659,6 +674,13 @@ export class QueryRunner {
                         values.push(QueryRunner.columnParam(val, types[col], 'edit'));
                         paramIndex++;
                     }
+                    // DEFAULT is a keyword, not a value: it cannot be a parameter.
+                    for (const col of updateDefaultColumns(update)) {
+                        setClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = DEFAULT`);
+                    }
+                    if (setClauses.length === 0) {
+                        continue;
+                    }
 
                     const identity = QueryRunner.identityEntries(update.primaryKey, types, verifyRowCount);
                     const whereClauses: string[] = [];
@@ -895,6 +917,12 @@ export class QueryRunner {
                 const setClauses: string[] = [];
                 for (const [col, val] of Object.entries(update.changes)) {
                     setClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = ${this.formatValue(val, types[col], 'edit')}`);
+                }
+                for (const col of updateDefaultColumns(update)) {
+                    setClauses.push(`${this.formatIdentifier(col, alwaysQuote)} = DEFAULT`);
+                }
+                if (setClauses.length === 0) {
+                    continue;
                 }
 
                 statements.push(
