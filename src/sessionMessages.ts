@@ -88,6 +88,8 @@ export interface SessionLog {
     messages: SessionMessage[];
     /** Every message since the log began or was cleared, including those no longer kept. */
     total: number;
+    /** How many of `total` are errors. */
+    errors: number;
     /** Unique per log and renewed by Clear, so the panel can tell new messages from a new log. */
     id: number;
 }
@@ -222,11 +224,14 @@ export class SessionMessageLog {
     append(ref: DbSessionRef, message: SessionMessage): void {
         let log = this.logs.get(ref.key);
         if (!log) {
-            log = { key: ref.key, label: ref.label, messages: [], total: 0, id: ++this.logCounter };
+            log = { key: ref.key, label: ref.label, messages: [], total: 0, errors: 0, id: ++this.logCounter };
             this.logs.set(ref.key, log);
         }
         log.messages.push(message);
         log.total++;
+        if (messageTone(message.severity) === 'danger') {
+            log.errors++;
+        }
         if (log.messages.length > this.limit) {
             log.messages.splice(0, log.messages.length - this.limit);
         }
@@ -244,6 +249,7 @@ export class SessionMessageLog {
         if (!log || log.total === 0) return;
         log.messages = [];
         log.total = 0;
+        log.errors = 0;
         log.id = ++this.logCounter;
         this.spools.get(key)?.truncate();
         this.emit(key);
@@ -374,6 +380,13 @@ export interface MessagesViewState {
     total: number;
     /** E.g. `12 messages`, or `last 2000 of 5234 messages` once the panel no longer shows them all. */
     countText: string;
+    /** How many errors the session sent, e.g. `3 errors`; empty without any. */
+    errorsText: string;
+}
+
+/** The errors of a log for the header of the panel; empty when there are none. */
+export function errorsCountText(errors: number): string {
+    return errors === 0 ? '' : `${errors} ${errors === 1 ? 'error' : 'errors'}`;
 }
 
 /** How many messages the panel shows, and of how many when it no longer shows all of them. */
@@ -389,7 +402,8 @@ export function messagesViewState(shown: DbSessionRef | undefined, log: SessionL
         label: shown ? shown.label : null,
         messages: messages.map((message) => ({ ...message, tone: messageTone(message.severity) })),
         total,
-        countText: shown ? messagesCountText(messages.length, total) : ''
+        countText: shown ? messagesCountText(messages.length, total) : '',
+        errorsText: shown ? errorsCountText(log?.errors ?? 0) : ''
     };
 }
 
@@ -411,6 +425,7 @@ export type MessagesUpdate =
         messages: Array<SessionMessage & { tone: MessageTone }>;
         total: number;
         countText: string;
+        errorsText: string;
         /** The panel drops its oldest lines beyond this many. */
         limit: number;
     };
@@ -441,6 +456,7 @@ export function messagesUpdate(
                 messages: log.messages.slice(log.messages.length - added).map((message) => ({ ...message, tone: messageTone(message.severity) })),
                 total: log.total,
                 countText: messagesCountText(log.messages.length, log.total),
+                errorsText: errorsCountText(log.errors),
                 limit
             },
             sent: current
@@ -615,20 +631,31 @@ body { padding: 0; display: flex; flex-direction: column; }
 .session { display: flex; align-items: baseline; gap: var(--sp-2); min-width: 0; }
 .session-label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .count { font-size: var(--fs-xs); color: var(--c-muted); white-space: nowrap; }
-.list { flex: 1; overflow-y: auto; padding: var(--sp-1) 0; font-family: var(--font-mono); font-size: var(--fs-sm); }
+.list { flex: 1; position: relative; overflow-y: auto; padding: var(--sp-1) 0; font-family: var(--font-mono); font-size: var(--fs-sm); }
 .empty { padding: var(--sp-3); font-family: inherit; color: var(--c-muted); }
 .msg { padding: 1px var(--sp-2); white-space: pre-wrap; word-break: break-word; user-select: text; }
 .msg-time, .msg-source { color: var(--c-muted); }
 .msg-sev { font-weight: 600; }
+.msg-sev .ico { vertical-align: text-bottom; margin-right: 2px; }
 .msg.tone-danger .msg-sev { color: var(--c-danger); }
 .msg.tone-warning .msg-sev { color: var(--c-warning); }
 .msg.tone-success .msg-sev { color: var(--c-success); }
 .msg.tone-info .msg-sev { color: var(--c-info); }
-.msg.tone-danger { background: color-mix(in srgb, var(--c-danger) 8%, transparent); }
-.msg-detail { padding-left: var(--sp-5); color: var(--c-muted); }`;
+/* Errors and warnings stand out by a wash, a stripe and an icon, never by hue alone. */
+.msg.tone-danger { padding-top: 2px; padding-bottom: 2px; background: color-mix(in srgb, var(--c-danger) 14%, transparent); box-shadow: inset 3px 0 0 var(--c-danger); }
+.msg.tone-danger .msg-text { color: var(--c-danger); font-weight: 600; }
+.msg.tone-danger .msg-detail { color: var(--c-fg); }
+.msg.tone-warning { background: color-mix(in srgb, var(--c-warning) 8%, transparent); box-shadow: inset 3px 0 0 var(--c-warning); }
+.msg.tone-danger.current { background: color-mix(in srgb, var(--c-danger) 30%, transparent); box-shadow: inset 6px 0 0 var(--c-danger), inset 0 0 0 1px var(--c-danger); }
+.msg-detail { padding-left: var(--sp-5); color: var(--c-muted); }
+.errors-btn { color: var(--c-danger); font-weight: 600; }
+.errors-btn[hidden] { display: none; }`;
         const body = `
 <div class="toolbar">
-    <div class="session"><span class="session-label" id="label"></span><span class="count" id="count"></span></div>
+    <div class="session">
+        <span class="session-label" id="label"></span><span class="count" id="count"></span>
+        <button class="btn btn-sm btn-ghost errors-btn" id="errorsBtn" hidden title="Go to the next error shown in the panel">${icon('error')}<span id="errorsText"></span></button>
+    </div>
     <div class="toolbar-group">
         <button class="btn btn-sm" id="copyBtn" title="Copy every message of this session to the clipboard, including those the panel no longer shows">${icon('copy')}Copy</button>
         <button class="btn btn-sm" id="saveBtn" title="Save every message of this session to a file, including those the panel no longer shows">${icon('save')}Save</button>
@@ -644,9 +671,13 @@ const countEl = document.getElementById('count');
 const copyBtn = document.getElementById('copyBtn');
 const saveBtn = document.getElementById('saveBtn');
 const clearBtn = document.getElementById('clearBtn');
+const errorsBtn = document.getElementById('errorsBtn');
+const errorsTextEl = document.getElementById('errorsText');
+const TONE_ICONS = { danger: ${JSON.stringify(icon('error'))}, warning: ${JSON.stringify(icon('warning'))} };
 copyBtn.addEventListener('click', () => vscode.postMessage({ type: 'copy' }));
 saveBtn.addEventListener('click', () => vscode.postMessage({ type: 'save' }));
 clearBtn.addEventListener('click', () => vscode.postMessage({ type: 'clear' }));
+errorsBtn.addEventListener('click', () => goToNextError());
 
 ${WEBVIEW_ESCAPE_HTML_JS}
 
@@ -657,7 +688,7 @@ function messageHtml(m) {
     let html = '<div class="msg tone-' + escapeHtml(m.tone) + '">'
         + '<span class="msg-time">[' + escapeHtml(m.time) + ']</span> '
         + (m.source && m.source !== shownLabel ? '<span class="msg-source">' + escapeHtml(m.source) + ' — </span>' : '')
-        + '<span class="msg-sev">' + escapeHtml(m.severity) + ':</span> '
+        + '<span class="msg-sev">' + (TONE_ICONS[m.tone] || '') + escapeHtml(m.severity) + ':</span> '
         + '<span class="msg-text">' + escapeHtml(m.text) + '</span>';
     for (const d of m.details || []) {
         html += '<div class="msg-detail">' + escapeHtml(d) + '</div>';
@@ -669,11 +700,27 @@ function isAtBottom() {
     return listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 4;
 }
 
-function updateHeader(countText, total) {
+function updateHeader(countText, total, errorsText) {
     countEl.textContent = countText || '';
+    errorsTextEl.textContent = errorsText || '';
+    errorsBtn.hidden = !errorsText;
     copyBtn.disabled = !total;
     saveBtn.disabled = !total;
     clearBtn.disabled = !total;
+}
+
+// From the marked error to the next one, round to the first; without a mark,
+// to the first error from where the list is scrolled to.
+function goToNextError() {
+    const errors = Array.from(listEl.querySelectorAll('.msg.tone-danger'));
+    if (errors.length === 0) return;
+    const at = errors.findIndex((el) => el.classList.contains('current'));
+    const next = at >= 0
+        ? errors[(at + 1) % errors.length]
+        : errors.find((el) => el.offsetTop >= listEl.scrollTop) || errors[0];
+    if (at >= 0) errors[at].classList.remove('current');
+    next.classList.add('current');
+    listEl.scrollTop = next.offsetTop;
 }
 
 function render(key, state) {
@@ -684,7 +731,7 @@ function render(key, state) {
     const messages = state.messages || [];
     labelEl.textContent = state.label ? 'Session of ' + state.label : 'No session';
     labelEl.title = state.label ? 'The database session of ' + state.label + ' and every tab sharing it' : '';
-    updateHeader(state.countText, state.total);
+    updateHeader(state.countText, state.total, state.errorsText);
     if (!state.label) {
         listEl.innerHTML = '<div class="empty">Open a SQL file or a Data Viewer tab to see the messages of its database session.</div>';
         return;
@@ -711,7 +758,7 @@ function append(update) {
     while (excess-- > 0 && listEl.firstElementChild) {
         listEl.firstElementChild.remove();
     }
-    updateHeader(update.countText, update.total);
+    updateHeader(update.countText, update.total, update.errorsText);
     if (atBottom) {
         listEl.scrollTop = listEl.scrollHeight;
     }

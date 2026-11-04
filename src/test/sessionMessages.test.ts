@@ -17,6 +17,7 @@ import {
     messagesFileName,
     messagesUpdate,
     messagesViewState,
+    errorsCountText,
     noticeMessage
 } from '../sessionMessages';
 
@@ -121,8 +122,28 @@ test('the panel is told the session it shows and the tone of each message', () =
     assert.equal(state.label, 'payroll.sql');
     assert.equal(state.messages[0].tone, 'danger');
     assert.equal(state.countText, '1 message');
-    assert.deepEqual(messagesViewState(TAB, undefined), { label: 'View Data: SELECT 1', messages: [], total: 0, countText: '0 messages' });
-    assert.deepEqual(messagesViewState(undefined, undefined), { label: null, messages: [], total: 0, countText: '' });
+    assert.deepEqual(messagesViewState(TAB, undefined), { label: 'View Data: SELECT 1', messages: [], total: 0, countText: '0 messages', errorsText: '' });
+    assert.deepEqual(messagesViewState(undefined, undefined), { label: null, messages: [], total: 0, countText: '', errorsText: '' });
+    assert.equal(state.errorsText, '1 error');
+});
+
+test('a log counts its errors, also those the panel no longer keeps, until it is cleared', () => {
+    const log = new SessionMessageLog({ limit: 2 });
+    log.append(FILE, noticeMessage('f', { severity: 'ERROR', message: 'e1' }, AT));
+    log.append(FILE, noticeMessage('f', { severity: 'WARNING', message: 'w' }, AT));
+    log.append(FILE, noticeMessage('f', { severity: 'FATAL', message: 'e2' }, AT));
+    log.append(FILE, noticeMessage('f', { message: 'n' }, AT));
+    assert.equal(log.get(FILE.key)?.errors, 2);
+    assert.equal(messagesViewState(FILE, log.get(FILE.key)).errorsText, '2 errors');
+    log.clear(FILE.key);
+    assert.equal(log.get(FILE.key)?.errors, 0);
+    assert.equal(messagesViewState(FILE, log.get(FILE.key)).errorsText, '');
+});
+
+test('errorsCountText names the errors only when there are some', () => {
+    assert.equal(errorsCountText(0), '');
+    assert.equal(errorsCountText(1), '1 error');
+    assert.equal(errorsCountText(12), '12 errors');
 });
 
 test('the count tells when the panel no longer shows every message', () => {
@@ -360,7 +381,7 @@ test('a hidden panel is sent nothing and gets the whole log when it is shown aga
 // ===== messagesUpdate =====
 
 function logOf(texts: string[], id = 1, total = texts.length) {
-    return { key: FILE.key, label: FILE.label, id, total, messages: texts.map((text) => noticeMessage('f', { message: text }, AT)) };
+    return { key: FILE.key, label: FILE.label, id, total, errors: 0, messages: texts.map((text) => noticeMessage('f', { message: text }, AT)) };
 }
 
 test('messagesUpdate sends only what is new while the same log grows', () => {
@@ -594,7 +615,28 @@ class FakeElement {
         const index = selector === '.empty' ? this.entries.findIndex((e) => e.startsWith('<div class="empty"')) : -1;
         return index >= 0 ? { remove: () => { this.entries.splice(index, 1); } } : null;
     }
-    addEventListener(): void {}
+    addEventListener(type: string, listener: () => void): void { this.listeners[type] = listener; }
+    listeners: Record<string, () => void> = {};
+    hidden = false;
+    /** Index of the entry marked as the current error, or -1. */
+    current = -1;
+    click(): void { this.listeners.click?.(); }
+    querySelectorAll(selector: string): any[] {
+        if (selector === '.msg.tone-danger') {
+            return this.entries
+                .map((entry, index) => ({ entry, index }))
+                .filter(({ entry }) => entry.startsWith('<div class="msg tone-danger"'))
+                .map(({ index }) => ({
+                    offsetTop: index * 20,
+                    classList: {
+                        add: () => { this.current = index; },
+                        remove: () => { if (this.current === index) this.current = -1; },
+                        contains: (name: string) => name === 'current' && this.current === index
+                    }
+                }));
+        }
+        return [];
+    }
 }
 
 function runPanelScript() {
@@ -606,7 +648,7 @@ function runPanelScript() {
     const window = { addEventListener: (_type: string, listener: (ev: { data: any }) => void) => { receive = listener; } };
     const sent: any[] = [];
     new Function('acquireVsCodeApi', 'document', 'window', script)(() => ({ postMessage: (m: any) => sent.push(m) }), document, window);
-    return { list: elements.list, count: elements.count, copy: elements.copyBtn, send: (data: any) => receive({ data }), sent };
+    return { list: elements.list, count: elements.count, copy: elements.copyBtn, elements, send: (data: any) => receive({ data }), sent };
 }
 
 const tone = (text: string) => ({ ...noticeMessage('payroll.sql', { message: text }, AT), tone: 'info' });
@@ -648,4 +690,72 @@ test('the panel script stays where the reader scrolled to while messages come in
     panel.list.scrollTop = 40;
     panel.send({ type: 'append', key: FILE.key, messages: [tone('new')], total: 51, countText: '51 messages', limit: 2000 });
     assert.equal(panel.list.scrollTop, 40);
+});
+
+// ===== errors stand out =====
+
+const toned = (severity: string, text: string) => {
+    const message = noticeMessage('payroll.sql', { severity, message: text }, AT);
+    return { ...message, tone: messageTone(severity) };
+};
+
+test('an error is marked by its row, an icon and the header, a warning by its own icon', () => {
+    const panel = runPanelScript();
+    panel.send({
+        type: 'log', key: FILE.key,
+        state: { label: 'payroll.sql', messages: [toned('NOTICE', 'fine'), toned('WARNING', 'careful'), toned('ERROR', 'broken')], total: 3, countText: '3 messages', errorsText: '1 error' }
+    });
+
+    const [notice, warning, error] = panel.list.entries;
+    assert.match(error, /^<div class="msg tone-danger">/);
+    assert.match(error, /<span class="msg-sev"><svg class="ico" aria-hidden="true"><use href="#icon-error"\/><\/svg>ERROR:<\/span>/);
+    assert.match(warning, /^<div class="msg tone-warning">/);
+    assert.match(warning, /#icon-warning/);
+    assert.doesNotMatch(notice, /#icon-/, 'a notice needs no mark');
+    assert.equal(panel.elements.errorsBtn.hidden, false);
+    assert.equal(panel.elements.errorsText.textContent, '1 error');
+});
+
+test('the error count in the header hides without errors and follows new ones', () => {
+    const panel = runPanelScript();
+    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: [toned('NOTICE', 'a')], total: 1, countText: '1 message', errorsText: '' } });
+    assert.equal(panel.elements.errorsBtn.hidden, true);
+
+    panel.send({ type: 'append', key: FILE.key, messages: [toned('ERROR', 'b'), toned('ERROR', 'c')], total: 3, countText: '3 messages', errorsText: '2 errors', limit: 2000 });
+    assert.equal(panel.elements.errorsBtn.hidden, false);
+    assert.equal(panel.elements.errorsText.textContent, '2 errors');
+});
+
+test('the error count jumps from one error to the next and round to the first', () => {
+    const panel = runPanelScript();
+    const messages = ['NOTICE', 'ERROR', 'NOTICE', 'NOTICE', 'ERROR', 'NOTICE'].map((severity, i) => toned(severity, `m${i}`));
+    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages, total: 6, countText: '6 messages', errorsText: '2 errors' } });
+    panel.list.scrollTop = 0;
+
+    panel.elements.errorsBtn.click();
+    assert.equal(panel.list.scrollTop, 20);
+    assert.equal(panel.list.current, 1);
+    panel.elements.errorsBtn.click();
+    assert.equal(panel.list.scrollTop, 80);
+    assert.equal(panel.list.current, 4);
+    panel.elements.errorsBtn.click();
+    assert.equal(panel.list.scrollTop, 20, 'after the last error it starts again at the first');
+    assert.equal(panel.list.current, 1);
+});
+
+test('the error count also steps through errors that all fit without scrolling', () => {
+    const panel = runPanelScript();
+    const messages = ['ERROR', 'NOTICE', 'ERROR'].map((severity, i) => toned(severity, `m${i}`));
+    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages, total: 3, countText: '3 messages', errorsText: '2 errors' } });
+    panel.list.scrollTop = 0;
+    panel.elements.errorsBtn.click();
+    panel.list.scrollTop = 0; // the list cannot scroll, so it stays at the top
+    panel.elements.errorsBtn.click();
+    assert.equal(panel.list.current, 2, 'the next error is marked, not the first one again');
+});
+
+test('the error and warning icons exist in the sprite', () => {
+    const sprite = fs.readFileSync(path.join(ROOT, 'src', 'webview', 'icons.svg'), 'utf8');
+    assert.match(sprite, /<symbol id="icon-error" viewBox="0 0 16 16">/);
+    assert.match(sprite, /<symbol id="icon-warning" viewBox="0 0 16 16">/);
 });

@@ -326,7 +326,9 @@ fields wherever it comes from.
   sharing its session write into the same log — and shows the log of the SQL
   file or Data Viewer tab that is active; a log ends with its session. The
   panel shows the newest 2000 messages of a log; **Save** writes every message
-  of the session to a file and **Copy** puts all of them on the clipboard. A
+  of the session to a file and **Copy** puts all of them on the clipboard.
+  Errors are striped, tinted and marked with an icon, and the header counts
+  them; clicking the count jumps from one error to the next. A
   running statement can be cancelled from its notification; one still waiting
   for a Data Viewer query of the same session is then not run at all.
 - **Execute File** (`Ctrl+Shift+Alt+Enter`, or the run button in the editor's
