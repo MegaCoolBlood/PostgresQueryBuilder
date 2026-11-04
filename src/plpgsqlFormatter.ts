@@ -723,8 +723,13 @@ interface Tok {
     text: string;
     /** Count of newline characters in the whitespace preceding this token. */
     nlBefore: number;
-    /** The FROM of `IS [NOT] DISTINCT FROM`: a comparison operator, not a clause. */
-    operatorFrom?: boolean;
+    /**
+     * A clause keyword used as something else, so every test for a clause
+     * passes it by: the FROM of `IS [NOT] DISTINCT FROM` (a comparison
+     * operator) and a SET that is not the assignment list of an UPDATE
+     * (`SET ROLE …`, `ALTER COLUMN … SET DEFAULT`, `ON DELETE SET NULL`).
+     */
+    notClause?: boolean;
 }
 
 interface TokMeta {
@@ -1001,8 +1006,56 @@ function markDistinctFrom(toks: Tok[]): Tok[] {
         if (!distinct || distinct.word !== 'distinct') return t;
         let before = prevWord(distinct.at);
         if (before && before.word === 'not') before = prevWord(before.at);
-        return before && before.word === 'is' ? { ...t, operatorFrom: true } : t;
+        return before && before.word === 'is' ? { ...t, notClause: true } : t;
     });
+}
+
+/** Words that may stand between UPDATE and its SET: `UPDATE [ONLY] schema.tab [AS] alias SET`. */
+const UPDATE_TARGET_WORDS_MAX = 6;
+/** Words that, between an UPDATE and a SET, show the SET belongs to something else. */
+const NOT_UPDATE_TARGET = new Set([
+    'on', 'delete', 'cascade', 'restrict', 'no', 'action', 'null', 'default',
+    'alter', 'column', 'table', 'references', 'constraint', 'of', 'for', 'each', 'row',
+    'before', 'after', 'instead', 'grant', 'revoke', 'privileges', 'to'
+]);
+
+/**
+ * Mark every SET that is not the assignment list of an UPDATE — `UPDATE t SET`,
+ * `ON CONFLICT … DO UPDATE SET`, `MERGE … THEN UPDATE SET` — as no clause:
+ * `SET ROLE x`, `SET search_path TO a, b`, `SET TIME ZONE …`, `ALTER COLUMN c
+ * SET DEFAULT 0`, `ON UPDATE SET NULL` stay on one line instead of being broken
+ * after SET and split at their commas like a list of assignments.
+ */
+function markNonUpdateSet(toks: Tok[]): Tok[] {
+    const isComment = (t: Tok) => t.type === 'lineComment' || t.type === 'blockComment';
+    const isAssignmentSet = (at: number): boolean => {
+        let words = 0;
+        for (let j = at - 1; j >= 0; j--) {
+            const t = toks[j];
+            if (isComment(t)) continue;
+            if (t.type === 'word') {
+                const w = t.text.toLowerCase();
+                if (w === 'update') {
+                    let k = j - 1;
+                    while (k >= 0 && isComment(toks[k])) k--;
+                    // `ON UPDATE SET NULL` is the action of a foreign key.
+                    return !(k >= 0 && toks[k].type === 'word' && toks[k].text.toLowerCase() === 'on');
+                }
+                if (NOT_UPDATE_TARGET.has(w) || ++words > UPDATE_TARGET_WORDS_MAX) return false;
+                continue;
+            }
+            if (t.type === 'quotedIdent' || t.type === 'name') {
+                if (++words > UPDATE_TARGET_WORDS_MAX) return false;
+                continue;
+            }
+            if (t.text === '.' || t.text === '*') continue;
+            return false;
+        }
+        return false;
+    };
+    return toks.map((t, i) => (
+        t.type === 'word' && t.text.toLowerCase() === 'set' && !isAssignmentSet(i) ? { ...t, notClause: true } : t
+    ));
 }
 
 /** Parenthesis depth for each token (a `)` reports the post-close depth). */
@@ -1801,6 +1854,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     let toks = opt.normalizeDataTypes ? normalizeTypePhrases(tokenize(input), typeAliases) : tokenize(input);
     toks = markQualifiedNames(toks);
     toks = markDistinctFrom(toks);
+    toks = markNonUpdateSet(toks);
     if (opt.replaceDashesInBlockComments) {
         toks = toks.map(t => t.type === 'blockComment' ? { ...t, text: replaceBlockCommentDashes(t.text) } : t);
     }
@@ -1946,7 +2000,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
                 if (tk.text === ';') break;
                 if (tk.type !== 'word') continue;
                 const w = tk.text.toLowerCase();
-                if (!tk.operatorFrom && isEnd(w)) break;
+                if (!tk.notClause && isEnd(w)) break;
                 if (w === 'between') between++;
                 else if (w === 'or') ops.push(k);
                 else if (w === 'and') { if (between > 0) between--; else ops.push(k); }
@@ -2004,7 +2058,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             if (w === 'between') top.between++;
             else if (w === 'or') top.hasOr = true;
             else if (w === 'and') { if (top.between > 0) top.between--; else top.ands.push(i); }
-            else if ((CLAUSE_NEWLINE.has(w) && !tk.operatorFrom) || JOIN_WORDS.has(w)
+            else if ((CLAUSE_NEWLINE.has(w) && !tk.notClause) || JOIN_WORDS.has(w)
                 || w === 'on' || w === 'when' || w === 'then' || w === 'else'
                 || w === 'loop' || w === 'into' || w === 'using') {
                 finalize(top);
@@ -2275,7 +2329,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         if (t.text === ';' || t.text === ')') return true;
         if (t.type !== 'word') return false;
         const w = t.text.toLowerCase();
-        return (CLAUSE_NEWLINE.has(w) && !t.operatorFrom) || JOIN_WORDS.has(w) || w === 'into';
+        return (CLAUSE_NEWLINE.has(w) && !t.notClause) || JOIN_WORDS.has(w) || w === 'into';
     };
 
     const nearestBegin = (): BlockFrame | null => {
@@ -2418,7 +2472,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             else if (d === 0 && b === 0) {
                 if (tk.text === ',') return true;
                 if (tk.text === ';') return false;
-                if (tk.type === 'word' && !tk.operatorFrom) {
+                if (tk.type === 'word' && !tk.notClause) {
                     const w = tk.text.toLowerCase();
                     if (CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w) || w === 'into' || w === 'from') return false;
                 }
@@ -2441,7 +2495,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             // its own leading newline must not count as a break inside the list.
             if (d === 0 && b === 0) {
                 if (tk.text === ')' || tk.text === ';') break;
-                if (tk.type === 'word' && !tk.operatorFrom) {
+                if (tk.type === 'word' && !tk.notClause) {
                     const w = tk.text.toLowerCase();
                     // `loop` ends a cursor `FOR … IN <query> LOOP`, so the list must
                     // not run on into the loop body (whose newlines would otherwise be
@@ -2612,7 +2666,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             const acc = stack[stack.length - 1];
             // A statement / list / clause boundary ends the current chain.
             if (tk.text === ';' || tk.text === ',') { finalize(acc); continue; }
-            if (tk.type === 'word' && !tk.operatorFrom) {
+            if (tk.type === 'word' && !tk.notClause) {
                 const w = tk.text.toLowerCase();
                 if (CLAUSE_NEWLINE.has(w) || JOIN_WORDS.has(w) || w === 'into') { finalize(acc); continue; }
             }
@@ -3229,7 +3283,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             }
 
             // SQL clause keywords (only inside an actual SQL context)
-            if (CLAUSE_NEWLINE.has(w) && inSql && !t.operatorFrom) {
+            if (CLAUSE_NEWLINE.has(w) && inSql && !t.notClause) {
                 joinRiver = false;
                 const clauseIndent = blockIndent + pd;
                 popLists(pd);

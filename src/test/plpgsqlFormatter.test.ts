@@ -3015,3 +3015,83 @@ test('SELECT DISTINCT and FROM inside EXTRACT / SUBSTRING keep their layout', ()
         'SELECT EXTRACT(YEAR FROM d), SUBSTRING(s FROM 2)\nFROM t;'
     );
 });
+// ===== SET that is not the assignment list of an UPDATE =====
+
+test('a SET statement stays on one line instead of being broken after SET', () => {
+    const cases: Array<[string, string]> = [
+        ['set ROLE payroll_admin;', 'SET ROLE payroll_admin;'],
+        ["SET ROLE 'payroll_admin';", "SET ROLE 'payroll_admin';"],
+        ['SET LOCAL ROLE payroll_admin;', 'SET LOCAL ROLE payroll_admin;'],
+        ['SET SESSION AUTHORIZATION DEFAULT;', 'SET SESSION AUTHORIZATION DEFAULT;'],
+        ["SET TIME ZONE 'Europe/Vienna';", "SET TIME ZONE 'Europe/Vienna';"],
+        ["SET LOCAL statement_timeout = '5min';", "SET LOCAL statement_timeout = '5min';"],
+        ['SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;', 'SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;'],
+        ['SET CONSTRAINTS ALL DEFERRED;', 'SET CONSTRAINTS ALL DEFERRED;']
+    ];
+    for (const [src, expected] of cases) {
+        const result = formatSqlChecked(src);
+        assert.equal(result.ok, true, result.reason);
+        assert.equal(result.text, expected);
+        assert.equal(formatSql(result.text), result.text, 'idempotent');
+    }
+});
+
+test('the list of a SET statement is not split at its commas', () => {
+    assert.equal(formatSql('SET search_path TO payroll, public;'), 'SET search_path TO payroll, public;');
+    assert.equal(formatSql('SET search_path = payroll, public;'), 'SET search_path = payroll, public;');
+    assert.equal(formatSql('ALTER ROLE payroll SET search_path TO payroll, public;'), 'ALTER ROLE payroll SET search_path TO payroll, public;');
+});
+
+test('a SET statement written across lines is joined again', () => {
+    assert.equal(formatSql('SET\n  ROLE payroll_admin;\nSELECT * FROM wages WHERE id = 1;'), 'SET ROLE payroll_admin;\nSELECT * FROM wages WHERE id = 1;');
+});
+
+test('SET statements in a PL/pgSQL body stay on one line next to an UPDATE that still breaks', () => {
+    const out = formatSql('DO $$\nBEGIN\n    IF true THEN\n        SET LOCAL ROLE payroll_admin;\n        UPDATE wages SET amount = 1, paid = true WHERE id = 3;\n    END IF;\n    SET search_path TO payroll, public;\nEND $$;');
+    assert.equal(out, [
+        'DO $$',
+        'BEGIN',
+        '  IF TRUE THEN',
+        '    SET LOCAL ROLE payroll_admin;',
+        '    UPDATE wages',
+        '    SET',
+        '      amount = 1,',
+        '      paid = TRUE',
+        '    WHERE id = 3;',
+        '  END IF;',
+        '  SET search_path TO payroll, public;',
+        'END',
+        '$$;'
+    ].join('\n'));
+    assert.equal(formatSql(out), out, 'idempotent');
+});
+
+test('SET inside ALTER and in the action of a foreign key is no clause', () => {
+    assert.equal(formatSql('ALTER TABLE wages ALTER COLUMN amount SET DEFAULT 0;'), 'ALTER TABLE wages ALTER COLUMN amount SET DEFAULT 0;');
+    assert.equal(formatSql('ALTER TABLE wages SET SCHEMA archive;'), 'ALTER TABLE wages SET SCHEMA archive;');
+    assert.equal(
+        formatSql('CREATE TABLE a (id int REFERENCES b (id) ON UPDATE SET NULL ON DELETE SET DEFAULT, c int);'),
+        'CREATE TABLE a(\n  id INT REFERENCES b(id) ON UPDATE SET NULL ON DELETE SET DEFAULT,\n  c INT\n);'
+    );
+    assert.equal(
+        formatSql('CREATE TABLE a (id int REFERENCES b (id) ON UPDATE CASCADE ON DELETE SET NULL);'),
+        'CREATE TABLE a(\n  id INT REFERENCES b(id) ON UPDATE CASCADE ON DELETE SET NULL\n);'
+    );
+});
+
+test('the SET of every form of UPDATE is still the clause of its assignments', () => {
+    assert.equal(
+        formatSql('UPDATE ONLY payroll.wages AS w SET amount = 1, paid = true WHERE w.id = 3;'),
+        'UPDATE ONLY payroll.wages AS w\nSET\n  amount = 1,\n  paid = TRUE\nWHERE w.id = 3;'
+    );
+    assert.equal(formatSql('UPDATE "Wages" w SET amount = 1, paid = true;'), 'UPDATE "Wages" w\nSET\n  amount = 1,\n  paid = TRUE;');
+    assert.equal(formatSql('UPDATE wages /* note */ SET amount = 1, paid = true;'), 'UPDATE wages /* note */\nSET\n  amount = 1,\n  paid = TRUE;');
+    assert.ok(
+        formatSql('INSERT INTO wages (id, amount) VALUES (1, 2) ON CONFLICT (id) DO UPDATE SET amount = EXCLUDED.amount, paid = false;')
+            .endsWith('DO UPDATE\nSET\n  amount = EXCLUDED.amount,\n  paid = FALSE;')
+    );
+    assert.ok(
+        formatSql('MERGE INTO wages w USING src s ON w.id = s.id WHEN MATCHED THEN UPDATE SET amount = s.amount, paid = s.paid WHEN NOT MATCHED THEN INSERT (id) VALUES (s.id);')
+            .includes('  UPDATE\n  SET\n    amount = s.amount,\n    paid = s.paid\n')
+    );
+});
