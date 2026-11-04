@@ -2027,7 +2027,7 @@ test('the Export tab shows only the export dialog, prefilled from the instructio
     assert.equal(init.title, 'Export: line 12 of payroll.sql');
     assert.deepEqual(init.exportOnly, {
         format: 'csv', fileName: 'payroll_line12.csv', folder: 'C:\\work', options: { csvSeparator: ';' }, sql: 'SELECT * FROM orders',
-        purpose: 'export', submitLabel: 'Export', askAtRunTime: false
+        purpose: 'export', submitLabel: 'Export', askAtRunTime: false, fileAssist: false
     });
     assert.match(panel.webview.html, /id="exportDialogOverlay"/, 'the page of the Data Viewer, with its export dialog');
     assert.equal(panel.posted.some((m: any) => m.command === 'rowsLoaded'), false);
@@ -2084,6 +2084,52 @@ test('Cancel in the Export tab, or closing it, chooses nothing', async () => {
 test('an answer of an export dialog in an ordinary Data Viewer is ignored', async () => {
     const { send } = await openCustomQueryPanel();
     await send({ command: 'exportDialogResult', options: { format: 'csv' } });
+});
+
+test('the Export tab of an instruction answers placeholder suggestions and the preview of its file', async () => {
+    const asked: any[] = [];
+    const { panel, send } = openExportTab({
+        ...EXPORT_REQUEST,
+        purpose: 'instruction',
+        fileAssist: {
+            complete: (text: string, cursor: number) => {
+                asked.push(['complete', text, cursor]);
+                return { from: 4, items: [{ label: '{YEAR}', insertText: '{YEAR}', detail: 'The year', example: '2026' }] };
+            },
+            preview: (fileName: string, folder: string, format: string) => {
+                asked.push(['preview', fileName, folder, format]);
+                return fileName.includes('x') ? { error: '{YR-x} is no placeholder' } : { path: 'C:\\work\\o_2026.csv' };
+            }
+        }
+    });
+    assert.equal(panel.posted.find((m: any) => m.command === 'init').exportOnly.fileAssist, true);
+
+    await send({ command: 'exportPlaceholderSuggest', requestId: 3, text: 'out/{Y', cursor: 6 });
+    await send({ command: 'exportTargetPreview', requestId: 7, fileName: 'o_{YEAR}', folder: 'C:\\work', format: 'excel' });
+    await send({ command: 'exportTargetPreview', requestId: 8, fileName: 'o_{YR-x}', folder: '', format: 'bogus' });
+
+    assert.deepEqual(asked, [
+        ['complete', 'out/{Y', 6],
+        ['preview', 'o_{YEAR}', 'C:\\work', 'excel'],
+        ['preview', 'o_{YR-x}', '', 'csv']
+    ], 'an unknown format is taken as csv');
+    assert.deepEqual(panel.posted.filter((m: any) => m.command === 'exportPlaceholderSuggestions'), [
+        { command: 'exportPlaceholderSuggestions', requestId: 3, from: 4, items: [{ label: '{YEAR}', insertText: '{YEAR}', detail: 'The year', example: '2026' }] }
+    ]);
+    assert.deepEqual(panel.posted.filter((m: any) => m.command === 'exportTargetPreviewResult'), [
+        { command: 'exportTargetPreviewResult', requestId: 7, preview: { path: 'C:\\work\\o_2026.csv' } },
+        { command: 'exportTargetPreviewResult', requestId: 8, preview: { error: '{YR-x} is no placeholder' } }
+    ]);
+});
+
+test('an Export tab without placeholder help answers a suggestion with none and no preview', async () => {
+    const { panel, send } = openExportTab();
+    await send({ command: 'exportPlaceholderSuggest', requestId: 1, text: '{', cursor: 1 });
+    await send({ command: 'exportTargetPreview', requestId: 2, fileName: 'o', folder: '', format: 'csv' });
+    assert.deepEqual(panel.posted.filter((m: any) => m.command === 'exportPlaceholderSuggestions'), [
+        { command: 'exportPlaceholderSuggestions', requestId: 1, from: 1, items: [] }
+    ]);
+    assert.equal(panel.posted.some((m: any) => m.command === 'exportTargetPreviewResult'), false);
 });
 
 // ===== 3.5.0: a progress bar for exports =====

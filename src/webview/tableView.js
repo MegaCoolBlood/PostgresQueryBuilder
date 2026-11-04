@@ -3468,6 +3468,38 @@ function buildCommitWarnings(capabilityWarning, currentConnection, loadedConnect
     return warnings;
 }
 
+// ===== Placeholders of an instruction's file name =====
+// The suggestions come from the host, the same as in a SQL file; the panel
+// only narrows them to what was typed after `{` and inserts the one chosen.
+
+/** True when the text before the cursor ends in a `{` that is not closed yet. */
+function hasOpenPlaceholder(text, cursor) {
+    const before = String(text || '').slice(0, cursor);
+    return before.lastIndexOf('{') > before.lastIndexOf('}');
+}
+
+/** The suggestions starting with what was typed from `from` to the cursor, in any case. */
+function filterPlaceholderItems(items, typed) {
+    const prefix = String(typed || '').toLowerCase();
+    return (items || []).filter((item) => String(item.label).toLowerCase().startsWith(prefix));
+}
+
+/** `text` with `[from, to)` replaced by `insertText`, and where the cursor goes after it. */
+function insertPlaceholder(text, from, to, insertText) {
+    const value = String(text || '');
+    const start = Math.max(0, Math.min(from, value.length));
+    const end = Math.max(start, Math.min(to, value.length));
+    return { text: value.slice(0, start) + insertText + value.slice(end), cursor: start + insertText.length };
+}
+
+/** The line under the file name: where the file would go, that it is asked for, or what is wrong. */
+function targetPreviewText(preview) {
+    if (!preview) return { tone: '', text: '', path: '' };
+    if (preview.error) return { tone: 'error', text: String(preview.error), path: '' };
+    if (preview.ask) return { tone: '', text: 'No file name: a save dialog asks for the file each time the SQL file runs.', path: '' };
+    return { tone: '', text: 'If the SQL file ran now, the file would be ', path: String(preview.path || '') };
+}
+
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 (function() {
     const vscode = acquireVsCodeApi();
@@ -5249,6 +5281,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 // The dialog stays open with what was entered, to be corrected.
                 document.getElementById('exportDialogError').textContent = String(msg.message || '');
                 break;
+            case 'exportPlaceholderSuggestions':
+                showPlaceholders(msg);
+                break;
+            case 'exportTargetPreviewResult':
+                showTargetPreview(msg);
+                break;
             case 'exportSuccess':
                 changeCount.textContent = `Exported to ${msg.filePath}`;
                 setTimeout(() => { updateChangeIndicator(); }, 3000);
@@ -5262,6 +5300,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'exportLocationSelected':
                 if (msg.path) {
                     document.getElementById('exportSaveLocation').value = msg.path;
+                    scheduleTargetPreview();
                 }
                 break;
             case 'error':
@@ -8325,6 +8364,177 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         vscode.postMessage({ command: 'browseExportLocation' });
     });
 
+    // ===== Placeholders of an instruction's file name and folder =====
+    // Typing `{` or pressing the button beside a field lists the placeholders a
+    // SQL file offers in `file=`, each with what it gives now; the line below
+    // the fields tells where the file would go if the SQL file ran now.
+    let placeholderAssist = null; // { input, dropdown, from, items, active, requestId }
+    let placeholderRequestId = 0;
+    let targetPreviewTimer = null;
+    let targetPreviewRequestId = 0;
+    const exportTargetPreview = document.getElementById('exportTargetPreview');
+
+    function fileAssistOn() {
+        return !!(exportOnly && exportOnly.fileAssist);
+    }
+
+    function placeholderDropdown(input) {
+        const wrapper = input.closest('.typeahead-wrapper') || input.parentElement;
+        let dropdown = wrapper.querySelector('.typeahead-dropdown');
+        if (!dropdown) {
+            dropdown = document.createElement('div');
+            dropdown.className = 'typeahead-dropdown';
+            dropdown.setAttribute('role', 'listbox');
+            // mousedown, not click: the field keeps the focus and its cursor.
+            dropdown.addEventListener('mousedown', (e) => {
+                const item = e.target.closest('.placeholder-item');
+                if (!item) return;
+                e.preventDefault();
+                applyPlaceholder(Number(item.getAttribute('data-index')));
+            });
+            wrapper.appendChild(dropdown);
+        }
+        return dropdown;
+    }
+
+    function closePlaceholders() {
+        if (placeholderAssist) placeholderAssist.dropdown.style.display = 'none';
+        placeholderAssist = null;
+    }
+
+    function requestPlaceholders(input) {
+        if (!fileAssistOn()) return;
+        const requestId = ++placeholderRequestId;
+        const cursor = input.selectionStart ?? input.value.length;
+        if (placeholderAssist && placeholderAssist.input !== input) closePlaceholders();
+        placeholderAssist = { input, dropdown: placeholderDropdown(input), from: cursor, items: [], active: 0, requestId };
+        vscode.postMessage({ command: 'exportPlaceholderSuggest', requestId, text: input.value, cursor });
+    }
+
+    function showPlaceholders(msg) {
+        const assist = placeholderAssist;
+        if (!assist || msg.requestId !== assist.requestId) return;
+        const cursor = assist.input.selectionStart ?? assist.input.value.length;
+        const items = filterPlaceholderItems(msg.items, assist.input.value.slice(msg.from, cursor));
+        if (items.length === 0) {
+            closePlaceholders();
+            return;
+        }
+        assist.from = msg.from;
+        assist.items = items;
+        assist.active = 0;
+        renderPlaceholders();
+    }
+
+    function renderPlaceholders() {
+        const { dropdown, items, active } = placeholderAssist;
+        dropdown.innerHTML = items.map((item, i) =>
+            '<div class="typeahead-item placeholder-item' + (i === active ? ' active' : '') + '" role="option" data-index="' + i + '"'
+            + ' aria-selected="' + (i === active) + '" title="' + escapeAttr(item.detail || '') + '">'
+            + '<span class="placeholder-label">' + escapeHtml(item.label) + '</span>'
+            + '<span class="placeholder-example">' + escapeHtml(item.example || '') + '</span>'
+            + '<span class="placeholder-detail">' + escapeHtml(item.detail || '') + '</span>'
+            + '</div>'
+        ).join('');
+        dropdown.style.display = 'block';
+        const current = dropdown.querySelector('.placeholder-item.active');
+        if (current && current.scrollIntoView) current.scrollIntoView({ block: 'nearest' });
+    }
+
+    function applyPlaceholder(index) {
+        const assist = placeholderAssist;
+        const item = assist && assist.items[index];
+        if (!item) return;
+        const input = assist.input;
+        const cursor = Math.max(assist.from, input.selectionStart ?? input.value.length);
+        const result = insertPlaceholder(input.value, assist.from, cursor, item.insertText);
+        input.value = result.text;
+        input.focus();
+        input.setSelectionRange(result.cursor, result.cursor);
+        closePlaceholders();
+        scheduleTargetPreview();
+    }
+
+    [exportFilename, exportSaveLocation].forEach((input) => {
+        input.addEventListener('input', () => {
+            if (!fileAssistOn()) return;
+            scheduleTargetPreview();
+            if (hasOpenPlaceholder(input.value, input.selectionStart ?? input.value.length)) {
+                requestPlaceholders(input);
+            } else if (placeholderAssist && placeholderAssist.input === input) {
+                closePlaceholders();
+            }
+        });
+        input.addEventListener('keydown', (e) => {
+            const assist = placeholderAssist;
+            if (!assist || assist.input !== input || assist.items.length === 0) return;
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                const count = assist.items.length;
+                assist.active = (assist.active + (e.key === 'ArrowDown' ? 1 : count - 1)) % count;
+                renderPlaceholders();
+            } else if (e.key === 'Enter' || e.key === 'Tab') {
+                // Takes the suggestion instead of submitting the dialog or leaving the field.
+                e.preventDefault();
+                e.stopPropagation();
+                applyPlaceholder(assist.active);
+            } else if (e.key === 'Escape') {
+                // Closes the list, not the dialog.
+                e.preventDefault();
+                e.stopPropagation();
+                closePlaceholders();
+            }
+        });
+        input.addEventListener('blur', () => {
+            setTimeout(() => {
+                if (placeholderAssist && placeholderAssist.input === input && document.activeElement !== input) closePlaceholders();
+            }, 150);
+        });
+    });
+
+    document.querySelectorAll('.placeholder-btn').forEach((button) => {
+        // The field keeps the focus and its cursor, where the placeholder goes.
+        button.addEventListener('mousedown', (e) => e.preventDefault());
+        button.addEventListener('click', () => {
+            const input = document.getElementById(button.getAttribute('data-placeholder-for'));
+            if (!input) return;
+            if (placeholderAssist && placeholderAssist.input === input) {
+                closePlaceholders();
+                return;
+            }
+            input.focus();
+            requestPlaceholders(input);
+        });
+    });
+
+    function scheduleTargetPreview() {
+        if (!fileAssistOn()) return;
+        clearTimeout(targetPreviewTimer);
+        targetPreviewTimer = setTimeout(() => {
+            vscode.postMessage({
+                command: 'exportTargetPreview',
+                requestId: ++targetPreviewRequestId,
+                fileName: exportFilename.value.trim(),
+                folder: exportSaveLocation.value.trim(),
+                format: exportFormat.value
+            });
+        }, 150);
+    }
+
+    function showTargetPreview(msg) {
+        if (msg.requestId !== targetPreviewRequestId) return;
+        const view = targetPreviewText(msg.preview);
+        exportTargetPreview.classList.toggle('is-error', view.tone === 'error');
+        exportTargetPreview.textContent = view.text;
+        if (view.path) {
+            const pathEl = document.createElement('span');
+            pathEl.className = 'preview-path';
+            pathEl.textContent = view.path;
+            exportTargetPreview.appendChild(pathEl);
+            exportTargetPreview.appendChild(document.createTextNode('.'));
+        }
+    }
+
     // Progress of an export the host is running, with a Cancel of its own; the
     // notification of VS Code shows the same and can cancel it too.
     const exportProgressEl = document.getElementById('exportProgress');
@@ -8372,6 +8582,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function closeExportDialog() {
+        closePlaceholders();
         exportDialogOverlay.style.display = 'none';
         // In an Export tab the dialog is all there is: closing it cancels.
         if (exportOnly) {
@@ -8389,6 +8600,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         document.body.classList.add('export-only');
         // Writing an `-- @export` line instead of exporting.
         document.body.classList.toggle('export-instruction', exportOnly.purpose === 'instruction');
+        // Placeholder suggestions and the preview of the file, when the host offers them.
+        document.body.classList.toggle('export-file-assist', exportOnly.fileAssist === true);
         setDataLoading(false);
         // The dialog names where the query comes from and shows it as written.
         document.getElementById('exportDialogTitle').textContent = title || 'Export Data';
@@ -8416,6 +8629,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         onExportFormatChange();
         applyExportFormatOptions(exportFormat.value, options);
         if (options.insertTableName) document.getElementById('insertTableName').value = options.insertTableName;
+        scheduleTargetPreview();
     }
 
     function onExportFormatChange() {
@@ -8427,6 +8641,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const base = exportFilename.value.replace(/\.(csv|json|xml|sql|xlsx)$/, '');
         exportFilename.value = base;
         exportFilename.placeholder = `filename (${extensions[fmt]})`;
+        scheduleTargetPreview();
     }
 
     function applyExportDefaults(defaults) {
@@ -9581,6 +9796,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
+        hasOpenPlaceholder,
+        filterPlaceholderItems,
+        insertPlaceholder,
+        targetPreviewText,
         isNumericScalarType,
         duplicateCellValue,
         isStaleLoadAnswer,

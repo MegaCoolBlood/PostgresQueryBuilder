@@ -22,7 +22,7 @@ import { loadCompletionCatalog, loadCompletionColumns } from './sqlCompletion';
 import type { DbSession, DbSessionManager, DbSessionRef } from './dbSession';
 import { resetSessionWithConfirmation, type QueryViewLoad, type ViewerPlacement } from './sqlFileSession';
 import { executableColumnType, executableTypePickItems, type ExecutableValueRunner } from './executableColumns';
-import { exportDialogChoiceFrom, type ExportDialogChoice, type ExportDialogRequest } from './exportInstructions';
+import { EXPORT_FILE_EXTENSIONS, exportDialogChoiceFrom, type ExportDialogChoice, type ExportDialogRequest, type ExportFileAssist, type ExportFormat } from './exportInstructions';
 import { ExportCancelledError, ExportTracker, notificationProgress } from './exportProgress';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -65,6 +65,8 @@ interface PanelSession {
     onExportChoice?: (choice: ExportDialogChoice | undefined) => void;
     /** Set for an Export tab: why a choice cannot be taken; the dialog then stays open. */
     validateExportChoice?: (choice: ExportDialogChoice) => string | undefined;
+    /** Set for an Export tab that writes an instruction: placeholder suggestions and the preview of its file. */
+    exportFileAssist?: ExportFileAssist;
     /** The export this panel is running, so its Cancel button can stop it. */
     runningExport?: ExportTracker;
     disposed: boolean;
@@ -723,7 +725,9 @@ export class TableWebViewManager {
         resetSession: this.handleResetSession,
         runExecutableValue: this.handleRunExecutableValue,
         chooseExecutableType: this.handleChooseExecutableType,
-        exportDialogResult: this.handleExportDialogResult
+        exportDialogResult: this.handleExportDialogResult,
+        exportPlaceholderSuggest: this.handleExportPlaceholderSuggest,
+        exportTargetPreview: this.handleExportTargetPreview
     };
 
     /**
@@ -749,6 +753,7 @@ export class TableWebViewManager {
                 session.panel.dispose();
             };
             session.validateExportChoice = request.validate;
+            session.exportFileAssist = request.fileAssist;
             session.panel.onDidDispose(() => settle(undefined));
             this.post(session, {
                 command: 'init',
@@ -769,9 +774,37 @@ export class TableWebViewManager {
                     sql: request.sql,
                     purpose: request.purpose ?? 'export',
                     submitLabel: request.submitLabel ?? 'Export',
-                    askAtRunTime: request.askAtRunTime === true
+                    askAtRunTime: request.askAtRunTime === true,
+                    fileAssist: request.fileAssist !== undefined
                 }
             });
+        });
+    }
+
+    /** Placeholder suggestions for the file name or folder of an instruction's export dialog. */
+    private handleExportPlaceholderSuggest(ctx: MessageContext): void {
+        const { session, message } = ctx;
+        const text = typeof message.text === 'string' ? message.text : '';
+        const cursor = Number.isInteger(message.cursor) ? message.cursor : text.length;
+        const result = session.exportFileAssist?.complete(text, cursor) ?? null;
+        this.post(session, {
+            command: 'exportPlaceholderSuggestions',
+            requestId: message.requestId,
+            from: result?.from ?? cursor,
+            items: result?.items ?? []
+        });
+    }
+
+    /** Where the file of the instruction being written would go if it ran now. */
+    private handleExportTargetPreview(ctx: MessageContext): void {
+        const { session, message } = ctx;
+        const assist = session.exportFileAssist;
+        if (!assist) return;
+        const format: ExportFormat = Object.prototype.hasOwnProperty.call(EXPORT_FILE_EXTENSIONS, message.format) ? message.format : 'csv';
+        this.post(session, {
+            command: 'exportTargetPreviewResult',
+            requestId: message.requestId,
+            preview: assist.preview(String(message.fileName ?? ''), String(message.folder ?? ''), format)
         });
     }
 

@@ -1,23 +1,28 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import {
+    EXPORT_FILE_EXTENSIONS,
     EXPORT_FORMAT_NAMES,
     EXPORT_INSTRUCTION_OPTIONS,
     EXPORT_PLACEHOLDER_NAMES,
     exportPlaceholders,
     exportTargetErrors,
+    fillExportPlaceholders,
     findInstructionLines,
     parseExportInstruction,
     planExportInstructions,
     resolveExportTarget,
     type ExportDialogChoice,
     type ExportDialogRequest,
+    type ExportFileAssist,
     type ExportFormat,
     type ExportInstruction,
     type ExportPlaceholders,
     type ExportSettings,
+    type ExportTargetPreview,
     type InstructionError,
-    type InstructionLine
+    type InstructionLine,
+    type PlaceholderSuggestion
 } from './exportInstructions';
 import { codeMask, isResultQuery, statementRanges } from './sqlFileSession';
 import { getErrorMessage, Logger } from './logger';
@@ -425,6 +430,91 @@ const INSTRUCTION_START = /^(\s*--\s*)(@export)\b/i;
 /** The snippet that writes a whole instruction, with the format and the file to fill in. */
 export const EXPORT_SNIPPET = '-- @export ${1|csv,excel,json,xml,insert|} file=${2:{file\\}_{date\\}}';
 
+/** Names often built from placeholders, offered after the placeholders themselves. */
+export const PLACEHOLDER_PATTERNS: ReadonlyArray<{ insertText: string; detail: string }> = [
+    { insertText: '{YEAR}-{MON}-{MDAY}', detail: 'Today, such as 2026-10-28.' },
+    { insertText: '{YEAR-1 DAY}-{MON-1 DAY}-{MDAY-1}', detail: 'Yesterday, such as 2026-10-27.' },
+    { insertText: '{YEAR}-{MON}', detail: 'This month, such as 2026-10.' },
+    { insertText: '{YEAR-1 MON}-{MON-1}', detail: 'Last month with its year, such as 2026-09 — 2026-12 in January 2027.' },
+    { insertText: '{YEAR-1}', detail: 'Last year, such as 2025.' },
+    { insertText: '{YEAR}{MON}{MDAY}_{HOUR}{MIN}{SEC}', detail: 'A timestamp, such as 20261028_135959.' }
+];
+
+/**
+ * The placeholders and patterns for the `file=` value `value` up to the
+ * cursor, which starts at column `valueStart`. They replace an open `{…`
+ * before the cursor and are inserted at the cursor otherwise. The SQL file
+ * and the export dialog offer the same ones.
+ */
+export function filePlaceholderCompletions(value: string, valueStart: number): { from: number; items: AssistCompletion[] } {
+    const open = value.lastIndexOf('{');
+    const from = valueStart + (open > value.lastIndexOf('}') ? open : value.length);
+    const items = EXPORT_PLACEHOLDER_NAMES.map((name, i): AssistCompletion => ({
+        label: `{${name}}`, insertText: `{${name}}`, kind: 'placeholder', detail: PLACEHOLDER_DOCS[name], sortText: String(i).padStart(2, '0')
+    }));
+    PLACEHOLDER_PATTERNS.forEach((pattern, i) => items.push({
+        label: pattern.insertText, insertText: pattern.insertText, kind: 'placeholder', detail: pattern.detail, sortText: `p${i}`
+    }));
+    return { from, items };
+}
+
+/**
+ * The placeholders for the file name or folder field of the export dialog,
+ * the same as in a SQL file, each with what it gives at `now`.
+ */
+export function placeholderFieldCompletions(
+    text: string,
+    cursor: number,
+    values: ExportPlaceholders
+): { from: number; items: PlaceholderSuggestion[] } {
+    const at = Math.max(0, Math.min(cursor, text.length));
+    const { from, items } = filePlaceholderCompletions(text.slice(0, at), 0);
+    return {
+        from,
+        items: items.map((item) => {
+            const filled = fillExportPlaceholders(item.insertText, values);
+            return { label: item.label, insertText: item.insertText, detail: item.detail, example: 'text' in filled ? filled.text : undefined };
+        })
+    };
+}
+
+/**
+ * Where the file of an instruction with this file name and folder would be
+ * written if it ran now — the same check as when the SQL file runs — or that
+ * a save dialog asks each time, for an empty name.
+ */
+export function instructionTargetPreview(
+    typedName: string,
+    folder: string,
+    format: ExportFormat,
+    documentFolder: string | undefined,
+    values: ExportPlaceholders,
+    pathApi: path.PlatformPath = path
+): ExportTargetPreview {
+    const file = instructionFile(typedName, folder, documentFolder, pathApi);
+    if (!file) return { ask: true };
+    return resolveExportTarget(file, format, documentFolder, values, pathApi);
+}
+
+/**
+ * The help the export dialog gets while an instruction for the SQL file
+ * `documentFileName` is written. Every answer is computed for the moment it
+ * is asked, so the examples and the preview show what a run now would give.
+ */
+export function instructionFileAssist(
+    documentFolder: string | undefined,
+    documentFileName: string,
+    now: () => Date = () => new Date()
+): ExportFileAssist {
+    const values = () => exportPlaceholders(now(), documentFileName);
+    return {
+        complete: (text, cursor) => placeholderFieldCompletions(text, cursor, values()),
+        preview: (fileName, folder, format) => instructionTargetPreview(
+            fileName, folder, EXPORT_FILE_EXTENSIONS[format] ? format : 'csv', documentFolder, values()
+        )
+    };
+}
+
 /**
  * The suggestions for the text before the cursor on a line. `trigger` is the
  * character that opened them, if one did: a blank, `=` or `{` only inside an
@@ -479,12 +569,7 @@ export function exportInstructionCompletions(linePrefix: string, trigger?: strin
         const valueStart = current.start + eq + 1;
         const value = current.text.slice(eq + 1);
         if (key === 'file') {
-            const open = value.lastIndexOf('{');
-            const from = open > value.lastIndexOf('}') ? valueStart + open : linePrefix.length;
-            const items = EXPORT_PLACEHOLDER_NAMES.map((name, i): AssistCompletion => ({
-                label: `{${name}}`, insertText: `{${name}}`, kind: 'placeholder', detail: PLACEHOLDER_DOCS[name], sortText: String(i).padStart(2, '0')
-            }));
-            return { from, items };
+            return filePlaceholderCompletions(value, valueStart);
         }
         const doc = format ? EXPORT_OPTION_DOCS[format][key] : undefined;
         if (!doc?.values || trigger === '{') return null;
@@ -659,7 +744,8 @@ export class ExportInstructionAssist implements vscode.Disposable {
             sql: target.sql,
             purpose: 'instruction',
             submitLabel: target.instruction ? 'Update' : 'Insert',
-            validate: (c) => instructionChoiceProblem(c, documentFolder, values)
+            validate: (c) => instructionChoiceProblem(c, documentFolder, values),
+            fileAssist: instructionFileAssist(documentFolder, document.fileName)
         });
         if (!choice) return;
         if (document.isClosed) {

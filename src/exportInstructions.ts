@@ -552,6 +552,27 @@ export interface ExportDialogRequest {
     askAtRunTime?: boolean;
     /** Why a choice cannot be taken, shown in the dialog, which stays open; undefined to accept it. */
     validate?: (choice: ExportDialogChoice) => string | undefined;
+    /** For an instruction: help with the placeholders of the file name and folder. */
+    fileAssist?: ExportFileAssist;
+}
+
+/** A placeholder or pattern offered for the file name or folder of the export dialog. */
+export interface PlaceholderSuggestion {
+    label: string;
+    insertText: string;
+    detail?: string;
+    /** What it gives right now, such as `2026-12`. */
+    example?: string;
+}
+
+/** Where the file of an instruction would go if it ran now, why it could not, or that it asks each time. */
+export type ExportTargetPreview = { path: string } | { error: string } | { ask: true };
+
+/** What the export dialog asks while an instruction's file name is typed. */
+export interface ExportFileAssist {
+    /** The suggestions for `text` with the cursor at `cursor`, and from where they replace it. */
+    complete(text: string, cursor: number): { from: number; items: PlaceholderSuggestion[] } | null;
+    preview(fileName: string, folder: string, format: ExportFormat): ExportTargetPreview;
 }
 
 /** What the user chose in the Export tab. */

@@ -1243,6 +1243,70 @@ body.export-instruction #exportSaveDefault {
     display: none;
 }
 
+/* Help with the placeholders of an instruction's file name and folder: a
+   button that opens the suggestions, and where the file would go if the SQL
+   file ran now. Shown only when the host offers it. */
+.export-dialog .placeholder-btn,
+.export-dialog .export-target-preview {
+    display: none;
+}
+
+body.export-file-assist .export-dialog .placeholder-btn {
+    display: inline-flex;
+}
+
+body.export-file-assist .export-dialog .export-target-preview {
+    display: block;
+    margin: 0 0 var(--sp-2);
+    /* Lines up with the fields, past the 180px label column. */
+    padding-left: calc(180px + var(--sp-2));
+    font-size: var(--fs-xs);
+    color: var(--c-muted);
+    overflow-wrap: anywhere;
+}
+
+.export-target-preview .preview-path {
+    font-family: var(--font-mono);
+    color: var(--c-fg);
+}
+
+.export-target-preview.is-error {
+    color: var(--c-danger);
+}
+
+.placeholder-field .typeahead-dropdown {
+    max-height: 260px;
+}
+
+.placeholder-item {
+    display: grid;
+    grid-template-columns: max-content max-content minmax(0, 1fr);
+    gap: var(--sp-2);
+    align-items: baseline;
+}
+
+.placeholder-item .placeholder-label {
+    font-family: var(--font-mono);
+}
+
+.placeholder-item .placeholder-example {
+    font-family: var(--font-mono);
+    color: var(--c-info);
+}
+
+.placeholder-item .placeholder-detail {
+    font-size: var(--fs-xs);
+    color: var(--c-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.typeahead-item.active {
+    background: var(--c-hover);
+    box-shadow: inset 2px 0 0 var(--c-accent);
+}
+
 /* Why the dialog's choice was refused; it stays open to be corrected. */
 .export-dialog-error {
     padding: var(--sp-2) var(--sp-4);

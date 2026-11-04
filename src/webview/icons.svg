@@ -36,4 +36,5 @@
     <symbol id="icon-file" viewBox="0 0 16 16"><path d="M4 2.5h5l3 3v8H4z"/><path d="M9 2.5v3h3"/></symbol>
     <symbol id="icon-error" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M6 6l4 4M10 6l-4 4"/></symbol>
     <symbol id="icon-warning" viewBox="0 0 16 16"><path d="M8 2.5l5.5 10h-11z"/><path d="M8 6.5v3"/><path d="M8 11.2v.1"/></symbol>
+    <symbol id="icon-braces" viewBox="0 0 16 16"><path d="M6 2.5h-.5A1.5 1.5 0 004 4v2.5L2.5 8 4 9.5V12a1.5 1.5 0 001.5 1.5H6"/><path d="M10 2.5h.5A1.5 1.5 0 0112 4v2.5L13.5 8 12 9.5V12a1.5 1.5 0 01-1.5 1.5H10"/></symbol>
 </svg>

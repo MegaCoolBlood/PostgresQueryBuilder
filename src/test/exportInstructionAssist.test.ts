@@ -17,9 +17,13 @@ import {
     instructionChoiceProblem,
     instructionEdit,
     instructionFile,
+    instructionFileAssist,
     instructionPrefill,
+    instructionTargetPreview,
     instructionTextFromChoice,
     locateExportTarget,
+    PLACEHOLDER_PATTERNS,
+    placeholderFieldCompletions,
     queryTable,
     relocateExportTarget,
     type ExportTarget
@@ -315,9 +319,11 @@ test('after an option come the values it takes', () => {
 
 test('file= offers the placeholders, also in the middle of a name', () => {
     const fresh = exportInstructionCompletions('-- @export csv file=', '=');
-    assert.deepEqual(fresh?.items.map((i) => i.label), [
+    assert.deepEqual(fresh?.items.filter((i) => !i.sortText?.startsWith('p')).map((i) => i.label), [
         '{date}', '{time}', '{file}', '{YEAR}', '{YR}', '{MON}', '{MDAY}', '{YDAY}', '{WDAY}', '{HOUR}', '{MIN}', '{SEC}', '{MSEC}'
     ]);
+    assert.deepEqual(fresh?.items.filter((i) => i.sortText?.startsWith('p')).map((i) => i.label), PLACEHOLDER_PATTERNS.map((p) => p.insertText),
+        'the patterns follow the placeholders');
     assert.deepEqual(fresh?.items.map((i) => i.sortText), [...fresh!.items.map((i) => i.sortText)].sort(), 'offered in this order');
     assert.equal(fresh?.items.find((i) => i.label === '{YR}')?.detail, 'The year, two digits, such as 26; {YR-1} is last year, {YR-1 MON} the year of last month.');
     assert.equal(fresh?.from, '-- @export csv file='.length);
@@ -437,7 +443,7 @@ test('Add Export Instruction writes what the export dialog chose above the query
 
     await assist.addInstruction();
 
-    const { validate, ...request } = requests[0];
+    const { validate, fileAssist, ...request } = requests[0];
     assert.deepEqual(request, {
         format: 'csv',
         fileName: 'orders',
@@ -450,6 +456,9 @@ test('Add Export Instruction writes what the export dialog chose above the query
         submitLabel: 'Insert'
     });
     assert.match(validate(choice({ format: 'insert', insertTableName: '' }, 'o', path.dirname(doc.fileName))), /needs table=/);
+    // The dialog's help knows the SQL file: {file} is its name, a relative name lands beside it.
+    assert.equal(fileAssist.complete('', 0)?.items.find((i: any) => i.label === '{file}')?.example, 'payroll');
+    assert.deepEqual(fileAssist.preview('o', path.dirname(doc.fileName), 'json'), { path: path.join(path.dirname(doc.fileName), 'o.json') });
     const line = '-- @export csv file=exports/orders separator=; header=true quote=true lineending=crlf';
     assert.equal(applied.length, 1);
     assert.equal(applied[0].text, `    ${line}\n`);
@@ -621,4 +630,73 @@ test('the export dialog writes an instruction with its own button, run-time choi
     assert.match(js, /getElementById\('exportExecuteLabel'\)\.textContent = exportOnly\.submitLabel \|\| 'Export'/);
     assert.match(js, /opts\.typedFilename = exportFilename\.value\.trim\(\);\s*opts\.askAtRunTime = /);
     assert.match(js, /case 'exportDialogInvalid':\s*\/\/[^\n]*\n\s*document\.getElementById\('exportDialogError'\)\.textContent = String\(msg\.message \|\| ''\)/);
+});
+
+// ===== placeholders in the export dialog =====
+
+/** Thursday, 14 January 2027, 09:05:07 — last month is December 2026. */
+const JANUARY = exportPlaceholders(new Date(2027, 0, 14, 9, 5, 7), 'C:\\work\\payroll.sql');
+
+test('the export dialog offers the same placeholders and patterns as file= in a SQL file', () => {
+    const inFile = exportInstructionCompletions('-- @export csv file=', '=');
+    const inDialog = placeholderFieldCompletions('', 0, JANUARY);
+    assert.deepEqual(inDialog.items.map((i) => [i.label, i.insertText, i.detail]), inFile?.items.map((i) => [i.label, i.insertText, i.detail]));
+});
+
+test('every suggestion of the dialog shows what it gives now', () => {
+    const { items } = placeholderFieldCompletions('', 0, JANUARY);
+    const example = (label: string) => items.find((i) => i.label === label)?.example;
+    assert.equal(example('{file}'), 'payroll');
+    assert.equal(example('{YEAR}'), '2027');
+    assert.equal(example('{WDAY}'), '4');
+    assert.equal(example('{YEAR-1 MON}-{MON-1}'), '2026-12', 'last month with its year');
+    assert.equal(example('{YEAR-1 DAY}-{MON-1 DAY}-{MDAY-1}'), '2027-01-13');
+    assert.ok(items.every((i) => typeof i.example === 'string'), 'every pattern is a valid name');
+});
+
+test('a suggestion replaces the open placeholder before the cursor and is inserted at the cursor otherwise', () => {
+    assert.equal(placeholderFieldCompletions('out/{file}_{YE', 14, JANUARY).from, 'out/{file}_'.length);
+    assert.equal(placeholderFieldCompletions('my report {', 11, JANUARY).from, 'my report '.length, 'a blank in the name does not end it');
+    assert.equal(placeholderFieldCompletions('out/{file}_', 4, JANUARY).from, 4, 'at the cursor, in the middle of the name');
+    assert.equal(placeholderFieldCompletions('abc', 99, JANUARY).from, 3);
+});
+
+test('the preview names the file an instruction would write now, relative to the SQL file', () => {
+    assert.deepEqual(
+        instructionTargetPreview('{file}_{YEAR-1 MON}{MON-1}', 'C:\\work\\reports', 'excel', 'C:\\work', JANUARY, path.win32),
+        { path: 'C:\\work\\reports\\payroll_202612.xlsx' }
+    );
+    assert.deepEqual(instructionTargetPreview('o.csv', 'D:\\{YEAR}', 'csv', 'C:\\work', JANUARY, path.win32), { path: 'D:\\2027\\o.csv' }, 'a folder takes placeholders too');
+    assert.deepEqual(instructionTargetPreview('  ', 'C:\\work', 'csv', 'C:\\work', JANUARY, path.win32), { ask: true });
+    assert.deepEqual(
+        instructionTargetPreview('o_{YR-x}', 'C:\\work', 'csv', 'C:\\work', JANUARY, path.win32),
+        { error: '{YR-x} is no placeholder; an offset is + or - and a whole number, such as {YR-1}, and may name a unit, such as {YR-1 MON}.' }
+    );
+    assert.match((instructionTargetPreview('o', '', 'csv', undefined, JANUARY, path.win32) as any).error, /not saved yet/);
+});
+
+test('the preview of the dialog agrees with the check of its choice', () => {
+    const choice = (fileName: string): ExportDialogChoice => ({
+        settings: { format: 'csv' } as ExportSettings, fileName: `${fileName}.csv`, folder: 'C:\\work', typedFileName: fileName, askAtRunTime: false
+    });
+    for (const name of ['o_{YEAR-1 MON}', 'o_{YR-x}', 'o_{month}', 'o_{date}']) {
+        const preview = instructionTargetPreview(name, 'C:\\work', 'csv', 'C:\\work', JANUARY, path.win32);
+        assert.equal(instructionChoiceProblem(choice(name), 'C:\\work', JANUARY, path.win32), 'error' in preview ? preview.error : undefined, name);
+    }
+});
+
+test('the help of the dialog reads the clock each time it is asked', () => {
+    let now = new Date(2027, 0, 14);
+    const assist = instructionFileAssist('C:\\work', 'C:\\work\\payroll.sql', () => now);
+    assert.equal(assist.complete('', 0)?.items.find((i) => i.label === '{MON}')?.example, '01');
+    now = new Date(2027, 1, 14);
+    assert.equal(assist.complete('', 0)?.items.find((i) => i.label === '{MON}')?.example, '02');
+    const preview = assist.preview('o_{MON}', 'C:\\work', 'json');
+    assert.ok('path' in preview && /o_02\.json$/.test(preview.path), JSON.stringify(preview));
+    assert.ok('path' in assist.preview('o', 'C:\\work', 'nonsense' as any) && /o\.csv$/.test((assist.preview('o', 'C:\\work', 'nonsense' as any) as any).path));
+});
+
+test('Add Export Instruction gives the dialog the help with placeholders', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'src', 'exportInstructionAssist.ts'), 'utf8');
+    assert.match(source, /purpose: 'instruction',[\s\S]{0,300}fileAssist: instructionFileAssist\(documentFolder, document\.fileName\)/);
 });

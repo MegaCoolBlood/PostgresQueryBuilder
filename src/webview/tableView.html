@@ -134,15 +134,19 @@
                     </div>
                     <div class="export-field">
                         <label for="exportFilename">Filename:</label>
-                        <input type="text" id="exportFilename" placeholder="export" />
+                        <span class="typeahead-wrapper placeholder-field"><input type="text" id="exportFilename" placeholder="export" autocomplete="off" spellcheck="false" aria-autocomplete="list" /></span>
+                        <button type="button" class="btn btn-sm btn-icon placeholder-btn" id="exportFilenamePlaceholders" data-placeholder-for="exportFilename" title="Insert a placeholder such as {date} or {YEAR-1 MON} at the cursor; typing { suggests them too" aria-label="Insert a placeholder into the file name"><svg class="ico" aria-hidden="true"><use href="#icon-braces"/></svg></button>
                     </div>
                     <div class="export-field">
                         <label for="exportSaveLocation">Save location:</label>
-                        <input type="text" id="exportSaveLocation" placeholder="(will prompt on export)" />
+                        <span class="typeahead-wrapper placeholder-field"><input type="text" id="exportSaveLocation" placeholder="(will prompt on export)" autocomplete="off" spellcheck="false" aria-autocomplete="list" /></span>
+                        <button type="button" class="btn btn-sm btn-icon placeholder-btn" id="exportSaveLocationPlaceholders" data-placeholder-for="exportSaveLocation" title="Insert a placeholder such as {YEAR} at the cursor, for a folder per year or month; typing { suggests them too" aria-label="Insert a placeholder into the folder"><svg class="ico" aria-hidden="true"><use href="#icon-braces"/></svg></button>
                         <button class="btn" id="exportBrowseLocation" title="Browse for folder">Browse</button>
                     </div>
+                    <!-- Writing an `-- @export` instruction only: where the file would go if the SQL file ran now -->
+                    <div class="export-target-preview" id="exportTargetPreview" aria-live="polite"></div>
                     <!-- Writing an `-- @export` instruction only -->
-                    <div class="export-instruction-hint">File name and folder may use {date}, {time}, {file} and the parts of the clock {YEAR}, {YR}, {MON}, {MDAY}, {YDAY}, {WDAY}, {HOUR}, {MIN}, {SEC}, {MSEC}, each with an offset such as {YR-1}, or {YEAR-1 MON} for the year of last month. Leave the file name empty to be asked for the file each time the SQL file runs. A folder inside the folder of the SQL file is written relative to it.</div>
+                    <div class="export-instruction-hint">File name and folder may hold placeholders such as {date}, {file}, {YEAR} or {YEAR-1 MON} for the year of last month: type { or use the button beside the field to pick one. Leave the file name empty to be asked for the file each time the SQL file runs. A folder inside the folder of the SQL file is written relative to it.</div>
                     <div class="export-field-checkbox export-instruction-only">
                         <input type="checkbox" id="exportAskAtRunTime" />
                         <label for="exportAskAtRunTime">Open this dialog when the SQL file runs</label>

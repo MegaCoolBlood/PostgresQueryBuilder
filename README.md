@@ -424,9 +424,14 @@ fields wherever it comes from.
   you want to decide then, and **Insert** writes the matching `-- @export`
   line above the query, with every option of the format spelled out. On a
   query that has an instruction already, the dialog starts from it and
-  **Update** replaces it. A file name may keep its placeholders,
-  an empty one means *ask each time*, and a folder inside the folder of the
-  SQL file is written relative to it.
+  **Update** replaces it. File name and folder may hold placeholders, an
+  empty file name means *ask each time*, and a folder inside the folder of
+  the SQL file is written relative to it. Typing `{` in either field — or the
+  `{ }` button beside it — lists the placeholders and a few ready patterns
+  (today, yesterday, last month with its year, a timestamp), each with what it
+  gives right now; arrow keys, `Enter` or `Tab` pick one. Below the fields the
+  dialog shows the file the instruction would write if the SQL file ran now,
+  or what is wrong with a placeholder, before **Insert** is pressed.
 
   Typing an instruction by hand is guided too: `-- @export` is offered as a
   snippet at the start of a line, and inside the line the formats, the
