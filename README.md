@@ -329,14 +329,17 @@ fields wherever it comes from.
   of the session to a file and **Copy** puts all of them on the clipboard.
   Errors are striped, tinted and marked with an icon, and the header counts
   them; clicking the count jumps from one error to the next. A
-  running statement can be cancelled from its notification; one still waiting
+  running statement can be cancelled from its notification, which also counts
+  how long it has been running; one still waiting
   for a Data Viewer query of the same session is then not run at all.
 - **Execute File** (`Ctrl+Shift+Alt+Enter`, or the run button in the editor's
   title bar) runs every statement of the file from top to bottom in the file's
   session. Each query returning rows opens in its own Data Viewer, and the run
   goes on only once that Data Viewer has loaded its first page, so it shows the
   data as the statements above left it. All Data Viewers of a run open as tabs
-  of one editor group beside the file, which keeps the focus. The run stops at
+  of one editor group beside the file, which keeps the focus. While it runs, its
+  notification shows the statement it is at and how long the run has taken so
+  far (`statement 3 of 12 · 1 min 05 s elapsed`). The run stops at
   the first statement that fails, names it with its line and puts the cursor
   at the error.
 - **Export instead of showing.** A comment line `-- @export …` above a query

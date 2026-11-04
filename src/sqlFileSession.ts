@@ -237,6 +237,67 @@ function durationText(ms: number): string {
     return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
+/** How long a run has been going, in whole seconds: `42 s`, `1 min 05 s`, `1 h 02 min`. */
+export function elapsedText(ms: number): string {
+    const seconds = Math.max(0, Math.floor(ms / 1000));
+    if (seconds < 60) return `${seconds} s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes} min ${String(seconds % 60).padStart(2, '0')} s`;
+    return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')} min`;
+}
+
+/** Time for {@link ElapsedProgress}; tests pass a clock they move themselves. */
+export interface ProgressClock {
+    now(): number;
+    every(ms: number, tick: () => void): { dispose(): void };
+}
+
+const systemClock: ProgressClock = {
+    now: () => Date.now(),
+    every: (ms, tick) => {
+        const handle = setInterval(tick, ms);
+        return { dispose: () => clearInterval(handle) };
+    }
+};
+
+/**
+ * The message of a run's notification, followed by how long the run has been
+ * going — `statement 3 of 12 · 1 min 05 s elapsed` — and renewed every second,
+ * so a statement that runs for minutes still shows that time passes.
+ */
+export class ElapsedProgress {
+    private message = '';
+    private readonly started: number;
+    private readonly timer: { dispose(): void };
+
+    constructor(
+        private readonly progress: { report(value: { message?: string; increment?: number }): void },
+        private readonly clock: ProgressClock = systemClock
+    ) {
+        this.started = clock.now();
+        this.timer = clock.every(1000, () => this.show());
+        this.show();
+    }
+
+    /** Show `message` in front of the elapsed time; `increment` moves the bar. */
+    report(message: string, increment?: number): void {
+        this.message = message;
+        this.show(increment);
+    }
+
+    dispose(): void {
+        this.timer.dispose();
+    }
+
+    private show(increment?: number): void {
+        const elapsed = `${elapsedText(this.clock.now() - this.started)} elapsed`;
+        this.progress.report({
+            message: this.message ? `${this.message} · ${elapsed}` : elapsed,
+            ...(increment !== undefined ? { increment } : {})
+        });
+    }
+}
+
 /** What `pg` reports for one statement. */
 export interface ExecutionResult {
     command?: string | null;
@@ -479,7 +540,9 @@ export class SqlFileSessions implements vscode.Disposable {
         private readonly messages: SessionMessageSink,
         private readonly modifyHistoryStore?: ModifyHistoryStore,
         private readonly openQueryView?: OpenQueryView,
-        private readonly exporter?: QueryExporter
+        private readonly exporter?: QueryExporter,
+        /** The time the notifications of a run count; tests move it themselves. */
+        private readonly clock?: ProgressClock
     ) {
         this.subscriptions.push(
             vscode.workspace.onDidCloseTextDocument(() => this.releaseClosedFiles()),
@@ -550,10 +613,11 @@ export class SqlFileSessions implements vscode.Disposable {
                     title: `Executing in the database session of "${ref.label}"`,
                     cancellable: true
                 },
-                (_progress, token) => {
+                (progress, token) => {
                     const runner = new CancellableRun((pid) => this.cancelBackend(pid));
                     token.onCancellationRequested(() => runner.cancel());
-                    return runner.run(session, target.sql, notices);
+                    const elapsed = new ElapsedProgress(progress, this.clock);
+                    return runner.run(session, target.sql, notices).finally(() => elapsed.dispose());
                 }
             );
         } catch (err: unknown) {
@@ -683,70 +747,75 @@ export class SqlFileSessions implements vscode.Disposable {
             async (progress, token): Promise<Stop | null> => {
                 const runner = new CancellableRun((pid) => this.cancelBackend(pid));
                 token.onCancellationRequested(() => runner.cancel());
-                // All Data Viewers of the run go into one group beside the
-                // file, as tabs: the file keeps the focus, so "beside" stays
-                // the same group, and once the first one is placed, the others
-                // follow it there even if the focus moved meanwhile.
-                let viewerColumn: vscode.ViewColumn | undefined;
-                for (let index = 0; index < total; index++) {
-                    if (runner.cancelled) {
-                        return { reason: 'cancelled', index };
-                    }
-                    progress.report({ message: `statement ${index + 1} of ${total}`, increment: 100 / total });
-                    const statement = statements[index];
-                    const sql = text.slice(statement.start, statement.end);
-
-                    if (statement.instruction) {
-                        const line = document.positionAt(statement.start).line;
-                        const outcome = await this.exportQuery(statement.instruction, sql, line, document, ref, session, runner, notices,
-                            (message) => progress.report({ message: `statement ${index + 1} of ${total} · ${message}` }));
-                        if (outcome.status === 'cancelled') {
+                const elapsed = new ElapsedProgress(progress, this.clock);
+                try {
+                    // All Data Viewers of the run go into one group beside the
+                    // file, as tabs: the file keeps the focus, so "beside" stays
+                    // the same group, and once the first one is placed, the others
+                    // follow it there even if the focus moved meanwhile.
+                    let viewerColumn: vscode.ViewColumn | undefined;
+                    for (let index = 0; index < total; index++) {
+                        if (runner.cancelled) {
                             return { reason: 'cancelled', index };
                         }
-                        if (outcome.status === 'failed') {
-                            return { reason: 'failed', index, error: outcome.error, inViewer: false };
-                        }
-                        exported.push(outcome.query);
-                        continue;
-                    }
+                        elapsed.report(`statement ${index + 1} of ${total}`, 100 / total);
+                        const statement = statements[index];
+                        const sql = text.slice(statement.start, statement.end);
 
-                    if (this.openQueryView && isResultQuery(sql)) {
-                        const view = await this.openQueryView(sql, queryViewTitle(sql), ref, {
-                            viewColumn: viewerColumn ?? vscode.ViewColumn.Beside,
-                            preserveFocus: true
-                        });
-                        if (!view) {
-                            return { reason: 'cancelled', index };
+                        if (statement.instruction) {
+                            const line = document.positionAt(statement.start).line;
+                            const outcome = await this.exportQuery(statement.instruction, sql, line, document, ref, session, runner, notices,
+                                (message) => elapsed.report(`statement ${index + 1} of ${total} · ${message}`));
+                            if (outcome.status === 'cancelled') {
+                                return { reason: 'cancelled', index };
+                            }
+                            if (outcome.status === 'failed') {
+                                return { reason: 'failed', index, error: outcome.error, inViewer: false };
+                            }
+                            exported.push(outcome.query);
+                            continue;
                         }
-                        opened++;
-                        const load = await Promise.race([view.loaded, runner.whenCancelled.then(() => null)]);
-                        // Known for sure only once the panel has shown itself.
-                        const column = view.viewColumn?.();
-                        if (viewerColumn === undefined && column !== undefined && column > 0) {
-                            viewerColumn = column;
-                        }
-                        if (load === null) {
-                            return { reason: 'cancelled', index: index + 1 };
-                        }
-                        if (load.status === 'failed') {
-                            return { reason: 'failed', index, error: new Error(load.error), inViewer: true };
-                        }
-                        continue;
-                    }
 
-                    try {
-                        await runner.run(session, sql, notices);
-                    } catch (err: unknown) {
-                        // A statement stopped by Cancel fails with "canceling
-                        // statement due to user request"; that is no error.
-                        if (err instanceof CancelledBeforeStart || runner.cancelled) {
-                            return { reason: 'cancelled', index };
+                        if (this.openQueryView && isResultQuery(sql)) {
+                            const view = await this.openQueryView(sql, queryViewTitle(sql), ref, {
+                                viewColumn: viewerColumn ?? vscode.ViewColumn.Beside,
+                                preserveFocus: true
+                            });
+                            if (!view) {
+                                return { reason: 'cancelled', index };
+                            }
+                            opened++;
+                            const load = await Promise.race([view.loaded, runner.whenCancelled.then(() => null)]);
+                            // Known for sure only once the panel has shown itself.
+                            const column = view.viewColumn?.();
+                            if (viewerColumn === undefined && column !== undefined && column > 0) {
+                                viewerColumn = column;
+                            }
+                            if (load === null) {
+                                return { reason: 'cancelled', index: index + 1 };
+                            }
+                            if (load.status === 'failed') {
+                                return { reason: 'failed', index, error: new Error(load.error), inViewer: true };
+                            }
+                            continue;
                         }
-                        return { reason: 'failed', index, error: err, inViewer: false };
+
+                        try {
+                            await runner.run(session, sql, notices);
+                        } catch (err: unknown) {
+                            // A statement stopped by Cancel fails with "canceling
+                            // statement due to user request"; that is no error.
+                            if (err instanceof CancelledBeforeStart || runner.cancelled) {
+                                return { reason: 'cancelled', index };
+                            }
+                            return { reason: 'failed', index, error: err, inViewer: false };
+                        }
+                        this.recordModifyHistory(sql);
                     }
-                    this.recordModifyHistory(sql);
+                    return null;
+                } finally {
+                    elapsed.dispose();
                 }
-                return null;
             }
         );
 
@@ -956,10 +1025,11 @@ export class SqlFileSessions implements vscode.Disposable {
                     title: `Running in the database session of "${label}"`,
                     cancellable: true
                 },
-                (_progress, token) => {
+                (progress, token) => {
                     const runner = new CancellableRun((pid) => this.cancelBackend(pid));
                     token.onCancellationRequested(() => runner.cancel());
-                    return runner.run(session, sql, notices);
+                    const elapsed = new ElapsedProgress(progress, this.clock);
+                    return runner.run(session, sql, notices).finally(() => elapsed.dispose());
                 }
             );
         } catch (err: unknown) {

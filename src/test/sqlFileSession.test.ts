@@ -23,6 +23,8 @@ import {
     resultValueText,
     statementErrorText,
     messageLogRefFor,
+    elapsedText,
+    ElapsedProgress,
     type QueryViewLoad
 } from '../sqlFileSession';
 import { MESSAGES_PANEL_NAME, formatSessionMessage } from '../sessionMessages';
@@ -306,6 +308,7 @@ function createFileSessions(options: {
     /** How the first query of a Data Viewer opened for `sql` ends; loaded at once by default. */
     viewerLoad?: (sql: string) => Promise<QueryViewLoad>;
     exporter?: any;
+    clock?: any;
 } = {}) {
     const clients: FakeClient[] = [];
     /** Statements run on the session (`run:`) and Data Viewers opened (`view:`), in order. */
@@ -350,7 +353,7 @@ function createFileSessions(options: {
             viewColumn: () => 2
         };
     };
-    const fileSessions = new SqlFileSessions(manager, connectionManager, channel as any, modifyHistoryStore, openQueryView, options.exporter);
+    const fileSessions = new SqlFileSessions(manager, connectionManager, channel as any, modifyHistoryStore, openQueryView, options.exporter, options.clock);
     showFile(true);
     return { manager, clients, channel, history, poolQueries, opened, events, fileSessions };
 }
@@ -1167,7 +1170,9 @@ test('the notification of Execute File tells how far an export has come', async 
 
     await fileSessions.executeFile(editor as any);
 
-    assert.deepEqual(reports.filter((r) => r.startsWith('statement 2 of 3')), [
+    // Every message also tells how long the run has taken; that part depends on the clock.
+    assert.ok(reports.every((r) => / · \d+ s elapsed$|^\d+ s elapsed$/.test(r)), reports.join(' | '));
+    assert.deepEqual(reports.map((r) => r.replace(/ · \d+ s elapsed$/, '')).filter((r) => r.startsWith('statement 2 of 3')), [
         'statement 2 of 3',
         'statement 2 of 3 · Counting rows…',
         'statement 2 of 3 · Fetching rows: 0 of 2 (0%)',
@@ -1224,4 +1229,118 @@ test('summarizeFileRun names a single export and points to the messages for seve
         summarizeFileRun('payroll.sql', 3, 1, 12, [{ rows: 1, path: 'a' }, { rows: 2, path: 'b' }]),
         'Ran all 3 statements of payroll.sql in 12 ms; 1 query opened in the Data Viewer; 2 queries exported, listed in the "PostgreSQL Messages" panel.'
     );
+});
+
+// ===== elapsed time in the notification of a run =====
+
+/** A clock the test moves itself; every tick that is still running fires on `advance`. */
+function fakeClock() {
+    return {
+        time: 1_000_000,
+        ticks: [] as Array<() => void>,
+        now() { return this.time; },
+        every(_ms: number, tick: () => void) {
+            this.ticks.push(tick);
+            return { dispose: () => { this.ticks = this.ticks.filter((t) => t !== tick); } };
+        },
+        advance(ms: number) {
+            this.time += ms;
+            for (const tick of [...this.ticks]) tick();
+        }
+    };
+}
+
+/** Let `withProgress` run its task with a progress that records every report. */
+function recordProgress(t: { after(fn: () => void): void }) {
+    const reports: Array<{ message?: string; increment?: number }> = [];
+    recordWindowCalls(t, 'withProgress', (_options: any, task: any) => task(
+        { report: (value: any) => reports.push(value) },
+        { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) }
+    ));
+    return reports;
+}
+
+test('elapsedText counts seconds, then minutes and seconds, then hours and minutes', () => {
+    assert.equal(elapsedText(0), '0 s');
+    assert.equal(elapsedText(999), '0 s');
+    assert.equal(elapsedText(42_300), '42 s');
+    assert.equal(elapsedText(65_000), '1 min 05 s');
+    assert.equal(elapsedText(59 * 60_000 + 59_000), '59 min 59 s');
+    assert.equal(elapsedText(3_720_000), '1 h 02 min');
+    assert.equal(elapsedText(-5), '0 s');
+});
+
+test('ElapsedProgress puts the time a run takes behind its message and renews it every second', () => {
+    const clock = fakeClock();
+    const reports: any[] = [];
+    const elapsed = new ElapsedProgress({ report: (value) => reports.push(value) }, clock);
+    assert.deepEqual(reports, [{ message: '0 s elapsed' }], 'the time shows at once');
+
+    elapsed.report('statement 1 of 3', 100 / 3);
+    assert.deepEqual(reports[1], { message: 'statement 1 of 3 · 0 s elapsed', increment: 100 / 3 });
+
+    clock.advance(65_000);
+    assert.deepEqual(reports[2], { message: 'statement 1 of 3 · 1 min 05 s elapsed' }, 'a tick does not move the bar');
+
+    elapsed.dispose();
+    clock.advance(1000);
+    assert.equal(reports.length, 3, 'nothing is reported after the run');
+    assert.equal(clock.ticks.length, 0);
+});
+
+test('Execute File shows how long the run takes while a statement is still running', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const reports = recordProgress(t);
+    const clock = fakeClock();
+    const { fileSessions } = createFileSessions({
+        clock,
+        onQuery: (_client, sql) => { if (sql === DO_BLOCK) clock.advance(65_000); }
+    });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(createEditor(FILE, 0) as any);
+
+    const messages = reports.map((r) => r.message);
+    assert.equal(messages[0], '0 s elapsed');
+    assert.ok(messages.includes('statement 1 of 3 · 0 s elapsed'), messages.join(' | '));
+    assert.ok(messages.includes('statement 1 of 3 · 1 min 05 s elapsed'), 'renewed while the DO block runs');
+    assert.ok(messages.includes('statement 3 of 3 · 1 min 05 s elapsed'), messages.join(' | '));
+    assert.equal(clock.ticks.length, 0, 'the timer ends with the run');
+});
+
+test('Execute File stops counting when a statement fails', async (t) => {
+    recordWindowCalls(t, 'showErrorMessage');
+    recordProgress(t);
+    const clock = fakeClock();
+    const { fileSessions } = createFileSessions({ clock, onQuery: () => { throw new Error('boom'); } });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(createEditor(FILE, 0) as any);
+
+    assert.equal(clock.ticks.length, 0);
+});
+
+test('Execute Selection shows how long its statement has been running', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const reports = recordProgress(t);
+    const clock = fakeClock();
+    const { fileSessions } = createFileSessions({ clock, onQuery: () => { clock.advance(3000); } });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.execute(selecting(FILE, DO_BLOCK) as any);
+
+    assert.deepEqual(reports.map((r) => r.message), ['0 s elapsed', '3 s elapsed']);
+    assert.equal(clock.ticks.length, 0);
+});
+
+test('a statement run for a Data Viewer shows how long it has been running', async (t) => {
+    const reports = recordProgress(t);
+    const clock = fakeClock();
+    const { fileSessions, manager } = createFileSessions({ clock, onQuery: () => { clock.advance(12_000); } });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeOnSession(manager.acquire(panelRef, 'panel:7'), 'Locks', 'SELECT pg_sleep(12)');
+
+    assert.deepEqual(reports.map((r) => r.message), ['0 s elapsed', '12 s elapsed']);
+    assert.equal(clock.ticks.length, 0);
 });
