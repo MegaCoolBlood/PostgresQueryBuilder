@@ -15,6 +15,7 @@ import {
     messageTone,
     messagesCountText,
     messagesFileName,
+    messagesUpdate,
     messagesViewState,
     noticeMessage
 } from '../sessionMessages';
@@ -233,9 +234,10 @@ test('a spool keeps the order of its messages and drops what Clear came after', 
 // ===== SessionMessagesView =====
 
 function resolveView(log: SessionMessageLog = new SessionMessageLog()) {
-    const view = new SessionMessagesView(log);
+    const view = new SessionMessagesView(log, { schedule: (render) => render() });
     const posted: any[] = [];
     let handler: (msg: any) => void = () => undefined;
+    let visibilityListener: () => void = () => undefined;
     const shownWithFocus: boolean[] = [];
     const webview: any = {
         options: {},
@@ -246,8 +248,10 @@ function resolveView(log: SessionMessageLog = new SessionMessageLog()) {
     };
     const webviewView: any = {
         webview,
+        visible: true,
         show: (preserveFocus: boolean) => { shownWithFocus.push(preserveFocus); },
-        onDidDispose: () => ({ dispose() {} })
+        onDidDispose: () => ({ dispose() {} }),
+        onDidChangeVisibility: (cb: () => void) => { visibilityListener = cb; return { dispose() {} }; }
     };
     view.resolveWebviewView(webviewView, {} as any, {} as any);
     return {
@@ -255,6 +259,7 @@ function resolveView(log: SessionMessageLog = new SessionMessageLog()) {
         html: webview.html as string,
         posted,
         send: (msg: any) => handler(msg),
+        setVisible: (visible: boolean) => { webviewView.visible = visible; visibilityListener(); },
         get shownWithFocus() { return shownWithFocus; },
         last: () => posted[posted.length - 1]
     };
@@ -290,6 +295,97 @@ test('switching to the tab that is already shown does not render again', () => {
     view.show(FILE);
     view.show({ ...FILE });
     assert.equal(posted.length, 1);
+});
+
+// ===== a flood of messages =====
+
+test('new messages of the shown log are sent alone, not the whole log again', () => {
+    const { view, last } = resolveView();
+    view.show(FILE);
+    view.append(FILE, noticeMessage('payroll.sql', { message: 'first' }, AT));
+    assert.equal(last().type, 'log', 'the first message replaces the empty text');
+    view.append(FILE, noticeMessage('payroll.sql', { severity: 'WARNING', message: 'second' }, AT));
+
+    assert.equal(last().type, 'append');
+    assert.equal(last().key, FILE.key);
+    assert.deepEqual(last().messages.map((m: any) => [m.text, m.tone]), [['second', 'warning']]);
+    assert.equal(last().total, 2);
+    assert.equal(last().countText, '2 messages');
+    assert.equal(last().limit, 2000);
+});
+
+test('thousands of messages in a burst become one update of the panel', () => {
+    const pending: Array<() => void> = [];
+    const log = new SessionMessageLog({ limit: 100 });
+    const view = new SessionMessagesView(log, { schedule: (render) => pending.push(render) });
+    const posted: any[] = [];
+    view.resolveWebviewView({
+        webview: { options: {}, html: '', cspSource: 'x', postMessage: (m: any) => { posted.push(m); return Promise.resolve(true); }, onDidReceiveMessage: () => ({ dispose() {} }) },
+        visible: true
+    } as any, {} as any, {} as any);
+    view.show(FILE);
+    view.append(FILE, noticeMessage('f', { message: 'start' }, AT));
+    pending.shift()?.();
+    assert.equal(posted.length, 2);
+
+    for (let i = 0; i < 5000; i++) {
+        view.append(FILE, noticeMessage('f', { message: `row ${i}` }, AT));
+    }
+    assert.equal(pending.length, 1, 'one update is waiting, however many messages came');
+    assert.equal(posted.length, 2, 'nothing is sent per message');
+    pending.shift()?.();
+
+    assert.equal(posted.length, 3);
+    // More came than the panel keeps, so it gets its 100 lines whole instead of 5000 to append.
+    assert.equal(posted[2].type, 'log');
+    assert.equal(posted[2].state.messages.length, 100);
+    assert.equal(posted[2].state.countText, 'last 100 of 5001 messages');
+});
+
+test('a hidden panel is sent nothing and gets the whole log when it is shown again', () => {
+    const { view, posted, last, setVisible } = resolveView();
+    view.show(FILE);
+    view.append(FILE, noticeMessage('f', { message: 'a' }, AT));
+    setVisible(false);
+    const before = posted.length;
+    view.append(FILE, noticeMessage('f', { message: 'b' }, AT));
+    view.append(FILE, noticeMessage('f', { message: 'c' }, AT));
+    assert.equal(posted.length, before);
+
+    setVisible(true);
+    assert.equal(last().type, 'log');
+    assert.deepEqual(last().state.messages.map((m: any) => m.text), ['a', 'b', 'c']);
+});
+
+// ===== messagesUpdate =====
+
+function logOf(texts: string[], id = 1, total = texts.length) {
+    return { key: FILE.key, label: FILE.label, id, total, messages: texts.map((text) => noticeMessage('f', { message: text }, AT)) };
+}
+
+test('messagesUpdate sends only what is new while the same log grows', () => {
+    const sent = { key: FILE.key, label: FILE.label, id: 1, total: 2 };
+    const { update, sent: next } = messagesUpdate(FILE, logOf(['a', 'b', 'c', 'd']), sent, 10);
+    assert.equal(update?.type, 'append');
+    assert.deepEqual((update as any).messages.map((m: any) => m.text), ['c', 'd']);
+    assert.deepEqual(next, { key: FILE.key, label: FILE.label, id: 1, total: 4 });
+});
+
+test('messagesUpdate sends nothing when nothing changed', () => {
+    const sent = { key: FILE.key, label: FILE.label, id: 1, total: 2 };
+    assert.equal(messagesUpdate(FILE, logOf(['a', 'b']), sent, 10).update, null);
+});
+
+test('messagesUpdate sends the whole log for anything but new messages', () => {
+    const sent = { key: FILE.key, label: FILE.label, id: 1, total: 2 };
+    const whole = (shown: any, log: any, before: any) => messagesUpdate(shown, log, before, 10).update?.type;
+    assert.equal(whole(FILE, logOf(['a', 'b', 'c']), undefined), 'log', 'nothing was sent yet');
+    assert.equal(whole(TAB, undefined, sent), 'log', 'another session');
+    assert.equal(whole({ ...FILE, label: 'renamed' }, logOf(['a', 'b', 'c']), sent), 'log', 'another label');
+    assert.equal(whole(FILE, logOf(['x'], 2), sent), 'log', 'cleared, or ended and begun anew');
+    assert.equal(whole(FILE, undefined, sent), 'log', 'the session ended');
+    assert.equal(whole(FILE, logOf(['c', 'd', 'e'], 1, 6), sent), 'log', 'more came than the log keeps');
+    assert.equal(whole(FILE, logOf(['a']), { ...sent, total: 0 }), 'log', 'the first message replaces the empty text');
 });
 
 test('the log of a session that ended disappears from the panel', () => {
@@ -350,7 +446,7 @@ test('Copy puts every message of the session on the clipboard, like Save, not on
     for (let i = 1; i <= 5; i++) {
         resolved.view.append(FILE, noticeMessage('payroll.sql', { message: `step ${i}` }, AT));
     }
-    assert.equal(resolved.last().state.messages.length, 2, 'the panel shows only the newest');
+    assert.equal(resolved.view.log.get(FILE.key)?.messages.length, 2, 'the panel shows only the newest');
 
     resolved.send({ type: 'copy' });
     for (let i = 0; i < 20 && copied.length === 0; i++) {
@@ -424,7 +520,7 @@ test('Save in the panel asks for a file and writes every message of the shown se
     resolved.view.show(FILE);
     resolved.view.append(FILE, noticeMessage('payroll.sql', { message: 'first' }, AT));
     resolved.view.append(FILE, noticeMessage('payroll.sql', { message: 'second' }, AT));
-    assert.equal(resolved.last().state.countText, 'last 1 of 2 messages');
+    assert.equal(resolved.last().countText, 'last 1 of 2 messages');
 
     resolved.send({ type: 'save' });
     for (let i = 0; i < 20 && statusMessages.length === 0; i++) {
@@ -469,4 +565,87 @@ test('the extension ends a log with its session and follows the active tab', () 
     assert.match(source, /onDidChangeActiveTextEditor\(showLogOfEditor\)/);
     assert.match(source, /onDidFocusSession\(\(ref\) => messagesView\.show\(ref\)\)/);
     assert.doesNotMatch(source, /createOutputChannel\('PostgreSQL Messages'\)|MESSAGES_CHANNEL_NAME/, 'no shared output for every session');
+});
+
+// ===== the script of the panel =====
+
+/** Top-level entries of the list, as the script writes them. */
+function entriesOf(html: string): string[] {
+    return html ? html.split(/(?=<div class="(?:msg|empty)[ "])/).filter(Boolean) : [];
+}
+
+/** Just enough of an element for the panel's script; the list keeps its entries as HTML strings. */
+class FakeElement {
+    textContent = '';
+    title = '';
+    disabled = false;
+    scrollTop = 0;
+    clientHeight = 100;
+    entries: string[] = [];
+    get scrollHeight(): number { return this.entries.length * 20; }
+    set innerHTML(html: string) { this.entries = entriesOf(html); }
+    get innerHTML(): string { return this.entries.join(''); }
+    insertAdjacentHTML(_position: string, html: string): void { this.entries.push(...entriesOf(html)); }
+    get childElementCount(): number { return this.entries.length; }
+    get firstElementChild(): { remove(): void } | null {
+        return this.entries.length > 0 ? { remove: () => { this.entries.shift(); } } : null;
+    }
+    querySelector(selector: string): { remove(): void } | null {
+        const index = selector === '.empty' ? this.entries.findIndex((e) => e.startsWith('<div class="empty"')) : -1;
+        return index >= 0 ? { remove: () => { this.entries.splice(index, 1); } } : null;
+    }
+    addEventListener(): void {}
+}
+
+function runPanelScript() {
+    const { html } = resolveView();
+    const script = /<script nonce="[^"]+">([\s\S]*)<\/script>/.exec(html)?.[1] ?? '';
+    const elements: Record<string, FakeElement> = {};
+    const document = { getElementById: (id: string) => (elements[id] ??= new FakeElement()) };
+    let receive: (ev: { data: any }) => void = () => undefined;
+    const window = { addEventListener: (_type: string, listener: (ev: { data: any }) => void) => { receive = listener; } };
+    const sent: any[] = [];
+    new Function('acquireVsCodeApi', 'document', 'window', script)(() => ({ postMessage: (m: any) => sent.push(m) }), document, window);
+    return { list: elements.list, count: elements.count, copy: elements.copyBtn, send: (data: any) => receive({ data }), sent };
+}
+
+const tone = (text: string) => ({ ...noticeMessage('payroll.sql', { message: text }, AT), tone: 'info' });
+
+test('the panel script appends new messages and drops the oldest beyond the limit', () => {
+    const panel = runPanelScript();
+    assert.deepEqual(panel.sent, [{ type: 'ready' }]);
+    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: ['a', 'b', 'c'].map(tone), total: 3, countText: '3 messages' } });
+    assert.equal(panel.list.childElementCount, 3);
+
+    panel.send({ type: 'append', key: FILE.key, messages: ['d', 'e'].map(tone), total: 5, countText: 'last 4 of 5 messages', limit: 4 });
+
+    assert.equal(panel.list.childElementCount, 4);
+    assert.match(panel.list.entries[0], /msg-text">b</);
+    assert.match(panel.list.entries[3], /msg-text">e</);
+    assert.equal(panel.count.textContent, 'last 4 of 5 messages');
+    assert.equal(panel.list.scrollTop, panel.list.scrollHeight, 'it follows new messages while scrolled to the end');
+});
+
+test('the panel script replaces the empty text with the first message and ignores another session', () => {
+    const panel = runPanelScript();
+    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: [], total: 0, countText: '0 messages' } });
+    assert.match(panel.list.innerHTML, /No messages from the database session of payroll\.sql yet/);
+    assert.equal(panel.copy.disabled, true);
+
+    panel.send({ type: 'append', key: FILE.key, messages: [tone('<b>first</b>')], total: 1, countText: '1 message', limit: 2000 });
+    assert.equal(panel.list.childElementCount, 1);
+    assert.match(panel.list.innerHTML, /&lt;b&gt;first&lt;\/b&gt;/, 'what the server says is escaped');
+    assert.equal(panel.copy.disabled, false);
+
+    panel.send({ type: 'append', key: TAB.key, messages: [tone('elsewhere')], total: 9, countText: '9 messages', limit: 2000 });
+    assert.equal(panel.list.childElementCount, 1);
+    assert.equal(panel.count.textContent, '1 message');
+});
+
+test('the panel script stays where the reader scrolled to while messages come in', () => {
+    const panel = runPanelScript();
+    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: Array.from({ length: 50 }, (_, i) => tone(`m${i}`)), total: 50, countText: '50 messages' } });
+    panel.list.scrollTop = 40;
+    panel.send({ type: 'append', key: FILE.key, messages: [tone('new')], total: 51, countText: '51 messages', limit: 2000 });
+    assert.equal(panel.list.scrollTop, 40);
 });

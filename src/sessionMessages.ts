@@ -88,6 +88,8 @@ export interface SessionLog {
     messages: SessionMessage[];
     /** Every message since the log began or was cleared, including those no longer kept. */
     total: number;
+    /** Unique per log and renewed by Clear, so the panel can tell new messages from a new log. */
+    id: number;
 }
 
 type SpoolOperation = { kind: 'append'; text: string } | { kind: 'truncate' } | { kind: 'remove' };
@@ -205,16 +207,22 @@ export class SessionMessageLog {
     private readonly spoolRoot?: string;
     private spoolDir?: string;
     private spoolCounter = 0;
+    private logCounter = 0;
 
     constructor(options: SessionMessageLogOptions = {}) {
         this.limit = options.limit ?? MAX_MESSAGES_PER_LOG;
         this.spoolRoot = options.spoolRoot;
     }
 
+    /** How many messages a log keeps for the panel. */
+    get keptLimit(): number {
+        return this.limit;
+    }
+
     append(ref: DbSessionRef, message: SessionMessage): void {
         let log = this.logs.get(ref.key);
         if (!log) {
-            log = { key: ref.key, label: ref.label, messages: [], total: 0 };
+            log = { key: ref.key, label: ref.label, messages: [], total: 0, id: ++this.logCounter };
             this.logs.set(ref.key, log);
         }
         log.messages.push(message);
@@ -236,6 +244,7 @@ export class SessionMessageLog {
         if (!log || log.total === 0) return;
         log.messages = [];
         log.total = 0;
+        log.id = ++this.logCounter;
         this.spools.get(key)?.truncate();
         this.emit(key);
     }
@@ -384,6 +393,70 @@ export function messagesViewState(shown: DbSessionRef | undefined, log: SessionL
     };
 }
 
+/** What the panel was last sent: which log, and how many of its messages. */
+export interface SentLog {
+    key: string | null;
+    label: string | null;
+    /** {@link SessionLog.id}, or null when there was no log. */
+    id: number | null;
+    total: number;
+}
+
+/** A message to the panel: the whole log, or only the messages that came since the last one. */
+export type MessagesUpdate =
+    | { type: 'log'; key: string | null; state: MessagesViewState }
+    | {
+        type: 'append';
+        key: string;
+        messages: Array<SessionMessage & { tone: MessageTone }>;
+        total: number;
+        countText: string;
+        /** The panel drops its oldest lines beyond this many. */
+        limit: number;
+    };
+
+/**
+ * What to send the panel so it shows `log` of `shown`, given what it was sent
+ * last. Only the new messages are sent while the same log grows by no more
+ * than it keeps; anything else — another session, Clear, a log that ended,
+ * a first message — sends the whole log. Null when nothing changed.
+ */
+export function messagesUpdate(
+    shown: DbSessionRef | undefined,
+    log: SessionLog | undefined,
+    sent: SentLog | undefined,
+    limit: number
+): { update: MessagesUpdate | null; sent: SentLog } {
+    const current: SentLog = { key: shown?.key ?? null, label: shown?.label ?? null, id: log?.id ?? null, total: log?.total ?? 0 };
+    const sameLog = sent !== undefined && sent.key === current.key && sent.label === current.label && sent.id === current.id;
+    if (sameLog && sent.total === current.total) {
+        return { update: null, sent: current };
+    }
+    const added = current.total - (sent?.total ?? 0);
+    if (sameLog && log && shown && sent.total > 0 && added > 0 && added <= log.messages.length) {
+        return {
+            update: {
+                type: 'append',
+                key: shown.key,
+                messages: log.messages.slice(log.messages.length - added).map((message) => ({ ...message, tone: messageTone(message.severity) })),
+                total: log.total,
+                countText: messagesCountText(log.messages.length, log.total),
+                limit
+            },
+            sent: current
+        };
+    }
+    return { update: { type: 'log', key: current.key, state: messagesViewState(shown, log) }, sent: current };
+}
+
+/** How often at most the panel is updated while messages keep coming. */
+export const MESSAGES_RENDER_INTERVAL_MS = 100;
+
+export interface SessionMessagesViewOptions {
+    /** Run `render` a little later; tests run it at once. */
+    schedule?: (render: () => void) => void;
+}
+
 /**
  * The *PostgreSQL Messages* panel. It shows the log of one session at a time:
  * that of the SQL file or Data Viewer tab that was active last.
@@ -394,10 +467,16 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
     private view?: vscode.WebviewView;
     private shown?: DbSessionRef;
     private readonly subscription: { dispose(): void };
+    /** What the panel was sent last; undefined when it needs the whole log. */
+    private sent?: SentLog;
+    private renderPending = false;
+    private readonly schedule: (render: () => void) => void;
 
-    constructor(readonly log: SessionMessageLog) {
+    constructor(readonly log: SessionMessageLog, options: SessionMessagesViewOptions = {}) {
+        this.schedule = options.schedule ?? ((render) => { setTimeout(render, MESSAGES_RENDER_INTERVAL_MS); });
+        // A flood of messages becomes one update every few milliseconds, not one per message.
         this.subscription = log.onDidChange((key) => {
-            if (key === this.shown?.key) this.render();
+            if (key === this.shown?.key) this.scheduleRender();
         });
     }
 
@@ -434,13 +513,22 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
         _token: vscode.CancellationToken
     ): void {
         this.view = webviewView;
+        this.sent = undefined;
         webviewView.webview.options = { enableScripts: true };
         webviewView.webview.html = this.getHtml(webviewView.webview);
         webviewView.onDidDispose?.(() => {
             if (this.view === webviewView) this.view = undefined;
         });
+        // A hidden panel is sent nothing; shown again, it gets the whole log once.
+        webviewView.onDidChangeVisibility?.(() => {
+            if (webviewView.visible) {
+                this.sent = undefined;
+                this.render();
+            }
+        });
         webviewView.webview.onDidReceiveMessage((message: { type?: string }) => {
             if (message.type === 'ready') {
+                this.sent = undefined;
                 this.render();
             } else if (message.type === 'clear') {
                 if (this.shown) this.log.clear(this.shown.key);
@@ -492,11 +580,31 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
         }
     }
 
+    private scheduleRender(): void {
+        if (this.renderPending) return;
+        this.renderPending = true;
+        this.schedule(() => {
+            this.renderPending = false;
+            this.render();
+        });
+    }
+
     private render(): void {
-        if (!this.view) return;
-        const state = messagesViewState(this.shown, this.shown ? this.log.get(this.shown.key) : undefined);
-        Promise.resolve(this.view.webview.postMessage({ type: 'log', key: this.shown?.key ?? null, state }))
-            .catch(() => undefined);
+        const view = this.view;
+        if (!view) return;
+        if (view.visible === false) {
+            this.sent = undefined;
+            return;
+        }
+        const { update, sent } = messagesUpdate(
+            this.shown,
+            this.shown ? this.log.get(this.shown.key) : undefined,
+            this.sent,
+            this.log.keptLimit
+        );
+        this.sent = sent;
+        if (!update) return;
+        Promise.resolve(view.webview.postMessage(update)).catch(() => undefined);
     }
 
     private getHtml(webview: vscode.Webview): string {
@@ -543,18 +651,40 @@ clearBtn.addEventListener('click', () => vscode.postMessage({ type: 'clear' }));
 ${WEBVIEW_ESCAPE_HTML_JS}
 
 let shownKey = null;
+let shownLabel = null;
+
+function messageHtml(m) {
+    let html = '<div class="msg tone-' + escapeHtml(m.tone) + '">'
+        + '<span class="msg-time">[' + escapeHtml(m.time) + ']</span> '
+        + (m.source && m.source !== shownLabel ? '<span class="msg-source">' + escapeHtml(m.source) + ' — </span>' : '')
+        + '<span class="msg-sev">' + escapeHtml(m.severity) + ':</span> '
+        + '<span class="msg-text">' + escapeHtml(m.text) + '</span>';
+    for (const d of m.details || []) {
+        html += '<div class="msg-detail">' + escapeHtml(d) + '</div>';
+    }
+    return html + '</div>';
+}
+
+function isAtBottom() {
+    return listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 4;
+}
+
+function updateHeader(countText, total) {
+    countEl.textContent = countText || '';
+    copyBtn.disabled = !total;
+    saveBtn.disabled = !total;
+    clearBtn.disabled = !total;
+}
 
 function render(key, state) {
     const switched = key !== shownKey;
     shownKey = key;
-    const atBottom = listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 4;
+    shownLabel = state.label;
+    const atBottom = isAtBottom();
     const messages = state.messages || [];
     labelEl.textContent = state.label ? 'Session of ' + state.label : 'No session';
     labelEl.title = state.label ? 'The database session of ' + state.label + ' and every tab sharing it' : '';
-    countEl.textContent = state.countText || '';
-    copyBtn.disabled = !state.total;
-    saveBtn.disabled = !state.total;
-    clearBtn.disabled = !state.total;
+    updateHeader(state.countText, state.total);
     if (!state.label) {
         listEl.innerHTML = '<div class="empty">Open a SQL file or a Data Viewer tab to see the messages of its database session.</div>';
         return;
@@ -563,20 +693,26 @@ function render(key, state) {
         listEl.innerHTML = '<div class="empty">No messages from the database session of ' + escapeHtml(state.label) + ' yet.</div>';
         return;
     }
-    let html = '';
-    for (const m of messages) {
-        html += '<div class="msg tone-' + escapeHtml(m.tone) + '">'
-            + '<span class="msg-time">[' + escapeHtml(m.time) + ']</span> '
-            + (m.source && m.source !== state.label ? '<span class="msg-source">' + escapeHtml(m.source) + ' — </span>' : '')
-            + '<span class="msg-sev">' + escapeHtml(m.severity) + ':</span> '
-            + '<span class="msg-text">' + escapeHtml(m.text) + '</span>';
-        for (const d of m.details || []) {
-            html += '<div class="msg-detail">' + escapeHtml(d) + '</div>';
-        }
-        html += '</div>';
-    }
-    listEl.innerHTML = html;
+    listEl.innerHTML = messages.map(messageHtml).join('');
     if (switched || atBottom) {
+        listEl.scrollTop = listEl.scrollHeight;
+    }
+}
+
+// New messages are added below and the oldest beyond the limit removed, so
+// the list is never rebuilt while a session keeps sending.
+function append(update) {
+    if (update.key !== shownKey) return;
+    const atBottom = isAtBottom();
+    const empty = listEl.querySelector('.empty');
+    if (empty) empty.remove();
+    listEl.insertAdjacentHTML('beforeend', update.messages.map(messageHtml).join(''));
+    let excess = listEl.childElementCount - update.limit;
+    while (excess-- > 0 && listEl.firstElementChild) {
+        listEl.firstElementChild.remove();
+    }
+    updateHeader(update.countText, update.total);
+    if (atBottom) {
         listEl.scrollTop = listEl.scrollHeight;
     }
 }
@@ -585,6 +721,8 @@ window.addEventListener('message', (ev) => {
     const msg = ev.data;
     if (msg && msg.type === 'log') {
         render(msg.key, msg.state);
+    } else if (msg && msg.type === 'append') {
+        append(msg);
     }
 });
 
