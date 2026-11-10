@@ -2,6 +2,8 @@
 
 ## 3.5.3
 
+- **Ctrl+Z takes back a change to the query even after it has run:** The query bar of the Data Viewer shares one undo history with the grid, but every result that came back started that history over. Once a changed query had run, *Ctrl+Z* in the query bar did nothing, and the same happened to the `WHERE` condition a filter writes into the query and runs right away. Running a query now keeps every earlier version of the query text — typed by you or written by a filter or sort — so *Ctrl+Z* brings back the query as it was before your change and *Ctrl+Y* restores the change. Taking back a filter also clears its box in the filter row, so the filter does not come back the next time the query runs. Undo only changes the text; press *Run* to see the result of the restored query. Grid edits that were not saved still end with the run that replaced the rows, and undo never brings them back on rows they no longer belong to.
+
 - **Copying a cell keeps its leading and trailing blanks:** A value such as `'ABC   '` — typical of a `CHAR(n)` column, which pads to its length — was shown with its blanks in the Data Viewer, but *Ctrl+C* put only `ABC` on the clipboard, because the blanks at both ends of every copied cell were cut off. Pasting into Excel also dropped them, and it joined two blanks inside a value into one. A copied cell now keeps its value exactly as it is shown, whether it is a single cell, a block of cells or a row that is scrolled out of view. Pasting as plain text into an editor gives the blanks back, and so does pasting into Excel, where they arrive as ordinary blanks, not as non-breaking spaces.
 
 ## 3.5.2

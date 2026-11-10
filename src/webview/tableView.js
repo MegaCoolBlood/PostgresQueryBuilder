@@ -905,6 +905,31 @@ function applyHistoryEntry(history, index, state, equals, coalesce) {
     return { history: h, index: h.length - 1 };
 }
 
+// The parts of an undo snapshot that are keyed by row index, as opposed to the
+// query text and the filter row.
+const EDIT_GRID_KEYS = ['modified', 'deleted', 'inserted', 'duplicated', 'invalid'];
+
+// The history after a fresh result replaced the rows. Grid edits are keyed by
+// row index and no longer map, but the query and filter steps up to `index`
+// stay undoable: each keeps its query and filters on top of the grid state of
+// `current`, steps that thereby become equal merge, and `current` is the new
+// top. The redo tail is dropped like after any other change. Returns the new
+// { history, index }.
+function rebaseEditHistory(history, index, current, equals) {
+    const kept = [];
+    const push = (state) => {
+        if (!kept.length || !equals(kept[kept.length - 1], state)) { kept.push(state); }
+    };
+    (Array.isArray(history) ? history.slice(0, Math.max(0, index) + 1) : []).forEach(snap => {
+        if (!snap) { return; }
+        const state = cloneEditValue(snap);
+        EDIT_GRID_KEYS.forEach(key => { state[key] = cloneEditValue(current[key]); });
+        push(state);
+    });
+    push(current);
+    return { history: kept, index: kept.length - 1 };
+}
+
 function formatNumberDisplay(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
     if (value === null || value === undefined) return null;
     const num = Number(value);
@@ -3717,7 +3742,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             inserted: cloneEditValue(insertedRows),
             duplicated: cloneEditValue(duplicatedRows),
             invalid: cloneEditValue(invalidCells),
-            query: queryInput ? queryInput.value : ''
+            query: queryInput ? queryInput.value : '',
+            filters: cloneEditValue({ values: filters, exact: exactFilters, modes: filterModes })
         };
     }
 
@@ -3732,6 +3758,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             queryInput.value = snap.query;
             autoSizeQueryInput();
         }
+        // A filter changes the query and the filter row together, so both go
+        // back together; otherwise the filter box would bring the filter back.
+        const filtersChanged = snap.filters
+            && serializeEditValue(snap.filters) !== serializeEditValue({ values: filters, exact: exactFilters, modes: filterModes });
+        if (filtersChanged) {
+            filters = cloneEditValue(snap.filters.values);
+            exactFilters = cloneEditValue(snap.filters.exact);
+            filterModes = cloneEditValue(snap.filters.modes);
+            renderHeader();
+        }
         selectedRowIdx = null;
         clearCellRangeSelection();
         renderBody();
@@ -3740,11 +3776,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         historySuspended = false;
     }
 
-    // Start a fresh history whose baseline is the current state. Called when a
-    // new result replaces the rows, since per-row-index snapshots no longer map.
+    // Start a fresh history whose baseline is the current state.
     function resetEditHistory() {
         editHistory = [captureEditState()];
         editHistoryIndex = 0;
+        queryTypingRun = false;
+    }
+
+    // A new result replaced the rows: per-row-index grid steps no longer map and
+    // are dropped, but every change to the query text stays undoable — also one
+    // made by a filter, a sort or a navigation that ran the query.
+    function rebaseEditHistoryOnNewRows() {
+        const r = rebaseEditHistory(editHistory, editHistoryIndex, captureEditState(), editStatesEqual);
+        editHistory = r.history;
+        editHistoryIndex = r.index;
         queryTypingRun = false;
     }
 
@@ -5617,11 +5662,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         setDataLoading(false);
         updateRowCount();
         renderTable();
-        // A fresh result is the new baseline: per-row-index snapshots from the
-        // previous rows no longer map, so the undo history starts over here.
-        // An auto refresh keeps a history that holds only query-text changes.
+        // A fresh result is the new baseline for grid edits: per-row-index
+        // snapshots from the previous rows no longer map, so they are dropped
+        // while the query-text steps stay undoable. An auto refresh keeps a
+        // history that holds only query-text changes as it is.
         if (isFreshRowLoad(currentOffset, isAppend) && !keepHistory) {
-            resetEditHistory();
+            rebaseEditHistoryOnNewRows();
         }
         if (auto) {
             // "More" continues after the rows the refresh brought back.
@@ -10050,6 +10096,7 @@ if (typeof module !== 'undefined' && module.exports) {
         serializeEditValue,
         editStatesEqual,
         applyHistoryEntry,
+        rebaseEditHistory,
         stripTrailingLimitOffset,
         parseSqlForWhere,
         findTopLevelKeywordIndex,

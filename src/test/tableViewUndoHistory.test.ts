@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
 
-const { cloneEditValue, serializeEditValue, editStatesEqual, applyHistoryEntry } = require(
+const { cloneEditValue, serializeEditValue, editStatesEqual, applyHistoryEntry, rebaseEditHistory } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -132,4 +133,94 @@ test('a mixed grid/query sequence undoes in reverse order on one stack', () => {
     const undone: string[] = [];
     while (index > 0) { index--; undone.push(history[index]); }
     assert.deepEqual(undone, ['deleteD', 'addColumn', 'fillC', 'deleteB5', 'selectEdit', 'cellA1', 's0']);
+});
+
+// ===== 3.5.3: running the query keeps the query and filter steps undoable =====
+
+const noFilters = { values: {}, exact: {}, modes: {} };
+
+test('rebaseEditHistory keeps every query step of the history after a run', () => {
+    const history = [
+        snapshot({ query: 'SELECT 1', filters: noFilters }),
+        snapshot({ query: 'SELECT 12', filters: noFilters }),
+        snapshot({ query: 'SELECT 123', filters: noFilters })
+    ];
+    const current = snapshot({ query: 'SELECT 123', filters: noFilters });
+    const r = rebaseEditHistory(history, 2, current, editStatesEqual);
+    assert.deepEqual(r.history.map((s: any) => s.query), ['SELECT 1', 'SELECT 12', 'SELECT 123']);
+    assert.equal(r.index, 2);
+});
+
+test('rebaseEditHistory drops grid edits and merges the steps that only differed in them', () => {
+    const history = [
+        snapshot({ query: 'SELECT 1' }),
+        snapshot({ query: 'SELECT 1', modified: new Map([['0:name', 'x']]) }),
+        snapshot({ query: 'SELECT 1', modified: new Map([['0:name', 'x']]), deleted: new Set([3]) }),
+        snapshot({ query: 'SELECT 2', modified: new Map([['0:name', 'x']]), deleted: new Set([3]) })
+    ];
+    const current = snapshot({ query: 'SELECT 2' });
+    const r = rebaseEditHistory(history, 3, current, editStatesEqual);
+    assert.deepEqual(r.history.map((s: any) => s.query), ['SELECT 1', 'SELECT 2']);
+    for (const s of r.history) {
+        assert.equal(s.modified.size, 0);
+        assert.equal(s.deleted.size, 0);
+    }
+});
+
+test('rebaseEditHistory keeps the filter row of each step together with its query', () => {
+    const filtered = { values: { name: 'abc' }, exact: {}, modes: {} };
+    const history = [
+        snapshot({ query: 'SELECT * FROM t', filters: noFilters }),
+        snapshot({ query: "SELECT * FROM t WHERE name ILIKE '%abc%'", filters: filtered })
+    ];
+    const r = rebaseEditHistory(history, 1, history[1], editStatesEqual);
+    assert.equal(r.history.length, 2);
+    assert.deepEqual(r.history[0].filters, noFilters);
+    assert.deepEqual(r.history[1].filters, filtered);
+    assert.equal(r.index, 1);
+});
+
+test('rebaseEditHistory appends the current state when it differs from the last step', () => {
+    const history = [snapshot({ query: 'SELECT 1' }), snapshot({ query: 'SELECT 2' })];
+    const current = snapshot({ query: 'SELECT 3' });
+    const r = rebaseEditHistory(history, 1, current, editStatesEqual);
+    assert.deepEqual(r.history.map((s: any) => s.query), ['SELECT 1', 'SELECT 2', 'SELECT 3']);
+    assert.equal(r.history[r.index], current);
+});
+
+test('rebaseEditHistory drops the redo tail beyond the current step', () => {
+    const history = [snapshot({ query: 'SELECT 1' }), snapshot({ query: 'SELECT 2' }), snapshot({ query: 'SELECT 3' })];
+    // Undone back to SELECT 1 and run: SELECT 2 and 3 are no longer redoable.
+    const r = rebaseEditHistory(history, 0, snapshot({ query: 'SELECT 1' }), editStatesEqual);
+    assert.deepEqual(r.history.map((s: any) => s.query), ['SELECT 1']);
+    assert.equal(r.index, 0);
+});
+
+test('rebaseEditHistory does not share state with the history it was built from', () => {
+    const history = [snapshot({ query: 'SELECT 1', filters: { values: { a: 'x' }, exact: {}, modes: {} } })];
+    const r = rebaseEditHistory(history, 0, snapshot({ query: 'SELECT 2' }), editStatesEqual);
+    r.history[0].filters.values.a = 'changed';
+    assert.equal(history[0].filters.values.a, 'x');
+});
+
+test('rebaseEditHistory starts from the current state when there is no history', () => {
+    const current = snapshot();
+    assert.deepEqual(rebaseEditHistory([], 0, current, editStatesEqual), { history: [current], index: 0 });
+    assert.deepEqual(rebaseEditHistory(undefined, 0, current, editStatesEqual), { history: [current], index: 0 });
+});
+
+test('a fresh result rebases the undo history instead of starting it over', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    const loaded = src.slice(src.indexOf('function handleRowsLoaded('), src.indexOf('function handlePrimaryKeysLoaded('));
+    assert.match(loaded, /rebaseEditHistoryOnNewRows\(\)/);
+    assert.doesNotMatch(loaded, /resetEditHistory\(\)/, 'a run must not wipe the query steps');
+});
+
+test('an undo step holds the filter row and restores it with the query', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    const capture = src.slice(src.indexOf('function captureEditState('), src.indexOf('function restoreEditState('));
+    assert.match(capture, /filters: cloneEditValue\(\{ values: filters, exact: exactFilters, modes: filterModes \}\)/);
+    const restore = src.slice(src.indexOf('function restoreEditState('), src.indexOf('function resetEditHistory('));
+    assert.match(restore, /filters = cloneEditValue\(snap\.filters\.values\)/);
+    assert.match(restore, /renderHeader\(\)/);
 });
