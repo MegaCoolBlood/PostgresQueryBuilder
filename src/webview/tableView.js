@@ -238,14 +238,37 @@ function cellRangeToTsv(rows) {
 }
 
 /**
+ * The text a data cell is copied as: its own text and that of its value span,
+ * without the buttons drawn into it (foreign key, executable column, line
+ * count). Nothing is trimmed — a blank at either end belongs to the value.
+ * `td` only needs `childNodes` with `nodeType`, `textContent` and `classList`.
+ */
+function cellCopyText(td) {
+    let text = '';
+    if (!td || !td.childNodes) return text;
+    td.childNodes.forEach(node => {
+        if (node.nodeType === 3) {
+            text += node.textContent;
+        } else if (node.nodeType === 1 && !node.classList.contains('fk-btn') && !node.classList.contains('exec-btn') && !node.classList.contains('lines-btn')) {
+            text += node.textContent;
+        }
+    });
+    return text;
+}
+
+/**
  * Render a rectangular block of cell values as an HTML `<table>` so pasting into
  * a rich-text target (Teams, Word, Outlook) keeps the row/column structure.
- * Every value is HTML-escaped.
+ * Every value is HTML-escaped. HTML collapses a leading, trailing or repeated
+ * blank, so such a run is written the way Excel itself writes it — non-breaking
+ * spaces in an `mso-spacerun` span, which Excel and Word paste back as ordinary
+ * blanks.
  */
 function cellRangeToHtml(rows) {
     if (!Array.isArray(rows) || rows.length === 0) return '';
     const esc = (s) => String(s === null || s === undefined ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/^ +| {2,}| +$/g, run => `<span style="mso-spacerun:yes">${'&nbsp;'.repeat(run.length)}</span>`);
     const body = rows
         .map(row => {
             const cells = (Array.isArray(row) ? row : [])
@@ -6837,20 +6860,20 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (!entry) return '';
         if (entry.kind === 'insert') {
             const inserted = insertedRows[entry.idx];
-            return inserted ? String(inserted.row[colName] || '').trim() : '';
+            return inserted ? String(inserted.row[colName] || '') : '';
         }
         if (entry.kind === 'dup') {
             const dup = duplicatedRows[entry.idx];
             if (!dup) return '';
             if (dup.defaults && dup.defaults.has(colName)) return 'DEFAULT';
             const value = dup.row[colName];
-            return value === null || value === undefined ? '' : cellToString(value).trim();
+            return value === null || value === undefined ? '' : cellToString(value);
         }
         const key = `${entry.idx}:${colName}`;
         const value = modifiedCells.has(key) ? modifiedCells.get(key) : (allRows[entry.idx] || {})[colName];
         if (isCellDefault(value)) return 'DEFAULT';
         if (value === null) return 'NULL';
-        return String(isNumericColumn(colName) ? formatNumberDisplay(value, thousandSeparator) : cellToString(value)).trim();
+        return String(isNumericColumn(colName) ? formatNumberDisplay(value, thousandSeparator) : cellToString(value));
     }
 
     // The markup of the row at position `planIndex` of the display.
@@ -8940,15 +8963,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function getCellTextContent(td) {
-        let text = '';
-        td.childNodes.forEach(node => {
-            if (node.nodeType === Node.TEXT_NODE) {
-                text += node.textContent;
-            } else if (node.nodeType === Node.ELEMENT_NODE && !node.classList.contains('fk-btn') && !node.classList.contains('exec-btn') && !node.classList.contains('lines-btn')) {
-                text += node.textContent;
-            }
-        });
-        return text.trim();
+        return cellCopyText(td);
     }
 
     function getDefaultTableReference() {
@@ -10009,6 +10024,7 @@ if (typeof module !== 'undefined' && module.exports) {
         stripThousandSeparators,
         cellRangeToTsv,
         cellRangeToHtml,
+        cellCopyText,
         parseClipboardTable,
         planClipboardPaste,
         singleClipboardValue,

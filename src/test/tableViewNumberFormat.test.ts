@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey, hasTextInputSelection, shouldCopyCellRange, computeCellNavTarget, computeScrollAdjustment, typingStartsCellEdit, shouldFillLoneValue, isInCodeEditor, isTextEntryElement } = require(
+const { normalizeNumericInput, formatNumberDisplay, formatExactMatchValue, normalizeFilterInputValue, escapeSqlString, liveFormatNumeric, stripThousandSeparators, cellRangeToTsv, cellRangeToHtml, cellCopyText, parseClipboardTable, planClipboardPaste, singleClipboardValue, resolveMouseRelease, isSingleCellSelection, isPrintableTypingKey, hasTextInputSelection, shouldCopyCellRange, computeCellNavTarget, computeScrollAdjustment, typingStartsCellEdit, shouldFillLoneValue, isInCodeEditor, isTextEntryElement } = require(
     path.join(__dirname, '../../../src/webview/tableView.js')
 );
 
@@ -71,6 +71,56 @@ test('cellRangeToHtml returns an empty string for an empty or invalid block', ()
     assert.equal(cellRangeToHtml([]), '');
     assert.equal(cellRangeToHtml(null), '');
     assert.equal(cellRangeToHtml(undefined), '');
+});
+
+// ===== 3.5.3: copying a cell keeps its leading and trailing blanks =====
+
+const SPACERUN = (n: number) => `<span style="mso-spacerun:yes">${'&nbsp;'.repeat(n)}</span>`;
+const htmlRow = (...cells: string[]) =>
+    `<table border="1" style="border-collapse:collapse"><tr>${cells.map(c => `<td>${c}</td>`).join('')}</tr></table>`;
+
+test('cellRangeToTsv keeps leading and trailing blanks of a value', () => {
+    assert.equal(cellRangeToTsv([['abc   ', '  lead']]), 'abc   \t  lead');
+    assert.equal(cellRangeToTsv([['x '], [' y']]), 'x \r\n y');
+});
+
+test('cellRangeToHtml keeps trailing, leading and repeated blanks the way Excel writes them', () => {
+    assert.equal(cellRangeToHtml([['abc   ']]), htmlRow('abc' + SPACERUN(3)));
+    assert.equal(cellRangeToHtml([['  lead']]), htmlRow(SPACERUN(2) + 'lead'));
+    assert.equal(cellRangeToHtml([['a  b']]), htmlRow('a' + SPACERUN(2) + 'b'));
+    assert.equal(cellRangeToHtml([['x ']]), htmlRow('x' + SPACERUN(1)));
+    assert.equal(cellRangeToHtml([['   ']]), htmlRow(SPACERUN(3)));
+});
+
+test('cellRangeToHtml leaves a single blank between words and escaping untouched', () => {
+    assert.equal(cellRangeToHtml([['a b c']]), htmlRow('a b c'));
+    assert.equal(cellRangeToHtml([['a & b  ']]), htmlRow('a &amp; b' + SPACERUN(2)));
+});
+
+type FakeNode = { nodeType: number; textContent: string; classList: { contains(c: string): boolean } };
+const textNode = (text: string): FakeNode => ({ nodeType: 3, textContent: text, classList: { contains: () => false } });
+const element = (cls: string, text: string): FakeNode => ({ nodeType: 1, textContent: text, classList: { contains: (c: string) => c === cls } });
+
+test('cellCopyText keeps the blanks at both ends of a cell value', () => {
+    const td = { childNodes: [element('cell-content', '  padded value   ')] };
+    assert.equal(cellCopyText(td), '  padded value   ');
+});
+
+test('cellCopyText skips the buttons drawn into a cell', () => {
+    const td = {
+        childNodes: [
+            element('exec-btn', '▶'),
+            element('cell-content', 'ABC  '),
+            element('lines-btn', '3 lines'),
+            element('fk-btn', '↗')
+        ]
+    };
+    assert.equal(cellCopyText(td), 'ABC  ');
+});
+
+test('cellCopyText reads a plain text cell (new row) without trimming', () => {
+    assert.equal(cellCopyText({ childNodes: [textNode(' new ')] }), ' new ');
+    assert.equal(cellCopyText(null), '');
 });
 
 // ===== 3.2.0: paste a block of Excel cells into the grid =====
