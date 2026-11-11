@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const WEBVIEW = path.join(__dirname, '../../../src/webview');
-const { lineSelectionCorners, fullySelectedLines } = require(path.join(WEBVIEW, 'tableView.js'));
+const { lineSelectionCorners, fullySelectedLines, selectAllCorners } = require(path.join(WEBVIEW, 'tableView.js'));
 
 // ===== 3.3.0: select whole rows (row number) and whole columns (header strip) =====
 
@@ -101,4 +101,41 @@ test('the column-select strip and the selected-line markers are styled', () => {
     assert.match(css, /\.col-select-strip\s*\{/);
     assert.match(css, /thead th\.col-selected\s*\{/);
     assert.match(css, /td\.row-num-cell\.row-num-selected\s*\{/);
+});
+
+// ===== 3.5.3: Ctrl+A selects every cell =====
+
+test('selectAllCorners spans every row and column of the grid', () => {
+    assert.deepEqual(selectAllCorners(120, 7, false, false), {
+        anchor: { r: 0, c: 0 },
+        focus: { r: 119, c: 6 }
+    });
+    assert.deepEqual(selectAllCorners(1, 1, false, false), { anchor: { r: 0, c: 0 }, focus: { r: 0, c: 0 } });
+});
+
+test('selectAllCorners marks every row number and column header as selected', () => {
+    const { anchor, focus } = selectAllCorners(4, 3, false, false);
+    assert.deepEqual(fullySelectedLines({ minR: anchor.r, maxR: focus.r, minC: anchor.c, maxC: focus.c }, 4, 3), {
+        rows: { min: 0, max: 3 },
+        cols: { min: 0, max: 2 }
+    });
+});
+
+test('selectAllCorners leaves Ctrl+A to a field, a cell being edited, the code editor or an open dialog', () => {
+    assert.equal(selectAllCorners(10, 3, true, false), null, 'selects the text of the focused field');
+    assert.equal(selectAllCorners(10, 3, false, true), null, 'a dialog or menu is open');
+});
+
+test('selectAllCorners selects nothing in an empty grid', () => {
+    assert.equal(selectAllCorners(0, 3, false, false), null);
+    assert.equal(selectAllCorners(5, 0, false, false), null);
+});
+
+test('Ctrl+A is wired to select every cell and keeps its own meaning otherwise', () => {
+    const js = fs.readFileSync(path.join(WEBVIEW, 'tableView.js'), 'utf8');
+    assert.match(js, /\(e\.ctrlKey \|\| e\.metaKey\) && !e\.altKey && !e\.shiftKey && \(e\.key === 'a' \|\| e\.key === 'A'\)\) \{\s*if \(selectAllCells\(\)\) \{\s*e\.preventDefault\(\);/);
+    const fn = js.slice(js.indexOf('function selectAllCells('), js.indexOf('function dataColumnCount('));
+    assert.match(fn, /isTextEntryElement\(document\.activeElement\)/);
+    assert.match(fn, /\.sql-dialog-overlay, \.dlg-overlay/);
+    assert.match(fn, /selectAllCorners\(renderPlan\.length, columns\.length/);
 });

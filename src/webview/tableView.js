@@ -707,6 +707,17 @@ function lineSelectionCorners(kind, from, to, rowCount, colCount) {
     return null;
 }
 
+// The corners of a Ctrl+A selection over every cell of the grid — the loaded
+// rows with the new and duplicated ones, and every column — or null when Ctrl+A
+// keeps its own meaning: in a field, a cell being edited or the code editor it
+// selects their text, and over an open dialog or menu it does not reach the
+// grid. An empty grid has nothing to select.
+function selectAllCorners(rowCount, colCount, inTextEntry, overlayOpen) {
+    if (inTextEntry || overlayOpen) { return null; }
+    if (!(rowCount > 0) || !(colCount > 0)) { return null; }
+    return { anchor: { r: 0, c: 0 }, focus: { r: rowCount - 1, c: colCount - 1 } };
+}
+
 // Which row numbers and column headers to mark for a selection rectangle
 // ({minR, maxR, minC, maxC}): rows whose every column is selected, and columns
 // whose every row is selected. Each part is {min, max} or null.
@@ -4809,6 +4820,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             blurActiveEditable();
             return;
         }
+        // Ctrl/Cmd+A selects every cell, as in Excel.
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'a' || e.key === 'A')) {
+            if (selectAllCells()) {
+                e.preventDefault();
+            }
+            return;
+        }
         if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && rangeAnchor && rangeFocus) {
             // In the code editor Ctrl+C copies the editor's text (VS Code copies
             // the current line when nothing is selected), never the cell range.
@@ -4859,6 +4877,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return key === 'ArrowUp' || key === 'ArrowDown' || key === 'ArrowLeft'
             || key === 'ArrowRight' || key === 'Home' || key === 'End'
             || key === 'PageUp' || key === 'PageDown';
+    }
+
+    // Select every cell of the grid, unless the focus or an open dialog or menu
+    // keeps Ctrl+A for itself. The view stays where it is scrolled to.
+    function selectAllCells() {
+        const overlayOpen = isVisible(contextMenu) || isVisible(queryHistoryPanel)
+            || Array.from(document.querySelectorAll('.sql-dialog-overlay, .dlg-overlay')).some(isVisible);
+        const corners = selectAllCorners(renderPlan.length, columns.length,
+            isTextEntryElement(document.activeElement), overlayOpen);
+        if (!corners) { return false; }
+        rangeAnchor = corners.anchor;
+        rangeFocus = corners.focus;
+        applyCellRangeHighlight();
+        clearNativeTextSelection();
+        return true;
     }
 
     // Number of data columns in the grid.
@@ -10083,6 +10116,7 @@ if (typeof module !== 'undefined' && module.exports) {
         planSeriesWrites,
         fillPreviewText,
         lineSelectionCorners,
+        selectAllCorners,
         fullySelectedLines,
         isPrintableTypingKey,
         typingStartsCellEdit,

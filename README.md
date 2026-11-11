@@ -569,6 +569,7 @@ duplicating, deleting and moving between the personal and the workspace scope.
 | `Ctrl+Alt+Enter` | SQL files | Execute the selected text |
 | `Ctrl+Shift+Alt+Enter` | SQL files | Execute the whole file |
 | `Enter` | Filter inputs | Apply the column filter |
+| `Ctrl+A` | Data Viewer grid | Select every cell of the loaded rows |
 | `Alt+←` / `Alt+→` | Single record view | Previous / next row |
 | `Esc` | Dialogs | Close |
 | `Shift+Alt+F` | SQL files, query bar | Format |
