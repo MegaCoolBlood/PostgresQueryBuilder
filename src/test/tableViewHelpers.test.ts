@@ -39,6 +39,8 @@ const {
     charBudgetStateClass,
     classifyColumnDefault,
     defaultResetColumns,
+    copyUnsavedRow,
+    shiftRowKeys,
     defaultCellTitle,
     headerRelationTargets,
     isLiftableSelect,
@@ -1530,4 +1532,78 @@ test('buildCommitTargets does not take a joined row with a json value outside it
 
     assert.deepEqual(targets[0].changes.inserts, []);
     assert.deepEqual(targets[0].changes.updates, [{ primaryKey: { value: null }, changes: { value: 'neu' } }]);
+});
+
+// ===== 3.5.3: duplicate a row that is not saved yet =====
+
+test('copyUnsavedRow copies a new row and leaves the reset columns empty for the database', () => {
+    const entry = { row: { id: '77', name: 'new name', created: '2026-11-11' }, anchor: 4 };
+    const copy = copyUnsavedRow('insert', entry, ['id', 'created']);
+    assert.deepEqual(copy, { row: { id: '', name: 'new name', created: '' }, anchor: 4 });
+    assert.deepEqual(copyUnsavedRow('insert', entry, []).row, entry.row, 'Duplicate Row Exactly keeps every value');
+    copy.row.name = 'changed';
+    assert.equal(entry.row.name, 'new name', 'the copy is independent of its source');
+});
+
+test('copyUnsavedRow copies a new row anchored at the top', () => {
+    assert.equal(copyUnsavedRow('insert', { row: { a: 'x' }, anchor: null }, []).anchor, null);
+});
+
+test('copyUnsavedRow keeps what a duplicated row leaves to the database and adds the reset columns', () => {
+    const entry = {
+        row: { id: null, name: 'Smith', state: 'N', created: '2026-01-01' },
+        anchor: 2,
+        defaults: new Set(['id']),
+        source: { id: 5, name: 'Smith', state: 'N', created: '2026-01-01' }
+    };
+    const copy = copyUnsavedRow('dup', entry, ['created']);
+    assert.deepEqual(copy.row, { id: null, name: 'Smith', state: 'N', created: null });
+    assert.deepEqual([...copy.defaults].sort(), ['created', 'id']);
+    assert.equal(copy.anchor, 2);
+    assert.deepEqual(copy.source, { id: 5, name: 'Smith', state: 'N', created: '2026-01-01' },
+        '"Copy Value From Source Row" brings back the original id and the copied date');
+    copy.defaults.add('name');
+    assert.equal(entry.defaults.has('name'), false, 'the copy is independent of its source');
+});
+
+test('copyUnsavedRow takes an edited value of a duplicated row as the source of its copy', () => {
+    const entry = { row: { id: null, name: 'edited' }, anchor: 0, defaults: new Set(['id']), source: { id: 5, name: 'Smith' } };
+    const copy = copyUnsavedRow('dup', entry, []);
+    assert.deepEqual(copy.source, { id: 5, name: 'edited' });
+    assert.deepEqual(copy.row, { id: null, name: 'edited' });
+});
+
+test('copyUnsavedRow ignores reset columns the row does not have', () => {
+    assert.deepEqual(copyUnsavedRow('insert', { row: { a: 'x' }, anchor: null }, ['missing']).row, { a: 'x' });
+    assert.deepEqual([...copyUnsavedRow('dup', { row: { a: 'x' }, anchor: 1 }, ['missing']).defaults], []);
+});
+
+test('shiftRowKeys moves the keys of the rows from the new one on one down', () => {
+    const invalid = new Map([
+        ['ins:0:name', 'too long'],
+        ['ins:1:id', 'not a number'],
+        ['ins:2:a:b', 'a column name with a colon'],
+        ['dup:1:id', 'other kind'],
+        ['3:name', 'loaded row']
+    ]);
+    assert.deepEqual([...shiftRowKeys(invalid, 'ins', 1)], [
+        ['ins:0:name', 'too long'],
+        ['ins:2:id', 'not a number'],
+        ['ins:3:a:b', 'a column name with a colon'],
+        ['dup:1:id', 'other kind'],
+        ['3:name', 'loaded row']
+    ]);
+    assert.deepEqual([...shiftRowKeys(new Map([['insert:0', 40], ['insert:2', 80], ['dup:0', 60]]), 'insert', 1)],
+        [['insert:0', 40], ['insert:3', 80], ['dup:0', 60]], 'row heights are keyed the same way');
+});
+
+test('new and duplicated rows offer Duplicate row next to their remove button', () => {
+    const js = require('node:fs').readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    assert.match(js, /data-row-action="duplicateInsertedRow" data-row-arg="\$\{iIdx\}" title="Duplicate row">\$\{icon\('copy'\)\}<\/button><button class="btn btn-danger btn-sm btn-icon" data-row-action="removeInsertedRow"/);
+    assert.match(js, /data-row-action="duplicateDuplicatedRow" data-row-arg="\$\{dIdx\}" title="Duplicate row">\$\{icon\('copy'\)\}<\/button><button class="btn btn-danger btn-sm btn-icon" data-row-action="removeDuplicatedRow"/);
+    assert.match(js, /duplicateInsertedRow: \(idx\) => window\.duplicateInsertedRow\(idx\)/);
+    assert.match(js, /duplicateDuplicatedRow: \(idx\) => window\.duplicateDuplicatedRow\(idx\)/);
+    const menu = js.slice(js.indexOf('function showCellContextMenu('), js.indexOf('// 0b. Set cells of existing rows'));
+    assert.match(menu, /label: 'Duplicate Row',\s*action: \(\) => duplicateUnsavedRow\(unsaved\.kind, unsaved\.idx, defaultResetColumns\(columnDefaults, duplicateResetMode\)\)/);
+    assert.match(menu, /label: 'Duplicate Row Exactly',\s*action: \(\) => duplicateUnsavedRow\(unsaved\.kind, unsaved\.idx, \[\]\)/);
 });

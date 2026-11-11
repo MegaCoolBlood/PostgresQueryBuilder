@@ -3093,6 +3093,47 @@ function defaultResetColumns(columnDefaults, mode) {
         .map(info => info.column);
 }
 
+// The copy of a row that is not saved yet, to go directly below it. A new row
+// ('insert') keeps its values, but the columns in `resetColumns` are left empty,
+// which an INSERT leaves to the database. A duplicated row ('dup') keeps its
+// values and the columns it leaves to the database, adds `resetColumns` to them,
+// and remembers the values of the row it was copied from, so "Copy Value From
+// Source Row" brings those back.
+function copyUnsavedRow(kind, entry, resetColumns) {
+    const reset = new Set(resetColumns || []);
+    const row = Object.assign({}, entry.row);
+    if (kind === 'insert') {
+        reset.forEach(name => { if (name in row) row[name] = ''; });
+        return { row, anchor: entry.anchor };
+    }
+    const defaults = new Set(entry.defaults || []);
+    const source = {};
+    Object.keys(row).forEach(name => {
+        source[name] = defaults.has(name) && entry.source ? entry.source[name] : row[name];
+    });
+    reset.forEach(name => { if (name in row) defaults.add(name); });
+    defaults.forEach(name => { row[name] = null; });
+    return { row, anchor: entry.anchor, defaults, source };
+}
+
+// A map keyed by rows of one kind — `ins:3:name`, `insert:3` — after a row was
+// put in at index `at` of that kind: the rows from `at` on move one down. Keys
+// of other kinds are kept as they are.
+function shiftRowKeys(map, prefix, at) {
+    const next = new Map();
+    for (const [key, value] of map) {
+        const parts = String(key).split(':');
+        const idx = parseInt(parts[1], 10);
+        if (parts[0] === prefix && !isNaN(idx) && idx >= at) {
+            parts[1] = String(idx + 1);
+            next.set(parts.join(':'), value);
+        } else {
+            next.set(key, value);
+        }
+    }
+    return next;
+}
+
 // The value of a cell of a loaded row that is set back to its column default:
 // saved as `SET column = DEFAULT`. One shared object, recognised by identity,
 // so no text a user types — not even "DEFAULT" — can be taken for it.
@@ -6313,6 +6354,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             }
         }
 
+        // 0c. A row that is not saved yet can be duplicated like an existing one.
+        const insAttr = td.getAttribute('data-insert');
+        const unsaved = dupAttr !== null ? { kind: 'dup', idx: parseInt(dupAttr) }
+            : insAttr !== null ? { kind: 'insert', idx: parseInt(insAttr) } : null;
+        if (unsaved) {
+            items.push({
+                label: 'Duplicate Row',
+                action: () => duplicateUnsavedRow(unsaved.kind, unsaved.idx, defaultResetColumns(columnDefaults, duplicateResetMode))
+            });
+            items.push({
+                label: 'Duplicate Row Exactly',
+                action: () => duplicateUnsavedRow(unsaved.kind, unsaved.idx, [])
+            });
+            items.push({ separator: true });
+        }
+
         // 0b. Set cells of existing rows back to their column default
         if (rowIdx !== null) {
             const resettable = cellsToResetFrom(td).filter(c => canResetCellToDefault(c.rowIdx, c.colName));
@@ -6968,7 +7025,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const row = insertedRows[iIdx].row;
         let html = `<tr class="row-inserted" data-insert-index="${iIdx}"${attrs}>`;
         html += `<td class="row-num-cell">${rowNum}</td>`;
-        html += `<td class="actions-cell"><button class="btn btn-danger btn-sm btn-icon" data-row-action="removeInsertedRow" data-row-arg="${iIdx}" title="Remove this new row">${icon('close')}</button></td>`;
+        html += `<td class="actions-cell"><button class="btn btn-sm btn-icon" data-row-action="duplicateInsertedRow" data-row-arg="${iIdx}" title="Duplicate row">${icon('copy')}</button><button class="btn btn-danger btn-sm btn-icon" data-row-action="removeInsertedRow" data-row-arg="${iIdx}" title="Remove this new row">${icon('close')}</button></td>`;
         cellContext.cols.forEach(cc => {
             const val = row[cc.name] || '';
             const invalid = invalidCells.get(`ins:${iIdx}:${cc.name}`);
@@ -6982,7 +7039,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const row = entry.row;
         let html = `<tr class="row-duplicated" data-dup-index="${dIdx}"${attrs}>`;
         html += `<td class="row-num-cell">${rowNum}</td>`;
-        html += `<td class="actions-cell"><button class="btn btn-danger btn-sm btn-icon" data-row-action="removeDuplicatedRow" data-row-arg="${dIdx}" title="Remove this duplicate">${icon('close')}</button></td>`;
+        html += `<td class="actions-cell"><button class="btn btn-sm btn-icon" data-row-action="duplicateDuplicatedRow" data-row-arg="${dIdx}" title="Duplicate row">${icon('copy')}</button><button class="btn btn-danger btn-sm btn-icon" data-row-action="removeDuplicatedRow" data-row-arg="${dIdx}" title="Remove this duplicate">${icon('close')}</button></td>`;
         cellContext.cols.forEach(cc => {
             const atDefault = !!entry.defaults && entry.defaults.has(cc.name);
             const val = row[cc.name] !== null && row[cc.name] !== undefined ? cellToString(row[cc.name]) : '';
@@ -7617,6 +7674,43 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         recordEditHistory();
     }
 
+    // Duplicate a new or duplicated row that is not saved yet: the copy goes
+    // directly below it and is unsaved too. `kind` is 'insert' or 'dup'.
+    function duplicateUnsavedRow(kind, idx, resetColumns) {
+        const rows = kind === 'insert' ? insertedRows : duplicatedRows;
+        const entry = rows[idx];
+        if (!entry) return;
+        const copy = copyUnsavedRow(kind, entry, resetColumns);
+        const at = idx + 1;
+        rows.splice(at, 0, copy);
+        // Later rows of the same kind move one down, and the copy shows the
+        // same problems as its source, except in the columns it leaves empty.
+        const prefix = kind === 'insert' ? 'ins' : 'dup';
+        invalidCells = shiftRowKeys(invalidCells, prefix, at);
+        const left = new Set(resetColumns);
+        for (const [key, reason] of Array.from(invalidCells)) {
+            const parts = key.split(':');
+            if (parts[0] === prefix && parts[1] === String(idx) && !left.has(parts.slice(2).join(':'))) {
+                invalidCells.set(`${prefix}:${at}:${parts.slice(2).join(':')}`, reason);
+            }
+        }
+        const heights = shiftRowKeys(rowContentHeights, kind, at);
+        rowContentHeights.clear();
+        heights.forEach((h, key) => rowContentHeights.set(key, h));
+        renderBody();
+        updateRowCount();
+        updateChangeIndicator();
+        recordEditHistory();
+    }
+
+    window.duplicateInsertedRow = function(idx) {
+        duplicateUnsavedRow('insert', idx, defaultResetColumns(columnDefaults, duplicateResetMode));
+    };
+
+    window.duplicateDuplicatedRow = function(idx) {
+        duplicateUnsavedRow('dup', idx, defaultResetColumns(columnDefaults, duplicateResetMode));
+    };
+
     window.removeInsertedRow = function(idx) {
         insertedRows.splice(idx, 1);
         reindexInvalidRowKeys('ins', idx);
@@ -7641,7 +7735,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         deleteRow: (idx) => window.deleteRow(idx),
         undeleteRow: (idx) => window.undeleteRow(idx),
         removeInsertedRow: (idx) => window.removeInsertedRow(idx),
-        removeDuplicatedRow: (idx) => window.removeDuplicatedRow(idx)
+        removeDuplicatedRow: (idx) => window.removeDuplicatedRow(idx),
+        duplicateInsertedRow: (idx) => window.duplicateInsertedRow(idx),
+        duplicateDuplicatedRow: (idx) => window.duplicateDuplicatedRow(idx)
     };
     tableBody.addEventListener('click', (e) => {
         const btn = e.target && e.target.closest ? e.target.closest('[data-row-action]') : null;
@@ -10101,6 +10197,8 @@ if (typeof module !== 'undefined' && module.exports) {
         applyQueryParameters,
         liveFormatNumeric,
         stripThousandSeparators,
+        copyUnsavedRow,
+        shiftRowKeys,
         cellRangeToTsv,
         cellRangeToHtml,
         cellCopyText,

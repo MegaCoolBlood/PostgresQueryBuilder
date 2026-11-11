@@ -177,7 +177,9 @@ warning says that its settings are gone.
   data type, primary and foreign key badges, a character counter for
   length-limited columns and arrows to step through the result.
 - Insert, duplicate and delete rows from the row toolbar. A deleted row is
-  struck through until you save and can be restored until then.
+  struck through until you save and can be restored until then. A new or
+  duplicated row that is not saved yet can be duplicated as well; the copy
+  goes directly below it.
 - **Reset to Default** in the context menu of a cell of an existing row sets
   the column back to the default the table defines for it — for example
   `mit_geloescht VARCHAR(1) DEFAULT 'N'` — for that cell or every cell of a
