@@ -162,7 +162,8 @@ const documentListeners = {
     close: [] as Array<(doc: any) => void>,
     tabs: [] as Array<(event: any) => void>,
     open: [] as Array<(doc: any) => void>,
-    change: [] as Array<(event: any) => void>
+    change: [] as Array<(event: any) => void>,
+    configuration: [] as Array<(event: any) => void>
 };
 
 function registerDocumentListener(bucket: Array<(doc: any) => void>, listener: (doc: any) => void) {
@@ -193,6 +194,14 @@ export function fireDidCloseTextDocument(doc: any): void {
 /** Let a test replay a change of the editor tabs; set `window.tabGroups.all` first. */
 export function fireDidChangeTabs(event: any = { opened: [], closed: [], changed: [] }): void {
     for (const l of [...documentListeners.tabs]) {
+        l(event);
+    }
+}
+
+/** Let a test replay a change of the settings `changed` (full keys) to everything that subscribed. */
+export function fireDidChangeConfiguration(changed: string[]): void {
+    const event = { affectsConfiguration: (section: string) => changed.some((key) => key === section || key.startsWith(`${section}.`)) };
+    for (const l of [...documentListeners.configuration]) {
         l(event);
     }
 }
@@ -246,7 +255,7 @@ const vscodeStub = {
     workspace: {
         workspaceFolders: undefined as any,
         textDocuments: [] as any[],
-        onDidChangeConfiguration: (_listener: any) => ({ dispose() {} }),
+        onDidChangeConfiguration: (listener: any) => registerDocumentListener(documentListeners.configuration, listener),
         onDidChangeWorkspaceFolders: (_listener: any) => ({ dispose() {} }),
         onDidSaveTextDocument: (listener: any) => registerDocumentListener(documentListeners.save, listener),
         onDidCloseTextDocument: (listener: any) => registerDocumentListener(documentListeners.close, listener),
@@ -276,6 +285,7 @@ const vscodeStub = {
         showInformationMessage: (..._args: any[]) => Promise.resolve(undefined),
         showErrorMessage: (..._args: any[]) => Promise.resolve(undefined),
         showTextDocument: (..._args: any[]): Promise<any> => Promise.resolve(undefined),
+        visibleTextEditors: [] as any[],
         setStatusBarMessage: (..._args: any[]) => ({ dispose() {} }),
         showOpenDialog: (_options?: any): Promise<any> => Promise.resolve(undefined),
         showSaveDialog: (_options?: any): Promise<any> => Promise.resolve(undefined),
@@ -307,6 +317,7 @@ const vscodeStub = {
         }
     },
     ViewColumn: { One: 1, Two: 2, Three: 3, Beside: -2, Active: -1 },
+    ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
     Uri: {
         file: (p: string) => ({ fsPath: p, path: p }),
         parse: (value: string, _strict?: boolean) => ({ toString: () => value, scheme: value.split(':')[0] }),

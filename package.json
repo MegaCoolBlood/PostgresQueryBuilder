@@ -520,6 +520,11 @@
           ],
           "default": "volatile",
           "description": "Which columns are left to their database default when a row is duplicated"
+        },
+        "postgresQueryBuilder.messages.clearOnExecute": {
+          "type": "boolean",
+          "default": false,
+          "description": "Clear the log of a database session in the PostgreSQL Messages panel each time Execute File or Execute Selection starts in it. The checkbox \"Clear on Execute\" of the panel sets the same value."
         }
       }
     },

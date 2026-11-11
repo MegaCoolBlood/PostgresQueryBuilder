@@ -334,6 +334,8 @@ fields wherever it comes from.
   file or Data Viewer tab that is active; a log ends with its session. The
   panel shows the newest 2000 messages of a log; **Save** writes every message
   of the session to a file and **Copy** puts all of them on the clipboard.
+  With **Clear on Execute** ticked, every **Execute File** and **Execute
+  Selection** starts with an empty log of its session.
   Errors are striped, tinted and marked with an icon, and the header counts
   them; clicking the count jumps from one error to the next. A
   running statement can be cancelled from its notification, which also counts
@@ -588,6 +590,7 @@ duplicating, deleting and moving between the personal and the workspace scope.
 | `postgresQueryBuilder.completion.enable` | `true` | Autocomplete tables, columns, functions and keywords in SQL files |
 | `postgresQueryBuilder.completion.tableAlias` | `true` | Write the alias after a table completed after `FROM` or `JOIN` |
 | `postgresQueryBuilder.duplicateRowResetDefaults` | `volatile` | Which columns a duplicated row leaves to their database default |
+| `postgresQueryBuilder.messages.clearOnExecute` | `false` | Clear the log of a session in the *PostgreSQL Messages* panel each time **Execute File** or **Execute Selection** starts in it; the panel's **Clear on Execute** checkbox sets it too |
 | `postgresQueryBuilder.savedQueriesFile` | `postgres-query-builder.queries.json` | Where shared bookmarked queries are kept |
 | `postgresQueryBuilder.customMappingsFile` | `postgres-query-builder.mappings.json` | Where shared column mappings are kept |
 | `postgresQueryBuilder.format.enable` | `true` | Whether the formatter is offered at all |

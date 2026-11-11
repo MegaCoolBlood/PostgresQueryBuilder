@@ -268,7 +268,10 @@ function createDocument(text: string) {
         isClosed: false,
         getText: () => text,
         offsetAt: (position: { offset: number }) => position.offset,
-        positionAt: (offset: number) => ({ offset, line: text.slice(0, offset).split('\n').length - 1 })
+        positionAt: (offset: number) => {
+            const before = text.slice(0, offset).split('\n');
+            return { offset, line: before.length - 1, character: before[before.length - 1].length };
+        }
     };
 }
 
@@ -329,8 +332,24 @@ function createFileSessions(options: {
         lines: [] as string[],
         keys: [] as string[],
         revealed: [] as string[],
+        /** Every entry of a statement a run started, as it stands now. */
+        statements: [] as any[],
         get shown() { return this.revealed.length; },
-        append(ref: { key: string }, message: any) { this.lines.push(formatSessionMessage(message)); this.keys.push(ref.key); },
+        append(ref: { key: string }, message: any) {
+            if (message.timer) {
+                this.statements.push(message);
+                return;
+            }
+            this.lines.push(formatSessionMessage(message));
+            this.keys.push(ref.key);
+        },
+        finish(_ref: { key: string }, started: any, status: string, ms: number) {
+            const at = this.statements.indexOf(started);
+            if (at >= 0) this.statements[at] = { ...started, timer: { ...started.timer, status, ms } };
+        },
+        /** The sessions an Execute command started in, in order. */
+        runsStarted: [] as string[],
+        runStarting(ref: { key: string }) { this.runsStarted.push(ref.key); },
         reveal(ref: { key: string }) { this.revealed.push(ref.key); }
     };
     const history: Array<{ sql: string }> = [];
@@ -1361,4 +1380,173 @@ test('a run counts the messages of the server without keeping them', async (t) =
     // The messages reach the log through the session; a run only counts them.
     const source = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'src', 'sqlFileSession.ts'), 'utf8');
     assert.doesNotMatch(source, /notices\.push\(|SessionNotice\[\]/, 'no run collects the messages of the server');
+});
+
+// ===== the log of a run names every statement it starts, and how long it ran =====
+
+test('Execute File logs the start of every statement, leading to the whole statement', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    recordProgress(t);
+    const clock = fakeClock();
+    const { fileSessions, channel } = createFileSessions({
+        clock,
+        onQuery: (_client, sql) => { if (sql === DO_BLOCK) clock.advance(65_000); }
+    });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(createEditor(FILE, 0) as any);
+
+    assert.deepEqual(channel.statements.map((m) => m.text), [
+        'Started executing query at line 1',
+        'Started executing query at line 11',
+        'Started executing query at line 15'
+    ]);
+    const [first, second] = channel.statements;
+    assert.equal(first.severity, 'RUN');
+    assert.deepEqual(first.link, { text: 'line 1', uri: URI, start: { line: 0, character: 0 }, end: { line: 8, character: 6 } }, 'the DO block without its semicolon');
+    assert.deepEqual(second.link.end, { line: 12, character: SET_CONFIG.split('\n')[2].length }, 'a statement over several lines ends on its last');
+    assert.deepEqual(channel.statements.map((m) => [m.timer.started, m.timer.status, m.timer.ms]), [
+        [1_000_000, 'done', 65_000],
+        [1_065_000, 'done', 0],
+        [1_065_000, 'done', 0]
+    ]);
+});
+
+test('a statement is in the log, still running, while it runs', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const seen: string[] = [];
+    const { fileSessions, channel } = createFileSessions({
+        onQuery: (_client, sql) => {
+            if (sql === DO_BLOCK) seen.push(...channel.statements.map((m) => `${m.link.text}: ${m.timer.status}`));
+        }
+    });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(createEditor(FILE, 0) as any);
+
+    assert.deepEqual(seen, ['line 1: running']);
+});
+
+test('the entry of a failed statement says it failed, and no later statement is logged', async (t) => {
+    recordWindowCalls(t, 'showErrorMessage');
+    recordProgress(t);
+    const clock = fakeClock();
+    const { fileSessions, channel } = createFileSessions({ clock, onQuery: () => { clock.advance(420); throw new Error('boom'); } });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(createEditor(FILE, 0) as any);
+
+    assert.deepEqual(channel.statements.map((m) => [m.link.text, m.timer.status, m.timer.ms]), [['line 1', 'failed', 420]]);
+});
+
+test('the entry of a query whose Data Viewer fails says it failed', async (t) => {
+    recordWindowCalls(t, 'showErrorMessage');
+    const { fileSessions, channel } = createFileSessions({
+        viewerLoad: async () => ({ status: 'failed', error: 'relation "v_lohn" does not exist' } as QueryViewLoad)
+    });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(createEditor(FILE, 0) as any);
+
+    assert.deepEqual(channel.statements.map((m) => m.timer.status), ['done', 'failed']);
+});
+
+test('the entry of a statement stopped by Cancel says it was cancelled', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const control = controllableCancel(t);
+    const { fileSessions, channel } = createFileSessions({ viewerLoad: () => new Promise<QueryViewLoad>(() => undefined) });
+    t.after(() => fileSessions.dispose());
+
+    const run = fileSessions.executeFile(createEditor(FILE, 0) as any);
+    while (channel.statements.length < 2) await tick();
+    control.cancel();
+    await run;
+
+    assert.deepEqual(channel.statements.map((m) => [m.link.text, m.timer.status]), [['line 1', 'done'], ['line 11', 'cancelled']]);
+});
+
+test('the entry of an export ends once its file is written', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const exporter = fakeExporter();
+    const { fileSessions, channel } = exportingSessions(exporter);
+    t.after(() => fileSessions.dispose());
+    const { editor } = savedFile(t, createEditor(EXPORT_SCRIPT, 0));
+
+    await fileSessions.executeFile(editor as any);
+
+    assert.equal(exporter.written.length, 1);
+    assert.deepEqual(channel.statements.map((m) => [m.link.text, m.timer.status]), [
+        ['line 1', 'done'],
+        [`line ${EXPORT_LINE + 2}`, 'done'],
+        [`line ${EXPORT_LINE + 3}`, 'done']
+    ]);
+});
+
+test('a selection run as one batch adds no statement entries', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const { fileSessions, channel } = createFileSessions();
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.execute(selecting(FILE, DO_BLOCK) as any);
+
+    assert.deepEqual(channel.statements, []);
+    assert.deepEqual(channel.revealed, [], 'without messages the panel stays as it is');
+});
+
+test('Execute File brings the panel into view once, as its first statement starts', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const revealedWhenRunning: number[] = [];
+    const { fileSessions, channel } = createFileSessions({
+        onQuery: (_client, sql) => { if (sql === DO_BLOCK) revealedWhenRunning.push(channel.revealed.length); }
+    });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(createEditor(FILE, 0) as any);
+
+    assert.deepEqual(revealedWhenRunning, [1], 'already while the first statement runs');
+    assert.deepEqual(channel.revealed, [`file:${URI}`], 'once for the run, not once per statement');
+    assert.equal(channel.statements.length, 3);
+});
+
+// ===== Clear on Execute: a run tells the log it starts =====
+
+test('Execute File and Execute Selection tell the log of the file a run starts, before anything runs', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const startedBeforeRunning: number[] = [];
+    const { fileSessions, channel } = createFileSessions({
+        onQuery: () => { startedBeforeRunning.push(channel.runsStarted.length); }
+    });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(createEditor(FILE, 0) as any);
+    await fileSessions.execute(selecting(FILE, DO_BLOCK) as any);
+
+    assert.deepEqual(channel.runsStarted, [`file:${URI}`, `file:${URI}`]);
+    assert.deepEqual(startedBeforeRunning, [1, 2]);
+});
+
+test('a selection opened in the Data Viewer is a run of Execute Selection as well', async (t) => {
+    const { fileSessions, channel, opened } = createFileSessions();
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.execute(selecting(FILE, SELECT) as any);
+
+    assert.equal(opened.length, 1);
+    assert.deepEqual(channel.runsStarted, [`file:${URI}`]);
+});
+
+test('a run that does not start leaves the log alone', async (t) => {
+    recordWindowCalls(t, 'showWarningMessage');
+    recordWindowCalls(t, 'showErrorMessage');
+    const offline = createFileSessions({ connected: false });
+    t.after(() => offline.fileSessions.dispose());
+    await offline.fileSessions.executeFile(createEditor(FILE, 0) as any);
+    await offline.fileSessions.execute(selecting(FILE, DO_BLOCK) as any);
+    assert.deepEqual(offline.channel.runsStarted, [], 'not connected');
+
+    const { fileSessions, channel } = createFileSessions();
+    t.after(() => fileSessions.dispose());
+    await fileSessions.executeFile(createEditor('-- @export cvs file=o.csv\nSELECT 1;', 0) as any);
+    await fileSessions.executeFile(createEditor('-- only a comment', 0) as any);
+    assert.deepEqual(channel.runsStarted, [], 'a wrong instruction or nothing to run');
 });

@@ -10,9 +10,12 @@ import { getErrorMessage, Logger } from './logger';
 import { uniqueFieldNames } from './queryRunner';
 import {
     MESSAGES_PANEL_NAME,
+    elapsedText,
     exportMessage,
     formatSessionMessage,
     noticeMessage,
+    statementStartedMessage,
+    type SessionMessage,
     type SessionMessageSink
 } from './sessionMessages';
 import {
@@ -237,14 +240,7 @@ function durationText(ms: number): string {
     return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
-/** How long a run has been going, in whole seconds: `42 s`, `1 min 05 s`, `1 h 02 min`. */
-export function elapsedText(ms: number): string {
-    const seconds = Math.max(0, Math.floor(ms / 1000));
-    if (seconds < 60) return `${seconds} s`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes} min ${String(seconds % 60).padStart(2, '0')} s`;
-    return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')} min`;
-}
+export { elapsedText };
 
 /** Time for {@link ElapsedProgress}; tests pass a clock they move themselves. */
 export interface ProgressClock {
@@ -598,6 +594,7 @@ export class SqlFileSessions implements vscode.Disposable {
         if (!await this.connectionManager.ensureConnected()) {
             return;
         }
+        this.messages.runStarting(fileSessionRef(document.uri, document.fileName));
         // A selection holding an export instruction runs statement by
         // statement, like Execute File, so each query can go where it is told.
         if (plan.statements.some((statement) => statement.instruction)) {
@@ -676,6 +673,7 @@ export class SqlFileSessions implements vscode.Disposable {
         if (!await this.connectionManager.ensureConnected()) {
             return;
         }
+        this.messages.runStarting(fileSessionRef(document.uri, document.fileName));
         await this.runStepwise(editor, plan.statements, 'Execute File');
     }
 
@@ -763,6 +761,7 @@ export class SqlFileSessions implements vscode.Disposable {
                     // the same group, and once the first one is placed, the others
                     // follow it there even if the focus moved meanwhile.
                     let viewerColumn: vscode.ViewColumn | undefined;
+                    const clock = this.clock ?? systemClock;
                     for (let index = 0; index < total; index++) {
                         if (runner.cancelled) {
                             return { reason: 'cancelled', index };
@@ -770,56 +769,75 @@ export class SqlFileSessions implements vscode.Disposable {
                         elapsed.report(`statement ${index + 1} of ${total}`, 100 / total);
                         const statement = statements[index];
                         const sql = text.slice(statement.start, statement.end);
-
-                        if (statement.instruction) {
-                            const line = document.positionAt(statement.start).line;
-                            const outcome = await this.exportQuery(statement.instruction, sql, line, document, ref, session, runner, notices,
-                                (message) => elapsed.report(`statement ${index + 1} of ${total} · ${message}`));
-                            if (outcome.status === 'cancelled') {
-                                return { reason: 'cancelled', index };
-                            }
-                            if (outcome.status === 'failed') {
-                                return { reason: 'failed', index, error: outcome.error, inViewer: false };
-                            }
-                            exported.push(outcome.query);
-                            continue;
+                        const statementStarted = clock.now();
+                        const entry = this.logStatementStart(ref, document, statement, statementStarted);
+                        // The panel comes into view once per run, with the first statement, without
+                        // taking the focus; closed during the run, it stays closed.
+                        if (index === 0) {
+                            this.messages.reveal(ref);
                         }
-
-                        if (this.openQueryView && isResultQuery(sql)) {
-                            const view = await this.openQueryView(sql, queryViewTitle(sql), ref, {
-                                viewColumn: viewerColumn ?? vscode.ViewColumn.Beside,
-                                preserveFocus: true
-                            });
-                            if (!view) {
-                                return { reason: 'cancelled', index };
-                            }
-                            opened++;
-                            const load = await Promise.race([view.loaded, runner.whenCancelled.then(() => null)]);
-                            // Known for sure only once the panel has shown itself.
-                            const column = view.viewColumn?.();
-                            if (viewerColumn === undefined && column !== undefined && column > 0) {
-                                viewerColumn = column;
-                            }
-                            if (load === null) {
-                                return { reason: 'cancelled', index: index + 1 };
-                            }
-                            if (load.status === 'failed') {
-                                return { reason: 'failed', index, error: new Error(load.error), inViewer: true };
-                            }
-                            continue;
-                        }
-
+                        // Anything that escapes below counts as a failure of the statement.
+                        let status: 'done' | 'failed' | 'cancelled' = 'failed';
                         try {
-                            await runner.run(session, sql, notices);
-                        } catch (err: unknown) {
-                            // A statement stopped by Cancel fails with "canceling
-                            // statement due to user request"; that is no error.
-                            if (err instanceof CancelledBeforeStart || runner.cancelled) {
-                                return { reason: 'cancelled', index };
+                            const statementStop = await (async (): Promise<Stop | null> => {
+                                if (statement.instruction) {
+                                    const line = document.positionAt(statement.start).line;
+                                    const outcome = await this.exportQuery(statement.instruction, sql, line, document, ref, session, runner, notices,
+                                        (message) => elapsed.report(`statement ${index + 1} of ${total} · ${message}`));
+                                    if (outcome.status === 'cancelled') {
+                                        return { reason: 'cancelled', index };
+                                    }
+                                    if (outcome.status === 'failed') {
+                                        return { reason: 'failed', index, error: outcome.error, inViewer: false };
+                                    }
+                                    exported.push(outcome.query);
+                                    return null;
+                                }
+
+                                if (this.openQueryView && isResultQuery(sql)) {
+                                    const view = await this.openQueryView(sql, queryViewTitle(sql), ref, {
+                                        viewColumn: viewerColumn ?? vscode.ViewColumn.Beside,
+                                        preserveFocus: true
+                                    });
+                                    if (!view) {
+                                        return { reason: 'cancelled', index };
+                                    }
+                                    opened++;
+                                    const load = await Promise.race([view.loaded, runner.whenCancelled.then(() => null)]);
+                                    // Known for sure only once the panel has shown itself.
+                                    const column = view.viewColumn?.();
+                                    if (viewerColumn === undefined && column !== undefined && column > 0) {
+                                        viewerColumn = column;
+                                    }
+                                    if (load === null) {
+                                        return { reason: 'cancelled', index: index + 1 };
+                                    }
+                                    if (load.status === 'failed') {
+                                        return { reason: 'failed', index, error: new Error(load.error), inViewer: true };
+                                    }
+                                    return null;
+                                }
+
+                                try {
+                                    await runner.run(session, sql, notices);
+                                } catch (err: unknown) {
+                                    // A statement stopped by Cancel fails with "canceling
+                                    // statement due to user request"; that is no error.
+                                    if (err instanceof CancelledBeforeStart || runner.cancelled) {
+                                        return { reason: 'cancelled', index };
+                                    }
+                                    return { reason: 'failed', index, error: err, inViewer: false };
+                                }
+                                this.recordModifyHistory(sql);
+                                return null;
+                            })();
+                            status = statementStop ? statementStop.reason : 'done';
+                            if (statementStop) {
+                                return statementStop;
                             }
-                            return { reason: 'failed', index, error: err, inViewer: false };
+                        } finally {
+                            this.messages.finish(ref, entry, status, clock.now() - statementStarted);
                         }
-                        this.recordModifyHistory(sql);
                     }
                     return null;
                 } finally {
@@ -1096,6 +1114,23 @@ export class SqlFileSessions implements vscode.Disposable {
         } catch (err: unknown) {
             Logger.error('SqlFileSessions.cancelBackend', err);
         }
+    }
+
+    /**
+     * Add the entry `Started executing query at line 12` for `statement` to
+     * the log of the run, leading to the whole statement; its timer runs until
+     * the statement ends.
+     */
+    private logStatementStart(ref: DbSessionRef, document: vscode.TextDocument, statement: { start: number; end: number }, now: number): SessionMessage {
+        const start = document.positionAt(statement.start);
+        const end = document.positionAt(statement.end);
+        const entry = statementStartedMessage(ref.label, {
+            uri: document.uri.toString(),
+            start: { line: start.line, character: start.character },
+            end: { line: end.line, character: end.character }
+        }, new Date(now));
+        this.messages.append(ref, entry);
+        return entry;
     }
 
     /** Text telling where the messages of the server are, which also shows them. */

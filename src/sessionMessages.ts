@@ -44,17 +44,49 @@ export function byteSizeText(bytes: number): string {
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+/** A place in a document, 0-based. */
+export interface MessagePosition {
+    line: number;
+    character: number;
+}
+
+/** Where an entry leads: a statement in its file. */
+export interface MessageLink {
+    /** The part of the entry's text that is the link, e.g. `line 12`. */
+    text: string;
+    /** The document, as `Uri.toString()` gives it. */
+    uri: string;
+    start: MessagePosition;
+    end: MessagePosition;
+}
+
+/** How a statement whose entry counts its running time has ended, if it has. */
+export type TimerStatus = 'running' | 'done' | 'failed' | 'cancelled';
+
+/** The running time of the statement of an entry. */
+export interface MessageTimer {
+    /** When the statement started, in milliseconds since the epoch. */
+    started: number;
+    status: TimerStatus;
+    /** How long it ran, once it has ended. */
+    ms?: number;
+}
+
 /** One entry of a session's log. */
 export interface SessionMessage {
     /** Local time it arrived, `HH:MM:SS`. */
     time: string;
     /** What it came from: the file or tab whose statement caused it. */
     source: string;
-    /** `NOTICE`, `INFO`, `WARNING`, `ERROR`, … as the server sent it, or `EXPORT`. */
+    /** `NOTICE`, `INFO`, `WARNING`, `ERROR`, … as the server sent it, `EXPORT`, or `RUN` for a statement of a run. */
     severity: string;
     text: string;
     /** Further lines such as `DETAIL: …`, `HINT: …`, `CONTEXT: …`. */
     details: string[];
+    /** Set on an entry that is changed after it was added or that the panel can act on; unique among all logs. */
+    id?: number;
+    link?: MessageLink;
+    timer?: MessageTimer;
 }
 
 /** The colour token a message is shown in. */
@@ -84,9 +116,109 @@ export function exportMessage(source: string, line: number, rows: number, filePa
     };
 }
 
-/** A log entry as plain text, e.g. for the clipboard: one line plus its indented detail lines. */
+/** How long a run has been going, in whole seconds: `42 s`, `1 min 05 s`, `1 h 02 min`. */
+export function elapsedText(ms: number): string {
+    const seconds = Math.max(0, Math.floor(ms / 1000));
+    if (seconds < 60) return `${seconds} s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes} min ${String(seconds % 60).padStart(2, '0')} s`;
+    return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')} min`;
+}
+
+/** How long a statement took: `12 ms`, `3.2 s`, or as {@link elapsedText} from a minute on. */
+export function runTimeText(ms: number): string {
+    if (ms < 1000) return `${Math.max(0, Math.round(ms))} ms`;
+    if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+    return elapsedText(ms);
+}
+
+/** What the timer of an entry shows at `now`: `running for 5 s`, `done in 3.2 s`, `failed after …`, `cancelled after …`. */
+export function timerText(timer: MessageTimer, now: number): string {
+    if (timer.status === 'running') return `running for ${elapsedText(now - timer.started)}`;
+    const took = runTimeText(timer.ms ?? 0);
+    if (timer.status === 'failed') return `failed after ${took}`;
+    if (timer.status === 'cancelled') return `cancelled after ${took}`;
+    return `done in ${took}`;
+}
+
+/**
+ * The panel's copy of {@link elapsedText}, {@link runTimeText} and
+ * {@link timerText}, which renews a running timer every second; a test keeps
+ * the two in step.
+ */
+export const TIMER_TEXT_JS = `
+function elapsedText(ms) {
+    const seconds = Math.max(0, Math.floor(ms / 1000));
+    if (seconds < 60) return seconds + ' s';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + ' min ' + String(seconds % 60).padStart(2, '0') + ' s';
+    return Math.floor(minutes / 60) + ' h ' + String(minutes % 60).padStart(2, '0') + ' min';
+}
+function runTimeText(ms) {
+    if (ms < 1000) return Math.max(0, Math.round(ms)) + ' ms';
+    if (ms < 60000) return (ms / 1000).toFixed(1) + ' s';
+    return elapsedText(ms);
+}
+function timerText(timer, now) {
+    if (timer.status === 'running') return 'running for ' + elapsedText(now - timer.started);
+    const took = runTimeText(timer.ms == null ? 0 : timer.ms);
+    if (timer.status === 'failed') return 'failed after ' + took;
+    if (timer.status === 'cancelled') return 'cancelled after ' + took;
+    return 'done in ' + took;
+}`;
+
+let entryCounter = 0;
+
+/**
+ * The entry a run adds when it starts a statement: `Started executing query
+ * at line 12`, whose `line 12` leads to the statement and whose timer runs
+ * until {@link SessionMessageSink.finish} stops it.
+ */
+export function statementStartedMessage(
+    source: string,
+    statement: { uri: string; start: MessagePosition; end: MessagePosition },
+    now: Date = new Date()
+): SessionMessage {
+    const lineText = `line ${statement.start.line + 1}`;
+    return {
+        id: ++entryCounter,
+        time: clockTime(now),
+        source,
+        severity: 'RUN',
+        text: `Started executing query at ${lineText}`,
+        details: [],
+        link: {
+            text: lineText,
+            uri: statement.uri,
+            start: { line: statement.start.line, character: statement.start.character },
+            end: { line: statement.end.line, character: statement.end.character }
+        },
+        timer: { started: now.getTime(), status: 'running' }
+    };
+}
+
+/** The entry of a statement once it has ended: its timer stopped at how long the statement ran. */
+export function statementEndedMessage(started: SessionMessage, status: Exclude<TimerStatus, 'running'>, ms: number): SessionMessage {
+    return { ...started, timer: { started: started.timer?.started ?? 0, status, ms } };
+}
+
+/**
+ * The line a log file gets when a statement has ended — `Query at line 12
+ * done in 3.2 s` — as a file cannot change the line written when it started.
+ */
+export function statementEndedLine(ended: SessionMessage, now: Date = new Date()): string {
+    const where = ended.link ? `Query at ${ended.link.text}` : 'Query';
+    const timer = ended.timer ? ` ${timerText(ended.timer, now.getTime())}` : '';
+    return formatSessionMessage({ time: clockTime(now), source: ended.source, severity: ended.severity, text: `${where}${timer}`, details: [] });
+}
+
+/**
+ * A log entry as plain text, e.g. for the clipboard: one line plus its
+ * indented detail lines. A statement that has ended says how long it ran.
+ */
 export function formatSessionMessage(message: SessionMessage): string {
-    const lines = [`[${message.time}] ${message.source} — ${message.severity}: ${message.text}`];
+    const timer = message.timer && message.timer.status !== 'running' ? ` · ${timerText(message.timer, 0)}` : '';
+    const lines = [`[${message.time}] ${message.source} — ${message.severity}: ${message.text}${timer}`];
     for (const detail of message.details) {
         lines.push(`    ${detail.replace(/\n/g, '\n    ')}`);
     }
@@ -242,7 +374,7 @@ export class SessionMessageLog {
     private readonly spools = new Map<string, MessageSpool>();
     /** Spools of discarded logs whose file is still being deleted. */
     private readonly retiring = new Set<MessageSpool>();
-    private readonly listeners = new Set<(key: string) => void>();
+    private readonly listeners = new Set<(key: string, updated?: SessionMessage) => void>();
     private readonly limit: number;
     private readonly spoolRoot?: string;
     private spoolDir?: string;
@@ -275,6 +407,30 @@ export class SessionMessageLog {
         }
         this.spoolOf(ref.key)?.write(`${formatSessionMessage(message)}\n`);
         this.emit(ref.key);
+    }
+
+    /**
+     * Stop the timer of the entry `started` of the log of `ref`: the entry
+     * the panel keeps shows how the statement ended, and the log file gets a
+     * line saying so. Nothing happens once the log has ended or the entry
+     * has ended before.
+     */
+    finish(ref: DbSessionRef, started: SessionMessage, status: Exclude<TimerStatus, 'running'>, ms: number, now: Date = new Date()): void {
+        const log = this.logs.get(ref.key);
+        if (!log || started.id === undefined) return;
+        const ended = statementEndedMessage(started, status, ms);
+        let updated: SessionMessage | undefined;
+        for (let i = log.messages.length - 1; i >= 0; i--) {
+            if (log.messages[i].id !== started.id) continue;
+            if (log.messages[i].timer?.status !== 'running') return;
+            updated = keptMessage(ended);
+            log.messages[i] = updated;
+            break;
+        }
+        this.spools.get(ref.key)?.write(`${statementEndedLine(ended, now)}\n`);
+        if (updated) {
+            this.emit(ref.key, updated);
+        }
     }
 
     get(key: string): SessionLog | undefined {
@@ -351,7 +507,8 @@ export class SessionMessageLog {
         await Promise.all([...this.spools.values(), ...this.retiring].map((spool) => spool.idle()));
     }
 
-    onDidChange(listener: (key: string) => void): { dispose(): void } {
+    /** `updated` is the entry that changed in place, for a change that added or removed none. */
+    onDidChange(listener: (key: string, updated?: SessionMessage) => void): { dispose(): void } {
         this.listeners.add(listener);
         return { dispose: () => { this.listeners.delete(listener); } };
     }
@@ -390,9 +547,9 @@ export class SessionMessageLog {
         return spool;
     }
 
-    private emit(key: string): void {
+    private emit(key: string, updated?: SessionMessage): void {
         for (const listener of [...this.listeners]) {
-            listener(key);
+            listener(key, updated);
         }
     }
 }
@@ -414,9 +571,19 @@ export function messagesFileName(label: string, now: Date = new Date()): string 
 /** Where the statements of a session report what the server said. */
 export interface SessionMessageSink {
     append(ref: DbSessionRef, message: SessionMessage): void;
+    /** Stop the timer of the entry `started` once its statement has ended; see {@link SessionMessageLog.finish}. */
+    finish(ref: DbSessionRef, started: SessionMessage, status: Exclude<TimerStatus, 'running'>, ms: number): void;
+    /** Execute File or Execute Selection is about to run in the session of `ref`; its log is cleared first if the user asked for that. */
+    runStarting(ref: DbSessionRef): void;
     /** Show the log of `ref` and bring the panel into view without taking the focus. */
     reveal(ref: DbSessionRef): void;
 }
+
+/** The section of this extension's settings. */
+const SETTINGS_SECTION = 'postgresQueryBuilder';
+
+/** Whether Execute File and Execute Selection clear the log of their session first; the panel's "Clear on Execute". */
+export const CLEAR_ON_EXECUTE_SETTING = 'messages.clearOnExecute';
 
 /** What the panel is told to show. */
 export interface MessagesViewState {
@@ -463,7 +630,7 @@ export interface SentLog {
     total: number;
 }
 
-/** A message to the panel: the whole log, or only the messages that came since the last one. */
+/** A message to the panel: the whole log, only the messages that came since the last one, or entries that changed. */
 export type MessagesUpdate =
     | { type: 'log'; key: string | null; state: MessagesViewState }
     | {
@@ -475,7 +642,9 @@ export type MessagesUpdate =
         errorsText: string;
         /** The panel drops its oldest lines beyond this many. */
         limit: number;
-    };
+    }
+    /** Entries the panel already shows, changed in place: a statement that has ended. */
+    | { type: 'update'; key: string; messages: Array<SessionMessage & { tone: MessageTone }> };
 
 /**
  * What to send the panel so it shows `log` of `shown`, given what it was sent
@@ -532,9 +701,12 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
     private view?: vscode.WebviewView;
     private shown?: DbSessionRef;
     private readonly subscription: { dispose(): void };
+    private readonly configSubscription: { dispose(): void };
     /** What the panel was sent last; undefined when it needs the whole log. */
     private sent?: SentLog;
     private renderPending = false;
+    /** Entries of the shown log that changed in place since the last render, by id. */
+    private readonly updated = new Map<number, SessionMessage>();
     private readonly schedule: (render: () => void) => void;
     private readonly maxCopyBytes: number;
 
@@ -542,8 +714,14 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
         this.schedule = options.schedule ?? ((render) => { setTimeout(render, MESSAGES_RENDER_INTERVAL_MS); });
         this.maxCopyBytes = options.maxCopyBytes ?? MAX_COPY_BYTES;
         // A flood of messages becomes one update every few milliseconds, not one per message.
-        this.subscription = log.onDidChange((key) => {
-            if (key === this.shown?.key) this.scheduleRender();
+        this.subscription = log.onDidChange((key, updated) => {
+            if (key !== this.shown?.key) return;
+            if (updated?.id !== undefined) this.updated.set(updated.id, updated);
+            this.scheduleRender();
+        });
+        // The checkbox follows the setting, also when it is changed in the settings.
+        this.configSubscription = vscode.workspace.onDidChangeConfiguration((event) => {
+            if (event.affectsConfiguration(`${SETTINGS_SECTION}.${CLEAR_ON_EXECUTE_SETTING}`)) this.postOptions();
         });
     }
 
@@ -552,8 +730,21 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
         return this.shown;
     }
 
+    /** Whether Execute File and Execute Selection clear the log of their session first. */
+    get clearOnExecute(): boolean {
+        return vscode.workspace.getConfiguration(SETTINGS_SECTION).get<boolean>(CLEAR_ON_EXECUTE_SETTING, false) === true;
+    }
+
     append(ref: DbSessionRef, message: SessionMessage): void {
         this.log.append(ref, message);
+    }
+
+    finish(ref: DbSessionRef, started: SessionMessage, status: Exclude<TimerStatus, 'running'>, ms: number): void {
+        this.log.finish(ref, started, status, ms);
+    }
+
+    runStarting(ref: DbSessionRef): void {
+        if (this.clearOnExecute) this.log.clear(ref.key);
     }
 
     /** Switch the panel to the log of `ref`. */
@@ -593,9 +784,10 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
                 this.render();
             }
         });
-        webviewView.webview.onDidReceiveMessage((message: { type?: string }) => {
+        webviewView.webview.onDidReceiveMessage((message: { type?: string; id?: unknown; value?: unknown }) => {
             if (message.type === 'ready') {
                 this.sent = undefined;
+                this.postOptions();
                 this.render();
             } else if (message.type === 'clear') {
                 if (this.shown) this.log.clear(this.shown.key);
@@ -603,14 +795,63 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
                 void this.copy();
             } else if (message.type === 'save') {
                 void this.save();
+            } else if (message.type === 'openLink') {
+                void this.openLink(Number(message.id));
+            } else if (message.type === 'clearOnExecute') {
+                void this.setClearOnExecute(message.value === true);
             }
         });
     }
 
     dispose(): void {
         this.subscription.dispose();
+        this.configSubscription.dispose();
         this.view = undefined;
         this.log.dispose();
+    }
+
+    /** Store the checkbox "Clear on Execute" as the user's setting, for every window. */
+    private async setClearOnExecute(value: boolean): Promise<void> {
+        try {
+            await vscode.workspace.getConfiguration(SETTINGS_SECTION).update(CLEAR_ON_EXECUTE_SETTING, value, vscode.ConfigurationTarget.Global);
+        } catch (err: unknown) {
+            Logger.error('SessionMessagesView.setClearOnExecute', err);
+            vscode.window.showErrorMessage(`"Clear on Execute" could not be saved: ${getErrorMessage(err)}`);
+            this.postOptions();
+        }
+    }
+
+    /** Tell the panel how its checkbox is set. */
+    private postOptions(): void {
+        const view = this.view;
+        if (!view) return;
+        Promise.resolve(view.webview.postMessage({ type: 'options', clearOnExecute: this.clearOnExecute })).catch(() => undefined);
+    }
+
+    /**
+     * Open the file of the entry `id` of the shown log and select the
+     * statement it leads to. The place comes from the log, never from the
+     * panel, which only names the entry.
+     */
+    private async openLink(id: number): Promise<void> {
+        const shown = this.shown;
+        const link = shown ? this.log.get(shown.key)?.messages.find((m) => m.id === id)?.link : undefined;
+        if (!link) return;
+        try {
+            const range = new vscode.Range(link.start.line, link.start.character, link.end.line, link.end.character);
+            const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(link.uri));
+            // The file stays in the group it is already shown in.
+            const visible = vscode.window.visibleTextEditors.find((editor) => editor.document.uri.toString() === link.uri);
+            const editor = await vscode.window.showTextDocument(document, {
+                viewColumn: visible?.viewColumn,
+                selection: new vscode.Selection(range.start, range.end),
+                preview: false
+            });
+            editor?.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+        } catch (err: unknown) {
+            Logger.error('SessionMessagesView.openLink', err);
+            vscode.window.showErrorMessage(`The statement at ${link.text} cannot be shown: ${getErrorMessage(err)}`);
+        }
     }
 
     /** Write every message of the shown log to a file the user picks. */
@@ -671,6 +912,8 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
 
     private render(): void {
         const view = this.view;
+        const updated = [...this.updated.values()];
+        this.updated.clear();
         if (!view) return;
         if (view.visible === false) {
             this.sent = undefined;
@@ -683,8 +926,18 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
             this.log.keptLimit
         );
         this.sent = sent;
-        if (!update) return;
-        Promise.resolve(view.webview.postMessage(update)).catch(() => undefined);
+        if (update) {
+            Promise.resolve(view.webview.postMessage(update)).catch(() => undefined);
+        }
+        // The whole log already shows every entry as it is now.
+        if (updated.length > 0 && this.shown && update?.type !== 'log') {
+            const changed: MessagesUpdate = {
+                type: 'update',
+                key: this.shown.key,
+                messages: updated.map((message) => ({ ...message, tone: messageTone(message.severity) }))
+            };
+            Promise.resolve(view.webview.postMessage(changed)).catch(() => undefined);
+        }
     }
 
     private getHtml(webview: vscode.Webview): string {
@@ -712,8 +965,15 @@ body { padding: 0; display: flex; flex-direction: column; }
 .msg.tone-warning { background: color-mix(in srgb, var(--c-warning) 8%, transparent); box-shadow: inset 3px 0 0 var(--c-warning); }
 .msg.tone-danger.current { background: color-mix(in srgb, var(--c-danger) 30%, transparent); box-shadow: inset 6px 0 0 var(--c-danger), inset 0 0 0 1px var(--c-danger); }
 .msg-detail { padding-left: var(--sp-5); color: var(--c-muted); }
+.msg-link { color: var(--vscode-textLink-foreground); text-decoration: underline; cursor: pointer; }
+.msg-link:hover { color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground)); }
+.msg-timer { color: var(--c-muted); }
+/* How a statement ended is said in words as well, never by hue alone. */
+.msg-timer.status-failed { color: var(--c-danger); font-weight: 600; }
+.msg-timer.status-cancelled { color: var(--c-warning); }
 .errors-btn { color: var(--c-danger); font-weight: 600; }
-.errors-btn[hidden] { display: none; }`;
+.errors-btn[hidden] { display: none; }
+.clear-on-execute { display: inline-flex; align-items: center; gap: var(--sp-1); white-space: nowrap; cursor: pointer; }`;
         const body = `
 <div class="toolbar">
     <div class="session">
@@ -721,6 +981,7 @@ body { padding: 0; display: flex; flex-direction: column; }
         <button class="btn btn-sm btn-ghost errors-btn" id="errorsBtn" hidden title="Go to the next error shown in the panel">${icon('error')}<span id="errorsText"></span></button>
     </div>
     <div class="toolbar-group">
+        <label class="clear-on-execute" title="Clear the messages of a session each time Execute File or Execute Selection starts in it"><input type="checkbox" id="clearOnExecute">Clear on Execute</label>
         <button class="btn btn-sm" id="copyBtn" title="Copy every message of this session to the clipboard, including those the panel no longer shows">${icon('copy')}Copy</button>
         <button class="btn btn-sm" id="saveBtn" title="Save every message of this session to a file, including those the panel no longer shows">${icon('save')}Save</button>
         <button class="btn btn-sm" id="clearBtn" title="Clear the messages of this session">${icon('trash')}Clear</button>
@@ -737,28 +998,79 @@ const saveBtn = document.getElementById('saveBtn');
 const clearBtn = document.getElementById('clearBtn');
 const errorsBtn = document.getElementById('errorsBtn');
 const errorsTextEl = document.getElementById('errorsText');
+const clearOnExecuteBox = document.getElementById('clearOnExecute');
 const TONE_ICONS = { danger: ${JSON.stringify(icon('error'))}, warning: ${JSON.stringify(icon('warning'))} };
 copyBtn.addEventListener('click', () => vscode.postMessage({ type: 'copy' }));
 saveBtn.addEventListener('click', () => vscode.postMessage({ type: 'save' }));
 clearBtn.addEventListener('click', () => vscode.postMessage({ type: 'clear' }));
 errorsBtn.addEventListener('click', () => goToNextError());
+clearOnExecuteBox.addEventListener('change', () => vscode.postMessage({ type: 'clearOnExecute', value: clearOnExecuteBox.checked === true }));
 
 ${WEBVIEW_ESCAPE_HTML_JS}
+${TIMER_TEXT_JS}
 
 let shownKey = null;
 let shownLabel = null;
 
+// The text of an entry, with the part that leads to a statement as a link.
+function textHtml(m) {
+    const link = m.link;
+    const at = link && m.id != null ? m.text.lastIndexOf(link.text) : -1;
+    if (at < 0) return escapeHtml(m.text);
+    return escapeHtml(m.text.slice(0, at))
+        + '<a href="#" class="msg-link" data-link-id="' + escapeHtml(String(m.id)) + '" title="Go to the statement and select it">'
+        + escapeHtml(link.text) + '</a>'
+        + escapeHtml(m.text.slice(at + link.text.length));
+}
+
+function timerHtml(m) {
+    const t = m.timer;
+    if (!t) return '';
+    const running = t.status === 'running';
+    return ' · <span class="msg-timer status-' + escapeHtml(t.status) + '"'
+        + (running ? ' data-running data-started="' + escapeHtml(String(Number(t.started))) + '"' : '')
+        + '>' + escapeHtml(timerText(t, Date.now())) + '</span>';
+}
+
 function messageHtml(m) {
-    let html = '<div class="msg tone-' + escapeHtml(m.tone) + '">'
+    let html = '<div class="msg tone-' + escapeHtml(m.tone) + '"'
+        + (m.id != null ? ' data-id="' + escapeHtml(String(m.id)) + '"' : '') + '>'
         + '<span class="msg-time">[' + escapeHtml(m.time) + ']</span> '
         + (m.source && m.source !== shownLabel ? '<span class="msg-source">' + escapeHtml(m.source) + ' — </span>' : '')
         + '<span class="msg-sev">' + (TONE_ICONS[m.tone] || '') + escapeHtml(m.severity) + ':</span> '
-        + '<span class="msg-text">' + escapeHtml(m.text) + '</span>';
+        + '<span class="msg-text">' + textHtml(m) + '</span>' + timerHtml(m);
     for (const d of m.details || []) {
         html += '<div class="msg-detail">' + escapeHtml(d) + '</div>';
     }
     return html + '</div>';
 }
+
+// A running timer is renewed every second, and only while one is shown.
+let timerHandle = null;
+function tickTimers() {
+    const running = listEl.querySelectorAll('.msg-timer[data-running]');
+    if (running.length === 0) {
+        clearInterval(timerHandle);
+        timerHandle = null;
+        return;
+    }
+    const now = Date.now();
+    running.forEach((el) => {
+        el.textContent = timerText({ status: 'running', started: Number(el.dataset.started) }, now);
+    });
+}
+function watchTimers() {
+    if (timerHandle === null && listEl.querySelectorAll('.msg-timer[data-running]').length > 0) {
+        timerHandle = setInterval(tickTimers, 1000);
+    }
+}
+
+listEl.addEventListener('click', (e) => {
+    const link = e && e.target && e.target.closest ? e.target.closest('.msg-link') : null;
+    if (!link) return;
+    e.preventDefault();
+    vscode.postMessage({ type: 'openLink', id: Number(link.dataset.linkId) });
+});
 
 function isAtBottom() {
     return listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 4;
@@ -808,6 +1120,7 @@ function render(key, state) {
     if (switched || atBottom) {
         listEl.scrollTop = listEl.scrollHeight;
     }
+    watchTimers();
 }
 
 // New messages are added below and the oldest beyond the limit removed, so
@@ -826,6 +1139,17 @@ function append(update) {
     if (atBottom) {
         listEl.scrollTop = listEl.scrollHeight;
     }
+    watchTimers();
+}
+
+// An entry that changed in place — a statement that ended — is drawn anew
+// where it is; one the panel no longer shows is left alone.
+function replace(update) {
+    if (update.key !== shownKey) return;
+    for (const m of update.messages) {
+        const el = listEl.querySelector('.msg[data-id="' + Number(m.id) + '"]');
+        if (el) el.outerHTML = messageHtml(m);
+    }
 }
 
 window.addEventListener('message', (ev) => {
@@ -834,6 +1158,10 @@ window.addEventListener('message', (ev) => {
         render(msg.key, msg.state);
     } else if (msg && msg.type === 'append') {
         append(msg);
+    } else if (msg && msg.type === 'update') {
+        replace(msg);
+    } else if (msg && msg.type === 'options') {
+        clearOnExecuteBox.checked = msg.clearOnExecute === true;
     }
 });
 

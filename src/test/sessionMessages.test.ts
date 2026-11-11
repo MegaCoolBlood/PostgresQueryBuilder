@@ -1,5 +1,5 @@
 import './helpers/vscodeMock';
-import { vscodeStub } from './helpers/vscodeMock';
+import { vscodeStub, fireDidChangeConfiguration } from './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -22,7 +22,13 @@ import {
     messagesUpdate,
     messagesViewState,
     errorsCountText,
-    noticeMessage
+    noticeMessage,
+    elapsedText,
+    runTimeText,
+    statementEndedLine,
+    statementStartedMessage,
+    timerText,
+    TIMER_TEXT_JS
 } from '../sessionMessages';
 
 const AT = new Date(2026, 10, 3, 9, 5, 7);
@@ -615,17 +621,36 @@ class FakeElement {
     get firstElementChild(): { remove(): void } | null {
         return this.entries.length > 0 ? { remove: () => { this.entries.shift(); } } : null;
     }
-    querySelector(selector: string): { remove(): void } | null {
+    querySelector(selector: string): any {
+        const list = this;
+        const byId = /^\.msg\[data-id="(\d+)"\]$/.exec(selector);
+        if (byId) {
+            const index = this.entries.findIndex((e) => e.startsWith('<div class="msg ') && e.includes(` data-id="${byId[1]}"`));
+            return index >= 0 ? { set outerHTML(html: string) { list.entries[index] = html; } } : null;
+        }
         const index = selector === '.empty' ? this.entries.findIndex((e) => e.startsWith('<div class="empty"')) : -1;
         return index >= 0 ? { remove: () => { this.entries.splice(index, 1); } } : null;
     }
-    addEventListener(type: string, listener: () => void): void { this.listeners[type] = listener; }
-    listeners: Record<string, () => void> = {};
+    addEventListener(type: string, listener: (event?: any) => void): void { this.listeners[type] = listener; }
+    listeners: Record<string, (event?: any) => void> = {};
     hidden = false;
     /** Index of the entry marked as the current error, or -1. */
     current = -1;
     click(): void { this.listeners.click?.(); }
     querySelectorAll(selector: string): any[] {
+        const list = this;
+        if (selector === '.msg-timer[data-running]') {
+            const RUNNING = /(<span class="msg-timer[^"]*" data-running data-started="(\d+)">)[^<]*/;
+            return this.entries
+                .map((entry, index) => ({ match: RUNNING.exec(entry), index }))
+                .filter(({ match }) => match !== null)
+                .map(({ match, index }) => ({
+                    dataset: { started: (match as RegExpExecArray)[2] },
+                    set textContent(text: string) {
+                        list.entries[index] = list.entries[index].replace(RUNNING, (_all, open: string) => `${open}${text}`);
+                    }
+                }));
+        }
         if (selector === '.msg.tone-danger') {
             return this.entries
                 .map((entry, index) => ({ entry, index }))
@@ -651,8 +676,19 @@ function runPanelScript() {
     let receive: (ev: { data: any }) => void = () => undefined;
     const window = { addEventListener: (_type: string, listener: (ev: { data: any }) => void) => { receive = listener; } };
     const sent: any[] = [];
-    new Function('acquireVsCodeApi', 'document', 'window', script)(() => ({ postMessage: (m: any) => sent.push(m) }), document, window);
-    return { list: elements.list, count: elements.count, copy: elements.copyBtn, elements, send: (data: any) => receive({ data }), sent };
+    // The panel's timers run when the test says so.
+    const intervals = new Map<number, () => void>();
+    let nextInterval = 1;
+    const setInterval = (fn: () => void) => { intervals.set(nextInterval, fn); return nextInterval++; };
+    const clearInterval = (handle: number) => { intervals.delete(handle); };
+    new Function('acquireVsCodeApi', 'document', 'window', 'setInterval', 'clearInterval', script)(
+        () => ({ postMessage: (m: any) => sent.push(m) }), document, window, setInterval, clearInterval
+    );
+    return {
+        list: elements.list, count: elements.count, copy: elements.copyBtn, elements, send: (data: any) => receive({ data }), sent,
+        intervals,
+        tickTimers: () => { for (const fn of [...intervals.values()]) fn(); }
+    };
 }
 
 const tone = (text: string) => ({ ...noticeMessage('payroll.sql', { message: text }, AT), tone: 'info' });
@@ -845,4 +881,394 @@ test('a flood of messages keeps the panel and its log at their limit', async (t)
     const saved = path.join(root, 'all.log');
     assert.equal(await log.saveTo(FILE.key, saved), 20_000);
     assert.equal(fs.readFileSync(saved, 'utf8').split('\n').length - 1, 20_000);
+});
+
+// ===== the entry of a statement a run starts =====
+
+const STATEMENT = { uri: 'file:///work/payroll.sql', start: { line: 11, character: 0 }, end: { line: 13, character: 24 } };
+
+test('a started statement is logged with a link to its line and a running timer', () => {
+    const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
+    assert.equal(entry.severity, 'RUN');
+    assert.equal(entry.text, 'Started executing query at line 12');
+    assert.deepEqual(entry.link, { text: 'line 12', ...STATEMENT });
+    assert.deepEqual(entry.timer, { started: AT.getTime(), status: 'running' });
+    assert.equal(formatSessionMessage(entry), '[09:05:07] payroll.sql — RUN: Started executing query at line 12');
+    assert.notEqual(statementStartedMessage('payroll.sql', STATEMENT, AT).id, entry.id, 'every entry has an id of its own');
+});
+
+test('timerText counts a running statement and tells how one ended', () => {
+    const started = AT.getTime();
+    assert.equal(timerText({ started, status: 'running' }, started + 65_400), 'running for 1 min 05 s');
+    assert.equal(timerText({ started, status: 'done', ms: 3210 }, 0), 'done in 3.2 s');
+    assert.equal(timerText({ started, status: 'failed', ms: 12 }, 0), 'failed after 12 ms');
+    assert.equal(timerText({ started, status: 'cancelled', ms: 125_000 }, 0), 'cancelled after 2 min 05 s');
+    assert.equal(runTimeText(999.6), '1000 ms');
+    assert.equal(runTimeText(59_999), '60.0 s');
+    assert.equal(runTimeText(60_000), '1 min 00 s');
+});
+
+test('the panel counts and words a timer exactly as the extension does', () => {
+    const { timerText: scriptTimerText } = new Function(`${TIMER_TEXT_JS}; return { timerText };`)();
+    const started = 1_000_000;
+    for (const ms of [0, 1, 999, 1000, 1499, 59_999, 60_000, 61_000, 3_599_999, 3_600_000, 7_385_000]) {
+        assert.equal(scriptTimerText({ started, status: 'running' }, started + ms), timerText({ started, status: 'running' }, started + ms), `running ${ms}`);
+        for (const status of ['done', 'failed', 'cancelled'] as const) {
+            assert.equal(scriptTimerText({ started, status, ms }, 0), timerText({ started, status, ms }, 0), `${status} ${ms}`);
+        }
+    }
+    assert.equal(elapsedText(65_000), '1 min 05 s');
+});
+
+test('finish stops the timer of the entry and copies say how long the statement ran', () => {
+    const log = new SessionMessageLog();
+    const changes: Array<[string, any]> = [];
+    log.onDidChange((key, updated) => changes.push([key, updated]));
+    const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
+    log.append(FILE, entry);
+    log.append(FILE, noticeMessage('payroll.sql', { message: 'step 1' }, AT));
+
+    log.finish(FILE, entry, 'done', 3210, AT);
+
+    const kept = log.get(FILE.key)?.messages[0];
+    assert.deepEqual(kept?.timer, { started: AT.getTime(), status: 'done', ms: 3210 });
+    assert.equal(kept?.link?.text, 'line 12', 'it still leads to the statement');
+    assert.equal(log.get(FILE.key)?.total, 2, 'it is no new message');
+    assert.equal(formatSessionMessage(kept!), '[09:05:07] payroll.sql — RUN: Started executing query at line 12 · done in 3.2 s');
+    assert.deepEqual(changes.at(-1), [FILE.key, kept]);
+
+    const before = changes.length;
+    log.finish(FILE, entry, 'failed', 9999, AT);
+    assert.equal(log.get(FILE.key)?.messages[0].timer?.status, 'done', 'an entry ends only once');
+    assert.equal(changes.length, before);
+});
+
+test('the log file gets a line of its own when a statement ends', async (t) => {
+    const root = tempRoot(t);
+    const log = new SessionMessageLog({ spoolRoot: root });
+    t.after(() => log.dispose());
+    const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
+    log.append(FILE, entry);
+    log.append(FILE, noticeMessage('payroll.sql', { message: 'inside' }, AT));
+    log.finish(FILE, entry, 'failed', 420, AT);
+
+    const target = path.join(root, 'saved.log');
+    assert.equal(await log.saveTo(FILE.key, target), 2);
+    assert.equal(fs.readFileSync(target, 'utf8'), [
+        '[09:05:07] payroll.sql — RUN: Started executing query at line 12',
+        '[09:05:07] payroll.sql — NOTICE: inside',
+        '[09:05:07] payroll.sql — RUN: Query at line 12 failed after 420 ms',
+        ''
+    ].join('\n'));
+    assert.equal(statementEndedLine({ ...entry, timer: { started: 0, status: 'cancelled', ms: 61_000 } }, AT),
+        '[09:05:07] payroll.sql — RUN: Query at line 12 cancelled after 1 min 01 s');
+});
+
+test('finish of an entry the log no longer keeps still writes its end to the log file', async (t) => {
+    const root = tempRoot(t);
+    const log = new SessionMessageLog({ limit: 1, spoolRoot: root });
+    t.after(() => log.dispose());
+    const changes: unknown[] = [];
+    log.onDidChange((_key, updated) => { if (updated) changes.push(updated); });
+    const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
+    log.append(FILE, entry);
+    log.append(FILE, noticeMessage('payroll.sql', { message: 'pushed it out' }, AT));
+
+    log.finish(FILE, entry, 'done', 5, AT);
+
+    assert.deepEqual(changes, [], 'the panel shows nothing that changed');
+    const target = path.join(root, 'saved.log');
+    await log.saveTo(FILE.key, target);
+    assert.match(fs.readFileSync(target, 'utf8'), /RUN: Query at line 12 done in 5 ms\n$/);
+});
+
+test('the panel gets an ended statement as an update of the entry it shows', () => {
+    const { view, posted, last } = resolveView();
+    view.show(FILE);
+    const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
+    view.append(FILE, entry);
+    assert.equal(last().type, 'log');
+    const sentBefore = posted.length;
+
+    view.finish(FILE, entry, 'done', 3210);
+
+    assert.equal(posted.length, sentBefore + 1);
+    assert.equal(last().type, 'update');
+    assert.equal(last().key, FILE.key);
+    assert.deepEqual(last().messages.map((m: any) => [m.id, m.timer.status, m.tone]), [[entry.id, 'done', 'info']]);
+});
+
+test('an ended statement of another session or a hidden panel is not sent as an update', () => {
+    const resolved = resolveView();
+    resolved.view.show(TAB);
+    const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
+    resolved.view.append(FILE, entry);
+    resolved.view.finish(FILE, entry, 'done', 1);
+    assert.ok(resolved.posted.every((m: any) => m.type !== 'update'), 'not the shown session');
+
+    resolved.view.show(FILE);
+    resolved.setVisible(false);
+    const other = statementStartedMessage('payroll.sql', STATEMENT, AT);
+    resolved.view.append(FILE, other);
+    resolved.view.finish(FILE, other, 'done', 1);
+    assert.ok(resolved.posted.every((m: any) => m.type !== 'update'), 'a hidden panel gets the whole log once shown');
+    resolved.setVisible(true);
+    assert.equal(resolved.last().type, 'log');
+    assert.deepEqual(resolved.last().state.messages.map((m: any) => m.timer.status), ['done', 'done']);
+});
+
+test('a click on the line of an entry opens its file with the whole statement selected', async (t) => {
+    const opened: unknown[] = [];
+    const shown: any[] = [];
+    const revealed: any[] = [];
+    const originals = {
+        open: vscodeStub.workspace.openTextDocument,
+        show: vscodeStub.window.showTextDocument,
+        visible: vscodeStub.window.visibleTextEditors
+    };
+    vscodeStub.workspace.openTextDocument = (uri: any) => { opened.push(uri.toString()); return Promise.resolve({ uri }); };
+    vscodeStub.window.showTextDocument = (document: any, options: any) => {
+        shown.push({ document, options });
+        return Promise.resolve({ revealRange: (range: any, type: number) => revealed.push({ range, type }) });
+    };
+    vscodeStub.window.visibleTextEditors = [{ document: { uri: { toString: () => STATEMENT.uri } }, viewColumn: 2 }];
+    t.after(() => {
+        vscodeStub.workspace.openTextDocument = originals.open;
+        vscodeStub.window.showTextDocument = originals.show;
+        vscodeStub.window.visibleTextEditors = originals.visible;
+    });
+    const { view, send } = resolveView();
+    view.show(FILE);
+    const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
+    view.append(FILE, entry);
+
+    send({ type: 'openLink', id: entry.id });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(opened, [STATEMENT.uri]);
+    const { selection, viewColumn, preview } = shown[0].options;
+    const at = (p: any) => [p.line, p.character];
+    assert.deepEqual([at(selection.anchor), at(selection.active)], [[11, 0], [13, 24]]);
+    assert.equal(viewColumn, 2, 'in the group that already shows the file');
+    assert.equal(preview, false);
+    assert.deepEqual(at(revealed[0].range.start), [11, 0]);
+});
+
+test('a click leads only to an entry of the shown log, by its id alone', async (t) => {
+    const opened: unknown[] = [];
+    const original = vscodeStub.workspace.openTextDocument;
+    vscodeStub.workspace.openTextDocument = (uri: any) => { opened.push(uri); return Promise.resolve({ uri }); };
+    t.after(() => { vscodeStub.workspace.openTextDocument = original; });
+    const { view, send } = resolveView();
+    view.show(FILE);
+    const elsewhere = statementStartedMessage('tab', STATEMENT, AT);
+    view.append(TAB, elsewhere);
+    view.append(FILE, noticeMessage('payroll.sql', { message: 'no link' }, AT));
+
+    send({ type: 'openLink', id: elsewhere.id, uri: 'file:///etc/passwd' });
+    send({ type: 'openLink', id: 'x' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(opened, []);
+});
+
+test('a statement that cannot be shown any more says so', async (t) => {
+    const errors: unknown[] = [];
+    const originals = { open: vscodeStub.workspace.openTextDocument, error: vscodeStub.window.showErrorMessage };
+    vscodeStub.workspace.openTextDocument = () => Promise.reject(new Error('cannot open file:///work/payroll.sql'));
+    vscodeStub.window.showErrorMessage = (message: string) => { errors.push(message); return Promise.resolve(undefined); };
+    t.after(() => {
+        vscodeStub.workspace.openTextDocument = originals.open;
+        vscodeStub.window.showErrorMessage = originals.error;
+    });
+    const { view, send } = resolveView();
+    view.show(FILE);
+    const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
+    view.append(FILE, entry);
+
+    send({ type: 'openLink', id: entry.id });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(errors, ['The statement at line 12 cannot be shown: cannot open file:///work/payroll.sql']);
+});
+
+const running = (startedAgoMs: number) => {
+    const entry = statementStartedMessage('payroll.sql', STATEMENT, new Date(Date.now() - startedAgoMs));
+    return { ...entry, tone: 'info' };
+};
+
+test('the panel shows the line of a statement as a link and asks the extension to open it', () => {
+    const panel = runPanelScript();
+    const entry = running(0);
+    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: [entry], total: 1, countText: '1 message' } });
+
+    assert.match(panel.list.entries[0], new RegExp(`data-id="${entry.id}"`));
+    assert.match(panel.list.entries[0],
+        new RegExp(`msg-text">Started executing query at <a href="#" class="msg-link" data-link-id="${entry.id}" title="[^"]+">line 12</a></span>`));
+
+    let prevented = false;
+    panel.list.listeners.click({
+        target: { closest: (selector: string) => (selector === '.msg-link' ? { dataset: { linkId: String(entry.id) } } : null) },
+        preventDefault: () => { prevented = true; }
+    });
+    panel.list.listeners.click({ target: { closest: () => null }, preventDefault: () => { throw new Error('not a link'); } });
+
+    assert.equal(prevented, true);
+    assert.deepEqual(panel.sent.slice(1), [{ type: 'openLink', id: entry.id }]);
+});
+
+test('the panel renews a running timer every second and stops once none runs', () => {
+    const panel = runPanelScript();
+    const entry = running(65_000);
+    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: [entry], total: 1, countText: '1 message' } });
+    assert.match(panel.list.entries[0], /<span class="msg-timer status-running" data-running data-started="\d+">running for 1 min 0[56] s<\/span>/);
+    assert.equal(panel.intervals.size, 1, 'a timer runs');
+
+    panel.list.entries[0] = panel.list.entries[0].replace(/running for [^<]*/, 'stale');
+    panel.tickTimers();
+    assert.match(panel.list.entries[0], /running for 1 min 0[56] s<\/span>/, 'renewed by the tick');
+
+    panel.send({ type: 'update', key: FILE.key, messages: [{ ...entry, timer: { ...entry.timer, status: 'done', ms: 65_000 } }] });
+    assert.match(panel.list.entries[0], /<span class="msg-timer status-done">done in 1 min 05 s<\/span>/);
+    assert.doesNotMatch(panel.list.entries[0], /data-running/);
+    panel.tickTimers();
+    assert.equal(panel.intervals.size, 0, 'no timer runs once every statement has ended');
+});
+
+test('the panel marks how a statement ended and starts no timer for one that has', () => {
+    const panel = runPanelScript();
+    const ended = (status: string) => ({ ...running(0), timer: { started: 0, status, ms: 420 } });
+    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: [ended('failed'), ended('cancelled')], total: 2, countText: '2 messages' } });
+    assert.match(panel.list.entries[0], /<span class="msg-timer status-failed">failed after 420 ms<\/span>/);
+    assert.match(panel.list.entries[1], /<span class="msg-timer status-cancelled">cancelled after 420 ms<\/span>/);
+    assert.equal(panel.intervals.size, 0);
+});
+
+test('an update of an entry of another session or one no longer shown changes nothing', () => {
+    const panel = runPanelScript();
+    const entry = running(0);
+    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: [entry], total: 1, countText: '1 message' } });
+    const before = panel.list.innerHTML;
+    const done = { ...entry, timer: { ...entry.timer, status: 'done', ms: 1 } };
+    panel.send({ type: 'update', key: TAB.key, messages: [done] });
+    panel.send({ type: 'update', key: FILE.key, messages: [{ ...done, id: 999_999 }] });
+    assert.equal(panel.list.innerHTML, before);
+});
+
+test('the panel colours how a statement ended from tokens and says it in words', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'src', 'sessionMessages.ts'), 'utf8');
+    assert.match(source, /\.msg-timer\.status-failed \{ color: var\(--c-danger\);/);
+    assert.match(source, /\.msg-timer\.status-cancelled \{ color: var\(--c-warning\); \}/);
+    assert.match(source, /\.msg-link \{ color: var\(--vscode-textLink-foreground\);/);
+});
+
+// ===== Clear on Execute =====
+
+/** Let the settings hold `clearOnExecute` for one test, and record what is written to them. */
+function stubClearOnExecute(t: { after(fn: () => void): void }, value: unknown) {
+    const writes: unknown[][] = [];
+    const original = vscodeStub.workspace.getConfiguration;
+    vscodeStub.workspace.getConfiguration = ((section?: string) => ({
+        get: (key: string, fallback?: unknown) => (section === 'postgresQueryBuilder' && key === 'messages.clearOnExecute' ? value : fallback),
+        update: (key: string, next: unknown, target: unknown) => { writes.push([section, key, next, target]); return Promise.resolve(); }
+    })) as any;
+    t.after(() => { vscodeStub.workspace.getConfiguration = original; });
+    return writes;
+}
+
+test('with Clear on Execute a starting run empties the log of its session and no other', (t) => {
+    stubClearOnExecute(t, true);
+    const { view, last } = resolveView();
+    view.show(FILE);
+    view.append(FILE, noticeMessage('payroll.sql', { message: 'from the last run' }, AT));
+    view.append(TAB, noticeMessage('tab', { message: 'another session' }, AT));
+
+    view.runStarting(FILE);
+
+    assert.equal(view.log.get(FILE.key)?.total, 0);
+    assert.deepEqual(last().state.messages, [], 'the panel shows the emptied log');
+    assert.equal(view.log.get(TAB.key)?.total, 1);
+});
+
+test('without Clear on Execute a starting run keeps the log', (t) => {
+    stubClearOnExecute(t, undefined);
+    const { view } = resolveView();
+    view.append(FILE, noticeMessage('payroll.sql', { message: 'kept' }, AT));
+
+    view.runStarting(FILE);
+
+    assert.equal(view.clearOnExecute, false, 'off by default');
+    assert.equal(view.log.get(FILE.key)?.total, 1);
+});
+
+test('Clear on Execute is a setting, off by default, in the group of the SQL files', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+    const group = manifest.contributes.configuration.find((g: { title: string }) => g.title === 'SQL & Data Viewer');
+    const setting = group.properties['postgresQueryBuilder.messages.clearOnExecute'];
+    assert.equal(setting.type, 'boolean');
+    assert.equal(setting.default, false);
+    assert.match(setting.description, /Clear on Execute/);
+});
+
+test('the panel is told how its checkbox is set when it is ready and when the setting changes', (t) => {
+    let value = true;
+    const original = vscodeStub.workspace.getConfiguration;
+    vscodeStub.workspace.getConfiguration = (() => ({ get: () => value })) as any;
+    t.after(() => { vscodeStub.workspace.getConfiguration = original; });
+    const { send, posted } = resolveView();
+
+    send({ type: 'ready' });
+    assert.deepEqual(posted.filter((m: any) => m.type === 'options'), [{ type: 'options', clearOnExecute: true }]);
+
+    value = false;
+    fireDidChangeConfiguration(['postgresQueryBuilder.format.enable']);
+    assert.equal(posted.filter((m: any) => m.type === 'options').length, 1, 'another setting changes nothing');
+    fireDidChangeConfiguration(['postgresQueryBuilder.messages.clearOnExecute']);
+    assert.deepEqual(posted.filter((m: any) => m.type === 'options').at(-1), { type: 'options', clearOnExecute: false });
+});
+
+test('the checkbox stores Clear on Execute as a user setting', async (t) => {
+    const writes = stubClearOnExecute(t, false);
+    const { send } = resolveView();
+
+    send({ type: 'clearOnExecute', value: true });
+    send({ type: 'clearOnExecute', value: 'yes' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(writes, [
+        ['postgresQueryBuilder', 'messages.clearOnExecute', true, vscodeStub.ConfigurationTarget.Global],
+        ['postgresQueryBuilder', 'messages.clearOnExecute', false, vscodeStub.ConfigurationTarget.Global]
+    ], 'only a true value turns it on');
+});
+
+test('a checkbox that could not be stored says so and shows the setting as it is', async (t) => {
+    const errors: unknown[] = [];
+    const originals = { config: vscodeStub.workspace.getConfiguration, error: vscodeStub.window.showErrorMessage };
+    vscodeStub.workspace.getConfiguration = (() => ({ get: () => false, update: () => Promise.reject(new Error('read-only settings')) })) as any;
+    vscodeStub.window.showErrorMessage = (message: string) => { errors.push(message); return Promise.resolve(undefined); };
+    t.after(() => {
+        vscodeStub.workspace.getConfiguration = originals.config;
+        vscodeStub.window.showErrorMessage = originals.error;
+    });
+    const { send, last } = resolveView();
+
+    send({ type: 'clearOnExecute', value: true });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(errors, ['"Clear on Execute" could not be saved: read-only settings']);
+    assert.deepEqual(last(), { type: 'options', clearOnExecute: false }, 'the checkbox is unticked again');
+});
+
+test('the panel offers Clear on Execute as a labelled checkbox and reports a change', () => {
+    const { html } = resolveView();
+    assert.match(html, /<label class="clear-on-execute" title="[^"]+"><input type="checkbox" id="clearOnExecute">Clear on Execute<\/label>/);
+
+    const panel = runPanelScript();
+    const box = panel.elements.clearOnExecute as any;
+    panel.send({ type: 'options', clearOnExecute: true });
+    assert.equal(box.checked, true);
+
+    box.checked = false;
+    box.listeners.change();
+    assert.deepEqual(panel.sent.at(-1), { type: 'clearOnExecute', value: false });
 });
