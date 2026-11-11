@@ -2484,6 +2484,34 @@ function isFreshRowLoad(offset, isAppend) {
     return (offset || 0) <= 0;
 }
 
+// The text next to the spinner in the header: a first or new run (null, false
+// or undefined) loads the data, More ('more') a further page, All ('all') the rest.
+function dataLoadingLabel(append) {
+    if (append === 'all') return 'Loading all rows...';
+    if (append === 'more') return 'Loading more rows...';
+    return 'Loading data...';
+}
+
+// Whether rows added by More or All have to wait: while a cell is edited, a
+// multi-cell edit is typed or the mouse selects, fills, resizes or drags, new
+// rows would rebuild the grid under it and take the edit or the selection away.
+function appendMustWait(state) {
+    const s = state || {};
+    return !!(s.editingCell || s.multiEdit || s.pointerHeld || s.rangeDragging
+        || s.fillDragging || s.lineDrag || s.columnDrag);
+}
+
+// The selection after More or All added rows, from its corners as they were
+// taken before ({ key: 'row:12', c }), or null when there was none or a corner
+// row is not shown any more. `positionOf` maps a row key to its new position.
+function appendedSelection(anchor, focus, positionOf) {
+    if (!anchor || !focus) return null;
+    const a = positionOf(anchor.key);
+    const f = positionOf(focus.key);
+    if (a === undefined || a === null || f === undefined || f === null) return null;
+    return { anchor: { r: a, c: anchor.c }, focus: { r: f, c: focus.c } };
+}
+
 // The `readonly` attribute for a Single Record View field. A field is
 // non-editable when its row is marked for deletion or when the whole view is
 // read-only (e.g. an ad-hoc custom-query result that cannot be written back).
@@ -3718,6 +3746,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let currentSql = '';           // SQL without trailing LIMIT/OFFSET clause
     let userPaged = false;         // true when the user wrote an explicit LIMIT/OFFSET
     let appendPending = false;
+    // The More or All on its way ({ kind: 'more' | 'all', offset, allLoaded }:
+    // what to go back to if it brings no rows), or null.
+    let appendRequest = null;
+    // Its answer, held back while a cell is edited or the mouse drags, so the
+    // new rows cannot take the edit or the selection away; null otherwise.
+    let pendingAppendMessage = null;
     // The query text last run and whether its exact row count was requested,
     // so auto refresh can repeat exactly that run.
     let lastRunRawSql = '';
@@ -4078,16 +4112,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     // The overlay only veils the rows: it starts below the pinned header and
     // filter rows so a filter can still be typed while the data is on its way.
+    // A page added by More or All (`append`) veils nothing: the rows already
+    // there stay usable, and only the header says what is being loaded.
     let dataLoadingActive = false;
-    function setDataLoading(active) {
+    const dataLoadingText = document.getElementById('dataLoadingText');
+    function setDataLoading(active, append) {
         dataLoadingActive = !!active;
+        const veil = !!active && !append;
         dataLoading.classList.toggle('hidden', !active);
+        if (dataLoadingText) dataLoadingText.textContent = dataLoadingLabel(active ? append : null);
         if (!dataLoadingOverlay) return;
-        if (active) {
+        if (veil) {
             const head = Math.round(tableHead.getBoundingClientRect().height);
             dataLoadingOverlay.style.setProperty('--data-overlay-top', head + 'px');
         }
-        dataLoadingOverlay.classList.toggle('visible', active);
+        dataLoadingOverlay.classList.toggle('visible', veil);
     }
 
     // Show data loading spinner. The actual initial load is kicked off from
@@ -5424,6 +5463,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 break;
             case 'rowsLoaded':
                 if (isStaleLoadAnswer(msg.loadId, latestLoadId)) break;
+                if (msg.append && !msg.autoRefresh) {
+                    receiveAppendedRows(msg);
+                    break;
+                }
                 handleRowsLoaded(msg);
                 break;
             case 'columnsLoaded':
@@ -5438,6 +5481,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 break;
             case 'loadingFinished':
                 if (isStaleLoadAnswer(msg.loadId, latestLoadId)) break;
+                endAppendWithoutRows();
                 setDataLoading(false);
                 break;
             case 'primaryKeysLoaded':
@@ -5519,6 +5563,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     if (!isAutoRefreshAnswer(msg)) break;
                     stopAutoRefresh('Stopped because the query failed');
                 }
+                endAppendWithoutRows();
                 showError(msg.text);
                 break;
             case 'autoRefreshStopped':
@@ -5679,6 +5724,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const auto = !!msg.autoRefresh && !isAppend;
         const autoLimit = auto ? autoRefreshInFlight.limit : null;
         const viewState = auto ? captureGridViewState() : null;
+        // Rows added by More or All keep the selection on the rows it was on.
+        const appendView = isAppend ? captureAppendView() : null;
         const keepHistory = auto && !editHistoryHasGridEdits(editHistory);
         const previousTotal = totalCount;
         if (auto) {
@@ -5686,6 +5733,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             currentOffset = 0;
         }
         appendPending = false;
+        appendRequest = null;
+        pendingAppendMessage = null;
         if (isFreshRowLoad(currentOffset, isAppend)) {
             allRows = incoming;
             // A fresh load replaces the row set entirely; any pending edits
@@ -5735,7 +5784,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         setDataLoading(false);
         updateRowCount();
-        renderTable();
+        if (appendView) {
+            // The header with the filter being typed in stays as it is.
+            renderBody();
+            restoreAppendView(appendView);
+        } else {
+            renderTable();
+        }
         // A fresh result is the new baseline for grid edits: per-row-index
         // snapshots from the previous rows no longer map, so they are dropped
         // while the query-text steps stay undoable. An auto refresh keeps a
@@ -5895,6 +5950,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         userPaged = stripped.hadLimit;
         currentOffset = 0;
         appendPending = false;
+        appendRequest = null;
+        pendingAppendMessage = null;
         allLoaded = false;
         moreAvailable = false;
         const sql = userPaged ? raw : (currentSql + ' LIMIT ' + PAGE_SIZE + ' OFFSET 0');
@@ -7859,7 +7916,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function loadMore() {
-        if (userPaged || !currentSql) return;
+        if (userPaged || !currentSql || appendRequest) return;
+        appendRequest = { kind: 'more', offset: currentOffset, allLoaded };
         currentOffset += PAGE_SIZE;
         appendPending = true;
         postLoadRows(currentSql + ' LIMIT ' + PAGE_SIZE + ' OFFSET ' + currentOffset, true);
@@ -7867,13 +7925,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     // Load every remaining row in a single request (the "Load All" button).
     function loadAll() {
-        if (userPaged || !currentSql) return;
+        if (userPaged || !currentSql || appendRequest) return;
         if (typeof totalCount === 'number' && remainingRowCount(allRows.length, totalCount) <= 0) return;
+        appendRequest = { kind: 'all', offset: currentOffset, allLoaded };
         currentOffset = allRows.length;
         appendPending = true;
         allLoaded = true;
-        loadMoreBtn.disabled = true;
-        loadAllBtn.disabled = true;
         // No LIMIT -> fetch all rows from the current offset onward.
         postLoadRows(currentSql + ' OFFSET ' + currentOffset, true);
     }
@@ -7886,10 +7943,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             setAutoRefreshBusyIndicator(false);
             scheduleAutoRefresh();
         }
-        setDataLoading(true);
+        if (append && appendRequest) {
+            // The rows already there stay usable; More and All wait for this page.
+            loadMoreBtn.disabled = true;
+            loadAllBtn.disabled = true;
+            setDataLoading(true, appendRequest.kind);
+        } else {
+            setDataLoading(true);
+        }
         // The id of the result being extended: a page that arrives after a new
         // query was started is dropped instead of being appended to it.
         vscode.postMessage({ command: 'loadRows', sql, baseSql: currentSql, append: !!append, loadId: latestLoadId });
+    }
+
+    // A More or All that ended without rows — it failed, or the host had
+    // nothing to send — leaves the result as it was, so both can be tried again.
+    function endAppendWithoutRows() {
+        if (!appendRequest) return;
+        currentOffset = appendRequest.offset;
+        allLoaded = appendRequest.allLoaded;
+        appendRequest = null;
+        appendPending = false;
+        pendingAppendMessage = null;
+        updateRowCount();
     }
 
     // ===== Auto refresh ========================================================
@@ -8086,6 +8162,75 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             applyCellRangeHighlight();
         }
     }
+
+    // ===== Rows added by More or All while the grid stays usable ==========
+
+    // Where the user is before rows are added: the scroll position, and the
+    // corners of the selection by the row they are on, as a client-side sort
+    // can put new rows between the old ones.
+    function captureAppendView() {
+        const corner = (p) => (p && renderPlan[p.r] ? { key: planRowKey(renderPlan[p.r]), c: p.c } : null);
+        return {
+            scrollTop: gridScroller ? gridScroller.scrollTop : 0,
+            scrollLeft: gridScroller ? gridScroller.scrollLeft : 0,
+            anchor: corner(rangeAnchor),
+            focus: corner(rangeFocus)
+        };
+    }
+
+    function restoreAppendView(view) {
+        if (gridScroller) {
+            gridScroller.scrollTop = view.scrollTop;
+            gridScroller.scrollLeft = view.scrollLeft;
+        }
+        renderWindow(false);
+        const corners = appendedSelection(view.anchor, view.focus, planIndexOfKey);
+        if (corners) {
+            rangeAnchor = corners.anchor;
+            rangeFocus = corners.focus;
+            applyCellRangeHighlight();
+        }
+    }
+
+    // A page of More or All is held back while the grid is in the middle of
+    // something its rows would take away.
+    function appendMustWaitNow() {
+        const active = document.activeElement;
+        return appendMustWait({
+            editingCell: !!(active && tableBody.contains(active) && active.isContentEditable),
+            multiEdit: !!multiEditBounds,
+            pointerHeld,
+            rangeDragging,
+            fillDragging,
+            lineDrag: !!lineDrag,
+            columnDrag: dragSourceCol !== null
+        });
+    }
+
+    function receiveAppendedRows(msg) {
+        if (appendMustWaitNow()) {
+            pendingAppendMessage = msg;
+            return;
+        }
+        handleRowsLoaded(msg);
+    }
+
+    // Add a held-back page once the edit or the drag has ended; one overtaken
+    // by a new query is dropped.
+    function flushPendingAppend() {
+        const msg = pendingAppendMessage;
+        if (!msg) return;
+        if (isStaleLoadAnswer(msg.loadId, latestLoadId)) {
+            pendingAppendMessage = null;
+            return;
+        }
+        if (appendMustWaitNow()) return;
+        pendingAppendMessage = null;
+        handleRowsLoaded(msg);
+    }
+    // After the blur of a cell has committed its edit, and after a drag ended.
+    tableBody.addEventListener('focusout', () => setTimeout(flushPendingAppend, 0));
+    document.addEventListener('mouseup', () => setTimeout(flushPendingAppend, 0));
 
     if (autoRefreshSelect) {
         autoRefreshSelect.addEventListener('change', () => {
@@ -10277,6 +10422,9 @@ if (typeof module !== 'undefined' && module.exports) {
         reorderColumns,
         reorderSelectColumns,
         isFreshRowLoad,
+        dataLoadingLabel,
+        appendMustWait,
+        appendedSelection,
         expectsRelationMetadata,
         exportProgressView,
         recordFieldReadonlyAttr,

@@ -22,6 +22,9 @@ const {
     formatConstraintSort,
     buildConstraintOrderBy,
     isFreshRowLoad,
+    dataLoadingLabel,
+    appendMustWait,
+    appendedSelection,
     expectsRelationMetadata,
     exportProgressView,
     recordFieldReadonlyAttr,
@@ -1073,3 +1076,73 @@ test('buildGroupEditSql warns when an outer join was flattened', () => {
 
 
 
+
+// ===== 3.5.3: More and All leave the loaded rows usable =====
+
+test('dataLoadingLabel names what is being loaded', () => {
+    assert.equal(dataLoadingLabel(null), 'Loading data...');
+    assert.equal(dataLoadingLabel(undefined), 'Loading data...');
+    assert.equal(dataLoadingLabel(false), 'Loading data...');
+    assert.equal(dataLoadingLabel('more'), 'Loading more rows...');
+    assert.equal(dataLoadingLabel('all'), 'Loading all rows...');
+});
+
+test('appendMustWait holds new rows back while a cell is edited or the mouse is busy', () => {
+    assert.equal(appendMustWait({}), false, 'an idle grid takes the rows at once');
+    assert.equal(appendMustWait(undefined), false);
+    for (const busy of ['editingCell', 'multiEdit', 'pointerHeld', 'rangeDragging', 'fillDragging', 'lineDrag', 'columnDrag']) {
+        assert.equal(appendMustWait({ [busy]: true }), true, busy);
+    }
+});
+
+test('appendedSelection keeps the selection on the rows it was on', () => {
+    const positions = new Map([['row:2', 2], ['row:4', 7], ['insert:0', 0]]);
+    const at = (key: string) => positions.get(key);
+    assert.deepEqual(appendedSelection({ key: 'row:2', c: 0 }, { key: 'row:4', c: 1 }, at), {
+        anchor: { r: 2, c: 0 },
+        focus: { r: 7, c: 1 }
+    }, 'a sort can move a row further down');
+    assert.deepEqual(appendedSelection({ key: 'insert:0', c: 1 }, { key: 'insert:0', c: 1 }, at), {
+        anchor: { r: 0, c: 1 },
+        focus: { r: 0, c: 1 }
+    });
+});
+
+test('appendedSelection drops a selection without corners or whose row is gone', () => {
+    const at = (key: string) => (key === 'row:1' ? 1 : undefined);
+    assert.equal(appendedSelection(null, null, at), null);
+    assert.equal(appendedSelection({ key: 'row:1', c: 0 }, { key: 'row:9', c: 0 }, at), null);
+});
+
+test('More and All show the small indicator and veil nothing; a new run still veils the rows', () => {
+    const js = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    const loading = js.slice(js.indexOf('function setDataLoading('), js.indexOf('// Show data loading spinner.'));
+    assert.match(loading, /const veil = !!active && !append;/);
+    assert.match(loading, /dataLoadingOverlay\.classList\.toggle\('visible', veil\)/);
+    assert.match(loading, /dataLoadingText\.textContent = dataLoadingLabel\(active \? append : null\)/);
+    const post = js.slice(js.indexOf('function postLoadRows('), js.indexOf('function endAppendWithoutRows('));
+    assert.match(post, /setDataLoading\(true, appendRequest\.kind\)/);
+    assert.match(post, /loadMoreBtn\.disabled = true;\s*loadAllBtn\.disabled = true;/, 'More and All wait for the page');
+    const html = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.html'), 'utf8');
+    assert.match(html, /<span class="loading-indicator" id="dataLoading"><span class="spinner"><\/span> <span id="dataLoadingText">Loading data\.\.\.<\/span><\/span>/);
+});
+
+test('a page of More or All keeps the header, the selection and an edit in progress', () => {
+    const js = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    assert.match(js, /if \(msg\.append && !msg\.autoRefresh\) \{\s*receiveAppendedRows\(msg\);/);
+    const loaded = js.slice(js.indexOf('function handleRowsLoaded('), js.indexOf('let fkLoaded = false;'));
+    assert.match(loaded, /if \(appendView\) \{[\s\S]*?renderBody\(\);\s*restoreAppendView\(appendView\);\s*\} else \{\s*renderTable\(\);/);
+    assert.match(js, /tableBody\.addEventListener\('focusout', \(\) => setTimeout\(flushPendingAppend, 0\)\)/);
+    assert.match(js, /document\.addEventListener\('mouseup', \(\) => setTimeout\(flushPendingAppend, 0\)\)/);
+});
+
+test('a More or All that fails or brings nothing can be tried again from where it was', () => {
+    const js = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    const end = js.slice(js.indexOf('function endAppendWithoutRows('), js.indexOf('// ===== Auto refresh'));
+    assert.match(end, /currentOffset = appendRequest\.offset;\s*allLoaded = appendRequest\.allLoaded;/);
+    assert.match(end, /updateRowCount\(\);/);
+    assert.match(js, /case 'loadingFinished':[\s\S]{0,120}endAppendWithoutRows\(\);/);
+    assert.match(js, /endAppendWithoutRows\(\);\s*showError\(msg\.text\);/);
+    const run = js.slice(js.indexOf('function runQuery('), js.indexOf('function isDefaultQueryText('));
+    assert.match(run, /appendRequest = null;\s*pendingAppendMessage = null;/, 'a new run forgets a page still on its way');
+});
