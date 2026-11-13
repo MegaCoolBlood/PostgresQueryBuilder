@@ -15,6 +15,8 @@ const {
     appendSql,
     assembleWhereQuery,
     assembleOrderQuery,
+    shouldFormatGeneratedQuery,
+    replaceHistoryQuery,
     formatSql,
     buildNullConstraintClause,
     constraintIsUnary,
@@ -350,6 +352,38 @@ test('endsInLineComment only reports a -- comment that runs to the end', () => {
 test('appendSql glues with a space normally and with a line break after a comment', () => {
     assert.equal(appendSql('SELECT 1', ' LIMIT ', '50'), 'SELECT 1 LIMIT 50');
     assert.equal(appendSql('SELECT 1 -- note', ' LIMIT ', '50'), 'SELECT 1 -- note\nLIMIT 50');
+});
+
+// ===== 3.5.4: generated queries are laid out by the extension's formatter =====
+
+test('shouldFormatGeneratedQuery formats a written query but never one with :name placeholders', () => {
+    assert.equal(shouldFormatGeneratedQuery("SELECT * FROM t WHERE state = 'active'"), true);
+    assert.equal(shouldFormatGeneratedQuery("SELECT * FROM t WHERE a = ':x' -- :y"), true);
+    assert.equal(shouldFormatGeneratedQuery('SELECT * FROM t WHERE b=:other'), false);
+    assert.equal(shouldFormatGeneratedQuery('   '), false);
+});
+
+test('replaceHistoryQuery puts the formatted text into the steps that showed the generated one', () => {
+    const grid = { modified: { a: 1 } };
+    const history = [
+        { query: 'SELECT 1', ...grid },
+        { query: 'SELECT a FROM t WHERE x = 1', ...grid }
+    ];
+    const replaced = replaceHistoryQuery(history, 'SELECT a FROM t WHERE x = 1', 'SELECT a\nFROM t\nWHERE x = 1');
+    assert.deepEqual(replaced.map((s: any) => s.query), ['SELECT 1', 'SELECT a\nFROM t\nWHERE x = 1']);
+    assert.deepEqual(replaced[1].modified, { a: 1 });
+    assert.equal(history[1].query, 'SELECT a FROM t WHERE x = 1', 'the old history is not changed in place');
+});
+
+test('every query the Data Viewer writes and runs waits for the formatter first', () => {
+    const js = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    assert.doesNotMatch(js, /setQueryText\([^;]*\);\s*runQuery\(\);/, 'run through setQueryTextAndRun instead');
+    assert.doesNotMatch(js, /mergeWhereClausesIntoQuery\([^;]*\);\s*runQuery\(\);/, 'mergeWhereClausesIntoQuery runs the query itself');
+    const setText = js.slice(js.indexOf('function setQueryText('), js.indexOf('function setQueryTextAndRun('));
+    assert.match(setText, /queryEditor\.formatQuietly\(text\)/);
+    assert.match(setText, /queryInput\.value === shown/, 'text typed in the meantime is kept');
+    const editor = fs.readFileSync(path.join(__dirname, '../../../src/webview/queryEditor.js'), 'utf8');
+    assert.match(editor, /request\('format', \{ sql, quiet: true \}/);
 });
 
 // ===== 1.1.0: multi-line formatted SELECT in the data viewer (formatSql) =====

@@ -1425,6 +1425,21 @@ function formatSql(sql) {
     return lines.join('\n');
 }
 
+// Whether a query the Data Viewer wrote into the query bar goes to the
+// extension's formatter as well: not when it is empty, and not while it holds
+// :name placeholders, which the formatter can split apart (`b=:name`).
+function shouldFormatGeneratedQuery(text) {
+    const s = String(text == null ? '' : text);
+    return s.trim() !== '' && placeholderNames(s).length === 0;
+}
+
+// The undo history with every step that shows the query `from` showing `to`
+// instead, so the formatter's layout of a query that was already recorded does
+// not become an undo step of its own.
+function replaceHistoryQuery(history, from, to) {
+    return (history || []).map(step => (step && step.query === from ? Object.assign({}, step, { query: to }) : step));
+}
+
 // ===== Group Edit: turn the current SELECT into an UPDATE/DELETE template =====
 
 // Split a fragment on top-level whitespace, ignoring whitespace inside string
@@ -4211,12 +4226,38 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // view or a read-only custom query.
     setDataLoading(true);
 
-    // Set the query bar text, pretty-printed as a formatted multi-line SELECT,
-    // and resize the textarea to fit.
+    // Set the query bar text and resize the textarea to fit. The text is laid
+    // out by the built-in pretty-printer at once and then, like the Format
+    // button does, by the extension's formatter. Resolves to true once that
+    // has happened (or failed) and no newer text was set meanwhile.
+    let queryFormatSeq = 0;
     function setQueryText(sql) {
-        queryInput.value = formatSql(sql == null ? '' : String(sql));
+        const text = formatSql(sql == null ? '' : String(sql));
+        queryInput.value = text;
+        // What the editor shows, which is what the undo history records.
+        const shown = queryInput.value;
         autoSizeQueryInput();
         recordEditHistory();
+        const seq = ++queryFormatSeq;
+        if (!queryEditor || !queryEditor.formatQuietly || !shouldFormatGeneratedQuery(text)) {
+            return Promise.resolve(true);
+        }
+        return queryEditor.formatQuietly(text).then(formatted => {
+            if (seq !== queryFormatSeq) return false;
+            // Text typed in the meantime is never overwritten.
+            if (formatted !== null && formatted !== text && queryInput.value === shown) {
+                queryInput.value = formatted;
+                autoSizeQueryInput();
+                editHistory = replaceHistoryQuery(editHistory, shown, queryInput.value);
+            }
+            return true;
+        }, () => seq === queryFormatSeq);
+    }
+
+    // Show `sql` in the query bar and run it once it is formatted, unless a
+    // newer query was set in the meantime — that one runs instead.
+    function setQueryTextAndRun(sql) {
+        return setQueryText(sql).then(latest => { if (latest) runQuery(); });
     }
 
     // Grow/shrink the query textarea to fit its content (bounded by the CSS
@@ -5716,14 +5757,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         updateQueryParamsButton();
         // Both entry points start by running a query: a table view simply starts
         // with the default query for that table.
-        setQueryText(msg.sql || getDefaultQuery());
+        const shown = setQueryText(msg.sql || getDefaultQuery());
         applyCapabilities(caps);
         if (msg.awaitParameters && savedQueryParameters.length) {
             // The template cannot run as-is: ask for the placeholder values and
             // let the dialog trigger the first query.
             openQueryParamsDialog(true);
         } else {
-            runQuery();
+            shown.then(latest => { if (latest) runQuery(); });
         }
         vscode.postMessage({ command: 'getQueryHistory' });
     }
@@ -6082,7 +6123,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (clause) clausesByCol[cond.column] = clause;
         });
         mergeWhereClausesIntoQuery(clausesByCol);
-        runQuery();
     }
 
     function buildMappingConditionClause(cond) {
@@ -6097,14 +6137,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const fmtCol = formatIdentifier(colName);
         const clause = buildNullConstraintClause(fmtCol, isNull);
         mergeWhereClausesIntoQuery({ [colName]: clause });
-        runQuery();
     }
 
+    // Write the column conditions into the query's WHERE and run it.
     function mergeWhereClausesIntoQuery(clausesByCol) {
         const baseSql = (queryInput.value || '').trim() || `SELECT * FROM ${getDefaultTableReference()}`;
         const parsed = parseSqlForWhere(baseSql);
         const existing = mergeWhereClauses(parsed.where ? splitWhereByAnd(parsed.where) : [], clausesByCol);
-        setQueryText(assembleWhereQuery(parsed, existing));
+        setQueryTextAndRun(assembleWhereQuery(parsed, existing));
     }
 
     function updateRowCount() {
@@ -6442,7 +6482,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
         // Merge into the existing SQL, preserving user-written clauses.
         mergeWhereClausesIntoQuery(newClausesByCol);
-        runQuery();
     }
 
     function showCellContextMenu(e, td) {
@@ -6576,8 +6615,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     );
                     const clauses = parsed.where ? splitWhereByAnd(parsed.where) : [];
                     clauses.push(excludeClause);
-                    setQueryText(assembleWhereQuery(parsed, clauses));
-                    runQuery();
+                    setQueryTextAndRun(assembleWhereQuery(parsed, clauses));
                 }
             });
         }
@@ -6762,8 +6800,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             .split(',')
             .map(p => p.trim())
             .filter(p => p && !orderByMatchesColumn(p, colName));
-        setQueryText(assembleOrderQuery(parsed.base, parts));
-        runQuery();
+        setQueryTextAndRun(assembleOrderQuery(parsed.base, parts));
     }
 
     function applyOrderBy(colName, direction, mode) {
@@ -6781,16 +6818,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 .filter(p => p && !orderByMatchesColumn(p, colName));
             newOrder.push(`${fmtCol} ${direction}`);
         }
-        setQueryText(assembleOrderQuery(parsed.base, newOrder));
-        runQuery();
+        setQueryTextAndRun(assembleOrderQuery(parsed.base, newOrder));
     }
 
     function clearOrderBy() {
         const baseSql = (queryInput.value || '').trim();
         if (!baseSql) return;
         const parsed = parseSqlForOrder(baseSql);
-        setQueryText(parsed.base);
-        runQuery();
+        setQueryTextAndRun(parsed.base);
     }
 
     // A table with many foreign keys produces a menu nobody can scan, so from
@@ -8706,8 +8741,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             sorts: permanentSorts
         });
         closeConstraintsDialog();
-        setQueryText(getDefaultQuery());
-        runQuery();
+        setQueryTextAndRun(getDefaultQuery());
     }
 
     // ===== Group Edit Logic =====
@@ -8889,8 +8923,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
         queryParamsPendingInitialRun = false;
         closeQueryParamsDialog();
-        setQueryText(sql);
-        runQuery();
+        setQueryTextAndRun(sql);
     }
 
     // Reflect the query stored by the panel so a second "Bookmark Query"
@@ -10454,6 +10487,8 @@ if (typeof module !== 'undefined' && module.exports) {
         appendSql,
         assembleWhereQuery,
         assembleOrderQuery,
+        shouldFormatGeneratedQuery,
+        replaceHistoryQuery,
         hasSqlComment,
         collapseSqlWhitespace,
         splitTopLevelCommas,

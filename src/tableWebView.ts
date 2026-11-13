@@ -229,19 +229,24 @@ export function queryEditorAssets(
 /**
  * Format the query bar's statement with the PL/pgSQL formatter and the user's
  * settings — the same result as Shift+Alt+F in a .sql file. A rejected or
- * disabled run is explained to the user and leaves the text unchanged.
+ * disabled run is explained to the user and leaves the text unchanged; `quiet`
+ * suppresses those messages for the automatic formatting of generated queries.
  */
-export function formatQueryBarText(sql: string): { ok: boolean; text: string } {
+export function formatQueryBarText(sql: string, quiet = false): { ok: boolean; text: string } {
     if (!isFormatterEnabled()) {
-        vscode.window.showInformationMessage('The SQL formatter is turned off (postgresQueryBuilder.format.enable).');
+        if (!quiet) {
+            vscode.window.showInformationMessage('The SQL formatter is turned off (postgresQueryBuilder.format.enable).');
+        }
         return { ok: false, text: sql };
     }
     const outcome = formatSqlChecked(sql, getFormatOptions());
     if (!outcome.ok) {
-        vscode.window.showWarningMessage(`Formatting skipped to protect your code: ${outcome.reason ?? 'unknown reason'}`);
+        if (!quiet) {
+            vscode.window.showWarningMessage(`Formatting skipped to protect your code: ${outcome.reason ?? 'unknown reason'}`);
+        }
         return { ok: false, text: sql };
     }
-    if (outcome.checkWarnings && outcome.checkWarnings.length > 0) {
+    if (!quiet && outcome.checkWarnings && outcome.checkWarnings.length > 0) {
         vscode.window.showWarningMessage(`Formatted with warnings: ${outcome.checkWarnings.join(' ')}`);
     }
     // A query box has no use for the trailing newline a file gets.
@@ -1690,7 +1695,7 @@ export class TableWebViewManager {
             } else if (message.kind === 'columns') {
                 result = await loadCompletionColumns(this.connectionManager, String(message.schema ?? ''), String(message.table ?? ''));
             } else if (message.kind === 'format') {
-                result = formatQueryBarText(String(message.sql ?? ''));
+                result = formatQueryBarText(String(message.sql ?? ''), message.quiet === true);
             }
         } catch (err: unknown) {
             Logger.error('TableWebViewManager.handleQueryEditorRequest', err);

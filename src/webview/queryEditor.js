@@ -682,6 +682,13 @@
             return result && result.ok ? result.text : null;
         }
 
+        // The formatter's text for a query the Data Viewer wrote itself, or null.
+        // Never shows a message: the user did not ask for it.
+        async function formatQuietly(sql) {
+            const result = await request('format', { sql, quiet: true }, 5000);
+            return result && result.ok ? result.text : null;
+        }
+
         // Format with the extension's PL/pgSQL formatter. Without Monaco the
         // textarea is rewritten directly as one undo step.
         async function format() {
@@ -895,7 +902,8 @@
         return {
             isEditor: () => !!editor,
             hasFocus: () => !!editor && (editor.hasTextFocus() || editor.hasWidgetFocus()),
-            format
+            format,
+            formatQuietly
         };
     }
 

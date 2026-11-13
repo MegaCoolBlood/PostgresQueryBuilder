@@ -1387,6 +1387,31 @@ test('formatQueryBarText leaves the text alone and says why when the formatter i
         vscodeStub.window.showInformationMessage = originalInfo;
     }
 });
+
+test('query editor: a quiet format request formats like Format but never shows a message', async () => {
+    const { panel, send } = await openCustomQueryPanel();
+    const sql = "SELECT psa.pid FROM pg_stat_activity AS psa\n--WHERE x > 0\nWHERE state::text ILIKE '%active%' ORDER BY query_start ASC";
+    await send({ command: 'queryEditorRequest', requestId: 5, kind: 'format', sql, quiet: true });
+    const reply = panel.posted.find((m: any) => m.command === 'queryEditorResponse');
+    assert.equal(reply.result.ok, true);
+    assert.equal(reply.result.text, formatSqlChecked(sql, getFormatOptions()).text.replace(/\s+$/, ''));
+    assert.match(reply.result.text, /\n {2}--WHERE x > 0\nWHERE state::TEXT ILIKE '%active%'\nORDER BY query_start ASC$/);
+});
+
+test('formatQueryBarText stays silent when asked to, also with the formatter turned off', () => {
+    const info: string[] = [];
+    const originalConfig = vscodeStub.workspace.getConfiguration;
+    const originalInfo = vscodeStub.window.showInformationMessage;
+    vscodeStub.workspace.getConfiguration = () => ({ get: <T>(key: string, def?: T) => (key === 'format.enable' ? false : def) as T });
+    vscodeStub.window.showInformationMessage = (msg: string) => { info.push(msg); return Promise.resolve(undefined); };
+    try {
+        assert.deepEqual(formatQueryBarText('select 1', true), { ok: false, text: 'select 1' });
+        assert.deepEqual(info, []);
+    } finally {
+        vscodeStub.workspace.getConfiguration = originalConfig;
+        vscodeStub.window.showInformationMessage = originalInfo;
+    }
+});
 // ===== Auto refresh =====
 
 /** Connection stub that records every statement the panel runs against it. */
