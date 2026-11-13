@@ -1062,6 +1062,82 @@ function stripTrailingLimitOffset(sql) {
     };
 }
 
+// When a -- or /* */ comment starts at `i`, the index just past it (a line
+// comment ends before its line break); otherwise -1.
+function sqlCommentEnd(sql, i) {
+    if (sql[i] === '-' && sql[i + 1] === '-') {
+        const nl = sql.indexOf('\n', i + 2);
+        return nl === -1 ? sql.length : nl;
+    }
+    if (sql[i] === '/' && sql[i + 1] === '*') {
+        let j = i + 2, depth = 1;
+        while (j < sql.length && depth > 0) {
+            if (sql[j] === '/' && sql[j + 1] === '*') { depth++; j += 2; }
+            else if (sql[j] === '*' && sql[j + 1] === '/') { depth--; j += 2; }
+            else j++;
+        }
+        return j;
+    }
+    return -1;
+}
+
+// True when the end of `sql` lies inside a -- line comment, so that anything
+// appended on the same line would be commented out as well.
+function endsInLineComment(sql) {
+    const s = String(sql == null ? '' : sql);
+    // Comments are blank in the mask, string literals are not.
+    const masked = maskSqlStructure(s);
+    let i = 0;
+    while (i < s.length) {
+        const end = masked[i] === ' ' ? sqlCommentEnd(s, i) : -1;
+        if (end === -1) { i++; continue; }
+        if (s[i] === '-' && end === s.length) return true;
+        i = end;
+    }
+    return false;
+}
+
+// Appends `text` to `sql` with `glue` (e.g. ' WHERE ', ' AND ', ', ') in
+// between. After a trailing -- comment the glue starts a new line instead, so
+// the appended text is not swallowed by the comment.
+function appendSql(sql, glue, text) {
+    const base = String(sql == null ? '' : sql);
+    if (!endsInLineComment(base)) return base + glue + text;
+    return base + '\n' + glue.replace(/^[ \t]+/, '') + text;
+}
+
+function joinSqlParts(parts, glue) {
+    return (parts || []).reduce((sql, part, i) => (i === 0 ? part : appendSql(sql, glue, part)), '');
+}
+
+// Reassembles a query split by parseSqlForWhere with the given WHERE conditions.
+function assembleWhereQuery(parsed, clauses) {
+    let sql = parsed.base;
+    if (clauses && clauses.length > 0) sql = appendSql(sql, ' WHERE ', joinSqlParts(clauses, ' AND '));
+    if (parsed.orderBy) sql = appendSql(sql, ' ORDER BY ', parsed.orderBy);
+    return sql;
+}
+
+// Reassembles a query split by parseSqlForOrder with the given ORDER BY items.
+function assembleOrderQuery(base, orderParts) {
+    return orderParts && orderParts.length > 0
+        ? appendSql(base, ' ORDER BY ', joinSqlParts(orderParts, ', '))
+        : base;
+}
+
+// Splits off the first `ORDER BY` of the query as the query bar always has,
+// but ignores one inside a comment or string literal and keeps a comment that
+// stands in front of it in the base. Returns null when there is none.
+function splitTrailingOrderBy(s) {
+    const m = /\s+ORDER\s+BY\s+([\s\S]+)$/i.exec(maskSqlStructure(s));
+    if (!m) return null;
+    const keywordAt = m.index + m[0].length - m[0].replace(/^\s+/, '').length;
+    return {
+        base: s.substring(0, keywordAt).replace(/\s+$/, ''),
+        orderBy: s.substring(m.index + m[0].length - m[1].length).trim()
+    };
+}
+
 function findTopLevelKeywordIndex(sql, keyword) {
     const upper = keyword.toUpperCase();
     let depth = 0;
@@ -1078,6 +1154,8 @@ function findTopLevelKeywordIndex(sql, keyword) {
             i++;
             continue;
         }
+        const commentEnd = sqlCommentEnd(sql, i);
+        if (commentEnd !== -1) { i = commentEnd; continue; }
         if (ch === "'" || ch === '"') { inStr = true; strCh = ch; i++; continue; }
         if (ch === '(') { depth++; i++; continue; }
         if (ch === ')') { depth--; i++; continue; }
@@ -1100,11 +1178,10 @@ function parseSqlForWhere(sql) {
     s = s.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$/i, '');
     // Strip trailing ORDER BY ...
     let orderBy = '';
-    const ordRe = /\s+ORDER\s+BY\s+([\s\S]+)$/i;
-    const ordMatch = s.match(ordRe);
-    if (ordMatch) {
-        orderBy = ordMatch[1].trim();
-        s = s.substring(0, ordMatch.index);
+    const ordSplit = splitTrailingOrderBy(s);
+    if (ordSplit) {
+        orderBy = ordSplit.orderBy;
+        s = ordSplit.base;
     }
     // Find top-level WHERE (best-effort: first WHERE at paren depth 0, outside strings)
     const whereIdx = findTopLevelKeywordIndex(s, 'WHERE');
@@ -1137,6 +1214,8 @@ function splitWhereByAnd(whereClause) {
             i++;
             continue;
         }
+        const commentEnd = sqlCommentEnd(whereClause, i);
+        if (commentEnd !== -1) { buf += whereClause.substring(i, commentEnd); i = commentEnd; continue; }
         if (ch === "'" || ch === '"') { inStr = true; strCh = ch; buf += ch; i++; continue; }
         if (ch === '(') { depth++; buf += ch; i++; continue; }
         if (ch === ')') { depth--; buf += ch; i++; continue; }
@@ -1158,8 +1237,9 @@ function splitWhereByAnd(whereClause) {
 }
 
 function whereClauseTargetsColumn(clause, colName) {
+    const code = String(clause).replace(/^(?:\s*(?:--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/))*/, '');
     // Match an optional schema/table prefix then the column identifier (quoted or bare)
-    const m = clause.match(/^\s*(?:(?:"[^"]+"|[A-Za-z_][\w$]*)\s*\.\s*)*("[^"]+"|[A-Za-z_][\w$]*)/);
+    const m = code.match(/^\s*(?:(?:"[^"]+"|[A-Za-z_][\w$]*)\s*\.\s*)*("[^"]+"|[A-Za-z_][\w$]*)/);
     if (!m) return false;
     let tok = m[1];
     if (tok.startsWith('"') && tok.endsWith('"')) tok = tok.substring(1, tok.length - 1);
@@ -1185,11 +1265,8 @@ function parseSqlForOrder(sql) {
     // Strip trailing LIMIT [OFFSET] (numeric only — generated by us)
     s = s.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$/i, '');
     // Extract trailing ORDER BY ... up to end
-    const orderRe = /\s+ORDER\s+BY\s+([\s\S]+)$/i;
-    const m = s.match(orderRe);
-    if (m) {
-        return { base: s.substring(0, m.index), orderBy: m[1].trim() };
-    }
+    const split = splitTrailingOrderBy(s);
+    if (split) return split;
     return { base: s, orderBy: '' };
 }
 
@@ -2610,7 +2687,7 @@ function autoRefreshLoadPlan(state) {
     const base = String(s.currentSql || '');
     if (s.allLoaded) return { sql: base, limit: null };
     const limit = Math.max(pageSize, Math.round(Number(s.loadedRows) || 0));
-    return { sql: base + ' LIMIT ' + limit + ' OFFSET 0', limit };
+    return { sql: appendSql(base, ' LIMIT ', limit + ' OFFSET 0'), limit };
 }
 
 // Why a due auto refresh does not run now: '' when it may run. 'busy' covers
@@ -5954,7 +6031,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         pendingAppendMessage = null;
         allLoaded = false;
         moreAvailable = false;
-        const sql = userPaged ? raw : (currentSql + ' LIMIT ' + PAGE_SIZE + ' OFFSET 0');
+        const sql = userPaged ? raw : appendSql(currentSql, ' LIMIT ', PAGE_SIZE + ' OFFSET 0');
         const wantTotal = !userPaged && isDefaultQueryText(raw);
         lastRunRawSql = raw;
         lastRunWantTotal = wantTotal;
@@ -6027,10 +6104,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const baseSql = (queryInput.value || '').trim() || `SELECT * FROM ${getDefaultTableReference()}`;
         const parsed = parseSqlForWhere(baseSql);
         const existing = mergeWhereClauses(parsed.where ? splitWhereByAnd(parsed.where) : [], clausesByCol);
-        let sql = parsed.base;
-        if (existing.length > 0) sql += ` WHERE ${existing.join(' AND ')}`;
-        if (parsed.orderBy) sql += ` ORDER BY ${parsed.orderBy}`;
-        setQueryText(sql);
+        setQueryText(assembleWhereQuery(parsed, existing));
     }
 
     function updateRowCount() {
@@ -6502,9 +6576,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     );
                     const clauses = parsed.where ? splitWhereByAnd(parsed.where) : [];
                     clauses.push(excludeClause);
-                    let sql = parsed.base + ` WHERE ${clauses.join(' AND ')}`;
-                    if (parsed.orderBy) sql += ` ORDER BY ${parsed.orderBy}`;
-                    setQueryText(sql);
+                    setQueryText(assembleWhereQuery(parsed, clauses));
                     runQuery();
                 }
             });
@@ -6690,9 +6762,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             .split(',')
             .map(p => p.trim())
             .filter(p => p && !orderByMatchesColumn(p, colName));
-        setQueryText(parts.length > 0
-            ? `${parsed.base} ORDER BY ${parts.join(', ')}`
-            : parsed.base);
+        setQueryText(assembleOrderQuery(parsed.base, parts));
         runQuery();
     }
 
@@ -6702,17 +6772,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const parsed = parseSqlForOrder(baseSql);
         let newOrder;
         if (mode === 'replace' || !parsed.orderBy) {
-            newOrder = `${fmtCol} ${direction}`;
+            newOrder = [`${fmtCol} ${direction}`];
         } else {
             // Drop any existing entry that targets the same column
-            const parts = parsed.orderBy
+            newOrder = parsed.orderBy
                 .split(',')
                 .map(p => p.trim())
                 .filter(p => p && !orderByMatchesColumn(p, colName));
-            parts.push(`${fmtCol} ${direction}`);
-            newOrder = parts.join(', ');
+            newOrder.push(`${fmtCol} ${direction}`);
         }
-        setQueryText(`${parsed.base} ORDER BY ${newOrder}`);
+        setQueryText(assembleOrderQuery(parsed.base, newOrder));
         runQuery();
     }
 
@@ -7920,7 +7989,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         appendRequest = { kind: 'more', offset: currentOffset, allLoaded };
         currentOffset += PAGE_SIZE;
         appendPending = true;
-        postLoadRows(currentSql + ' LIMIT ' + PAGE_SIZE + ' OFFSET ' + currentOffset, true);
+        postLoadRows(appendSql(currentSql, ' LIMIT ', PAGE_SIZE + ' OFFSET ' + currentOffset), true);
     }
 
     // Load every remaining row in a single request (the "Load All" button).
@@ -10381,6 +10450,10 @@ if (typeof module !== 'undefined' && module.exports) {
         whereClauseTargetsColumn,
         mergeWhereClauses,
         parseSqlForOrder,
+        endsInLineComment,
+        appendSql,
+        assembleWhereQuery,
+        assembleOrderQuery,
         hasSqlComment,
         collapseSqlWhitespace,
         splitTopLevelCommas,

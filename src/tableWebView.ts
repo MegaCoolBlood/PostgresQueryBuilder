@@ -160,7 +160,9 @@ export function buildColumnProbeSql(singleStatement: string): string | null {
     if (!/^(select|with)\b/i.test(trimmed)) {
         return null;
     }
-    return `SELECT * FROM (${trimmed}) AS _pqb_cols LIMIT 0`;
+    // A -- comment on the last line would swallow the closing parenthesis.
+    const close = /--[^\n]*$/.test(trimmed) ? '\n)' : ')';
+    return `SELECT * FROM (${trimmed}${close} AS _pqb_cols LIMIT 0`;
 }
 
 /**

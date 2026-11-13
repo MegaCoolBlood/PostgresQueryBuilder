@@ -1054,6 +1054,16 @@ test('getQueryRowCount strips a trailing semicolon before wrapping the query', a
     assert.equal(queryCalls[0].sql, 'SELECT COUNT(*) AS count FROM (SELECT 1) AS _pqb_count');
 });
 
+test('getQueryRowCount closes the subquery on a new line after a trailing line comment', async () => {
+    const { runner, queryCalls } = createRunner({
+        queryHandler: () => ({ rows: [{ count: '1' }] })
+    });
+
+    await runner.getQueryRowCount('SELECT 1 -- just one');
+
+    assert.equal(queryCalls[0].sql, 'SELECT COUNT(*) AS count FROM (SELECT 1 -- just one\n) AS _pqb_count');
+});
+
 // ===== 2.2.2: capabilities resolved from the result metadata =====
 
 test('resolveEditPlan maps result fields to their source table and primary key', async () => {

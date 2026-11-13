@@ -11,6 +11,10 @@ const {
     whereClauseTargetsColumn,
     mergeWhereClauses,
     parseSqlForOrder,
+    endsInLineComment,
+    appendSql,
+    assembleWhereQuery,
+    assembleOrderQuery,
     formatSql,
     buildNullConstraintClause,
     constraintIsUnary,
@@ -256,6 +260,96 @@ test('parseSqlForOrder strips a generated LIMIT before extracting ORDER BY', () 
         parseSqlForOrder('SELECT * FROM t ORDER BY a, b DESC LIMIT 50 OFFSET 0'),
         { base: 'SELECT * FROM t', orderBy: 'a, b DESC' }
     );
+});
+
+// ===== 3.5.4: comments in the query bar =====
+
+const COMMENTED_ACTIVITY_QUERY = [
+    'SELECT',
+    'psa.pid,',
+    'psa.state',
+    'FROM pg_stat_activity AS psa',
+    '--WHERE cardinality(pg_blocking_pids(psa.pid)) > 0',
+    'ORDER BY query_start ASC'
+].join('\n');
+
+test('a column filter on a query with a commented-out WHERE line is not swallowed by the comment', () => {
+    const parsed = parseSqlForWhere(COMMENTED_ACTIVITY_QUERY);
+    assert.equal(parsed.where, '');
+    assert.equal(parsed.orderBy, 'query_start ASC');
+    assert.equal(
+        assembleWhereQuery(parsed, [`"state" = 'active'`]),
+        [
+            'SELECT',
+            'psa.pid,',
+            'psa.state',
+            'FROM pg_stat_activity AS psa',
+            '--WHERE cardinality(pg_blocking_pids(psa.pid)) > 0',
+            `WHERE "state" = 'active' ORDER BY query_start ASC`
+        ].join('\n')
+    );
+});
+
+test('a second filter round trip keeps the comment and replaces only the generated WHERE', () => {
+    const once = assembleWhereQuery(parseSqlForWhere(COMMENTED_ACTIVITY_QUERY), [`"state" = 'active'`]);
+    const parsed = parseSqlForWhere(once);
+    assert.equal(parsed.where, `"state" = 'active'`);
+    assert.equal(
+        assembleWhereQuery(parsed, mergeWhereClauses(splitWhereByAnd(parsed.where), { state: `"state" = 'idle'` })),
+        once.replace(`'active'`, `'idle'`)
+    );
+});
+
+test('parseSqlForWhere ignores WHERE and ORDER BY inside comments', () => {
+    const parsed = parseSqlForWhere('SELECT * FROM t -- WHERE a = 1 ORDER BY x\n/* WHERE b = 2 */');
+    assert.deepEqual(parsed, {
+        base: 'SELECT * FROM t -- WHERE a = 1 ORDER BY x\n/* WHERE b = 2 */',
+        where: '',
+        orderBy: ''
+    });
+});
+
+test('parseSqlForOrder keeps a comment that stands right before ORDER BY in the base', () => {
+    assert.deepEqual(
+        parseSqlForOrder('SELECT * FROM t -- all rows\nORDER BY a'),
+        { base: 'SELECT * FROM t -- all rows', orderBy: 'a' }
+    );
+});
+
+test('an apostrophe in a comment inside the WHERE does not hide the following conditions', () => {
+    const parsed = parseSqlForWhere("SELECT * FROM t WHERE a = 1 -- don't touch\nAND b = 2 ORDER BY c");
+    assert.equal(parsed.orderBy, 'c');
+    assert.deepEqual(splitWhereByAnd(parsed.where), ["a = 1 -- don't touch", 'b = 2']);
+});
+
+test('assembleWhereQuery starts a new line after a condition that ends in a comment', () => {
+    assert.equal(
+        assembleWhereQuery({ base: 'SELECT * FROM t', where: '', orderBy: 'c' }, ['a = 1 -- keep', 'b = 2']),
+        'SELECT * FROM t WHERE a = 1 -- keep\nAND b = 2 ORDER BY c'
+    );
+});
+
+test('whereClauseTargetsColumn looks past a leading comment', () => {
+    assert.equal(whereClauseTargetsColumn('-- only open ones\n"status" = 1', 'status'), true);
+    assert.equal(whereClauseTargetsColumn('/* x */ status = 1', 'status'), true);
+});
+
+test('assembleOrderQuery adds ORDER BY on a new line after a trailing comment', () => {
+    assert.equal(assembleOrderQuery('SELECT * FROM t -- note', ['a ASC']), 'SELECT * FROM t -- note\nORDER BY a ASC');
+    assert.equal(assembleOrderQuery('SELECT * FROM t', ['a ASC', 'b DESC']), 'SELECT * FROM t ORDER BY a ASC, b DESC');
+    assert.equal(assembleOrderQuery('SELECT * FROM t', []), 'SELECT * FROM t');
+});
+
+test('endsInLineComment only reports a -- comment that runs to the end', () => {
+    assert.equal(endsInLineComment('SELECT 1 -- note'), true);
+    assert.equal(endsInLineComment('SELECT 1 -- note\nFROM t'), false);
+    assert.equal(endsInLineComment("SELECT '--' AS x"), false);
+    assert.equal(endsInLineComment('SELECT 1 /* -- */'), false);
+});
+
+test('appendSql glues with a space normally and with a line break after a comment', () => {
+    assert.equal(appendSql('SELECT 1', ' LIMIT ', '50'), 'SELECT 1 LIMIT 50');
+    assert.equal(appendSql('SELECT 1 -- note', ' LIMIT ', '50'), 'SELECT 1 -- note\nLIMIT 50');
 });
 
 // ===== 1.1.0: multi-line formatted SELECT in the data viewer (formatSql) =====

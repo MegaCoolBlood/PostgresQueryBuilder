@@ -570,8 +570,10 @@ export class QueryRunner {
      */
     async getQueryRowCount(sql: string): Promise<number> {
         const trimmed = sql.trim().replace(/;\s*$/, '');
+        // A -- comment on the last line would swallow the closing parenthesis.
+        const close = /--[^\n]*$/.test(trimmed) ? '\n)' : ')';
         const result = await this.executor.query(
-            `SELECT COUNT(*) AS count FROM (${trimmed}) AS _pqb_count`
+            `SELECT COUNT(*) AS count FROM (${trimmed}${close} AS _pqb_count`
         );
         return parseInt(result.rows[0].count, 10);
     }

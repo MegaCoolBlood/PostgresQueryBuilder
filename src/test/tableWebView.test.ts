@@ -119,6 +119,13 @@ test('buildColumnProbeSql is case-insensitive to the leading keyword', () => {
     );
 });
 
+test('buildColumnProbeSql closes the subquery on a new line after a trailing line comment', () => {
+    assert.equal(
+        buildColumnProbeSql('SELECT 1\n-- the one'),
+        'SELECT * FROM (SELECT 1\n-- the one\n) AS _pqb_cols LIMIT 0'
+    );
+});
+
 test('buildColumnProbeSql returns null for non-SELECT statements', () => {
     assert.equal(buildColumnProbeSql('UPDATE t SET a = 1'), null);
     assert.equal(buildColumnProbeSql('INSERT INTO t VALUES (1)'), null);
