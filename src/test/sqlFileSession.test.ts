@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { DbSessionManager } from '../dbSession';
+import { DbSessionManager, type CommitMode } from '../dbSession';
 import { exportChoiceProblem } from '../exportInstructions';
 import {
     SqlFileSessions,
@@ -244,8 +244,13 @@ class FakeClient extends EventEmitter {
     /** Every query as it was passed, a config object included. */
     configs: Array<string | { text: string; rowMode?: string }> = [];
     ended = false;
+    /** What `getTransactionStatus()` reports; only tests with a commit mode keep it up to date. */
+    txStatus = 'I';
     constructor(readonly processID: number, private readonly onQuery?: (client: FakeClient, sql: string) => unknown) {
         super();
+    }
+    getTransactionStatus(): string {
+        return this.txStatus;
     }
     async query(textOrConfig: string | { text: string }): Promise<any> {
         const sql = typeof textOrConfig === 'string' ? textOrConfig : textOrConfig.text;
@@ -312,20 +317,31 @@ function createFileSessions(options: {
     viewerLoad?: (sql: string) => Promise<QueryViewLoad>;
     exporter?: any;
     clock?: any;
+    /** The commit mode of new sessions; with one, the fake clients track BEGIN / COMMIT / ROLLBACK. */
+    commitMode?: CommitMode;
 } = {}) {
     const clients: FakeClient[] = [];
     /** Statements run on the session (`run:`) and Data Viewers opened (`view:`), in order. */
     const events: string[] = [];
     const manager = new DbSessionManager({
         openClient: async () => {
-            const client = new FakeClient(4711 + clients.length, (c, sql) => {
+            const client = new FakeClient(4711 + clients.length, async (c, sql) => {
                 events.push(`run:${sql}`);
-                return options.onQuery?.(c, sql);
+                if (!options.commitMode) return options.onQuery?.(c, sql);
+                if (/^BEGIN\b/i.test(sql)) c.txStatus = 'T';
+                else if (/^(COMMIT|ROLLBACK)$/i.test(sql)) c.txStatus = 'I';
+                try {
+                    return await options.onQuery?.(c, sql);
+                } catch (err) {
+                    if (c.txStatus === 'T') c.txStatus = 'E';
+                    throw err;
+                }
             });
             clients.push(client);
             return client as any;
         },
-        generation: () => 1
+        generation: () => 1,
+        defaultCommitMode: () => options.commitMode ?? 'auto'
     });
     /** The session log: every message as its copied text, with the key of the session it went to. */
     const channel = {
@@ -1549,4 +1565,85 @@ test('a run that does not start leaves the log alone', async (t) => {
     await fileSessions.executeFile(createEditor('-- @export cvs file=o.csv\nSELECT 1;', 0) as any);
     await fileSessions.executeFile(createEditor('-- only a comment', 0) as any);
     assert.deepEqual(channel.runsStarted, [], 'a wrong instruction or nothing to run');
+});
+
+// ===== commit mode =====
+
+test('manual commit runs Execute File in one transaction it leaves open for the user', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const { fileSessions, events, manager } = createFileSessions({ commitMode: 'manual' });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(createEditor(SCRIPT, 0) as any);
+
+    assert.deepEqual(events, ['run:BEGIN', `run:${DO_BLOCK}`, `run:${UPDATE}`, `view:${SELECT}`, `run:${DELETE}`]);
+    assert.equal(manager.get(`file:${URI}`)?.transactionState, 'open', 'nothing is committed');
+});
+
+test('manual commit puts no BEGIN in front of what may not run in a transaction', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const { fileSessions, events } = createFileSessions({ commitMode: 'manual' });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(createEditor(`VACUUM pks_ate_payroll.lohn;\n${UPDATE};\nCOMMIT;\n${DELETE};\n`, 0) as any);
+
+    assert.deepEqual(events, [
+        'run:VACUUM pks_ate_payroll.lohn', 'run:BEGIN', `run:${UPDATE}`, 'run:COMMIT', 'run:BEGIN', `run:${DELETE}`
+    ]);
+});
+
+test('commit per run commits Execute File once every statement has run, and says so in the log', async (t) => {
+    const infos = recordWindowCalls(t, 'showInformationMessage');
+    const { fileSessions, events, channel, manager } = createFileSessions({ commitMode: 'run' });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(createEditor(SCRIPT, 0) as any);
+
+    assert.deepEqual(events, ['run:BEGIN', `run:${DO_BLOCK}`, `run:${UPDATE}`, `view:${SELECT}`, `run:${DELETE}`, 'run:COMMIT']);
+    assert.equal(manager.get(`file:${URI}`)?.transactionState, 'idle');
+    assert.match(channel.lines.at(-1)!, /— RUN: Committed the transaction of the run$/);
+    assert.match(String(infos[0][0]), /^Ran all 4 statements of payroll\.sql/);
+});
+
+test('commit per run rolls Execute File back when a statement fails, and the error says so', async (t) => {
+    const errors = recordWindowCalls(t, 'showErrorMessage');
+    const { fileSessions, events, channel } = createFileSessions({
+        commitMode: 'run',
+        onQuery: (_client, sql) => {
+            if (sql === DELETE) throw new Error('permission denied for table tmp');
+            return undefined;
+        }
+    });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.executeFile(createEditor(SCRIPT, 0) as any);
+
+    assert.equal(events.at(-1), 'run:ROLLBACK');
+    assert.match(channel.lines.at(-1)!, /— RUN: Rolled back the transaction of the run$/);
+    assert.equal(errors[0][0],
+        'Execute File stopped at statement 4 of 4 (line 16); the 3 statements before it were rolled back: permission denied for table tmp');
+});
+
+test('commit per run commits an executed selection, but leaves a transaction the user opened alone', async (t) => {
+    recordWindowCalls(t, 'showInformationMessage');
+    const { fileSessions, events, manager } = createFileSessions({ commitMode: 'run' });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.execute(selecting(FILE, DO_BLOCK) as any);
+    assert.deepEqual(events, ['run:BEGIN', `run:${DO_BLOCK}`, 'run:COMMIT']);
+
+    events.length = 0;
+    await manager.get(`file:${URI}`)!.query('BEGIN');
+    await fileSessions.execute(selecting(FILE, DO_BLOCK) as any);
+    assert.deepEqual(events, ['run:BEGIN', `run:${DO_BLOCK}`], 'joined, not committed');
+    assert.equal(manager.get(`file:${URI}`)?.transactionState, 'open');
+});
+
+test('a single SELECT of a selection opens the Data Viewer without a transaction of the run', async (t) => {
+    const { fileSessions, events } = createFileSessions({ commitMode: 'run' });
+    t.after(() => fileSessions.dispose());
+
+    await fileSessions.execute(selecting(FILE, SELECT) as any);
+
+    assert.deepEqual(events, [`view:${SELECT}`]);
 });

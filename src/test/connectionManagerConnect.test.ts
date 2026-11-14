@@ -578,5 +578,22 @@ test('the connection form has an application name field that is prefilled and po
     assert.match(html, /<label for="applicationName">Application name \(optional, shown in pg_stat_activity\)<\/label>/);
     assert.match(html, /<input type="text" id="applicationName" placeholder="PostgreSQL Query Booster" \/>/);
     assert.match(html, /if \(msg\.applicationName\) document\.getElementById\('applicationName'\)\.value = msg\.applicationName;/);
-    assert.match(html, /sslMode, caFile, applicationName\s*\n\s*\}\);/);
+    assert.match(html, /sslMode, caFile, applicationName,\s*\n\s*commitMode\s*\n\s*\}\);/);
+});
+
+test('connectionConfigFromForm stores a commit mode other than auto-commit, and nothing for auto-commit', () => {
+    assert.equal(connectionConfigFromForm({ ...formMessage, commitMode: 'manual' }).commitMode, 'manual');
+    assert.equal(connectionConfigFromForm({ ...formMessage, commitMode: 'run' }).commitMode, 'run');
+    assert.equal('commitMode' in connectionConfigFromForm({ ...formMessage, commitMode: 'auto' }), false);
+    assert.equal('commitMode' in connectionConfigFromForm({ ...formMessage, commitMode: 'bogus' }), false);
+    assert.equal('commitMode' in connectionConfigFromForm(formMessage), false);
+});
+
+test('the connection form offers the commit behaviour of new sessions, prefilled and posted', () => {
+    const cm = createManager(fakePoolFactory().factory);
+    const html: string = (cm as any).getConnectionFormHtml({ cspSource: 'vscode-webview:' });
+
+    assert.match(html, /<label for="commitMode">Commit behaviour of new sessions<\/label>\s*<select id="commitMode">\s*<option value="auto">Auto-commit<\/option>\s*<option value="manual">Manual commit<\/option>\s*<option value="run">Commit per run<\/option>\s*<\/select>/);
+    assert.match(html, /if \(msg\.commitMode\) document\.getElementById\('commitMode'\)\.value = msg\.commitMode;/);
+    assert.match(html, /const commitMode = document\.getElementById\('commitMode'\)\.value;/);
 });

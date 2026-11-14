@@ -31,6 +31,61 @@ export interface SessionClient {
 export type QueryFn = (sql: string, params?: unknown[]) => Promise<QueryResult>;
 
 /**
+ * When the work of a session becomes permanent:
+ * - `auto`   — every statement is committed as soon as it has run.
+ * - `manual` — Execute opens a transaction; nothing is permanent until the
+ *              user commits it (the panel's *Commit*, or `COMMIT`).
+ * - `run`    — each Execute File / Execute Selection is one transaction,
+ *              committed when every statement succeeded and rolled back otherwise.
+ */
+export type CommitMode = 'auto' | 'manual' | 'run';
+
+export const COMMIT_MODES: ReadonlyArray<CommitMode> = ['auto', 'manual', 'run'];
+
+/** How a commit mode is offered to the user. */
+export const COMMIT_MODE_LABELS: Readonly<Record<CommitMode, string>> = {
+    auto: 'Auto-commit',
+    manual: 'Manual commit',
+    run: 'Commit per run'
+};
+
+/** What a commit mode does, for a tooltip. */
+export const COMMIT_MODE_DESCRIPTIONS: Readonly<Record<CommitMode, string>> = {
+    auto: 'Every statement is committed as soon as it has run.',
+    manual: 'Execute opens a transaction; nothing is permanent until you press Commit or run COMMIT.',
+    run: 'Each Execute File or Execute Selection is one transaction: committed when every statement succeeded, rolled back when one fails or is cancelled.'
+};
+
+/** The commit mode `value` names; `auto` for anything else, the behaviour before the choice existed. */
+export function parseCommitMode(value: unknown): CommitMode {
+    return COMMIT_MODES.includes(value as CommitMode) ? value as CommitMode : 'auto';
+}
+
+/**
+ * Where the transaction of a session stands: `none` without a connection,
+ * `idle` outside a transaction, `open` inside one that is not committed yet,
+ * `failed` inside one a statement has aborted, which accepts only ROLLBACK.
+ */
+export type TransactionState = 'none' | 'idle' | 'open' | 'failed';
+
+/**
+ * Statements PostgreSQL refuses inside a transaction block, and those that
+ * control the transaction themselves: no BEGIN is put in front of them.
+ */
+const OUTSIDE_TRANSACTION = new RegExp(
+    '^(?:VACUUM|CHECKPOINT|DISCARD\\s+ALL|ALTER\\s+SYSTEM|(?:CREATE|DROP)\\s+(?:DATABASE|TABLESPACE)'
+    + '|(?:CREATE|DROP)\\s+(?:UNIQUE\\s+)?INDEX\\s+CONCURRENTLY|REINDEX\\b[\\s\\S]*\\bCONCURRENTLY'
+    + '|BEGIN|START\\s+TRANSACTION|COMMIT|END|ROLLBACK|ABORT|SAVEPOINT|RELEASE|PREPARE\\s+TRANSACTION)\\b',
+    'i'
+);
+
+/** Whether `sql` must run without a transaction opened for it; leading comments are skipped. */
+export function runsOutsideTransaction(sql: string): boolean {
+    const code = String(sql).replace(/^(?:\s+|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*/, '');
+    return OUTSIDE_TRANSACTION.test(code);
+}
+
+/**
  * Where the statements of a Data Viewer run: on any pooled connection, or on
  * the one connection of a {@link DbSession}.
  */
@@ -63,6 +118,7 @@ interface DbSessionHost {
     changed(session: DbSession): void;
     lost(session: DbSession, reason: string): void;
     notice(session: DbSession, notice: SessionNotice): void;
+    commitMode(session: DbSession): CommitMode;
 }
 
 const noop = (): void => undefined;
@@ -73,6 +129,12 @@ const SAVEPOINT = 'pqb_save';
 /** The transaction state of `client`; a client that cannot tell counts as idle. */
 function transactionStatus(client: SessionClient): string {
     return client.getTransactionStatus?.() ?? 'I';
+}
+
+function transactionStateOf(client: SessionClient | null): TransactionState {
+    if (!client) return 'none';
+    const status = transactionStatus(client);
+    return status === 'T' ? 'open' : status === 'E' ? 'failed' : 'idle';
 }
 
 /**
@@ -93,6 +155,8 @@ export class DbSession implements QueryExecutor {
     private tail: Promise<void> = Promise.resolve();
     private lostReason: string | null = null;
     private closed = false;
+    /** The transaction state last announced, so a change is announced once. */
+    private announcedState: TransactionState = 'none';
 
     constructor(
         readonly key: string,
@@ -114,11 +178,74 @@ export class DbSession implements QueryExecutor {
         return this.client?.processID ?? null;
     }
 
+    /** Where the session's transaction stands now. */
+    get transactionState(): TransactionState {
+        return transactionStateOf(this.client);
+    }
+
+    /** When the work of this session becomes permanent; see {@link CommitMode}. */
+    get commitMode(): CommitMode {
+        return this.host.commitMode(this);
+    }
+
     /** Run `work` on the session's connection once every earlier statement is done. */
     run<T>(work: (client: SessionClient) => Promise<T>): Promise<T> {
-        const result = this.tail.then(async () => work(await this.connection()));
+        const result = this.tail.then(async () => {
+            const client = await this.connection();
+            try {
+                return await work(client);
+            } finally {
+                this.announceTransactionState();
+            }
+        });
         this.tail = result.then(noop, noop);
         return result;
+    }
+
+    /**
+     * Before a statement of Execute in `manual` or `run` mode: open a
+     * transaction unless one is open, or the statement may not run in one.
+     * Returns true when it opened one. Waits for the session's turn; inside
+     * {@link run} use {@link beginOn} instead.
+     */
+    beginForStatement(sql: string): Promise<boolean> {
+        if (this.commitMode === 'auto' || runsOutsideTransaction(sql)) return Promise.resolve(false);
+        return this.run((client) => this.beginOn(client, sql));
+    }
+
+    /** {@link beginForStatement} on `client`, from inside {@link run}. */
+    async beginOn(client: SessionClient, sql: string): Promise<boolean> {
+        if (this.commitMode === 'auto' || transactionStatus(client) !== 'I' || runsOutsideTransaction(sql)) {
+            return false;
+        }
+        await client.query('BEGIN');
+        return true;
+    }
+
+    /** End the open transaction with COMMIT; false when none was open. */
+    commit(): Promise<boolean> {
+        return this.endTransaction('COMMIT');
+    }
+
+    /** End the open — or failed — transaction with ROLLBACK; false when none was open. */
+    rollback(): Promise<boolean> {
+        return this.endTransaction('ROLLBACK');
+    }
+
+    private endTransaction(command: 'COMMIT' | 'ROLLBACK'): Promise<boolean> {
+        if (!this.client) return Promise.resolve(false);
+        return this.run(async (client) => {
+            if (transactionStatus(client) === 'I') return false;
+            await client.query(command);
+            return true;
+        });
+    }
+
+    private announceTransactionState(): void {
+        const state = this.transactionState;
+        if (state === this.announcedState) return;
+        this.announcedState = state;
+        this.host.changed(this);
     }
 
     query(sql: string, params?: unknown[]): Promise<QueryResult> {
@@ -142,16 +269,23 @@ export class DbSession implements QueryExecutor {
      * Inside a transaction the user opened, the work becomes a savepoint of it
      * instead: BEGIN would be ignored and COMMIT or ROLLBACK would end the
      * user's own transaction. A failed transaction accepts nothing until the
-     * user ends it, so the work is refused.
+     * user ends it, so the work is refused. In `manual` mode the work opens a
+     * transaction of its own that stays open for the user to commit.
      */
     transaction<T>(work: (query: QueryFn, joined: boolean) => Promise<T>): Promise<T> {
         return this.run(async (client) => {
-            const status = transactionStatus(client);
+            let status = transactionStatus(client);
             if (status === 'E') {
                 throw new Error(
                     `The open transaction of the database session of ${this.label} has failed, so nothing can be saved in it. `
                     + 'End it with ROLLBACK or reset the session.'
                 );
+            }
+            // Manual commit: the work goes into a transaction left open for the user.
+            const opened = status === 'I' && this.commitMode === 'manual';
+            if (opened) {
+                await client.query('BEGIN');
+                status = 'T';
             }
             const joined = status === 'T';
             await client.query(joined ? `SAVEPOINT ${SAVEPOINT}` : 'BEGIN');
@@ -161,7 +295,10 @@ export class DbSession implements QueryExecutor {
                 return result;
             } catch (err) {
                 try {
-                    if (joined) {
+                    if (opened) {
+                        // Nothing else is in the transaction opened for this work.
+                        await client.query('ROLLBACK');
+                    } else if (joined) {
                         // Back to where the user's transaction stood, savepoint gone.
                         await client.query(`ROLLBACK TO SAVEPOINT ${SAVEPOINT}`);
                         await client.query(`RELEASE SAVEPOINT ${SAVEPOINT}`);
@@ -229,6 +366,7 @@ export class DbSession implements QueryExecutor {
         client.on('notice', (notice: SessionNotice) => this.host.notice(this, notice));
         this.client = client;
         this.clientGeneration = generation;
+        this.announcedState = transactionStateOf(client);
         const lost = this.lostReason;
         this.lostReason = null;
         if (lost) {
@@ -242,6 +380,7 @@ export class DbSession implements QueryExecutor {
     private broken(client: SessionClient, reason: string): void {
         if (this.client !== client) return;
         this.client = null;
+        this.announcedState = 'none';
         this.lostReason = reason;
         client.end().catch(noop);
         this.host.changed(this);
@@ -250,6 +389,7 @@ export class DbSession implements QueryExecutor {
     private drop(): void {
         const client = this.client;
         this.client = null;
+        this.announcedState = 'none';
         if (client) {
             client.end().catch(noop);
         }
@@ -264,6 +404,8 @@ export interface DbSessionManagerOptions {
     /** A session lost its connection unexpectedly and has just opened a new one. */
     onLost?(session: DbSession, reason: string): void;
     onNotice?(session: DbSession, notice: SessionNotice): void;
+    /** The commit mode of a session nobody chose one for: that of the active connection. */
+    defaultCommitMode?(): CommitMode;
 }
 
 /**
@@ -275,15 +417,32 @@ export class DbSessionManager {
     private readonly entries = new Map<string, { session: DbSession; holders: Set<string> }>();
     private readonly listeners = new Set<(key: string) => void>();
     private readonly host: DbSessionHost;
+    /** Commit modes chosen for a session, by its key; also before the session exists. */
+    private readonly commitModes = new Map<string, CommitMode>();
+    private readonly defaultCommitMode: () => CommitMode;
 
     constructor(options: DbSessionManagerOptions) {
+        this.defaultCommitMode = () => parseCommitMode(options.defaultCommitMode?.());
         this.host = {
             openClient: () => options.openClient(),
             generation: () => options.generation(),
             changed: (session) => this.emit(session.key),
             lost: (session, reason) => options.onLost?.(session, reason),
-            notice: (session, notice) => options.onNotice?.(session, notice)
+            notice: (session, notice) => options.onNotice?.(session, notice),
+            commitMode: (session) => this.commitModeOf(session.key)
         };
+    }
+
+    /** The commit mode of the session `key`: the one chosen for it, else that of the active connection. */
+    commitModeOf(key: string): CommitMode {
+        return this.commitModes.get(key) ?? this.defaultCommitMode();
+    }
+
+    /** Choose the commit mode of the session `key` until it ends. */
+    setCommitMode(key: string, mode: CommitMode): void {
+        if (this.commitModeOf(key) === mode && this.commitModes.has(key)) return;
+        this.commitModes.set(key, parseCommitMode(mode));
+        this.emit(key);
     }
 
     /** The session of `ref`, created on first use; `holder` keeps it alive until released. */
@@ -306,6 +465,7 @@ export class DbSessionManager {
         if (!entry || !entry.holders.delete(holder)) return;
         if (entry.holders.size === 0) {
             this.entries.delete(key);
+            this.commitModes.delete(key);
             entry.session.close();
         }
         this.emit(key);
@@ -336,6 +496,7 @@ export class DbSessionManager {
             session.close();
         }
         this.entries.clear();
+        this.commitModes.clear();
         this.listeners.clear();
     }
 

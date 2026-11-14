@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { DbSessionRef, SessionNotice } from './dbSession';
+import type { CommitMode, DbSessionRef, SessionNotice, TransactionState } from './dbSession';
+import { COMMIT_MODE_DESCRIPTIONS, COMMIT_MODE_LABELS, COMMIT_MODES, parseCommitMode } from './dbSession';
 import { getErrorMessage, Logger } from './logger';
 import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
 import { icon } from './webviewAssets';
@@ -721,6 +722,28 @@ export function messagesUpdate(
 /** How often at most the panel is updated while messages keep coming. */
 export const MESSAGES_RENDER_INTERVAL_MS = 100;
 
+/** The database sessions whose commit mode and open transaction the panel shows; the {@link DbSessionManager}. */
+export interface SessionTransactions {
+    commitModeOf(key: string): CommitMode;
+    setCommitMode(key: string, mode: CommitMode): void;
+    get(key: string): { readonly transactionState: TransactionState; commit(): Promise<boolean>; rollback(): Promise<boolean> } | undefined;
+    onDidChange(listener: (key: string) => void): { dispose(): void };
+}
+
+/** What the panel shows about the transaction of the shown session. */
+export interface SessionTransactionView {
+    type: 'session';
+    /** False while no session is shown. */
+    available: boolean;
+    commitMode: CommitMode;
+    transaction: TransactionState;
+}
+
+/** A line of the log about the transaction of a session, e.g. `Committed the open transaction`. */
+export function transactionMessage(source: string, text: string, now: Date = new Date()): SessionMessage {
+    return { time: clockTime(now), source, severity: 'RUN', text, details: [] };
+}
+
 export interface SessionMessagesViewOptions {
     /** Run `render` a little later; tests run it at once. */
     schedule?: (render: () => void) => void;
@@ -744,6 +767,8 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
     private renderPending = false;
     private readonly schedule: (render: () => void) => void;
     private readonly maxCopyBytes: number;
+    private sessions?: SessionTransactions;
+    private sessionsSubscription?: { dispose(): void };
 
     constructor(readonly log: SessionMessageLog, options: SessionMessagesViewOptions = {}) {
         this.schedule = options.schedule ?? ((render) => { setTimeout(render, MESSAGES_RENDER_INTERVAL_MS); });
@@ -762,6 +787,33 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
     /** The session whose log is shown, if any. */
     get shownSession(): DbSessionRef | undefined {
         return this.shown;
+    }
+
+    /**
+     * Let the panel show and change the commit mode of the shown session and
+     * commit or roll back its open transaction.
+     */
+    attachSessions(sessions: SessionTransactions): void {
+        this.sessionsSubscription?.dispose();
+        this.sessions = sessions;
+        this.sessionsSubscription = sessions.onDidChange((key) => {
+            if (key === this.shown?.key) this.postSession();
+        });
+        this.postSession();
+    }
+
+    /** What the panel shows about the transaction of the shown session. */
+    sessionView(): SessionTransactionView {
+        const shown = this.shown;
+        if (!shown || !this.sessions) {
+            return { type: 'session', available: false, commitMode: 'auto', transaction: 'none' };
+        }
+        return {
+            type: 'session',
+            available: true,
+            commitMode: this.sessions.commitModeOf(shown.key),
+            transaction: this.sessions.get(shown.key)?.transactionState ?? 'none'
+        };
     }
 
     /** Whether Execute File and Execute Selection clear the log of their session first. */
@@ -786,6 +838,7 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
         if (this.shown && this.shown.key === ref.key && this.shown.label === ref.label) return;
         this.shown = { key: ref.key, label: ref.label };
         this.render();
+        this.postSession();
     }
 
     reveal(ref: DbSessionRef): void {
@@ -823,6 +876,7 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
                 this.sent = undefined;
                 this.postOptions();
                 this.render();
+                this.postSession();
             } else if (message.type === 'clear') {
                 if (this.shown) this.log.clear(this.shown.key);
             } else if (message.type === 'copy') {
@@ -833,6 +887,12 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
                 void this.openLink(Number(message.id));
             } else if (message.type === 'clearOnExecute') {
                 void this.setClearOnExecute(message.value === true);
+            } else if (message.type === 'commitMode') {
+                if (this.shown && this.sessions && COMMIT_MODES.includes(message.value as CommitMode)) {
+                    this.sessions.setCommitMode(this.shown.key, parseCommitMode(message.value));
+                }
+            } else if (message.type === 'commit' || message.type === 'rollback') {
+                void this.endTransaction(message.type);
             }
         });
     }
@@ -840,8 +900,34 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
     dispose(): void {
         this.subscription.dispose();
         this.configSubscription.dispose();
+        this.sessionsSubscription?.dispose();
         this.view = undefined;
         this.log.dispose();
+    }
+
+    /** Tell the panel the commit mode and the transaction of the shown session. */
+    private postSession(): void {
+        const view = this.view;
+        if (!view || !this.sessions) return;
+        Promise.resolve(view.webview.postMessage(this.sessionView())).catch(() => undefined);
+    }
+
+    /** Commit or roll back the open transaction of the shown session, and say so in its log. */
+    private async endTransaction(kind: 'commit' | 'rollback'): Promise<void> {
+        const shown = this.shown;
+        const session = shown ? this.sessions?.get(shown.key) : undefined;
+        if (!shown || !session) return;
+        try {
+            const ended = kind === 'commit' ? await session.commit() : await session.rollback();
+            if (ended) {
+                this.log.append(shown, transactionMessage(shown.label, kind === 'commit' ? 'Committed the open transaction' : 'Rolled back the open transaction'));
+            }
+        } catch (err: unknown) {
+            Logger.error('SessionMessagesView.endTransaction', err);
+            const text = `${kind === 'commit' ? 'Commit' : 'Rollback'} failed: ${getErrorMessage(err)}`;
+            this.log.append(shown, { ...transactionMessage(shown.label, text), severity: 'ERROR' });
+            vscode.window.showErrorMessage(`${text} (database session of ${shown.label})`);
+        }
     }
 
     /** Store the checkbox "Clear on Execute" as the user's setting, for every window. */
@@ -1004,7 +1090,13 @@ body { padding: 0; display: flex; flex-direction: column; }
 .running[hidden] { display: none; }
 .errors-btn { color: var(--c-danger); font-weight: 600; }
 .errors-btn[hidden] { display: none; }
-.clear-on-execute { display: inline-flex; align-items: center; gap: var(--sp-1); white-space: nowrap; cursor: pointer; }`;
+.clear-on-execute { display: inline-flex; align-items: center; gap: var(--sp-1); white-space: nowrap; cursor: pointer; }
+.commit-mode { width: auto; }
+/* An open transaction is told in words, with a stripe in the warning or error colour. */
+.tx-state { padding: 0 var(--sp-2); border-radius: var(--radius); white-space: nowrap; font-weight: 600; }
+.tx-state.open { color: var(--c-warning); background: color-mix(in srgb, var(--c-warning) 14%, transparent); }
+.tx-state.failed { color: var(--c-danger); background: color-mix(in srgb, var(--c-danger) 14%, transparent); }
+.tx-state[hidden], #commitBtn[hidden], #rollbackBtn[hidden] { display: none; }`;
         const body = `
 <div class="toolbar">
     <div class="session">
@@ -1012,6 +1104,12 @@ body { padding: 0; display: flex; flex-direction: column; }
         <button class="btn btn-sm btn-ghost errors-btn" id="errorsBtn" hidden title="Go to the next error shown in the panel">${icon('error')}<span id="errorsText"></span></button>
     </div>
     <div class="toolbar-group">
+        <span class="tx-state" id="txState" role="status" hidden></span>
+        <button class="btn btn-sm" id="commitBtn" hidden title="Commit the open transaction of this session: its changes become permanent and visible to other sessions">${icon('check')}Commit</button>
+        <button class="btn btn-sm" id="rollbackBtn" hidden title="Roll back the open transaction of this session: its changes are undone">${icon('undo')}Rollback</button>
+        <select id="commitMode" class="commit-mode" aria-label="Commit behaviour of this session" title="Commit behaviour of this session; a new session starts with the one of its connection">
+            ${COMMIT_MODES.map((mode) => `<option value="${mode}" title="${COMMIT_MODE_DESCRIPTIONS[mode]}">${COMMIT_MODE_LABELS[mode]}</option>`).join('')}
+        </select>
         <label class="clear-on-execute" title="Clear the messages of a session each time Execute File or Execute Selection starts in it"><input type="checkbox" id="clearOnExecute">Clear on Execute</label>
         <button class="btn btn-sm" id="copyBtn" title="Copy every message of this session to the clipboard, including those the panel no longer shows">${icon('copy')}Copy</button>
         <button class="btn btn-sm" id="saveBtn" title="Save every message of this session to a file, including those the panel no longer shows">${icon('save')}Save</button>
@@ -1032,12 +1130,35 @@ const clearBtn = document.getElementById('clearBtn');
 const errorsBtn = document.getElementById('errorsBtn');
 const errorsTextEl = document.getElementById('errorsText');
 const clearOnExecuteBox = document.getElementById('clearOnExecute');
+const commitModeSelect = document.getElementById('commitMode');
+const txStateEl = document.getElementById('txState');
+const commitBtn = document.getElementById('commitBtn');
+const rollbackBtn = document.getElementById('rollbackBtn');
 const TONE_ICONS = { danger: ${JSON.stringify(icon('error'))}, warning: ${JSON.stringify(icon('warning'))} };
 copyBtn.addEventListener('click', () => vscode.postMessage({ type: 'copy' }));
 saveBtn.addEventListener('click', () => vscode.postMessage({ type: 'save' }));
 clearBtn.addEventListener('click', () => vscode.postMessage({ type: 'clear' }));
 errorsBtn.addEventListener('click', () => goToNextError());
 clearOnExecuteBox.addEventListener('change', () => vscode.postMessage({ type: 'clearOnExecute', value: clearOnExecuteBox.checked === true }));
+commitModeSelect.addEventListener('change', () => vscode.postMessage({ type: 'commitMode', value: commitModeSelect.value }));
+commitBtn.addEventListener('click', () => vscode.postMessage({ type: 'commit' }));
+rollbackBtn.addEventListener('click', () => vscode.postMessage({ type: 'rollback' }));
+
+// The commit mode of the shown session and whether it has work not committed yet.
+function showSession(s) {
+    commitModeSelect.disabled = !s.available;
+    commitModeSelect.value = s.commitMode;
+    const open = s.transaction === 'open';
+    const failed = s.transaction === 'failed';
+    txStateEl.hidden = !open && !failed;
+    txStateEl.className = 'tx-state' + (open ? ' open' : failed ? ' failed' : '');
+    txStateEl.textContent = open ? 'Uncommitted changes' : failed ? 'Transaction failed' : '';
+    txStateEl.title = open
+        ? 'This session has an open transaction: what it changed is not committed yet and not visible to other sessions.'
+        : failed ? 'A statement failed inside the open transaction; it accepts nothing but a rollback.' : '';
+    commitBtn.hidden = !open;
+    rollbackBtn.hidden = !open && !failed;
+}
 
 ${WEBVIEW_ESCAPE_HTML_JS}
 ${TIMER_TEXT_JS}
@@ -1204,6 +1325,8 @@ window.addEventListener('message', (ev) => {
         append(msg);
     } else if (msg && msg.type === 'options') {
         clearOnExecuteBox.checked = msg.clearOnExecute === true;
+    } else if (msg && msg.type === 'session') {
+        showSession(msg);
     }
 });
 

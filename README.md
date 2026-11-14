@@ -65,6 +65,7 @@ under the category **PostgreSQL Query Booster**.
 | SSL | yes | *Verify certificate and host name* (default for new connections), *Require SSL, do not verify the certificate*, *Prefer SSL, fall back to unencrypted*, or *Disable SSL* |
 | CA certificate file | no | PEM file with the CA certificate(s) used to verify the server; the system's trusted certificates when empty |
 | Application name | no | The `application_name` the server shows for this connection in `pg_stat_activity` and its logs; `PostgreSQL Query Booster` when empty |
+| Commit behaviour of new sessions | yes | *Auto-commit* (default), *Manual commit* or *Commit per run* — how the database sessions of this connection commit until you choose otherwise in the *PostgreSQL Messages* panel; see [Commit behaviour](#commit-behaviour) |
 
 Connections saved before the SSL option existed keep their old behaviour,
 *Prefer SSL*: SSL is attempted first and falls back to an unencrypted
@@ -126,7 +127,8 @@ stays in place for *More*, *All*, the row count, *Auto refresh*, *Save* and
 shares the session, and a Data Viewer opened with **View Data** from a SQL file
 runs on the session of that file. The badge next to the connection says *Own
 session* or *Session: payroll.sql*; clicking it resets the session after asking.
-If you opened a transaction in the session yourself (`BEGIN`), *Save* runs as a
+If you opened a transaction in the session yourself (`BEGIN`), or the session
+uses *Manual commit* (see [Commit behaviour](#commit-behaviour)), *Save* runs as a
 savepoint inside it, so nothing is permanent before your `COMMIT`.
 Switching the connection, disconnecting or changing the `search_path` closes
 every session, and the next query reconnects; if the server drops a session, a
@@ -338,6 +340,25 @@ fields wherever it comes from.
   of the session to a file and **Copy** puts all of them on the clipboard.
   With **Clear on Execute** ticked, every **Execute File** and **Execute
   Selection** starts with an empty log of its session.
+
+  <a id="commit-behaviour"></a>**Commit behaviour.** The drop-down next to
+  **Clear on Execute** sets how the session shown in the panel commits; a new
+  session starts with the setting of its connection.
+
+  | Mode | What happens |
+  |------|--------------|
+  | *Auto-commit* | Every statement is committed as soon as it has run, unless the script opens a transaction itself with `BEGIN`. |
+  | *Manual commit* | **Execute File** and **Execute Selection** open a transaction before their first statement, and *Save* in a Data Viewer of the session saves into it. Nothing is permanent until you press **Commit** in the panel or run `COMMIT`; **Rollback** undoes it. |
+  | *Commit per run* | Each **Execute File** and **Execute Selection** is one transaction: committed when every statement succeeded, rolled back when one fails or the run is cancelled. The log says which. A transaction you opened yourself before the run is joined and left to you. |
+
+  While the session has an open transaction, the panel says *Uncommitted
+  changes* and offers **Commit** and **Rollback**; after a failed statement it
+  says *Transaction failed* and offers **Rollback**. Statements PostgreSQL does
+  not allow in a transaction — `VACUUM`, `CREATE DATABASE`, `CREATE INDEX
+  CONCURRENTLY` and the like — and your own `BEGIN`, `COMMIT` or `ROLLBACK` get
+  no transaction opened in front of them. Closing the file and every Data
+  Viewer of a session, or resetting it, ends the session and with it an open
+  transaction, which PostgreSQL then rolls back.
   Errors are striped, tinted and marked with an icon, and the header counts
   them; clicking the count jumps from one error to the next. A
   running statement can be cancelled from its notification, which also counts

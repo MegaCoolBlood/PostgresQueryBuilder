@@ -15,6 +15,7 @@ import {
     formatSessionMessage,
     noticeMessage,
     statementStartedMessage,
+    transactionMessage,
     type SessionMessage,
     type SessionMessageSink
 } from './sessionMessages';
@@ -508,6 +509,8 @@ class CancellableRun {
             if (this.cancelled) {
                 throw new CancelledBeforeStart();
             }
+            // Manual commit and commit per run: the statement runs in a transaction.
+            await session.beginOn(client, sql);
             const count = (): void => { notices.count++; };
             client.on('notice', count);
             this.runningPid = client.processID ?? null;
@@ -604,7 +607,16 @@ export class SqlFileSessions implements vscode.Disposable {
 
         const { ref, session } = this.acquire(document);
         const statements = splitStatements(target.sql);
-        if (this.openQueryView && statements.length === 1 && isResultQuery(statements[0])) {
+        const opensViewer = !!this.openQueryView && statements.length === 1 && isResultQuery(statements[0]);
+        // A query only shown in the Data Viewer changes nothing a run would have to commit.
+        const ownsTransaction = !opensViewer && this.ownsRunTransaction(session);
+        if (this.openQueryView && opensViewer) {
+            try {
+                if (session.commitMode === 'manual') await session.beginForStatement(target.sql);
+            } catch (err: unknown) {
+                this.reportFailure(editor, target, ref, err);
+                return;
+            }
             await this.openQueryView(statements[0], queryViewTitle(statements[0]), ref);
             return;
         }
@@ -629,11 +641,13 @@ export class SqlFileSessions implements vscode.Disposable {
         } catch (err: unknown) {
             if (err instanceof CancelledBeforeStart) {
                 vscode.window.showInformationMessage('Execute Selection was cancelled before it started; nothing ran.');
-                return;
+            } else {
+                this.reportFailure(editor, target, ref, err);
             }
-            this.reportFailure(editor, target, ref, err);
+            if (ownsTransaction) await this.endRunTransaction(ref, session, false);
             return;
         }
+        if (ownsTransaction) await this.endRunTransaction(ref, session, true);
 
         this.recordModifyHistory(target.sql);
         let message = summarizeExecution(Array.isArray(outcome) ? outcome : [outcome], Date.now() - started);
@@ -744,6 +758,7 @@ export class SqlFileSessions implements vscode.Disposable {
         type Stop = { reason: 'failed'; index: number; error: unknown; inViewer: boolean } | { reason: 'cancelled'; index: number };
         let opened = 0;
         const exported: ExportedQuery[] = [];
+        const ownsTransaction = this.ownsRunTransaction(session);
 
         const stop = await vscode.window.withProgress(
             {
@@ -780,6 +795,16 @@ export class SqlFileSessions implements vscode.Disposable {
                         let status: 'done' | 'failed' | 'cancelled' = 'failed';
                         try {
                             const statementStop = await (async (): Promise<Stop | null> => {
+                                // Manual commit and commit per run: an export and a query of the
+                                // Data Viewer run in the transaction as well; a plain statement
+                                // opens it in its own turn (CancellableRun.run).
+                                if (statement.instruction || (this.openQueryView && isResultQuery(sql))) {
+                                    try {
+                                        await session.beginForStatement(sql);
+                                    } catch (err: unknown) {
+                                        return { reason: 'failed', index, error: err, inViewer: false };
+                                    }
+                                }
                                 if (statement.instruction) {
                                     const line = document.positionAt(statement.start).line;
                                     const outcome = await this.exportQuery(statement.instruction, sql, line, document, ref, session, runner, notices,
@@ -851,20 +876,25 @@ export class SqlFileSessions implements vscode.Disposable {
             this.messages.reveal(ref);
         }
         if (!stop) {
+            if (ownsTransaction) await this.endRunTransaction(ref, session, true);
             vscode.window.showInformationMessage(summarizeFileRun(label, total, opened, Date.now() - started, exported) + noticeText);
             return;
         }
+        const rolledBack = ownsTransaction ? ' Its transaction was rolled back, so none of them took effect.' : '';
         if (stop.reason === 'cancelled') {
             vscode.window.showInformationMessage(
-                `${command} was cancelled after ${stop.index} of ${total} statements; the rest did not run.${noticeText}`
+                `${command} was cancelled after ${stop.index} of ${total} statements; the rest did not run.${rolledBack}${noticeText}`
             );
+            if (ownsTransaction) await this.endRunTransaction(ref, session, false);
             return;
         }
         const failed = statements[stop.index];
         const line = document.positionAt(failed.start).line + 1;
         const before = stop.index === 0
             ? 'nothing before it ran'
-            : `the ${stop.index === 1 ? 'statement' : `${stop.index} statements`} before it ran`;
+            : stop.index === 1
+                ? `the statement before it ${ownsTransaction ? 'was rolled back' : 'ran'}`
+                : `the ${stop.index} statements before it ${ownsTransaction ? 'were rolled back' : 'ran'}`;
         const failedIn = stop.inViewer ? ', whose query failed in the Data Viewer' : '';
         this.reportFailure(
             editor,
@@ -876,6 +906,7 @@ export class SqlFileSessions implements vscode.Disposable {
                 revealStatement: true
             }
         );
+        if (ownsTransaction) await this.endRunTransaction(ref, session, false);
     }
 
     /**
@@ -1181,6 +1212,38 @@ export class SqlFileSessions implements vscode.Disposable {
             }
         } catch (err: unknown) {
             Logger.error('SqlFileSessions.recordModifyHistory', err);
+        }
+    }
+
+    /**
+     * Whether a run that starts now ends the transaction it works in: in
+     * `run` mode, unless the session already has a transaction the user left
+     * open — that one is joined and left to the user.
+     */
+    private ownsRunTransaction(session: DbSession): boolean {
+        const state = session.transactionState;
+        return session.commitMode === 'run' && state !== 'open' && state !== 'failed';
+    }
+
+    /**
+     * End the transaction of a run in `run` mode: COMMIT when every statement
+     * succeeded, ROLLBACK otherwise; the log of the session says which.
+     */
+    private async endRunTransaction(ref: DbSessionRef, session: DbSession, succeeded: boolean): Promise<void> {
+        const state = session.transactionState;
+        if (state !== 'open' && state !== 'failed') return;
+        const commit = succeeded && state === 'open';
+        try {
+            if (commit) {
+                await session.commit();
+            } else {
+                await session.rollback();
+            }
+            this.messages.append(ref, transactionMessage(ref.label, commit ? 'Committed the transaction of the run' : 'Rolled back the transaction of the run'));
+        } catch (err: unknown) {
+            const text = `${commit ? 'Committing' : 'Rolling back'} the transaction of the run failed: ${statementErrorText(err)}`;
+            this.messages.append(ref, { ...transactionMessage(ref.label, text), severity: 'ERROR' });
+            vscode.window.showErrorMessage(`${text} (database session of ${ref.label})`);
         }
     }
 

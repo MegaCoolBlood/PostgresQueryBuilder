@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { DbSessionManager, type DbSessionManagerOptions } from '../dbSession';
+import { DbSessionManager, parseCommitMode, runsOutsideTransaction, type CommitMode, type DbSessionManagerOptions } from '../dbSession';
 
 /** Stands in for a `pg` client: records statements and can be told what to answer. */
 class FakeClient extends EventEmitter {
@@ -403,4 +403,158 @@ test('dispose closes every session', async () => {
     assert.equal(clients[0].ended, true);
     assert.equal(session.isClosed, true);
     assert.equal(manager.get(REF.key), undefined);
+});
+
+// ===== commit mode and open transaction =====
+
+/** Sessions whose fake clients track BEGIN / COMMIT / ROLLBACK as the server does; `fail` fails a statement. */
+function createTransactionalSessions(mode: CommitMode = 'auto') {
+    const clients: FakeClient[] = [];
+    const changes: string[] = [];
+    let defaultMode = mode;
+    const manager = new DbSessionManager({
+        openClient: async () => {
+            const client: FakeClient = new FakeClient(100 + clients.length, (sql) => {
+                if (/^BEGIN\b/i.test(sql)) client.txStatus = 'T';
+                else if (/^(COMMIT|ROLLBACK)$/i.test(sql)) client.txStatus = 'I';
+                else if (/^ROLLBACK TO SAVEPOINT\b/i.test(sql)) client.txStatus = 'T';
+                else if (/fail/i.test(sql)) {
+                    if (client.txStatus === 'T') client.txStatus = 'E';
+                    throw new Error('boom');
+                }
+                return { rows: [] };
+            });
+            clients.push(client);
+            return client as any;
+        },
+        generation: () => 1,
+        defaultCommitMode: () => defaultMode
+    });
+    manager.onDidChange((key) => changes.push(key));
+    return { manager, clients, changes, setDefault: (value: CommitMode) => { defaultMode = value; } };
+}
+
+test('parseCommitMode knows the three modes and treats anything else as auto-commit', () => {
+    assert.equal(parseCommitMode('manual'), 'manual');
+    assert.equal(parseCommitMode('run'), 'run');
+    for (const value of ['auto', undefined, null, '', 'MANUAL', 42]) assert.equal(parseCommitMode(value), 'auto');
+});
+
+test('runsOutsideTransaction names what PostgreSQL refuses in a transaction and transaction control', () => {
+    for (const sql of ['VACUUM t', 'vacuum (analyze) t', 'CREATE DATABASE x', 'create index concurrently i on t (a)',
+        'REINDEX TABLE CONCURRENTLY t', 'ALTER SYSTEM SET x = 1', 'BEGIN', 'start transaction', 'COMMIT', 'ROLLBACK',
+        'END', 'SAVEPOINT s', '-- tidy up\nVACUUM t', '/* end */ COMMIT']) {
+        assert.equal(runsOutsideTransaction(sql), true, sql);
+    }
+    for (const sql of ['UPDATE t SET a = 1', 'CREATE INDEX i ON t (a)', 'SELECT 1', "INSERT INTO log VALUES ('VACUUM')", 'begin_work()']) {
+        assert.equal(runsOutsideTransaction(sql), false, sql);
+    }
+});
+
+test('a session commits as its connection says until a mode is chosen for it, which ends with the session', () => {
+    const { manager, changes, setDefault } = createTransactionalSessions('manual');
+    const session = manager.acquire(REF, 'file');
+    assert.equal(session.commitMode, 'manual');
+    setDefault('auto');
+    assert.equal(manager.commitModeOf(REF.key), 'auto', 'follows the active connection');
+
+    manager.setCommitMode(REF.key, 'run');
+    assert.equal(session.commitMode, 'run');
+    assert.deepEqual(changes, [REF.key], 'the panel hears of the choice');
+    manager.setCommitMode(REF.key, 'run');
+    assert.equal(changes.length, 1, 'choosing it again changes nothing');
+
+    manager.release(REF.key, 'file');
+    assert.equal(manager.commitModeOf(REF.key), 'auto');
+});
+
+test('a mode can be chosen for a session before its first statement', async () => {
+    const { manager, clients } = createTransactionalSessions('auto');
+    manager.setCommitMode(REF.key, 'manual');
+    const session = manager.acquire(REF, 'file');
+    await session.beginForStatement('UPDATE t SET a = 1');
+    assert.deepEqual(clients[0].queries, ['BEGIN']);
+});
+
+test('auto-commit opens no transaction and does not even wait for the session', async () => {
+    const { manager, clients } = createTransactionalSessions('auto');
+    const session = manager.acquire(REF, 'file');
+    assert.equal(await session.beginForStatement('UPDATE t SET a = 1'), false);
+    assert.equal(clients.length, 0);
+});
+
+test('manual commit opens one transaction for the statements and none for what may not run in one', async () => {
+    const { manager, clients } = createTransactionalSessions('manual');
+    const session = manager.acquire(REF, 'file');
+    assert.equal(await session.beginForStatement('VACUUM t'), false);
+    assert.equal(clients.length, 0, 'VACUUM needs no connection opened for a BEGIN');
+
+    assert.equal(await session.beginForStatement('UPDATE t SET a = 1'), true);
+    await session.query('UPDATE t SET a = 1');
+    assert.equal(await session.beginForStatement('UPDATE t SET b = 2'), false, 'already in a transaction');
+    assert.equal(await session.beginForStatement('COMMIT'), false);
+
+    assert.deepEqual(clients[0].queries, ['BEGIN', 'UPDATE t SET a = 1']);
+    assert.equal(session.transactionState, 'open');
+});
+
+test('a session announces when its transaction opens, fails and ends, once each', async () => {
+    const { manager, changes } = createTransactionalSessions('manual');
+    const session = manager.acquire(REF, 'file');
+    assert.equal(session.transactionState, 'none');
+    await session.query('SELECT 1');
+    const connected = changes.length;
+    assert.equal(session.transactionState, 'idle');
+
+    await session.query('SELECT 2');
+    assert.equal(changes.length, connected, 'nothing changed');
+    await session.beginForStatement('UPDATE t SET a = 1');
+    assert.equal(session.transactionState, 'open');
+    assert.equal(changes.length, connected + 1);
+    await assert.rejects(session.query('UPDATE fail'), /boom/);
+    assert.equal(session.transactionState, 'failed');
+    assert.equal(changes.length, connected + 2);
+
+    assert.equal(await session.rollback(), true);
+    assert.equal(session.transactionState, 'idle');
+    assert.equal(changes.length, connected + 3);
+});
+
+test('commit and rollback end only an open transaction', async () => {
+    const { manager, clients } = createTransactionalSessions('manual');
+    const session = manager.acquire(REF, 'file');
+    assert.equal(await session.commit(), false, 'no connection, nothing to commit');
+    assert.equal(clients.length, 0);
+
+    await session.query('SELECT 1');
+    assert.equal(await session.commit(), false);
+    await session.beginForStatement('UPDATE t SET a = 1');
+    assert.equal(await session.commit(), true);
+    assert.deepEqual(clients[0].queries, ['SELECT 1', 'BEGIN', 'COMMIT']);
+    assert.equal(session.transactionState, 'idle');
+});
+
+test('a save of the Data Viewer in manual commit stays in a transaction left open for the user', async () => {
+    const { manager, clients } = createTransactionalSessions('manual');
+    const session = manager.acquire(REF, 'tab');
+
+    const joined = await session.transaction(async (query, inUserTransaction) => {
+        await query('UPDATE t SET a = 1');
+        return inUserTransaction;
+    });
+
+    assert.equal(joined, true, 'nothing is permanent before the user commits');
+    assert.deepEqual(clients[0].queries, ['BEGIN', 'SAVEPOINT pqb_save', 'UPDATE t SET a = 1', 'RELEASE SAVEPOINT pqb_save']);
+    assert.equal(session.transactionState, 'open');
+
+    await assert.rejects(session.transaction((query) => query('UPDATE fail')), /boom/);
+    assert.equal(session.transactionState, 'open', 'a failed save leaves the earlier work where it was');
+});
+
+test('a failed save in manual commit that opened the transaction rolls it back entirely', async () => {
+    const { manager, clients } = createTransactionalSessions('manual');
+    const session = manager.acquire(REF, 'tab');
+    await assert.rejects(session.transaction((query) => query('UPDATE fail')), /boom/);
+    assert.deepEqual(clients[0].queries, ['BEGIN', 'SAVEPOINT pqb_save', 'UPDATE fail', 'ROLLBACK']);
+    assert.equal(session.transactionState, 'idle');
 });

@@ -7,7 +7,8 @@ import { promisify } from 'util';
 import { Client, ClientConfig, Pool, PoolConfig, QueryArrayResult, QueryResult, QueryResultRow, types as pgTypes } from 'pg';
 import { createHash } from 'crypto';
 import { Logger, getErrorMessage } from './logger';
-import type { SessionClient } from './dbSession';
+import type { CommitMode, SessionClient } from './dbSession';
+import { COMMIT_MODE_LABELS, COMMIT_MODES, parseCommitMode } from './dbSession';
 import { buildHtmlDocument } from './webviewUtils';
 import { icon } from './webviewAssets';
 
@@ -80,6 +81,8 @@ export interface ConnectionConfig {
     caFile?: string;
     /** Sent to the server as `application_name`; {@link DEFAULT_APPLICATION_NAME} when missing. */
     applicationName?: string;
+    /** The commit mode a new database session of this connection starts with; missing means `auto`. */
+    commitMode?: CommitMode;
 }
 
 /** The `application_name` of a connection that has none of its own. */
@@ -119,6 +122,7 @@ export interface ConnectionFormMessage {
     sslMode?: string;
     caFile?: string;
     applicationName?: string;
+    commitMode?: string;
 }
 
 /** The connection the connection form describes; optional fields left empty are not stored. */
@@ -142,6 +146,11 @@ export function connectionConfigFromForm(msg: ConnectionFormMessage): Connection
     const applicationName = customApplicationName(msg);
     if (applicationName !== undefined) {
         config.applicationName = applicationName;
+    }
+    // Auto-commit is the default and is not stored.
+    const commitMode = parseCommitMode(msg.commitMode);
+    if (commitMode !== 'auto') {
+        config.commitMode = commitMode;
     }
     return config;
 }
@@ -538,11 +547,13 @@ export class ConnectionManager {
                 sslMode: effectiveSslMode(existingConfig),
                 caFile: existingConfig.caFile ?? '',
                 applicationName: customApplicationName(existingConfig) ?? '',
+                commitMode: parseCommitMode(existingConfig.commitMode),
                 title: `Edit: ${existingConfig.name}`
             }
             : {
                 name: 'My Database', host: defaultHost, port: String(defaultPort), database: defaultDatabase,
                 user: 'postgres', schemas: '', sslMode: 'verify-full' as SslMode, caFile: '', applicationName: '',
+                commitMode: 'auto' as CommitMode,
                 title: 'New Connection'
             };
 
@@ -655,6 +666,12 @@ export class ConnectionManager {
             <label for="applicationName">Application name (optional, shown in pg_stat_activity)</label>
             <input type="text" id="applicationName" placeholder="${DEFAULT_APPLICATION_NAME}" />
         </div>
+        <div class="form-group">
+            <label for="commitMode">Commit behaviour of new sessions</label>
+            <select id="commitMode">
+                ${COMMIT_MODES.map((mode) => `<option value="${mode}">${COMMIT_MODE_LABELS[mode]}</option>`).join('\n                ')}
+            </select>
+        </div>
         <div class="error" id="error"></div>
         <div class="button-row">
             <button type="submit" class="btn btn-primary">${icon('plug')}Connect</button>
@@ -676,6 +693,7 @@ export class ConnectionManager {
                 if (msg.sslMode) document.getElementById('sslMode').value = msg.sslMode;
                 if (msg.caFile) document.getElementById('caFile').value = msg.caFile;
                 if (msg.applicationName) document.getElementById('applicationName').value = msg.applicationName;
+                if (msg.commitMode) document.getElementById('commitMode').value = msg.commitMode;
                 if (msg.title) document.getElementById('title').textContent = msg.title;
             } else if (msg.type === 'error') {
                 const el = document.getElementById('error');
@@ -696,6 +714,7 @@ export class ConnectionManager {
             const sslMode = document.getElementById('sslMode').value;
             const caFile = document.getElementById('caFile').value.trim();
             const applicationName = document.getElementById('applicationName').value.trim();
+            const commitMode = document.getElementById('commitMode').value;
 
             if (!name || !host || !port || !database || !user) {
                 const el = document.getElementById('error');
@@ -707,7 +726,8 @@ export class ConnectionManager {
             document.getElementById('error').style.display = 'none';
             vscode.postMessage({
                 type: 'connect',
-                name, host, port: parseInt(port, 10), database, user, password, schemas, sslMode, caFile, applicationName
+                name, host, port: parseInt(port, 10), database, user, password, schemas, sslMode, caFile, applicationName,
+                commitMode
             });
         });
 

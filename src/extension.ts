@@ -18,7 +18,7 @@ import { ManageBookmarksPanel } from './manageBookmarksPanel';
 import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore, onDidChangeTableAliases } from './tableStatementDrop';
 import { ViewDataFromSelect } from './viewDataFromSelect';
-import { DbSessionManager } from './dbSession';
+import { DbSessionManager, parseCommitMode } from './dbSession';
 import { SqlFileSessions, messageLogRefFor } from './sqlFileSession';
 import { SessionMessageLog, SessionMessagesView, noticeMessage } from './sessionMessages';
 import { Logger, getErrorMessage, getErrorStack } from './logger';
@@ -380,8 +380,11 @@ export function activate(context: vscode.ExtensionContext) {
                     + 'Settings made with SET or set_config and temporary tables of the old session are gone.'
                 );
             },
-            onNotice: (session, notice) => messagesView.append(session, noticeMessage(session.label, notice))
+            onNotice: (session, notice) => messagesView.append(session, noticeMessage(session.label, notice)),
+            // A new session commits as its connection says; the panel can change that per session.
+            defaultCommitMode: () => parseCommitMode(connectionManager.getActiveConnectionConfig()?.commitMode)
         });
+        messagesView.attachSessions(dbSessions);
         context.subscriptions.push(
             messagesView,
             vscode.window.registerWebviewViewProvider(SessionMessagesView.viewType, messagesView),

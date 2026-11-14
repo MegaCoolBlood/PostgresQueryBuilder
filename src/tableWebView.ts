@@ -28,7 +28,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 /** Said after a save that joined a transaction the user opened in the session. */
-const PENDING_HINT = 'they become permanent once that transaction is committed with COMMIT.';
+const PENDING_HINT = 'they become permanent once that transaction is committed with COMMIT or Commit in the PostgreSQL Messages panel.';
 
 /**
  * One open Data Viewer panel. Both entry points — a table opened from the tree

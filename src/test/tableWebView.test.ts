@@ -1775,7 +1775,7 @@ test('a save inside the open transaction of the session says it still needs COMM
     assert.deepEqual(clients[0].queries, ['SAVEPOINT pqb_save', 'UPDATE t SET a = 1 WHERE id = 7', 'RELEASE SAVEPOINT pqb_save']);
     assert.ok(panel.posted.some((m: any) => m.command === 'commitSuccess'));
     assert.equal(infos[0][0],
-        'Edited statements ran inside the open transaction of the database session; they become permanent once that transaction is committed with COMMIT.');
+        'Edited statements ran inside the open transaction of the database session; they become permanent once that transaction is committed with COMMIT or Commit in the PostgreSQL Messages panel.');
 });
 
 test('Data Viewers opened with the session of a SQL file share that session', async () => {

@@ -1207,6 +1207,158 @@ test('the number column is styled from tokens and is never part of a copied sele
     assert.match(source, /\.msg \{ position: relative; padding: 1px var\(--sp-2\) 1px calc\(var\(--num-width, 1ch\) \+ var\(--sp-2\) \* 2\);/);
 });
 
+// ===== commit mode and open transaction =====
+
+/** Stands in for the DbSessionManager: the shown session FILE has the transaction the test sets. */
+function fakeTransactions() {
+    const modes = new Map<string, string>();
+    const listeners = new Set<(key: string) => void>();
+    const calls: string[] = [];
+    let state = 'none';
+    let commitError: Error | null = null;
+    const emit = (key: string) => listeners.forEach((listener) => listener(key));
+    const api: any = {
+        commitModeOf: (key: string) => modes.get(key) ?? 'auto',
+        setCommitMode: (key: string, mode: string) => { modes.set(key, mode); emit(key); },
+        get: (key: string) => key !== FILE.key ? undefined : {
+            get transactionState() { return state; },
+            commit: async () => {
+                calls.push('commit');
+                if (commitError) throw commitError;
+                const ended = state === 'open';
+                state = 'idle';
+                return ended;
+            },
+            rollback: async () => {
+                calls.push('rollback');
+                const ended = state === 'open' || state === 'failed';
+                state = 'idle';
+                return ended;
+            }
+        },
+        onDidChange: (listener: (key: string) => void) => { listeners.add(listener); return { dispose: () => listeners.delete(listener) }; }
+    };
+    return { api, calls, modes, setState: (value: string) => { state = value; emit(FILE.key); }, emit, failCommit: (err: Error) => { commitError = err; } };
+}
+
+const sessionPosts = (posted: any[]) => posted.filter((m) => m.type === 'session');
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test('the panel is told the commit mode and the transaction of the shown session whenever they change', () => {
+    const { view, posted, send } = resolveView();
+    const sessions = fakeTransactions();
+    view.show(FILE);
+    view.attachSessions(sessions.api);
+    assert.deepEqual(sessionPosts(posted).at(-1), { type: 'session', available: true, commitMode: 'auto', transaction: 'none' });
+
+    sessions.setState('open');
+    assert.deepEqual(sessionPosts(posted).at(-1), { type: 'session', available: true, commitMode: 'auto', transaction: 'open' });
+    const count = sessionPosts(posted).length;
+    sessions.emit(TAB.key);
+    assert.equal(sessionPosts(posted).length, count, 'another session changes nothing shown');
+
+    view.show(TAB);
+    assert.deepEqual(sessionPosts(posted).at(-1), { type: 'session', available: true, commitMode: 'auto', transaction: 'none' });
+    send({ type: 'ready' });
+    assert.equal(sessionPosts(posted).length, count + 2, 'a panel that loads again gets it again');
+});
+
+test('the drop-down sets the commit mode of the shown session only', () => {
+    const { view, send } = resolveView();
+    const sessions = fakeTransactions();
+    view.attachSessions(sessions.api);
+    send({ type: 'commitMode', value: 'manual' });
+    assert.equal(sessions.modes.size, 0, 'no session is shown');
+
+    view.show(FILE);
+    send({ type: 'commitMode', value: 'manual' });
+    send({ type: 'commitMode', value: 'sometimes' });
+    assert.deepEqual([...sessions.modes], [[FILE.key, 'manual']]);
+});
+
+test('Commit and Rollback end the open transaction of the shown session and say so in its log', async () => {
+    const log = new SessionMessageLog();
+    const { view, send } = resolveView(log);
+    const sessions = fakeTransactions();
+    view.attachSessions(sessions.api);
+    view.show(FILE);
+
+    sessions.setState('open');
+    send({ type: 'commit' });
+    await tick();
+    sessions.setState('failed');
+    send({ type: 'rollback' });
+    await tick();
+    send({ type: 'commit' });
+    await tick();
+
+    assert.deepEqual(sessions.calls, ['commit', 'rollback', 'commit']);
+    assert.deepEqual(log.get(FILE.key)?.messages.map((m) => `${m.severity}: ${m.text}`), [
+        'RUN: Committed the open transaction',
+        'RUN: Rolled back the open transaction'
+    ], 'a commit without an open transaction logs nothing');
+});
+
+test('a commit the server refuses is logged as an error and shown', async (t) => {
+    const errors: string[] = [];
+    const original = vscodeStub.window.showErrorMessage;
+    vscodeStub.window.showErrorMessage = (message: string) => { errors.push(message); return Promise.resolve(undefined); };
+    t.after(() => { vscodeStub.window.showErrorMessage = original; });
+    const log = new SessionMessageLog();
+    const { view, send } = resolveView(log);
+    const sessions = fakeTransactions();
+    view.attachSessions(sessions.api);
+    view.show(FILE);
+    sessions.setState('open');
+    sessions.failCommit(new Error('insert or update on table "lohn" violates foreign key constraint'));
+
+    send({ type: 'commit' });
+    await tick();
+
+    assert.deepEqual(log.get(FILE.key)?.messages.map((m) => `${m.severity}: ${m.text}`), [
+        'ERROR: Commit failed: insert or update on table "lohn" violates foreign key constraint'
+    ]);
+    assert.deepEqual(errors, ['Commit failed: insert or update on table "lohn" violates foreign key constraint (database session of payroll.sql)']);
+});
+
+test('the panel shows uncommitted changes with Commit and Rollback, and a failed transaction with Rollback only', () => {
+    const panel = runPanelScript();
+    const { commitMode, txState, commitBtn, rollbackBtn } = panel.elements as any;
+    panel.send({ type: 'session', available: true, commitMode: 'manual', transaction: 'open' });
+    assert.equal(commitMode.value, 'manual');
+    assert.equal(commitMode.disabled, false);
+    assert.equal(txState.hidden, false);
+    assert.equal(txState.textContent, 'Uncommitted changes');
+    assert.equal(txState.className, 'tx-state open');
+    assert.deepEqual([commitBtn.hidden, rollbackBtn.hidden], [false, false]);
+
+    panel.send({ type: 'session', available: true, commitMode: 'manual', transaction: 'failed' });
+    assert.equal(txState.textContent, 'Transaction failed');
+    assert.equal(txState.className, 'tx-state failed');
+    assert.deepEqual([commitBtn.hidden, rollbackBtn.hidden], [true, false]);
+
+    panel.send({ type: 'session', available: true, commitMode: 'auto', transaction: 'idle' });
+    assert.deepEqual([txState.hidden, commitBtn.hidden, rollbackBtn.hidden], [true, true, true]);
+    panel.send({ type: 'session', available: false, commitMode: 'auto', transaction: 'none' });
+    assert.equal(commitMode.disabled, true);
+
+    commitMode.value = 'run';
+    commitMode.listeners.change();
+    commitBtn.listeners.click();
+    rollbackBtn.listeners.click();
+    assert.deepEqual(panel.sent.slice(1), [{ type: 'commitMode', value: 'run' }, { type: 'commit' }, { type: 'rollback' }]);
+});
+
+test('the commit behaviour sits next to Clear on Execute and the open transaction is styled from tokens', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'src', 'sessionMessages.ts'), 'utf8');
+    const { html } = resolveView();
+    assert.match(html, /<select id="commitMode" class="commit-mode" aria-label="Commit behaviour of this session"[^>]*>\s*<option value="auto" title="[^"]+">Auto-commit<\/option><option value="manual" title="[^"]+">Manual commit<\/option><option value="run" title="[^"]+">Commit per run<\/option>\s*<\/select>\s*<label class="clear-on-execute"/);
+    assert.match(html, /<button class="btn btn-sm" id="commitBtn" hidden title="[^"]+">[\s\S]*?Commit<\/button>/);
+    assert.match(html, /<button class="btn btn-sm" id="rollbackBtn" hidden title="[^"]+">[\s\S]*?Rollback<\/button>/);
+    assert.match(source, /\.tx-state\.open \{ color: var\(--c-warning\); background: color-mix\(in srgb, var\(--c-warning\) 14%, transparent\); \}/);
+    assert.match(source, /\.tx-state\.failed \{ color: var\(--c-danger\);/);
+});
+
 // ===== Clear on Execute =====
 
 /** Let the settings hold `clearOnExecute` for one test, and record what is written to them. */
