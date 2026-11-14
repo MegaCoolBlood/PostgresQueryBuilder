@@ -19,6 +19,13 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
         return this._filterText;
     }
 
+    /** Empty the Search field and clear the filter of every view it filters. */
+    clearFilter(): void {
+        this._filterText = '';
+        void this._view?.webview.postMessage({ type: 'setFilter', value: '' });
+        this._onDidChangeFilter.fire('');
+    }
+
     resolveWebviewView(
         webviewView: vscode.WebviewView,
         _context: vscode.WebviewViewResolveContext,
@@ -66,9 +73,9 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
         }`;
         const body = `
     <div class="search-container">
-        <input type="text" id="searchInput" placeholder="Filter tables... (e.g. schema.table or multiple terms)" />
+        <input type="text" id="searchInput" placeholder="Filter tables and objects... (e.g. schema.name or multiple terms)" />
     </div>
-    <div class="hint">Several terms separated by spaces: the matches with the most hits come first</div>
+    <div class="hint">Filters the Tables and the Objects view. Several terms separated by spaces: the matches with the most hits come first</div>
     <div class="button-row">
         <button class="btn" id="manageMappingsBtn" title="Open the manager for all custom column mappings (bulk share/move/delete)">${icon('goto')}Manage All Mappings</button>
     </div>
@@ -90,6 +97,12 @@ export class SearchViewProvider implements vscode.WebviewViewProvider {
         });
         document.getElementById('psqlConsoleBtn').addEventListener('click', () => {
             vscode.postMessage({ type: 'openPsqlConsole' });
+        });
+        window.addEventListener('message', (event) => {
+            if (event.data && event.data.type === 'setFilter') {
+                clearTimeout(debounceTimer);
+                input.value = event.data.value;
+            }
         });
         input.focus();`;
         return buildHtmlDocument({ webview, styles, body, script });

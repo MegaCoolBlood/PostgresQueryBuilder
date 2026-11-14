@@ -72,6 +72,12 @@
           "icon": "$(search)"
         },
         {
+          "id": "postgresObjectNavigator",
+          "name": "Objects",
+          "icon": "$(symbol-method)",
+          "visibility": "collapsed"
+        },
+        {
           "id": "postgresModifyHistory",
           "name": "Modify History",
           "type": "webview",
@@ -298,6 +304,66 @@
         "title": "Clear Select History",
         "category": "PostgreSQL Query Booster",
         "icon": "$(trash)"
+      },
+      {
+        "command": "postgresQueryBuilder.goToDatabaseObject",
+        "title": "Go to Database Object",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(search)"
+      },
+      {
+        "command": "postgresQueryBuilder.refreshObjectNavigator",
+        "title": "Refresh Objects",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "postgresQueryBuilder.openCreateScript",
+        "title": "Open CREATE Script",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "postgresQueryBuilder.copyCreateScript",
+        "title": "Copy CREATE Script",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "postgresQueryBuilder.openDropScript",
+        "title": "Open DROP Script",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "postgresQueryBuilder.copyDropScript",
+        "title": "Copy DROP Script",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "postgresQueryBuilder.goToRepositoryDefinition",
+        "title": "Go to Definition in Repository",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "postgresQueryBuilder.showOnlyDifferences",
+        "title": "Show Only Differences to the Repository",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "postgresQueryBuilder.showAllObjects",
+        "title": "Show All Objects",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "postgresQueryBuilder.rescanRepository",
+        "title": "Rescan Repository",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(sync)"
       }
     ],
     "menus": {
@@ -351,6 +417,31 @@
           "command": "postgresQueryBuilder.clearSelectHistory",
           "when": "view == postgresSelectHistory",
           "group": "navigation@1"
+        },
+        {
+          "command": "postgresQueryBuilder.goToDatabaseObject",
+          "when": "view == postgresObjectNavigator",
+          "group": "navigation@1"
+        },
+        {
+          "command": "postgresQueryBuilder.showOnlyDifferences",
+          "when": "view == postgresObjectNavigator && !postgresQueryBuilder.objectNavigator.onlyDifferences",
+          "group": "navigation@2"
+        },
+        {
+          "command": "postgresQueryBuilder.showAllObjects",
+          "when": "view == postgresObjectNavigator && postgresQueryBuilder.objectNavigator.onlyDifferences",
+          "group": "navigation@2"
+        },
+        {
+          "command": "postgresQueryBuilder.refreshObjectNavigator",
+          "when": "view == postgresObjectNavigator",
+          "group": "navigation@3"
+        },
+        {
+          "command": "postgresQueryBuilder.rescanRepository",
+          "when": "view == postgresObjectNavigator",
+          "group": "1_repository@1"
         }
       ],
       "view/item/context": [
@@ -413,6 +504,91 @@
           "command": "postgresQueryBuilder.deleteSavedQuery",
           "when": "view == postgresSavedQueries && viewItem =~ /^savedQuery\\./",
           "group": "3_delete@1"
+        },
+        {
+          "command": "postgresQueryBuilder.openCreateScript",
+          "when": "view == postgresObjectNavigator && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "group": "inline"
+        },
+        {
+          "command": "postgresQueryBuilder.goToRepositoryDefinition",
+          "when": "view == postgresObjectNavigator && viewItem =~ /^(dbObject\\..+|repoObject\\..+|objectSchema|objectSchema\\.repoOnly)$/",
+          "group": "0_repository@1"
+        },
+        {
+          "command": "postgresQueryBuilder.openCreateScript",
+          "when": "view == postgresObjectNavigator && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "group": "1_ddl@1"
+        },
+        {
+          "command": "postgresQueryBuilder.copyCreateScript",
+          "when": "view == postgresObjectNavigator && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "group": "1_ddl@2"
+        },
+        {
+          "command": "postgresQueryBuilder.openDropScript",
+          "when": "view == postgresObjectNavigator && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "group": "2_drop@1"
+        },
+        {
+          "command": "postgresQueryBuilder.copyDropScript",
+          "when": "view == postgresObjectNavigator && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "group": "2_drop@2"
+        },
+        {
+          "command": "postgresQueryBuilder.goToRepositoryDefinition",
+          "when": "view == postgresTableExplorer && viewItem =~ /^(schema|table)(\\.repoOnly)?$/",
+          "group": "0_repository@1"
+        },
+        {
+          "command": "postgresQueryBuilder.openCreateScript",
+          "when": "view == postgresTableExplorer && viewItem =~ /^(schema|table)$/",
+          "group": "1_ddl@1"
+        },
+        {
+          "command": "postgresQueryBuilder.copyCreateScript",
+          "when": "view == postgresTableExplorer && viewItem =~ /^(schema|table)$/",
+          "group": "1_ddl@2"
+        },
+        {
+          "command": "postgresQueryBuilder.openDropScript",
+          "when": "view == postgresTableExplorer && viewItem =~ /^(schema|table)$/",
+          "group": "2_drop@1"
+        },
+        {
+          "command": "postgresQueryBuilder.copyDropScript",
+          "when": "view == postgresTableExplorer && viewItem =~ /^(schema|table)$/",
+          "group": "2_drop@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "postgresQueryBuilder.openCreateScript",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.copyCreateScript",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.openDropScript",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.copyDropScript",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.goToRepositoryDefinition",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.showOnlyDifferences",
+          "when": "!postgresQueryBuilder.objectNavigator.onlyDifferences"
+        },
+        {
+          "command": "postgresQueryBuilder.showAllObjects",
+          "when": "postgresQueryBuilder.objectNavigator.onlyDifferences"
         }
       ],
       "editor/title": [
@@ -478,6 +654,10 @@
       {
         "view": "postgresTableExplorer",
         "contents": "No active PostgreSQL connection.\n[$(database) Select Connection](command:postgresQueryBuilder.selectConnection)\n[$(add) New Connection](command:postgresQueryBuilder.connect)"
+      },
+      {
+        "view": "postgresObjectNavigator",
+        "contents": "No database objects to show.\nFunctions, procedures, types, sequences, triggers and extensions of the active connection are listed here. Choose the connection in the Tables view; the setting postgresQueryBuilder.objectNavigator.objectKinds decides which kinds are shown."
       },
       {
         "view": "postgresSavedQueries",
@@ -980,6 +1160,104 @@
           },
           "additionalProperties": false,
           "markdownDescription": "Multi-line thresholds per construct, as a table. Each value is the pair `\"inlineMax, multilineMin\"`: a list with **at most** `inlineMax` elements always stays on one line, a list with **at least** `multilineMin` elements is always wrapped across lines, and in between the layout in the source decides (one line stays one line, multi-line stays multi-line). For the three structural blocks `caseWhenThen`, `exceptionWhenThen` and `ifElse` only `inlineMax` takes effect: a small block is collapsed onto one line when its number of statements (`;`) is `<= inlineMax` and the body contains no comments or nested blocks (`inlineMax = 0` = never collapse)."
+        }
+      }
+    },
+    {
+      "title": "Database Objects",
+      "order": 5,
+      "properties": {
+        "postgresQueryBuilder.objectNavigator.objectKinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "function",
+              "procedure",
+              "aggregate",
+              "type",
+              "domain",
+              "sequence",
+              "trigger",
+              "extension"
+            ],
+            "enumDescriptions": [
+              "Functions, shown with their signature and result type",
+              "Procedures, shown with their signature",
+              "Aggregate functions",
+              "Enum, composite and range types",
+              "Domains, shown with their base type",
+              "Sequences, except those of identity columns",
+              "Triggers, shown with their table",
+              "Extensions installed in the database"
+            ]
+          },
+          "uniqueItems": true,
+          "default": [
+            "function",
+            "procedure",
+            "aggregate",
+            "type",
+            "domain",
+            "sequence",
+            "trigger",
+            "extension"
+          ],
+          "markdownDescription": "Which kinds of database objects the **Objects** view shows. Tables, views, materialized views and foreign tables are listed in the **Tables** view."
+        },
+        "postgresQueryBuilder.objectNavigator.showExtensionObjects": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Also show the functions, types and other objects that belong to an extension, such as the many functions of PostGIS. The extensions themselves are always listed under **Extensions**."
+        },
+        "postgresQueryBuilder.ddl.includeComments": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Write the `COMMENT ON` statements of an object, and of the columns of a table or view, into its CREATE script."
+        },
+        "postgresQueryBuilder.ddl.includeOwner": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Write `ALTER … OWNER TO` into a CREATE script, so the object gets the owner it has in the database."
+        },
+        "postgresQueryBuilder.ddl.includeGrants": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Write the `GRANT` statements of an object into its CREATE script, and a `REVOKE … FROM PUBLIC` where the object no longer has its default privileges."
+        },
+        "postgresQueryBuilder.repository.compare": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Compare the **Objects** and **Tables** views with the `CREATE` statements in the SQL files of the workspace: an object missing from the repository is shown in red, an object that exists only in the repository is listed in the colour of an untracked file. A workspace without any `CREATE` statement marks nothing."
+        },
+        "postgresQueryBuilder.repository.include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/*.sql",
+            "**/*.pgsql",
+            "**/*.psql"
+          ],
+          "markdownDescription": "Glob patterns of the files scanned for `CREATE` statements, relative to the workspace folder."
+        },
+        "postgresQueryBuilder.repository.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/.git/**"
+          ],
+          "markdownDescription": "Glob patterns of files and folders left out of the scan for `CREATE` statements, e.g. a folder of database dumps."
+        },
+        "postgresQueryBuilder.repository.maxFileSizeKb": {
+          "type": "integer",
+          "default": 5120,
+          "minimum": 1,
+          "markdownDescription": "Files larger than this many kilobytes are not scanned for `CREATE` statements."
         }
       }
     }

@@ -34,6 +34,10 @@ SQL before it is written.
 - **Format PL/pgSQL.** A formatter for `sql`, `plpgsql` and `pgsql` that never
   changes what your code means, configurable per repository and available as a
   standalone CLI.
+- **Every object, its DDL, and your repository.** Functions with their
+  signature, procedures, types, sequences, triggers and extensions in a view
+  of their own; CREATE and DROP scripts of any object or table; and red marks
+  for whatever the SQL files of your workspace do not create.
 
 ---
 
@@ -94,10 +98,80 @@ and lets you override it.
 The *Tables* view lists the schemas and their tables. The system schemas
 `pg_catalog`, `information_schema` and `pg_toast` stay hidden, and if a
 connection names specific schemas, only those are shown. **Refresh** in the
-title bar reloads the tree; a click on a table opens it.
+title bar reloads the tree; a double click on a table opens it.
 
-The *Search* view below it filters the tables while you type, across all
-schemas, and understands the `schema.table` notation.
+The *Search* view below it filters the tables — and the *Objects* view — while
+you type, across all schemas, and understands the `schema.name` notation.
+
+---
+
+## Database objects
+
+The *Objects* view, below *Search*, lists everything of the database that is
+not a table: functions and procedures with their signature
+(`add_tax(amount numeric) → numeric`), aggregates, enum, composite and range
+types, domains, sequences, triggers with their table, and the installed
+extensions. It starts collapsed and reads nothing until you open it; then one
+query loads the whole catalog, and filtering happens without asking the
+database again. Objects that belong to an extension, such as the functions of
+PostGIS, stay hidden unless `postgresQueryBuilder.objectNavigator.showExtensionObjects`
+is on; `postgresQueryBuilder.objectNavigator.objectKinds` chooses the kinds.
+
+**Go to Database Object** (the search icon in the title bar, or the Command
+Palette) offers every object and table by name, kind and schema. The chosen
+entry is revealed and selected in its view; a Search filter that would hide it
+is cleared first.
+
+### CREATE and DROP scripts
+
+The context menu of an object, a schema or a table offers **Open CREATE
+Script**, **Copy CREATE Script**, **Open DROP Script** and **Copy DROP
+Script**. Several selected entries give one script — CREATE in the order of the
+selection, DROP in reverse. Scripts are only written, never run:
+
+- functions and procedures as the server prints them, aggregates, enum,
+  composite and range types, domains, sequences, triggers, extensions and
+  schemas;
+- views, materialized views with their indexes, and tables with their columns
+  (identity and generated columns included), constraints, inheritance and
+  partitioning, indexes, triggers, row level security and policies; foreign
+  tables with server and options;
+- `COMMENT ON`, `ALTER … OWNER TO` and `GRANT`, each of which can be turned
+  off with `postgresQueryBuilder.ddl.includeComments`, `…includeOwner` and
+  `…includeGrants`;
+- `DROP … IF EXISTS`, with the full signature for functions.
+
+Every name outside `pg_catalog` is written with its schema, as pg_dump does,
+so a script does not depend on the `search_path` of the session that runs it.
+
+### Comparing with the repository
+
+The SQL files of the workspace are scanned in the background for `CREATE`
+statements, and both views show how the database compares with them:
+
+| Look | Meaning |
+|------|---------|
+| red, with `!` | the object exists in the database but no file creates it |
+| colour of an untracked file, with `+` | a file creates it, but the database does not have it |
+| unchanged | both have it |
+
+A double click on an object of the *Objects* view jumps to its `CREATE`
+statement — or offers a choice when several files create it. In the *Tables*
+view, where a double click opens the Data Viewer, the context menu has **Go to
+Definition in Repository**. Functions are matched together with their argument
+types, so overloads are told apart, and `int`, `int4` and `integer` count as
+the same type. A name without schema belongs to the schema of a `SET
+search_path` earlier in the file, otherwise to the first schema of the
+connection's `search_path`. Comments, strings and function bodies are skipped,
+so a `CREATE TABLE` inside a function or an `EXECUTE` does not count; the
+statements of a `DO` block do, as it runs when the file is deployed. What an
+extension creates, and PostgreSQL's own `pg_*` schemas, are never marked.
+
+**Show Only Differences to the Repository** in the title bar of *Objects*
+hides what both sides have. A workspace without any `CREATE` statement marks
+nothing. Changed files are rescanned as they are saved; **Rescan Repository**
+starts over. `postgresQueryBuilder.repository.compare` turns the comparison
+off, and `…include`, `…exclude` and `…maxFileSizeKb` choose the files.
 
 ---
 
@@ -619,9 +693,16 @@ Every command lives in the Command Palette (`Ctrl+Shift+P`) under the category
 | Manage Bookmarked Queries... | Open the panel for scope, tags and placeholder metadata |
 | Manage Custom Column Mappings... | Open the mappings panel |
 | Import / Export Custom Column Mappings... | Exchange mappings as a file |
+| Go to Database Object | Find a function, type, table or other object by name and reveal it in its view |
+| Refresh Objects | Reload the *Objects* view from the database |
+| Show Only Differences to the Repository | Hide the objects the database and the repository both have |
+| Rescan Repository | Read the `CREATE` statements of the workspace's SQL files again |
 
 Bookmarked queries and mappings carry further commands for renaming,
 duplicating, deleting and moving between the personal and the workspace scope.
+The entries of the *Objects* and *Tables* views carry **Open CREATE Script**,
+**Copy CREATE Script**, **Open DROP Script**, **Copy DROP Script** and **Go to
+Definition in Repository** in their context menu.
 
 ---
 
@@ -661,6 +742,15 @@ duplicating, deleting and moving between the personal and the workspace scope.
 | `postgresQueryBuilder.customMappingsFile` | `postgres-query-builder.mappings.json` | Where shared column mappings are kept |
 | `postgresQueryBuilder.format.enable` | `true` | Whether the formatter is offered at all |
 | `postgresQueryBuilder.format.formatOnSave` | `false` | Format SQL files when they are saved |
+| `postgresQueryBuilder.objectNavigator.objectKinds` | all kinds | Which kinds of objects the *Objects* view lists |
+| `postgresQueryBuilder.objectNavigator.showExtensionObjects` | `false` | Also list the functions, types and other objects of extensions |
+| `postgresQueryBuilder.ddl.includeComments` | `true` | Write `COMMENT ON` into CREATE scripts |
+| `postgresQueryBuilder.ddl.includeOwner` | `true` | Write `ALTER … OWNER TO` into CREATE scripts |
+| `postgresQueryBuilder.ddl.includeGrants` | `true` | Write `GRANT` into CREATE scripts |
+| `postgresQueryBuilder.repository.compare` | `true` | Compare the *Objects* and *Tables* views with the `CREATE` statements of the workspace |
+| `postgresQueryBuilder.repository.include` | `**/*.sql`, `**/*.pgsql`, `**/*.psql` | Files scanned for `CREATE` statements |
+| `postgresQueryBuilder.repository.exclude` | `**/node_modules/**`, `**/.git/**` | Files and folders left out of the scan |
+| `postgresQueryBuilder.repository.maxFileSizeKb` | `5120` | Larger files are not scanned |
 
 The formatter brings around twenty further settings under
 `postgresQueryBuilder.format.*`; the settings UI describes each of them, and

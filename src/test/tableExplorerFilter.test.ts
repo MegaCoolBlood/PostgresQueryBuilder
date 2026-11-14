@@ -2,6 +2,7 @@ import './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TableExplorerProvider } from '../tableExplorer';
+import { scanSqlText } from '../repositoryScanner';
 
 function createProvider(): any {
     // The provider only needs a connection manager reference for construction;
@@ -180,4 +181,112 @@ test('getTreeItem marks schema and category nodes as expanded', () => {
     assert.equal(schemaItem.collapsibleState, 2);
     assert.equal(categoryItem.collapsibleState, 2);
     assert.equal(categoryItem.label, 'Views');
+});
+
+// ===== 4.0.0: reveal support and the comparison with the repository =====
+
+function createProviderWithRepository(
+    relationsBySchema: Record<string, Array<{ table_name: string; rel_kind: string }>>,
+    files: Record<string, string> | null,
+    extensionMembers: Array<{ member_kind: string; schema_name: string; name: string | null }> = []
+): any {
+    const connectionManager = {
+        isConnected: () => true,
+        getActiveConnectionConfig: () => ({ schemas: undefined }),
+        clearMetadataCache: () => {},
+        queryMetadata: async (sql: string, params?: any[]) => {
+            if (sql.includes('current_schemas')) return [{ schema_name: 'public' }];
+            if (sql.includes('pg_depend')) return extensionMembers;
+            if (sql.includes('information_schema.schemata')) {
+                return Object.keys(relationsBySchema).map(s => ({ schema_name: s }));
+            }
+            if (sql.includes('SELECT table_schema, table_name, rel_kind')) {
+                return Object.entries(relationsBySchema).flatMap(([schema, rels]) => rels.map(r => ({ table_schema: schema, ...r })));
+            }
+            return relationsBySchema[params?.[0]] ?? [];
+        }
+    };
+    const provider = new TableExplorerProvider(connectionManager as any);
+    if (files) {
+        const definitions = Object.entries(files).flatMap(([uri, sql]) => scanSqlText(sql).map(d => ({ ...d, uri })));
+        provider.setRepository({ snapshot: () => ({ version: 1, definitions }), ensureScanned: () => {} });
+    }
+    return provider;
+}
+
+const SALES = { sales: [{ table_name: 'orders', rel_kind: 'table' }, { table_name: 'legacy', rel_kind: 'table' }] };
+const SALES_REPO = {
+    'schema.sql': `CREATE SCHEMA sales;
+                   CREATE TABLE sales.orders (id int);
+                   CREATE VIEW sales.order_totals AS SELECT 1;
+                   CREATE TABLE archive.old_orders (id int);`
+};
+
+test('every node has a stable id and getParent leads back to its schema', () => {
+    const p = createProvider();
+    const table = { type: 'table', schema: 'public', table: 'users', kind: 'view' };
+    assert.equal(p.getTreeItem(table).id, 'tables/table/public/view/users');
+    const category = p.getParent(table);
+    assert.deepEqual(category, { type: 'category', schema: 'public', kind: 'view' });
+    assert.deepEqual(p.getParent(category), { type: 'schema', schema: 'public' });
+    assert.equal(p.getParent({ type: 'schema', schema: 'public' }), undefined);
+});
+
+test('without a repository to compare with, no relation is marked', async () => {
+    const p = createProviderWithRepository(SALES, null);
+    const tables = await p.getChildren({ type: 'category', schema: 'sales', kind: 'table' });
+    assert.ok(tables.every((t: any) => t.status === undefined && p.getTreeItem(t).resourceUri === undefined));
+    assert.equal(await p.definitionsFor(tables[0]), null);
+});
+
+test('a relation missing in the repository is marked, one defined there is not', async () => {
+    const p = createProviderWithRepository(SALES, SALES_REPO);
+    const tables = await p.getChildren({ type: 'category', schema: 'sales', kind: 'table' });
+    const byName = new Map<string, any>(tables.map((t: any) => [t.table, t]));
+    assert.equal(byName.get('orders').status, 'both');
+    assert.equal(p.getTreeItem(byName.get('orders')).resourceUri, undefined);
+    assert.equal(byName.get('legacy').status, 'dbOnly');
+    assert.match(String(p.getTreeItem(byName.get('legacy')).resourceUri), /\?dbOnly$/);
+    assert.match(String(p.getTreeItem(byName.get('legacy')).tooltip), /Not found in the repository\.$/);
+});
+
+test('relations and schemas that exist only in the repository are listed', async () => {
+    const p = createProviderWithRepository(SALES, SALES_REPO);
+    const schemas = await p.getChildren();
+    assert.deepEqual(schemas.map((s: any) => [s.schema, s.status]), [['archive', 'repoOnly'], ['sales', 'both']]);
+    const categories = await p.getChildren({ type: 'schema', schema: 'sales' });
+    assert.deepEqual(categories.map((c: any) => c.kind), ['table', 'view']);
+    const [view] = await p.getChildren({ type: 'category', schema: 'sales', kind: 'view' });
+    const item = p.getTreeItem(view);
+    assert.equal(item.contextValue, 'table.repoOnly');
+    assert.equal(item.description, 'only in repository');
+    assert.equal(item.command.command, 'postgresQueryBuilder.goToRepositoryDefinition', 'nothing to open in the Data Viewer');
+    assert.match(String(item.resourceUri), /\?repoOnly$/);
+});
+
+test('allRelationNodes lists every relation of the database and of the repository, ignoring the filter', async () => {
+    const p = createProviderWithRepository(SALES, SALES_REPO);
+    p.setFilter('nothing-matches');
+    const all = await p.allRelationNodes();
+    assert.deepEqual(all.map((r: any) => `${r.schema}.${r.table}:${r.status}`).sort(), [
+        'archive.old_orders:repoOnly', 'sales.legacy:dbOnly', 'sales.order_totals:repoOnly', 'sales.orders:both'
+    ]);
+    assert.equal(p.isFilteredOut(all[0]), true);
+    p.setFilter('');
+    assert.equal(p.isFilteredOut(all[0]), false);
+});
+
+test('what an extension or PostgreSQL itself provides is never marked', async () => {
+    const p = createProviderWithRepository(
+        { oracle: [{ table_name: 'dual', rel_kind: 'view' }], pg_temp_56: [], sales: [{ table_name: 'stats', rel_kind: 'view' }] },
+        SALES_REPO,
+        [{ member_kind: 'schema', schema_name: 'oracle', name: null }, { member_kind: 'relation', schema_name: 'sales', name: 'stats' }]
+    );
+    const schemas = await p.getChildren();
+    assert.deepEqual(schemas.filter((s: any) => s.schema !== 'archive').map((s: any) => [s.schema, s.status]),
+        [['oracle', undefined], ['pg_temp_56', undefined], ['sales', 'both']]);
+    const [dual] = await p.getChildren({ type: 'category', schema: 'oracle', kind: 'view' });
+    assert.equal(dual.status, undefined);
+    const views = await p.getChildren({ type: 'category', schema: 'sales', kind: 'view' });
+    assert.equal(views.find((v: any) => v.table === 'stats').status, undefined, 'a view of an extension is not marked');
 });

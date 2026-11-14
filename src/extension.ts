@@ -42,6 +42,10 @@ import { ExecutableValueRunner } from './executableColumns';
 import { ExportService } from './exportService';
 import { ADD_EXPORT_INSTRUCTION_COMMAND, ExportInstructionAssist } from './exportInstructionAssist';
 import { CompletionCatalogCache, SqlFileCompletionProvider, loadSqlCompletionApi, loadSqlWords } from './sqlCompletion';
+import { ObjectNavigatorProvider, readNavigatorSettings } from './objectNavigator';
+import { RepositoryIndex } from './repositoryIndex';
+import { ObjectStatusDecorationProvider } from './objectDecorations';
+import { registerDatabaseObjectCommands } from './databaseObjectCommands';
 
 /**
  * Surface the non-blocking warnings an enabled formatter check produced. The
@@ -583,8 +587,43 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(
             vscode.window.registerWebviewViewProvider(SearchViewProvider.viewType, searchViewProvider)
         );
+
+        // The Objects view and the comparison with the repository. Neither
+        // queries the database nor reads a file before one of the trees asks.
+        const repositoryIndex = new RepositoryIndex('postgresObjectNavigator');
+        const objectNavigator = new ObjectNavigatorProvider(connectionManager, readNavigatorSettings, repositoryIndex, context.workspaceState);
+        tableExplorer.setRepository(repositoryIndex);
+        const objectsTreeView = vscode.window.createTreeView('postgresObjectNavigator', {
+            treeDataProvider: objectNavigator,
+            showCollapseAll: true,
+            canSelectMany: true
+        });
+        context.subscriptions.push(
+            repositoryIndex,
+            objectsTreeView,
+            vscode.window.registerFileDecorationProvider(new ObjectStatusDecorationProvider()),
+            repositoryIndex.onDidChange(() => {
+                objectNavigator.rerender();
+                tableExplorer.rerender();
+            }),
+            connectionManager.onConnectionChanged(() => objectNavigator.reset()),
+            vscode.workspace.onDidChangeConfiguration((e) => {
+                if (e.affectsConfiguration('postgresQueryBuilder.objectNavigator')) objectNavigator.rerender();
+            })
+        );
+        registerDatabaseObjectCommands(context, {
+            connectionManager,
+            objectNavigator,
+            tableExplorer,
+            repositoryIndex,
+            objectsTreeView,
+            tablesTreeView: treeView,
+            clearSearchFilter: () => searchViewProvider.clearFilter()
+        });
+
         searchViewProvider.onDidChangeFilter((filter) => {
             tableExplorer.setFilter(filter);
+            objectNavigator.setFilter(filter);
         });
         searchViewProvider.onDidRequestManageMappings(() => {
             ManageMappingsPanel.show(context, columnMappingManager);

@@ -441,3 +441,61 @@ test('the changelog is English from the first entry to the last', () => {
         'the changelog still contains German text'
     );
 });
+
+/**
+ * 4.0.0 added the Objects view. It must never cost startup time, offers no
+ * connection actions (those belong to the Tables view), and the commands that
+ * need a tree node are only reachable from the trees.
+ */
+const OBJECT_NODE_COMMANDS = [
+    'postgresQueryBuilder.openCreateScript',
+    'postgresQueryBuilder.copyCreateScript',
+    'postgresQueryBuilder.openDropScript',
+    'postgresQueryBuilder.copyDropScript',
+    'postgresQueryBuilder.goToRepositoryDefinition'
+];
+
+test('the Objects view starts collapsed, so nothing is loaded for it at startup', () => {
+    const view = manifest.contributes.views.postgresQueryBuilderExplorer.find((v: { id: string }) => v.id === 'postgresObjectNavigator');
+    assert.ok(view, 'the Objects view is not contributed');
+    assert.equal(view.visibility, 'collapsed');
+});
+
+test('the Objects view offers no connection actions', () => {
+    const titleMenu: Array<{ command: string; when: string }> = manifest.contributes.menus['view/title'];
+    const objectActions = titleMenu.filter(m => m.when.includes('view == postgresObjectNavigator')).map(m => m.command);
+    assert.ok(objectActions.includes('postgresQueryBuilder.goToDatabaseObject'));
+    for (const action of TITLE_BAR_ACTIONS) {
+        assert.ok(!objectActions.includes(action.command), `the Objects view repeats "${action.label}"`);
+    }
+    const welcome = manifest.contributes.viewsWelcome.find((w: { view: string }) => w.view === 'postgresObjectNavigator');
+    assert.ok(welcome, 'the Objects view has no welcome content');
+    assert.ok(!welcome.contents.includes('command:'), 'the Objects welcome content offers an action');
+});
+
+test('the commands that need a tree node are hidden from the Command Palette and offered in both trees', () => {
+    const palette: Array<{ command: string; when: string }> = manifest.contributes.menus.commandPalette;
+    const context: Array<{ command: string; when: string }> = manifest.contributes.menus['view/item/context'];
+    for (const command of OBJECT_NODE_COMMANDS) {
+        assert.equal(palette.find(p => p.command === command)?.when, 'false', `${command} appears in the Command Palette`);
+        for (const view of ['postgresObjectNavigator', 'postgresTableExplorer']) {
+            assert.ok(context.some(m => m.command === command && m.when.includes(`view == ${view}`)), `${command} is missing from ${view}`);
+        }
+    }
+});
+
+test('every command a menu offers is contributed, with an icon where it shows as one', () => {
+    const commands = new Map((manifest.contributes.commands as Array<{ command: string; icon?: string }>).map(c => [c.command, c]));
+    const menus = manifest.contributes.menus as Record<string, Array<{ command: string; group?: string }>>;
+    for (const [where, entries] of Object.entries(menus)) {
+        for (const entry of entries) {
+            const contributed = commands.get(entry.command);
+            assert.ok(contributed, `${where} offers ${entry.command}, which is not contributed`);
+            const showsIcon = (where === 'view/title' && entry.group?.startsWith('navigation'))
+                || (where === 'view/item/context' && entry.group === 'inline');
+            if (showsIcon) {
+                assert.ok(contributed.icon, `${entry.command} shows as an icon in ${where} but has none`);
+            }
+        }
+    }
+});

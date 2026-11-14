@@ -5,6 +5,7 @@ import { buildRelationListQuery } from './queryRunner';
 import { deriveQualifier } from './statementBuilder';
 import { POSTGRES_RESERVED_KEYWORDS } from './reservedKeywords';
 import { Logger } from './logger';
+import { CURRENT_SCHEMAS_QUERY } from './repositoryComparison';
 
 /**
  * Autocomplete for SQL files. It is the autocomplete of the Data Viewer's query
@@ -158,7 +159,7 @@ export async function loadCompletionCatalog(source: CatalogSource, savedAlias?: 
              WHERE nspname NOT IN ('pg_catalog', 'information_schema') AND nspname NOT LIKE 'pg\\_%'
              ORDER BY nspname`
         ),
-        source.queryMetadata('SELECT unnest(current_schemas(false)) AS schema_name'),
+        source.queryMetadata(CURRENT_SCHEMAS_QUERY),
         // Only the aliases depend on it, so a failure costs no suggestions.
         source.queryMetadata(FIRST_COLUMN_QUERY).catch((err: unknown) => {
             Logger.error('loadCompletionCatalog.firstColumns', err);
