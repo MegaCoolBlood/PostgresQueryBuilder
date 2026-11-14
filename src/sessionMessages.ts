@@ -87,6 +87,8 @@ export interface SessionMessage {
     id?: number;
     link?: MessageLink;
     timer?: MessageTimer;
+    /** Its place in the log, from 1 for the first message since the log began or was cleared. */
+    number?: number;
 }
 
 /** The colour token a message is shown in. */
@@ -431,8 +433,8 @@ export class SessionMessageLog {
             // The started line leads to the statement as well, under an id of its own.
             message = { ...message, id: ++entryCounter, timer: undefined };
         }
-        log.messages.push(keptMessage(message));
         log.total++;
+        log.messages.push(keptMessage({ ...message, number: log.total }));
         if (messageTone(message.severity) === 'danger') {
             log.errors++;
         }
@@ -972,7 +974,9 @@ body { padding: 0; display: flex; flex-direction: column; }
 .count { font-size: var(--fs-xs); color: var(--c-muted); white-space: nowrap; }
 .list { flex: 1; position: relative; overflow-y: auto; padding: var(--sp-1) 0; font-family: var(--font-mono); font-size: var(--fs-sm); }
 .empty { padding: var(--sp-3); font-family: inherit; color: var(--c-muted); }
-.msg { padding: 1px var(--sp-2); white-space: pre-wrap; word-break: break-word; user-select: text; }
+.msg { position: relative; padding: 1px var(--sp-2) 1px calc(var(--num-width, 1ch) + var(--sp-2) * 2); white-space: pre-wrap; word-break: break-word; user-select: text; }
+/* The number of a message in its log, to point someone at "line 567"; never part of a copied selection. */
+.msg-num { position: absolute; left: var(--sp-2); width: var(--num-width, 1ch); text-align: right; color: var(--c-muted); user-select: none; }
 .msg-time, .msg-source { color: var(--c-muted); }
 .msg-sev { font-weight: 600; }
 .msg-sev .ico { vertical-align: text-bottom; margin-right: 2px; }
@@ -1064,6 +1068,7 @@ function timerHtml(m) {
 function messageHtml(m) {
     let html = '<div class="msg tone-' + escapeHtml(m.tone) + (m.timer ? ' run-' + escapeHtml(m.timer.status) : '') + '"'
         + (m.id != null ? ' data-id="' + escapeHtml(String(m.id)) + '"' : '') + '>'
+        + (m.number != null ? '<span class="msg-num">' + escapeHtml(String(Number(m.number))) + '</span>' : '')
         + '<span class="msg-time">[' + escapeHtml(m.time) + ']</span> '
         + (m.source && m.source !== shownLabel ? '<span class="msg-source">' + escapeHtml(m.source) + ' — </span>' : '')
         + '<span class="msg-sev">' + (TONE_ICONS[m.tone] || '') + escapeHtml(m.severity) + ':</span> '
@@ -1122,6 +1127,16 @@ function updateHeader(countText, total, errorsText) {
     copyBtn.disabled = !total;
     saveBtn.disabled = !total;
     clearBtn.disabled = !total;
+    setNumberWidth(total);
+}
+
+// The number column is as wide as the highest number of the log, so every
+// message — and the running line below — starts at the same place.
+function setNumberWidth(total) {
+    const width = String(Math.max(1, Number(total) || 0)).length + 'ch';
+    for (const el of [listEl, runningEl]) {
+        if (el.style) el.style.setProperty('--num-width', width);
+    }
 }
 
 // From the marked error to the next one, round to the first; without a mark,

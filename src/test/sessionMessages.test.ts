@@ -1160,6 +1160,53 @@ test('the panel colours how a statement ended from tokens and says it in words',
     assert.match(source, /\.msg-link \{ color: var\(--vscode-textLink-foreground\);/);
 });
 
+// ===== numbers of the messages =====
+
+test('every message is numbered from the start of its log, also beyond what the panel keeps, and Clear starts over', async (t) => {
+    const root = tempRoot(t);
+    const log = new SessionMessageLog({ limit: 3, spoolRoot: root });
+    t.after(() => log.dispose());
+    for (let i = 1; i <= 5; i++) log.append(FILE, noticeMessage('payroll.sql', { message: `m${i}` }, AT));
+    assert.deepEqual(log.get(FILE.key)!.messages.map((m) => [m.number, m.text]), [[3, 'm3'], [4, 'm4'], [5, 'm5']]);
+
+    const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
+    log.append(FILE, entry);
+    assert.equal(log.get(FILE.key)!.messages.at(-1)!.number, 6, 'the started line has a number');
+    assert.equal(log.get(FILE.key)!.running[0].number, undefined, 'the running line is no message and has none');
+    log.finish(FILE, entry, 'done', 1, AT);
+    assert.equal(log.get(FILE.key)!.messages.at(-1)!.number, 7);
+
+    const saved = path.join(root, 'saved.log');
+    await log.saveTo(FILE.key, saved);
+    assert.match(fs.readFileSync(saved, 'utf8'), /^\[09:05:07\] payroll\.sql — NOTICE: m1\n/, 'Save writes no numbers');
+
+    log.clear(FILE.key);
+    log.append(FILE, noticeMessage('payroll.sql', { message: 'again' }, AT));
+    assert.equal(log.get(FILE.key)!.messages[0].number, 1);
+});
+
+test('the panel shows the number of each message in a column as wide as the highest number', () => {
+    const panel = runPanelScript();
+    const styles: Record<string, string> = {};
+    (panel.list as any).style = { setProperty: (name: string, value: string) => { styles[name] = value; } };
+    const numbered = (text: string, number: number) => ({ ...tone(text), number });
+    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: [numbered('a', 566), numbered('b', 567)], total: 567, countText: '567 messages', running: [running(0)] } });
+
+    assert.match(panel.list.entries[1], /^<div class="msg tone-info"><span class="msg-num">567<\/span><span class="msg-time">/);
+    assert.doesNotMatch(panel.elements.running.entries[0], /msg-num/, 'the running line has no number');
+    assert.equal(styles['--num-width'], '3ch');
+
+    panel.send({ type: 'append', key: FILE.key, messages: [numbered('c', 1000)], total: 1000, countText: '1000 messages', limit: 2000, running: [] });
+    assert.match(panel.list.entries[2], /<span class="msg-num">1000<\/span>/);
+    assert.equal(styles['--num-width'], '4ch');
+});
+
+test('the number column is styled from tokens and is never part of a copied selection', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'src', 'sessionMessages.ts'), 'utf8');
+    assert.match(source, /\.msg-num \{ position: absolute;[^}]*width: var\(--num-width, 1ch\);[^}]*color: var\(--c-muted\);[^}]*user-select: none; \}/);
+    assert.match(source, /\.msg \{ position: relative; padding: 1px var\(--sp-2\) 1px calc\(var\(--num-width, 1ch\) \+ var\(--sp-2\) \* 2\);/);
+});
+
 // ===== Clear on Execute =====
 
 /** Let the settings hold `clearOnExecute` for one test, and record what is written to them. */
