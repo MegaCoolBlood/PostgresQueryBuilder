@@ -358,7 +358,9 @@ fields wherever it comes from.
   CONCURRENTLY` and the like — and your own `BEGIN`, `COMMIT` or `ROLLBACK` get
   no transaction opened in front of them. Closing the file and every Data
   Viewer of a session, or resetting it, ends the session and with it an open
-  transaction, which PostgreSQL then rolls back.
+  transaction, which PostgreSQL then rolls back. **Reset Session** next to the
+  drop-down resets the session shown, after asking — the same as the
+  **Reset Database Session** command or the session badge of a Data Viewer.
   Errors are striped, tinted and marked with an icon, and the header counts
   them; clicking the count jumps from one error to the next. A
   running statement can be cancelled from its notification, which also counts

@@ -769,6 +769,8 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
     private readonly maxCopyBytes: number;
     private sessions?: SessionTransactions;
     private sessionsSubscription?: { dispose(): void };
+    /** Resets the session `key` after asking; resolves to whether it was reset. */
+    private resetSessionOf?: (key: string) => Promise<boolean>;
 
     constructor(readonly log: SessionMessageLog, options: SessionMessagesViewOptions = {}) {
         this.schedule = options.schedule ?? ((render) => { setTimeout(render, MESSAGES_RENDER_INTERVAL_MS); });
@@ -790,12 +792,14 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
     }
 
     /**
-     * Let the panel show and change the commit mode of the shown session and
-     * commit or roll back its open transaction.
+     * Let the panel show and change the commit mode of the shown session,
+     * commit or roll back its open transaction and — with `resetSession` —
+     * reset it.
      */
-    attachSessions(sessions: SessionTransactions): void {
+    attachSessions(sessions: SessionTransactions, resetSession?: (key: string) => Promise<boolean>): void {
         this.sessionsSubscription?.dispose();
         this.sessions = sessions;
+        this.resetSessionOf = resetSession;
         this.sessionsSubscription = sessions.onDidChange((key) => {
             if (key === this.shown?.key) this.postSession();
         });
@@ -893,6 +897,8 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
                 }
             } else if (message.type === 'commit' || message.type === 'rollback') {
                 void this.endTransaction(message.type);
+            } else if (message.type === 'resetSession') {
+                void this.resetSession();
             }
         });
     }
@@ -910,6 +916,20 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
         const view = this.view;
         if (!view || !this.sessions) return;
         Promise.resolve(view.webview.postMessage(this.sessionView())).catch(() => undefined);
+    }
+
+    /** Reset the shown session after asking, and say so in its log. */
+    private async resetSession(): Promise<void> {
+        const shown = this.shown;
+        if (!shown || !this.resetSessionOf) return;
+        try {
+            if (await this.resetSessionOf(shown.key)) {
+                this.log.append(shown, transactionMessage(shown.label, 'Reset the database session; the next statement opens a new one'));
+            }
+        } catch (err: unknown) {
+            Logger.error('SessionMessagesView.resetSession', err);
+            vscode.window.showErrorMessage(`The database session of ${shown.label} could not be reset: ${getErrorMessage(err)}`);
+        }
     }
 
     /** Commit or roll back the open transaction of the shown session, and say so in its log. */
@@ -1110,6 +1130,7 @@ body { padding: 0; display: flex; flex-direction: column; }
         <select id="commitMode" class="commit-mode" aria-label="Commit behaviour of this session" title="Commit behaviour of this session; a new session starts with the one of its connection">
             ${COMMIT_MODES.map((mode) => `<option value="${mode}" title="${COMMIT_MODE_DESCRIPTIONS[mode]}">${COMMIT_MODE_LABELS[mode]}</option>`).join('')}
         </select>
+        <button class="btn btn-sm" id="resetSessionBtn" disabled title="Reset the database session: settings made with SET or set_config, temporary tables and an open transaction are discarded, and the next statement opens a new session">${icon('refresh')}Reset Session</button>
         <label class="clear-on-execute" title="Clear the messages of a session each time Execute File or Execute Selection starts in it"><input type="checkbox" id="clearOnExecute">Clear on Execute</label>
         <button class="btn btn-sm" id="copyBtn" title="Copy every message of this session to the clipboard, including those the panel no longer shows">${icon('copy')}Copy</button>
         <button class="btn btn-sm" id="saveBtn" title="Save every message of this session to a file, including those the panel no longer shows">${icon('save')}Save</button>
@@ -1134,6 +1155,7 @@ const commitModeSelect = document.getElementById('commitMode');
 const txStateEl = document.getElementById('txState');
 const commitBtn = document.getElementById('commitBtn');
 const rollbackBtn = document.getElementById('rollbackBtn');
+const resetSessionBtn = document.getElementById('resetSessionBtn');
 const TONE_ICONS = { danger: ${JSON.stringify(icon('error'))}, warning: ${JSON.stringify(icon('warning'))} };
 copyBtn.addEventListener('click', () => vscode.postMessage({ type: 'copy' }));
 saveBtn.addEventListener('click', () => vscode.postMessage({ type: 'save' }));
@@ -1143,6 +1165,7 @@ clearOnExecuteBox.addEventListener('change', () => vscode.postMessage({ type: 'c
 commitModeSelect.addEventListener('change', () => vscode.postMessage({ type: 'commitMode', value: commitModeSelect.value }));
 commitBtn.addEventListener('click', () => vscode.postMessage({ type: 'commit' }));
 rollbackBtn.addEventListener('click', () => vscode.postMessage({ type: 'rollback' }));
+resetSessionBtn.addEventListener('click', () => vscode.postMessage({ type: 'resetSession' }));
 
 // The commit mode of the shown session and whether it has work not committed yet.
 function showSession(s) {
@@ -1158,6 +1181,8 @@ function showSession(s) {
         : failed ? 'A statement failed inside the open transaction; it accepts nothing but a rollback.' : '';
     commitBtn.hidden = !open;
     rollbackBtn.hidden = !open && !failed;
+    // Only a session with a connection has anything to reset.
+    resetSessionBtn.disabled = !s.available || s.transaction === 'none';
 }
 
 ${WEBVIEW_ESCAPE_HTML_JS}

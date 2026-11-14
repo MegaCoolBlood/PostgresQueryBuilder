@@ -1352,11 +1352,69 @@ test('the panel shows uncommitted changes with Commit and Rollback, and a failed
 test('the commit behaviour sits next to Clear on Execute and the open transaction is styled from tokens', () => {
     const source = fs.readFileSync(path.join(ROOT, 'src', 'sessionMessages.ts'), 'utf8');
     const { html } = resolveView();
-    assert.match(html, /<select id="commitMode" class="commit-mode" aria-label="Commit behaviour of this session"[^>]*>\s*<option value="auto" title="[^"]+">Auto-commit<\/option><option value="manual" title="[^"]+">Manual commit<\/option><option value="run" title="[^"]+">Commit per run<\/option>\s*<\/select>\s*<label class="clear-on-execute"/);
+    assert.match(html, /<select id="commitMode" class="commit-mode" aria-label="Commit behaviour of this session"[^>]*>\s*<option value="auto" title="[^"]+">Auto-commit<\/option><option value="manual" title="[^"]+">Manual commit<\/option><option value="run" title="[^"]+">Commit per run<\/option>\s*<\/select>\s*<button class="btn btn-sm" id="resetSessionBtn" disabled title="Reset the database session[^"]+">[\s\S]*?Reset Session<\/button>\s*<label class="clear-on-execute"/);
     assert.match(html, /<button class="btn btn-sm" id="commitBtn" hidden title="[^"]+">[\s\S]*?Commit<\/button>/);
     assert.match(html, /<button class="btn btn-sm" id="rollbackBtn" hidden title="[^"]+">[\s\S]*?Rollback<\/button>/);
     assert.match(source, /\.tx-state\.open \{ color: var\(--c-warning\); background: color-mix\(in srgb, var\(--c-warning\) 14%, transparent\); \}/);
     assert.match(source, /\.tx-state\.failed \{ color: var\(--c-danger\);/);
+});
+
+// ===== Reset Session =====
+
+test('Reset Session resets the shown session after asking and says so in its log', async () => {
+    const log = new SessionMessageLog();
+    const { view, send } = resolveView(log);
+    const asked: string[] = [];
+    let answer = false;
+    view.attachSessions(fakeTransactions().api, async (key) => { asked.push(key); return answer; });
+
+    send({ type: 'resetSession' });
+    await tick();
+    assert.deepEqual(asked, [], 'no session is shown');
+
+    view.show(FILE);
+    send({ type: 'resetSession' });
+    await tick();
+    assert.equal(log.get(FILE.key), undefined, 'declined: nothing is logged');
+
+    answer = true;
+    send({ type: 'resetSession' });
+    await tick();
+    assert.deepEqual(asked, [FILE.key, FILE.key]);
+    assert.deepEqual(log.get(FILE.key)?.messages.map((m) => `${m.severity}: ${m.text}`), [
+        'RUN: Reset the database session; the next statement opens a new one'
+    ]);
+});
+
+test('a reset that fails is shown, not swallowed', async (t) => {
+    const errors: string[] = [];
+    const original = vscodeStub.window.showErrorMessage;
+    vscodeStub.window.showErrorMessage = (message: string) => { errors.push(message); return Promise.resolve(undefined); };
+    t.after(() => { vscodeStub.window.showErrorMessage = original; });
+    const { view, send } = resolveView();
+    view.attachSessions(fakeTransactions().api, async () => { throw new Error('connection gone'); });
+    view.show(FILE);
+
+    send({ type: 'resetSession' });
+    await tick();
+
+    assert.deepEqual(errors, ['The database session of payroll.sql could not be reset: connection gone']);
+});
+
+test('the Reset Session button can be pressed only while the shown session has a connection', () => {
+    const panel = runPanelScript();
+    const { resetSessionBtn } = panel.elements as any;
+    panel.send({ type: 'session', available: true, commitMode: 'auto', transaction: 'none' });
+    assert.equal(resetSessionBtn.disabled, true, 'nothing to reset yet');
+    for (const transaction of ['idle', 'open', 'failed']) {
+        panel.send({ type: 'session', available: true, commitMode: 'auto', transaction });
+        assert.equal(resetSessionBtn.disabled, false, transaction);
+    }
+    panel.send({ type: 'session', available: false, commitMode: 'auto', transaction: 'none' });
+    assert.equal(resetSessionBtn.disabled, true, 'no session shown');
+
+    resetSessionBtn.listeners.click();
+    assert.deepEqual(panel.sent.slice(1), [{ type: 'resetSession' }]);
 });
 
 // ===== Clear on Execute =====

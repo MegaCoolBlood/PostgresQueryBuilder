@@ -19,7 +19,7 @@ import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore, onDidChangeTableAliases } from './tableStatementDrop';
 import { ViewDataFromSelect } from './viewDataFromSelect';
 import { DbSessionManager, parseCommitMode } from './dbSession';
-import { SqlFileSessions, messageLogRefFor } from './sqlFileSession';
+import { SqlFileSessions, messageLogRefFor, resetSessionWithConfirmation } from './sqlFileSession';
 import { SessionMessageLog, SessionMessagesView, noticeMessage } from './sessionMessages';
 import { Logger, getErrorMessage, getErrorStack } from './logger';
 import { formatSqlChecked } from './plpgsqlFormatter';
@@ -384,7 +384,14 @@ export function activate(context: vscode.ExtensionContext) {
             // A new session commits as its connection says; the panel can change that per session.
             defaultCommitMode: () => parseCommitMode(connectionManager.getActiveConnectionConfig()?.commitMode)
         });
-        messagesView.attachSessions(dbSessions);
+        messagesView.attachSessions(dbSessions, (key) => {
+            const session = dbSessions.get(key);
+            if (!session) {
+                vscode.window.showInformationMessage('No database session is open for this tab yet; the next statement opens one.');
+                return Promise.resolve(false);
+            }
+            return resetSessionWithConfirmation(session, Math.max(0, dbSessions.holderCount(key) - 1));
+        });
         context.subscriptions.push(
             messagesView,
             vscode.window.registerWebviewViewProvider(SessionMessagesView.viewType, messagesView),
