@@ -302,6 +302,45 @@ same dialog opens when you bookmark a query, whether from an SQL file or with
 the star button of the Data Viewer, so a bookmark is described with the same
 fields wherever it comes from.
 
+## Select history
+
+A Data Viewer of a table opened from the **Tables** view keeps the queries you
+run in it in its own history, under the **History** button of its query bar.
+Every other Data Viewer — opened with **View Data**, by **Execute Selection** or
+**Execute File**, from a bookmarked query or as a related table — writes its
+queries into the **Select History** view instead, so none of them is lost.
+
+The newest query is on top, with the time it ran last and how often it ran; a
+query that runs again moves to the top instead of being listed twice. The
+tooltip shows the whole statement, where it ran and on which connection.
+
+The icon tells how the last run of a query ended:
+
+| Icon | Last run |
+|------|----------|
+| green check | succeeded |
+| red error, plus *Failed* | failed — the tooltip shows the error and how long it ran |
+| slashed circle, plus *Cancelled* | cancelled — the tab was closed, the session reset or the connection switched while it ran, or no connection was chosen |
+| spinning, plus *Running* | still running |
+
+A run still marked as running when VS Code was closed counts as cancelled on
+the next start.
+
+- **Double-click** a query to run it in a new Data Viewer.
+- **Drag** queries into an editor to insert them, each closed by a semicolon.
+- **Copy Query** and **Delete from Select History** are in the context menu,
+  for every selected query; the play icon runs one.
+- **Search Select History**, the field right above the view, filters while you
+  type, as the search of the **Tables** view does: every query that contains
+  one of the entered terms — in the statement, the SQL file or Data Viewer it
+  ran in, or its connection — is shown, the queries with the most matching
+  terms first, the matches highlighted. A term is a part of a word, not a
+  pattern; **Escape** clears the field. The trash icon in the title bar of the
+  history deletes the whole history after asking.
+
+The view keeps the newest 500 queries;
+`postgresQueryBuilder.selectHistory.maxEntries` sets another number.
+
 ---
 
 ## SQL editor and SQL files
@@ -617,6 +656,7 @@ duplicating, deleting and moving between the personal and the workspace scope.
 | `postgresQueryBuilder.completion.tableAlias` | `true` | Write the alias after a table completed after `FROM` or `JOIN` |
 | `postgresQueryBuilder.duplicateRowResetDefaults` | `volatile` | Which columns a duplicated row leaves to their database default |
 | `postgresQueryBuilder.messages.clearOnExecute` | `false` | Clear the log of a session in the *PostgreSQL Messages* panel each time **Execute File** or **Execute Selection** starts in it; the panel's **Clear on Execute** checkbox sets it too |
+| `postgresQueryBuilder.selectHistory.maxEntries` | `500` | How many queries the **Select History** view keeps (10–10000); the oldest beyond that are dropped |
 | `postgresQueryBuilder.savedQueriesFile` | `postgres-query-builder.queries.json` | Where shared bookmarked queries are kept |
 | `postgresQueryBuilder.customMappingsFile` | `postgres-query-builder.mappings.json` | Where shared column mappings are kept |
 | `postgresQueryBuilder.format.enable` | `true` | Whether the formatter is offered at all |

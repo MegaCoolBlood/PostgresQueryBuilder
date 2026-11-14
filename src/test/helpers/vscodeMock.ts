@@ -28,6 +28,10 @@ class EventEmitter<T> {
 const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 };
 
 class ThemeIcon {
+    constructor(public id: string, public color?: ThemeColor) {}
+}
+
+class ThemeColor {
     constructor(public id: string) {}
 }
 
@@ -216,6 +220,7 @@ export function fireDidChangeTextDocument(document: any): void {
 const vscodeStub = {
     EventEmitter,
     ThemeIcon,
+    ThemeColor,
     TreeItem,
     DataTransferItem,
     DocumentDropEdit,

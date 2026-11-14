@@ -6270,7 +6270,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             baseSql: currentSql,
             append: false,
             wantTotal,
-            loadId: latestLoadId
+            loadId: latestLoadId,
+            // The statement as the user ran it, for the Select History.
+            historySql: raw
         });
     }
 

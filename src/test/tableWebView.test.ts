@@ -421,6 +421,56 @@ test('table panel: init omits the alias qualifier when the option is off', async
 
 // ===== Height of the query box =====
 
+test('the Select History records how each run of a Data Viewer of no one table ended', async (t) => {
+    const errors: string[] = [];
+    const originalError = vscodeStub.window.showErrorMessage;
+    vscodeStub.window.showErrorMessage = (message: string) => { errors.push(message); return Promise.resolve(undefined); };
+    t.after(() => { vscodeStub.window.showErrorMessage = originalError; });
+    let connected = true;
+    const { dbSessions } = createSessionManager(async (sql) => {
+        if (sql.startsWith('SELECT * FROM missing LIMIT')) throw new Error('relation "missing" does not exist');
+        if (sql.startsWith('SELECT pg_sleep(60) LIMIT')) {
+            // Reset Session while the query runs: its connection is closed under it.
+            dbSessions.get('tab:1')?.reset();
+            throw new Error('Connection terminated');
+        }
+        return { rows: [[1]], fields: [{ name: 'n', dataTypeID: 23 }], rowCount: 1 };
+    });
+    const { manager } = createManager({ dbSessions, connection: { ensureConnected: async () => connected } });
+    const runs: any[] = [];
+    manager.setSelectHistory({
+        record: async (sql, source, _connection, startedAt) => { runs.push({ sql, source, startedAt, status: 'running' }); },
+        finish: async (sql, startedAt, status, _ms, detail) => {
+            Object.assign(runs.find((r) => r.sql === sql && r.startedAt === startedAt), { status, detail });
+        }
+    });
+    const panel = await withPanel(() => manager.openQueryView('SELECT 1 AS n', 'View Data: SELECT 1 AS n'));
+    const run = (sql: string, extra: any = {}) => panel.state.onMessage({ ...loadRows(sql), historySql: sql, ...extra });
+
+    await run('SELECT 1 AS n');
+    await run('SELECT * FROM missing');
+    await run('SELECT pg_sleep(60)');
+    connected = false;
+    await run('SELECT 2 AS n');
+    connected = true;
+    await run('SELECT 3 AS n', { append: true });
+    await run('SELECT 4 AS n', { autoRefresh: true, autoRefreshId: 1 });
+
+    assert.deepEqual(runs.map((r) => [r.sql, r.status, r.detail]), [
+        ['SELECT 1 AS n', 'done', undefined],
+        ['SELECT * FROM missing', 'failed', 'relation "missing" does not exist'],
+        ['SELECT pg_sleep(60)', 'cancelled', 'The database session was reset or the connection switched while the query ran.'],
+        ['SELECT 2 AS n', 'cancelled', 'No connection was chosen, so the query did not run.']
+    ], 'more rows and an auto refresh are no runs of their own');
+    assert.equal(runs[0].source, 'View Data: SELECT 1 AS n');
+
+    const table = await withPanel(() => manager.openTableView('public', 'orders'));
+    await table.state.onMessage({ ...loadRows('SELECT * FROM public.orders'), historySql: 'SELECT * FROM public.orders' });
+    assert.equal(runs.length, 4, 'a table keeps its queries in its own history');
+});
+
+// ===== Height of the query box =====
+
 test('normalizeQueryBarHeight keeps a sensible pixel height and treats everything else as automatic', () => {
     assert.equal(normalizeQueryBarHeight(120.4), 120);
     assert.equal(normalizeQueryBarHeight(3), 24);

@@ -81,6 +81,17 @@
           "id": "postgresSavedQueries",
           "name": "Bookmarked Queries",
           "icon": "$(bookmark)"
+        },
+        {
+          "id": "postgresSelectHistorySearch",
+          "name": "Search Select History",
+          "type": "webview",
+          "icon": "$(search)"
+        },
+        {
+          "id": "postgresSelectHistory",
+          "name": "Select History",
+          "icon": "$(history)"
         }
       ],
       "postgresQueryBoosterMessages": [
@@ -263,6 +274,30 @@
         "title": "Bookmark Query...",
         "category": "PostgreSQL Query Booster",
         "icon": "$(add)"
+      },
+      {
+        "command": "postgresQueryBuilder.runSelectHistoryEntry",
+        "title": "Run in the Data Viewer",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(play)"
+      },
+      {
+        "command": "postgresQueryBuilder.copySelectHistoryEntry",
+        "title": "Copy Query",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "postgresQueryBuilder.deleteSelectHistoryEntry",
+        "title": "Delete from Select History",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "postgresQueryBuilder.clearSelectHistory",
+        "title": "Clear Select History",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(trash)"
       }
     ],
     "menus": {
@@ -311,9 +346,34 @@
           "command": "postgresQueryBuilder.manageSavedQueries",
           "when": "view == postgresSavedQueries",
           "group": "navigation"
+        },
+        {
+          "command": "postgresQueryBuilder.clearSelectHistory",
+          "when": "view == postgresSelectHistory",
+          "group": "navigation@1"
         }
       ],
       "view/item/context": [
+        {
+          "command": "postgresQueryBuilder.runSelectHistoryEntry",
+          "when": "view == postgresSelectHistory && viewItem == selectHistoryEntry",
+          "group": "inline"
+        },
+        {
+          "command": "postgresQueryBuilder.runSelectHistoryEntry",
+          "when": "view == postgresSelectHistory && viewItem == selectHistoryEntry",
+          "group": "1_run@1"
+        },
+        {
+          "command": "postgresQueryBuilder.copySelectHistoryEntry",
+          "when": "view == postgresSelectHistory && viewItem == selectHistoryEntry",
+          "group": "2_edit@1"
+        },
+        {
+          "command": "postgresQueryBuilder.deleteSelectHistoryEntry",
+          "when": "view == postgresSelectHistory && viewItem == selectHistoryEntry",
+          "group": "3_delete@1"
+        },
         {
           "command": "postgresQueryBuilder.runSavedQuery",
           "when": "view == postgresSavedQueries && viewItem =~ /^savedQuery\\./",
@@ -422,6 +482,10 @@
       {
         "view": "postgresSavedQueries",
         "contents": "No bookmarked queries yet.\nRun a query in the Data Viewer and use \"Bookmark Query\" to store it here. Placeholders written as :name are filled in every time the query runs."
+      },
+      {
+        "view": "postgresSelectHistory",
+        "contents": "No queries yet.\nEvery query run in a Data Viewer that shows no one table — opened by View Data, Execute, a bookmarked query or a related table — is kept here. A table opened from the Tables view keeps its queries in its own history.\nDouble-click a query to run it again, or drag it into an editor."
       }
     ],
     "configuration": [
@@ -525,6 +589,13 @@
           "type": "boolean",
           "default": false,
           "description": "Clear the log of a database session in the PostgreSQL Messages panel each time Execute File or Execute Selection starts in it. The checkbox \"Clear on Execute\" of the panel sets the same value."
+        },
+        "postgresQueryBuilder.selectHistory.maxEntries": {
+          "type": "integer",
+          "default": 500,
+          "minimum": 10,
+          "maximum": 10000,
+          "description": "How many queries the Select History keeps. A query that runs again moves to the top instead of being added twice; beyond this many, the oldest are dropped."
         }
       }
     },

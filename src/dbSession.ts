@@ -157,6 +157,7 @@ export class DbSession implements QueryExecutor {
     private closed = false;
     /** The transaction state last announced, so a change is announced once. */
     private announcedState: TransactionState = 'none';
+    private interruptionCount = 0;
 
     constructor(
         readonly key: string,
@@ -181,6 +182,15 @@ export class DbSession implements QueryExecutor {
     /** Where the session's transaction stands now. */
     get transactionState(): TransactionState {
         return transactionStateOf(this.client);
+    }
+
+    /**
+     * How often the session's connection was closed on purpose — by a reset,
+     * a switch of the connection or the end of the session. A statement that
+     * fails while this changes was cancelled rather than wrong.
+     */
+    get interruptions(): number {
+        return this.interruptionCount;
     }
 
     /** When the work of this session becomes permanent; see {@link CommitMode}. */
@@ -391,6 +401,7 @@ export class DbSession implements QueryExecutor {
         this.client = null;
         this.announcedState = 'none';
         if (client) {
+            this.interruptionCount++;
             client.end().catch(noop);
         }
     }

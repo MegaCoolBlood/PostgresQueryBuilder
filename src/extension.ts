@@ -19,7 +19,18 @@ import { QueryRunner } from './queryRunner';
 import { TableDragAndDropController, TableStatementDropProvider, QualifierStore, onDidChangeTableAliases } from './tableStatementDrop';
 import { ViewDataFromSelect } from './viewDataFromSelect';
 import { DbSessionManager, parseCommitMode } from './dbSession';
-import { SqlFileSessions, messageLogRefFor, resetSessionWithConfirmation } from './sqlFileSession';
+import { SqlFileSessions, messageLogRefFor, queryViewTitle, resetSessionWithConfirmation } from './sqlFileSession';
+import {
+    SELECT_HISTORY_SIZE_SETTING,
+    SelectHistoryDragController,
+    SelectHistoryDropProvider,
+    SelectHistoryProvider,
+    SelectHistorySearchView,
+    SelectHistoryStore,
+    droppedSelectText,
+    selectHistoryLimit,
+    type SelectHistoryEntry
+} from './selectHistory';
 import { SessionMessageLog, SessionMessagesView, noticeMessage } from './sessionMessages';
 import { Logger, getErrorMessage, getErrorStack } from './logger';
 import { formatSqlChecked } from './plpgsqlFormatter';
@@ -65,6 +76,8 @@ let outputChannel: vscode.OutputChannel;
 const tableClicks = new DoubleClickGate();
 /** Detects the double click that opens a bookmarked query in the Data Viewer. */
 const savedQueryClicks = new DoubleClickGate();
+/** Detects the double click that runs a query of the Select History. */
+const selectHistoryClicks = new DoubleClickGate();
 
 /** Language IDs the PL/pgSQL formatter and the SQL autocomplete apply to. */
 const FORMATTER_LANGUAGES = ['sql', 'postgres', 'pgsql'];
@@ -470,6 +483,7 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.languages.registerDocumentDropEditProvider('*', new SavedQueryDropProvider(savedQueryStore))
         );
         registerSavedQueryCommands(context);
+        registerSelectHistory(context);
 
         // Allow dropping a table from the tree view into any text editor to
         // insert a generated SQL statement at the drop position.
@@ -652,6 +666,66 @@ async function resolveSavedQuery(arg: unknown): Promise<SavedQuery | undefined> 
         return savedQueryStore.get(node.query.id);
     }
     return pickSavedQuery();
+}
+
+/**
+ * The "Select History": the queries of every Data Viewer that shows no one
+ * table, newest first, each with how its last run ended. A double click runs
+ * one, dragging inserts it into an editor; Copy and Delete sit in its context
+ * menu, and the search field above it filters it while typing.
+ */
+function registerSelectHistory(context: vscode.ExtensionContext): void {
+    const config = () => vscode.workspace.getConfiguration('postgresQueryBuilder');
+    const store = new SelectHistoryStore(context.globalState, () => selectHistoryLimit(config().get(SELECT_HISTORY_SIZE_SETTING)));
+    tableWebViewManager.setSelectHistory(store);
+    const provider = new SelectHistoryProvider(store);
+    const view = vscode.window.createTreeView('postgresSelectHistory', {
+        treeDataProvider: provider,
+        canSelectMany: true,
+        dragAndDropController: new SelectHistoryDragController()
+    });
+    provider.onDidChangeTreeData(() => { view.message = provider.searchMessage(); });
+    /** The entries a context-menu command applies to: all selected ones when it was invoked on one of them. */
+    const targets = (entry?: SelectHistoryEntry, entries?: readonly SelectHistoryEntry[]): SelectHistoryEntry[] => {
+        if (entries && entries.length > 0) return [...entries];
+        if (entry?.sql) return [entry];
+        return [...view.selection];
+    };
+    const run = async (entry?: SelectHistoryEntry): Promise<void> => {
+        if (entry?.sql) await tableWebViewManager.openQueryView(entry.sql, queryViewTitle(entry.sql));
+    };
+    context.subscriptions.push(
+        view,
+        vscode.window.registerWebviewViewProvider(SelectHistorySearchView.viewType, new SelectHistorySearchView(provider)),
+        vscode.languages.registerDocumentDropEditProvider('*', new SelectHistoryDropProvider()),
+        vscode.commands.registerCommand('postgresQueryBuilder.openSelectHistoryEntry', async (entry?: SelectHistoryEntry) => {
+            if (entry?.sql && selectHistoryClicks.accept(entry.sql)) await run(entry);
+        }),
+        vscode.commands.registerCommand('postgresQueryBuilder.runSelectHistoryEntry', (entry?: SelectHistoryEntry) => run(entry ?? view.selection[0])),
+        vscode.commands.registerCommand('postgresQueryBuilder.copySelectHistoryEntry', async (entry?: SelectHistoryEntry, entries?: readonly SelectHistoryEntry[]) => {
+            const chosen = targets(entry, entries);
+            if (chosen.length === 0) return;
+            await vscode.env.clipboard.writeText(chosen.length === 1 ? chosen[0].sql : droppedSelectText(chosen.map((e) => e.sql)));
+            vscode.window.setStatusBarMessage(chosen.length === 1 ? 'Query copied.' : `${chosen.length} queries copied.`, 3000);
+        }),
+        vscode.commands.registerCommand('postgresQueryBuilder.deleteSelectHistoryEntry', async (entry?: SelectHistoryEntry, entries?: readonly SelectHistoryEntry[]) => {
+            const chosen = targets(entry, entries);
+            if (chosen.length > 0) await store.remove(chosen.map((e) => e.sql));
+        }),
+        vscode.commands.registerCommand('postgresQueryBuilder.clearSelectHistory', async () => {
+            const count = store.getAll().length;
+            if (count === 0) return;
+            const answer = await vscode.window.showWarningMessage(
+                `Delete all ${count} ${count === 1 ? 'query' : 'queries'} of the Select History?`, { modal: true }, 'Delete All'
+            );
+            if (answer === 'Delete All') await store.clear();
+        }),
+        vscode.workspace.onDidChangeConfiguration((event) => {
+            if (event.affectsConfiguration(`postgresQueryBuilder.${SELECT_HISTORY_SIZE_SETTING}`)) void store.trim();
+        })
+    );
+    // A query still running when VS Code was closed never ended.
+    void store.settleInterrupted().then(() => store.trim());
 }
 
 function registerSavedQueryCommands(context: vscode.ExtensionContext): void {

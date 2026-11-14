@@ -84,6 +84,14 @@ interface MessageContext {
     session: PanelSession;
     message: any;
     queryRunner: QueryRunner;
+    /** Set by a handler that ended without running its query, e.g. because no connection was chosen. */
+    nothingRan?: boolean;
+}
+
+/** Where the Data Viewer reports the runs of its queries for the "Select History". */
+export interface SelectHistorySink {
+    record(sql: string, source?: string, connection?: string, startedAt?: number): Promise<void>;
+    finish(sql: string, startedAt: number, status: 'done' | 'failed' | 'cancelled', durationMs?: number, detail?: string): Promise<void>;
 }
 
 /** Minimal shape of a `pg` field descriptor used to build result columns. */
@@ -325,6 +333,7 @@ export class TableWebViewManager {
     private dbSessions?: DbSessionManager;
     /** Runs the values of executable columns; set once the extension has wired it. */
     private executableValueRunner?: ExecutableValueRunner;
+    private selectHistory?: SelectHistorySink;
     /** Cell values currently open in an editor tab, keyed by scratch file path. */
     private cellEditors: Map<string, CellEditorLink> = new Map();
     private cellEditorCounter = 0;
@@ -384,6 +393,11 @@ export class TableWebViewManager {
      */
     setExecutableValueRunner(runner: ExecutableValueRunner): void {
         this.executableValueRunner = runner;
+    }
+
+    /** Where the queries of a Data Viewer that shows no one table are remembered (the "Select History"). */
+    setSelectHistory(history: SelectHistorySink): void {
+        this.selectHistory = history;
     }
 
     private broadcastMappings(): void {
@@ -504,12 +518,16 @@ export class TableWebViewManager {
             // The first query the panel runs on its own (not a page appended
             // to it, not an auto refresh) is what a script waits for.
             const firstLoad = message.command === 'loadRows' && !message.append && !message.autoRefresh;
+            const historyRun = this.startHistoryRun(session, message);
+            const ctx: MessageContext = { session, message, queryRunner };
             try {
-                await handler.call(this, { session, message, queryRunner });
+                await handler.call(this, ctx);
+                this.finishHistoryRun(session, historyRun, { nothingRan: ctx.nothingRan });
                 if (firstLoad) {
                     settleFirstLoad(session, { status: 'loaded' });
                 }
             } catch (err: unknown) {
+                this.finishHistoryRun(session, historyRun, { error: err });
                 if (firstLoad) {
                     settleFirstLoad(session, { status: 'failed', error: getErrorMessage(err) });
                 }
@@ -925,6 +943,7 @@ export class TableWebViewManager {
             }
         }
         if (!await this.connectionManager.ensureConnected()) {
+            ctx.nothingRan = true;
             this.post(session, { command: 'loadingFinished', loadId });
             return;
         }
@@ -1440,6 +1459,50 @@ export class TableWebViewManager {
             command: 'queryHistoryUpdated',
             history: this.getQueryHistory(session.historyKey)
         });
+    }
+
+    /**
+     * A query the user runs in a Data Viewer that shows no one table goes into
+     * the Select History, which shows it running until {@link finishHistoryRun}.
+     * A table keeps its queries in its own history.
+     */
+    private startHistoryRun(session: PanelSession, message: any): { sql: string; startedAt: number; interruptions: number } | undefined {
+        const fresh = message.command === 'loadRows' && !message.append && !message.autoRefresh;
+        if (!fresh || session.origin !== 'query' || !this.selectHistory || typeof message.historySql !== 'string') return undefined;
+        const run = { sql: message.historySql, startedAt: Date.now(), interruptions: session.dbSession?.interruptions ?? 0 };
+        // Where it ran: the SQL file whose session it shares, else the title of its Data Viewer.
+        const source = session.dbSessionRef?.label ?? session.historyKey.replace(/^query:/, '');
+        this.selectHistory.record(run.sql, source, this.getConnectionName(), run.startedAt)
+            .catch((err: unknown) => Logger.error('TableWebViewManager.selectHistory', err));
+        return run;
+    }
+
+    /**
+     * How a run of the Select History ended. A query that fails because its
+     * tab was closed, its session reset or the connection switched while it
+     * ran was cancelled, not wrong.
+     */
+    private finishHistoryRun(
+        session: PanelSession,
+        run: { sql: string; startedAt: number; interruptions: number } | undefined,
+        outcome: { error?: unknown; nothingRan?: boolean }
+    ): void {
+        if (!run || !this.selectHistory) return;
+        const durationMs = Date.now() - run.startedAt;
+        const interrupted = session.disposed || (session.dbSession?.interruptions ?? 0) !== run.interruptions;
+        let status: 'done' | 'failed' | 'cancelled' = 'done';
+        let detail: string | undefined;
+        if (outcome.nothingRan) {
+            status = 'cancelled';
+            detail = 'No connection was chosen, so the query did not run.';
+        } else if (outcome.error !== undefined) {
+            status = interrupted ? 'cancelled' : 'failed';
+            detail = interrupted
+                ? (session.disposed ? 'The Data Viewer was closed while the query ran.' : 'The database session was reset or the connection switched while the query ran.')
+                : getErrorMessage(outcome.error);
+        }
+        this.selectHistory.finish(run.sql, run.startedAt, status, durationMs, detail)
+            .catch((err: unknown) => Logger.error('TableWebViewManager.selectHistory', err));
     }
 
     private handleGetQueryHistory(ctx: MessageContext): void {
