@@ -1278,6 +1278,53 @@ test('a psql variable written right behind an operator is not merged into the op
     assert.equal(formatSql('do $$ begin x:=:y; end $$;'), 'DO $$\nBEGIN\n  x := :y;\nEND\n$$;');
 });
 
+// ===== keywords that are also common names =====
+
+test('TYPE, DOMAIN, DATA, CONSTANT, WITHOUT and PREPARE are cased as keywords where they are keywords', () => {
+    const cases: [string, string][] = [
+        ['create type mood as enum (\'a\');', "CREATE TYPE mood AS ENUM ('a');"],
+        ['alter type mood rename to feeling;', 'ALTER TYPE mood RENAME TO feeling;'],
+        ['drop type if exists mood;', 'DROP TYPE IF EXISTS mood;'],
+        ['comment on type mood is \'x\';', "COMMENT ON TYPE mood IS 'x';"],
+        ['create domain d as numeric(10, 2);', 'CREATE DOMAIN d AS NUMERIC(10, 2);'],
+        ['drop domain d;', 'DROP DOMAIN d;'],
+        ['alter table t alter column c type bigint;', 'ALTER TABLE t ALTER COLUMN c TYPE BIGINT;'],
+        ['alter table t alter column c set data type bigint;', 'ALTER TABLE t ALTER COLUMN c SET DATA TYPE BIGINT;'],
+        ['alter table t alter column type type text;', 'ALTER TABLE t ALTER COLUMN type TYPE TEXT;'],
+        ['select x::timestamp without time zone from t;', 'SELECT x::TIMESTAMP WITHOUT TIME ZONE FROM t;'],
+        ['prepare p(int) as select $1;', 'PREPARE p(INT) AS\nSELECT $1;'],
+        ['deallocate prepare p;', 'DEALLOCATE PREPARE p;'],
+        ['deallocate p;', 'DEALLOCATE p;'],
+        ['create materialized view v as select 1 with no data;', 'CREATE MATERIALIZED VIEW v AS\nSELECT 1\nWITH NO DATA;']
+    ];
+    for (const [src, expected] of cases) {
+        const r = formatSqlChecked(src, { normalizeDataTypes: false });
+        assert.equal(r.ok, true, r.reason);
+        assert.equal(r.text, expected, src);
+        assert.equal(formatSql(r.text, { normalizeDataTypes: false }), r.text, src);
+    }
+    assert.equal(formatSql('do $$ declare x constant int := 1; begin end $$;'),
+        'DO $$\nDECLARE\n  x CONSTANT INT := 1;\nBEGIN\nEND\n$$;');
+});
+
+test('a column called type, data, domain, constant, without or prepare keeps the case of a name', () => {
+    assert.equal(
+        formatSql('select type, data, domain, constant, without, prepare from t join u on type = 1 where data is not null;'),
+        [
+            'SELECT',
+            '  type,',
+            '  data,',
+            '  domain,',
+            '  constant,',
+            '  without,',
+            '  prepare',
+            'FROM t',
+            'JOIN u ON type = 1',
+            'WHERE data IS NOT NULL;'
+        ].join('\n')
+    );
+});
+
 // ===== data type names used as names =====
 
 test('a column named like a data type keeps the case of an identifier', () => {

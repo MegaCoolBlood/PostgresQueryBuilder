@@ -736,6 +736,13 @@ interface Tok {
      * word elsewhere — a column called `name`, `date` or `text` — is a name.
      */
     isType?: boolean;
+    /**
+     * A word that is a keyword only here — the TYPE of `CREATE TYPE`, the
+     * CONSTANT of a declaration — although it is not in `KEYWORDS`, because
+     * elsewhere it is a common name (`type`, `data`, `domain`). Set by
+     * `markTypePositions()`; such a word follows `keywordCase`.
+     */
+    contextKeyword?: boolean;
 }
 
 interface TokMeta {
@@ -1000,6 +1007,7 @@ function markQualifiedNames(toks: Tok[]): Tok[] {
 /** How a word is cased: as a data type, a keyword or an identifier. */
 function wordCategory(t: Tok): 'type' | 'keyword' | 'ident' {
     if (t.isType) return 'type';
+    if (t.contextKeyword) return 'keyword';
     return KEYWORDS.has(t.text.toLowerCase()) ? 'keyword' : 'ident';
 }
 
@@ -1078,10 +1086,18 @@ function markTypePositions(toks: Tok[]): Tok[] {
     const markType = (k: number): void => {
         const t = typeAt(k);
         if (!t) return;
-        for (const w of t.words) {
+        t.words.forEach((w, idx) => {
             if (DATATYPES.has(word(w))) typed.add(w);
-            else inType.add(w);
-        }
+            // The WITH / WITHOUT of `timestamp with[out] time zone`.
+            else if (idx > 0) { inType.add(w); keywordAt.add(w); }
+        });
+    };
+    // Words that are keywords at this position only (see `Tok.contextKeyword`).
+    const keywordAt = new Set<number>();
+    // CREATE / ALTER / DROP / COMMENT ON in front of the object kind at `k`.
+    const objectDdl = (k: number): boolean => {
+        const p = prev(k);
+        return ['create', 'alter', 'drop'].includes(word(p)) || (word(p) === 'on' && word(prev(p)) === 'comment');
     };
 
     // The significant tokens of each top-level element of the list opened at `open`.
@@ -1132,12 +1148,16 @@ function markTypePositions(toks: Tok[]): Tok[] {
         // `name [CONSTANT] type [NOT NULL] [:= …];`
         if (declare && k === declStart && isName(k)) {
             let j = next(k);
-            if (word(j) === 'constant') j = next(j);
+            const constant = word(j) === 'constant' ? j : -1;
+            if (constant !== -1) j = next(j);
             const t = typeAt(j);
             if (t) {
                 const e = t.end;
                 if (e >= n || punct(e, ';') || operator(e, ':=') || operator(e, '=')
-                    || ['not', 'default', 'collate'].includes(word(e))) markType(j);
+                    || ['not', 'default', 'collate'].includes(word(e))) {
+                    markType(j);
+                    if (constant !== -1) keywordAt.add(constant);
+                }
             }
         }
         if (operator(k, '::')) { markType(next(k)); continue; }
@@ -1155,7 +1175,36 @@ function markTypePositions(toks: Tok[]): Tok[] {
         if (w === 'setof') { markType(next(k)); continue; }
         if (w === 'type') {
             const p = prev(k);
-            if (word(p) === 'data' || (isName(p) && ['column', 'alter', 'attribute'].includes(word(prev(p))))) markType(next(k));
+            if (objectDdl(k)) {
+                keywordAt.add(k);
+                // CREATE TYPE name AS ENUM / RANGE
+                const as = next(chainEnd(next(k)));
+                if (word(prev(k)) === 'create' && word(as) === 'as' && ['enum', 'range'].includes(word(next(as)))) {
+                    keywordAt.add(next(as));
+                }
+            } else if (word(p) === 'data') {
+                keywordAt.add(p);
+                keywordAt.add(k);
+                markType(next(k));
+            } else if (isName(p) && !['column', 'attribute'].includes(word(p))
+                && ['column', 'alter', 'attribute'].includes(word(prev(p)))) {
+                // ALTER [COLUMN | ATTRIBUTE] name TYPE type
+                keywordAt.add(k);
+                markType(next(k));
+            }
+            continue;
+        }
+        if (w === 'data') {
+            // [CREATE … AS …] WITH [NO] DATA
+            const p = prev(k);
+            if (word(p) === 'with') keywordAt.add(k);
+            else if (word(p) === 'no' && word(prev(p)) === 'with') { keywordAt.add(p); keywordAt.add(k); }
+            continue;
+        }
+        if (w === 'prepare' || w === 'deallocate') {
+            // PREPARE name …, DEALLOCATE [PREPARE] name; never a column of a list.
+            const p = prev(k);
+            if ((p < 0 || punct(p, ';') || (w === 'prepare' && word(p) === 'deallocate')) && isName(next(k))) keywordAt.add(k);
             continue;
         }
         if (w === 'add') {
@@ -1166,6 +1215,10 @@ function markTypePositions(toks: Tok[]): Tok[] {
             continue;
         }
         if (w === 'domain' || w === 'sequence') {
+            if (w === 'domain') {
+                if (!objectDdl(k)) continue;
+                keywordAt.add(k);
+            }
             const name = next(k);
             if (!isName(name)) continue;
             const j = next(chainEnd(name));
@@ -1202,7 +1255,14 @@ function markTypePositions(toks: Tok[]): Tok[] {
             else if (SIGNATURE_OWNERS.has(bw) && word(prev(before)) !== 'execute') signature(k);
         }
     }
-    return toks.map((t, k) => (typed.has(k) ? { ...t, isType: true } : inType.has(k) ? { ...t, notClause: true } : t));
+    return toks.map((t, k) => {
+        if (typed.has(k)) return { ...t, isType: true };
+        if (!inType.has(k) && !keywordAt.has(k)) return t;
+        const marked: Tok = { ...t };
+        if (inType.has(k)) marked.notClause = true;
+        if (keywordAt.has(k) && !KEYWORDS.has(t.text.toLowerCase())) marked.contextKeyword = true;
+        return marked;
+    });
 }
 
 /**
