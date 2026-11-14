@@ -1278,6 +1278,126 @@ test('a psql variable written right behind an operator is not merged into the op
     assert.equal(formatSql('do $$ begin x:=:y; end $$;'), 'DO $$\nBEGIN\n  x := :y;\nEND\n$$;');
 });
 
+// ===== names spelled like keywords =====
+
+test('a function named like a keyword is laid out as a call, also left() and right()', () => {
+    const r = formatSqlChecked("select left(s, 2), right(s, 1), replace(a,'b','c'), filter(x), coalesce(a, b) from t; call refresh_all(); call comment(1);");
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.text, [
+        'SELECT',
+        '  left(s, 2),',
+        '  right(s, 1),',
+        "  replace(a, 'b', 'c'),",
+        '  filter(x),',
+        '  coalesce(a, b)',
+        'FROM t;',
+        'CALL refresh_all();',
+        'CALL comment(1);'
+    ].join('\n'));
+    assert.equal(formatSql(r.text), r.text);
+    assert.equal(formatSql('call refresh(); create procedure analyze(p int) language sql as $$ select 1 $$; drop function if exists replace(text);'),
+        'CALL refresh();\nCREATE PROCEDURE analyze(\n  p INT\n)\n  LANGUAGE sql\nAS $$ select 1 $$;\nDROP FUNCTION IF EXISTS replace(TEXT);');
+});
+
+test('keywords that take a parenthesis keep their meaning', () => {
+    assert.equal(formatSql('select count(*) filter (where a > 1) from t;'), 'SELECT count(*) FILTER (WHERE a > 1) FROM t;');
+    assert.equal(formatSql('create table t (id int, primary key (id));'), 'CREATE TABLE t(\n  id INT,\n  PRIMARY KEY (id)\n);');
+    assert.equal(formatSql('select a from t left join u on u.id = t.id;'), 'SELECT a\nFROM t\nLEFT JOIN u ON u.id = t.id;');
+    assert.equal(formatSql('with x as materialized (select 1) select * from x;'), 'WITH x AS MATERIALIZED (\n  SELECT 1\n)\nSELECT *\nFROM x;');
+});
+
+test('a schema or alias named like a keyword keeps the case of a name in front of a dot', () => {
+    assert.equal(formatSql('select * from security.comment;'), 'SELECT * FROM security.comment;');
+    assert.equal(formatSql('select owner.key from t owner;'), 'SELECT owner.key FROM t owner;');
+    assert.equal(formatSql('do $$ begin new.x := 1; end $$;'), 'DO $$\nBEGIN\n  NEW.x := 1;\nEND\n$$;');
+});
+
+test('tables, schemas and routines named like keywords keep the case of a name', () => {
+    const src = [
+        'create table comment (key int, owner text, language text);',
+        'create function query(key int) returns int language sql as $$ select 1 $$;',
+        'create schema security;',
+        'drop table if exists owner cascade;',
+        'alter table comment rename to notice;',
+        'create index on comment (key);',
+        'truncate comment;',
+        'insert into comment (key, owner) values (1, 2);',
+        'update owner set key = 2;',
+        'delete from notice where key = 1;',
+        'select c.key from comment c join owner o on o.key = c.key;'
+    ].join('\n');
+    const r = formatSqlChecked(src);
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.text, [
+        'CREATE TABLE comment(',
+        '  key INT,',
+        '  owner TEXT,',
+        '  language TEXT',
+        ');',
+        'CREATE FUNCTION query(',
+        '  key INT',
+        ') RETURNS INT',
+        '  LANGUAGE sql',
+        'AS $$ select 1 $$;',
+        'CREATE SCHEMA security;',
+        'DROP TABLE IF EXISTS owner CASCADE;',
+        'ALTER TABLE comment RENAME TO notice;',
+        'CREATE INDEX ON comment(key);',
+        'TRUNCATE comment;',
+        'INSERT INTO comment(key, owner)',
+        'VALUES (1, 2);',
+        'UPDATE owner',
+        'SET',
+        '  key = 2;',
+        'DELETE',
+        'FROM notice',
+        'WHERE key = 1;',
+        'SELECT c.key',
+        'FROM comment c',
+        'JOIN owner o ON o.key = c.key;'
+    ].join('\n'));
+    assert.equal(formatSql(r.text), r.text);
+});
+
+test('columns named like keywords keep the case of a name in lists and conditions', () => {
+    const r = formatSqlChecked('select key, owner, comment, language, cost, first, last, temp from t where key = 1 and owner is not null order by first desc nulls last, last;');
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.text, [
+        'SELECT',
+        '  key,',
+        '  owner,',
+        '  comment,',
+        '  language,',
+        '  cost,',
+        '  first,',
+        '  last,',
+        '  temp',
+        'FROM t',
+        'WHERE key = 1',
+        '  AND owner IS NOT NULL',
+        'ORDER BY first DESC NULLS LAST, last;'
+    ].join('\n'));
+    assert.equal(formatSql(r.text), r.text);
+});
+
+test('the same words stay keywords where they are keywords', () => {
+    assert.equal(formatSql('comment on table t is \'x\';'), "COMMENT ON TABLE t IS 'x';");
+    assert.equal(formatSql('alter table t owner to bob;'), 'ALTER TABLE t OWNER TO bob;');
+    assert.equal(formatSql('create temp table t (a int);'), 'CREATE TEMP TABLE t(\n  a INT\n);');
+    assert.equal(formatSql('select * from t order by a nulls first fetch first 5 rows only;'),
+        'SELECT *\nFROM t\nORDER BY a NULLS FIRST\nFETCH FIRST 5 ROWS ONLY;');
+    const fn = formatSql('create or replace function f() returns trigger language plpgsql security definer cost 10 as $$\nbegin\n  raise notice \'x\';\n  return query select 1;\nend\n$$;');
+    assert.match(fn, /^CREATE OR REPLACE FUNCTION f\(\) RETURNS TRIGGER/);
+    assert.match(fn, /LANGUAGE plpgsql/);
+    assert.match(fn, /SECURITY DEFINER/);
+    assert.match(fn, /COST 10/);
+    assert.match(fn, /RAISE NOTICE 'x';/);
+    assert.match(fn, /RETURN QUERY/);
+    assert.equal(formatSql('do $$\nbegin\n  return next;\nend\n$$;'), 'DO $$\nBEGIN\n  RETURN NEXT;\nEND\n$$;');
+    assert.equal(formatSql('create trigger trg after insert on t for each statement execute function f();'),
+        formatSql('CREATE TRIGGER trg AFTER INSERT ON t FOR EACH STATEMENT EXECUTE FUNCTION f();'));
+});
+
 // ===== keywords that are also common names =====
 
 test('TYPE, DOMAIN, DATA, CONSTANT, WITHOUT and PREPARE are cased as keywords where they are keywords', () => {
@@ -1398,7 +1518,7 @@ test('gives every row of a multi-row VALUES list its own line when the source di
     ].join('\n');
     const out = formatSql(src);
     assert.equal(out, [
-        'INSERT INTO tmp_vars(KEY, val)',
+        'INSERT INTO tmp_vars(key, val)',
         'VALUES',
         "  ('var1', 'a'),",
         "  ('var2', 'b'),",

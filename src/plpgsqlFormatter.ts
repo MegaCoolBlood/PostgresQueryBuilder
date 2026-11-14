@@ -1336,6 +1336,153 @@ function markNonUpdateSet(toks: Tok[]): Tok[] {
     ));
 }
 
+/**
+ * Keywords PostgreSQL does not reserve that are popular names of tables,
+ * columns, schemas and routines. Where one of them can only be a name it is
+ * retyped as `name` by `markKeywordNames()`; everywhere else it stays a keyword.
+ */
+const NAME_LIKE_KEYWORDS = new Set([
+    'key', 'owner', 'comment', 'language', 'query', 'cost', 'first', 'last', 'next',
+    'replace', 'view', 'materialized', 'index', 'sequence', 'schema', 'function',
+    'procedure', 'trigger', 'temp', 'temporary', 'unlogged', 'immutable', 'stable',
+    'volatile', 'security', 'definer', 'invoker', 'cascade', 'restrict', 'before',
+    'after', 'instead', 'each', 'statement', 'leakproof', 'parallel', 'support',
+    'called', 'external', 'notice', 'warning', 'errcode', 'filter'
+]);
+/** Function names that are keywords elsewhere (`LEFT JOIN`); a name only right before `(`. */
+const CALLABLE_KEYWORDS = new Set(['left', 'right']);
+/** After these, a name-like keyword is an operand: a column, a variable, an alias. */
+const OPERAND_INTRODUCERS = new Set([
+    'select', 'distinct', 'where', 'and', 'or', 'not', 'when', 'then', 'else', 'case',
+    'on', 'having', 'by', 'set', 'returning', 'if', 'elsif', 'elseif', 'while', 'return',
+    'as', 'like', 'ilike', 'between'
+]);
+/** Before these, an operand ends. */
+const OPERAND_TERMINATORS = new Set([
+    'from', 'where', 'as', 'and', 'or', 'then', 'else', 'end', 'when', 'group', 'order',
+    'having', 'limit', 'offset', 'union', 'intersect', 'except', 'into', 'is', 'in', 'not',
+    'like', 'ilike', 'between', 'similar', 'asc', 'desc', 'nulls', 'collate', 'returning',
+    'window', 'for', 'fetch', 'loop'
+]);
+/**
+ * After these the next word names an object: a table, schema, routine, column
+ * or variable. The set lists the name-like keywords that may still follow as
+ * keywords (`INTO TEMP`, `ON UPDATE CASCADE`).
+ */
+const OBJECT_NAME_INTRODUCERS = new Map<string, Set<string>>([
+    ['from', new Set()], ['join', new Set()], ['call', new Set()], ['truncate', new Set()],
+    ['table', new Set()], ['view', new Set()], ['index', new Set()], ['sequence', new Set()],
+    ['schema', new Set()], ['function', new Set()], ['procedure', new Set()], ['column', new Set()],
+    ['references', new Set()], ['into', new Set(['temp', 'temporary', 'unlogged'])],
+    ['update', new Set(['cascade', 'restrict'])], ['only', new Set()]
+]);
+
+/**
+ * Retype a keyword that stands where PostgreSQL only accepts a name as `name`,
+ * so it is cased and laid out as the identifier it is: `left(s, 2)` is a call,
+ * not a LEFT JOIN, `security.comment` and `CREATE TABLE comment` keep their
+ * case, and so do `key` and `owner` in `SELECT key, owner … WHERE key = 1`.
+ */
+function markKeywordNames(toks: Tok[]): Tok[] {
+    const n = toks.length;
+    const isComment = (k: number): boolean =>
+        k >= 0 && k < n && (toks[k].type === 'lineComment' || toks[k].type === 'blockComment');
+    const next = (k: number): number => { let j = k + 1; while (j < n && isComment(j)) j++; return j; };
+    const prev = (k: number): number => { let j = k - 1; while (j >= 0 && isComment(j)) j--; return j; };
+    const word = (k: number): string => (k >= 0 && k < n && toks[k].type === 'word' ? toks[k].text.toLowerCase() : '');
+    const punct = (k: number, p: string): boolean => k >= 0 && k < n && toks[k].type === 'punct' && toks[k].text === p;
+    const isKeywordWord = (k: number): boolean =>
+        k >= 0 && k < n && toks[k].type === 'word' && !toks[k].isType && !toks[k].contextKeyword
+        && KEYWORDS.has(toks[k].text.toLowerCase());
+
+    // A keyword that still takes a parenthesis here: `FILTER (WHERE …)`,
+    // `PRIMARY KEY (…)`, `RETURN QUERY (…)`, `FETCH FIRST (n)`, `AS MATERIALIZED (…)`.
+    const keepsParen = (k: number): boolean => {
+        const w = word(k);
+        const p = word(prev(k));
+        if (w === 'filter') return word(next(next(k))) === 'where';
+        if (w === 'key') return p === 'primary' || p === 'foreign';
+        if (w === 'query' || w === 'next') return p === 'return';
+        if (w === 'first' || w === 'next') return p === 'fetch';
+        return w === 'materialized';
+    };
+    const endsOperand = (k: number, after: string): boolean => {
+        if (k >= n) return true;
+        const t = toks[k];
+        if (t.type === 'punct') return t.text === ',' || t.text === ')' || t.text === ';' || t.text === ']';
+        if (t.type === 'operator') return true;
+        if (t.type === 'word' && t.isType) return after === '(' || after === ',' || after === 'declare' || after === ';';
+        if (t.type === 'word' && t.contextKeyword && t.text.toLowerCase() === 'constant') return after === 'declare' || after === ';';
+        if (t.type === 'word' && !t.notClause && OPERAND_TERMINATORS.has(t.text.toLowerCase())) return true;
+        // An alias right after a select-list entry: `SELECT key k, owner o`.
+        return (t.type === 'word' || t.type === 'quotedIdent') && !KEYWORDS.has(t.text.toLowerCase())
+            && (after === 'select' || after === 'distinct' || after === ',');
+    };
+    // What stands in front of `k`, for `endsOperand`: a word, a punctuation
+    // mark, `op` for an operator or '' for the start of the input.
+    const before = (k: number): string => {
+        const p = prev(k);
+        if (p < 0) return '';
+        const t = toks[p];
+        if (t.type === 'word') return t.text.toLowerCase();
+        if (t.type === 'operator') return 'op';
+        return t.text;
+    };
+
+    const named = new Set<number>();
+    let declare = false;
+    for (let k = 0; k < n; k++) {
+        if (isComment(k)) continue;
+        const w = word(k);
+        if (w === 'declare') declare = true;
+        else if (w === 'begin') declare = false;
+        if (!isKeywordWord(k)) continue;
+        const nx = next(k);
+        // After CALL / FUNCTION / PROCEDURE only a routine name can follow.
+        const routineOwner = word(prev(k));
+        if ((routineOwner === 'call' || routineOwner === 'function' || routineOwner === 'procedure')
+            && w !== 'if' && !toks[prev(k)].notClause) {
+            named.add(k);
+            continue;
+        }
+        // A call: `left(s, 2)`, `replace(a, b, c)`, `CREATE TABLE comment (…)`.
+        if ((NAME_LIKE_KEYWORDS.has(w) || CALLABLE_KEYWORDS.has(w)) && punct(nx, '(') && !keepsParen(k)) {
+            named.add(k);
+            continue;
+        }
+        if (!NAME_LIKE_KEYWORDS.has(w)) continue;
+        // A schema, table or alias: `security.comment`, `owner.key`.
+        if (punct(nx, '.') && toks[nx].nlBefore === 0) { named.add(k); continue; }
+        const p = prev(k);
+        const pw = word(p);
+        // An object name: `FROM comment`, `DROP TABLE IF EXISTS owner`.
+        const ifExists = pw === 'exists'
+            && (word(prev(p)) === 'if' || (word(prev(p)) === 'not' && word(prev(prev(p))) === 'if'));
+        if (ifExists) { named.add(k); continue; }
+        const keep = p >= 0 && toks[p].type === 'word' && !toks[p].notClause ? OBJECT_NAME_INTRODUCERS.get(pw) : undefined;
+        if (keep && !keep.has(w)) { named.add(k); continue; }
+        // A table alias: `FROM t owner`, `JOIN u comment ON …`.
+        const pp = prev(p);
+        const tableBefore = p >= 0 && (toks[p].type === 'quotedIdent' || toks[p].type === 'name'
+            || (toks[p].type === 'word' && !KEYWORDS.has(pw)));
+        if (tableBefore && ['from', 'join', 'update', 'only'].includes(word(pp))
+            && (endsOperand(nx, ',') || ['on', 'join', 'left', 'right', 'inner', 'full', 'cross', 'natural', 'using', 'set'].includes(word(nx)))) {
+            named.add(k);
+            continue;
+        }
+        if (pw === 'to' && ['rename', 'owner'].includes(word(prev(p)))) { named.add(k); continue; }
+        if (p >= 0 && toks[p].type === 'word' && toks[p].contextKeyword && ['type', 'domain'].includes(pw)) { named.add(k); continue; }
+        // An operand: a column in a list or a condition, a variable.
+        if (pw === 'return' && (w === 'next' || w === 'query')) continue;
+        const b = before(k);
+        const introduced = b === ',' || b === '(' || b === '[' || b === 'op'
+            || (OPERAND_INTRODUCERS.has(b) && !toks[p].notClause)
+            || (declare && (b === 'declare' || b === ';'));
+        if (introduced && endsOperand(nx, b === 'op' ? 'op' : b)) named.add(k);
+    }
+    return toks.map((t, k) => (named.has(k) ? { ...t, type: 'name' as TokType } : t));
+}
+
 /** Parenthesis depth for each token (a `)` reports the post-close depth). */
 function computeDepths(toks: Tok[]): number[] {
     const out: number[] = [];
@@ -2134,6 +2281,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     toks = markQualifiedNames(toks);
     toks = markDistinctFrom(toks);
     toks = markNonUpdateSet(toks);
+    toks = markKeywordNames(toks);
     if (opt.replaceDashesInBlockComments) {
         toks = toks.map(t => t.type === 'blockComment' ? { ...t, text: replaceBlockCommentDashes(t.text) } : t);
     }
