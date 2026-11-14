@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { EventEmitter } from 'node:events';
 import { DbSessionManager } from '../dbSession';
-import { buildCustomResultColumns, buildColumnProbeSql, buildCellEditorFileName, cellEditorFileExtension, TableWebViewManager, queryEditorAssets, formatQueryBarText, buildDataViewerCsp, applyDataViewerCsp } from '../tableWebView';
+import { buildCustomResultColumns, buildColumnProbeSql, buildCellEditorFileName, cellEditorFileExtension, TableWebViewManager, queryEditorAssets, formatQueryBarText, buildDataViewerCsp, applyDataViewerCsp, normalizeQueryBarHeight, QUERY_BAR_HEIGHT_KEY } from '../tableWebView';
 import { QueryRunner } from '../queryRunner';
 import { QualifierStore } from '../tableStatementDrop';
 import { ManageBookmarksPanel } from '../manageBookmarksPanel';
@@ -417,6 +417,46 @@ test('table panel: init omits the alias qualifier when the option is off', async
     assert.equal(init.origin, 'table');
     assert.equal(init.qualifyColumnsWithAlias, false);
     assert.equal(init.tableAlias, '');
+});
+
+// ===== Height of the query box =====
+
+test('normalizeQueryBarHeight keeps a sensible pixel height and treats everything else as automatic', () => {
+    assert.equal(normalizeQueryBarHeight(120.4), 120);
+    assert.equal(normalizeQueryBarHeight(3), 24);
+    assert.equal(normalizeQueryBarHeight(99999), 4000);
+    for (const v of [undefined, null, 0, -5, NaN, '120', {}]) assert.equal(normalizeQueryBarHeight(v), null);
+});
+
+test('the query box height the user dragged to is stored and opens every Data Viewer with it', async () => {
+    const tableInit = await openTablePanelInit('public', 'orders', (store) => { store[QUERY_BAR_HEIGHT_KEY] = 90; });
+    assert.equal(tableInit.queryBarHeight, 90);
+    const fresh = await openTablePanelInit('public', 'orders');
+    assert.equal(fresh.queryBarHeight, null, 'without a stored height the box follows the query');
+
+    const { panel, send, globalStateStore } = await openCustomQueryPanel();
+    assert.equal(panel.posted.find((m: any) => m.command === 'init').queryBarHeight, null);
+    await send({ command: 'saveQueryBarHeight', height: 140 });
+    assert.equal(globalStateStore[QUERY_BAR_HEIGHT_KEY], 140);
+    await send({ command: 'saveQueryBarHeight', height: null });
+    assert.equal(globalStateStore[QUERY_BAR_HEIGHT_KEY], undefined, 'a double-click hands the height back to the query');
+});
+
+test('a new query box height reaches the other open Data Viewers at once', async () => {
+    const { manager } = createManager();
+    const panels = [createFakePanel(), createFakePanel()];
+    const originalCreate = vscodeStub.window.createWebviewPanel;
+    let next = 0;
+    vscodeStub.window.createWebviewPanel = () => panels[next++];
+    try {
+        await manager.openQueryView('SELECT 1', 'A');
+        await manager.openQueryView('SELECT 2', 'B');
+    } finally {
+        vscodeStub.window.createWebviewPanel = originalCreate;
+    }
+    await panels[0].state.onMessage({ command: 'saveQueryBarHeight', height: 75 });
+    assert.deepEqual(panels[1].posted.filter((m: any) => m.command === 'queryBarHeightChanged'), [{ command: 'queryBarHeightChanged', height: 75 }]);
+    assert.equal(panels[0].posted.some((m: any) => m.command === 'queryBarHeightChanged'), false);
 });
 
 test('table panel: init carries the option and the persisted table alias', async () => {

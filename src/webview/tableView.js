@@ -1914,7 +1914,27 @@ function computeResizedRowHeight(startHeight, deltaY, minHeight, maxHeight) {
     return h;
 }
 
-// Compute the new column width while dragging the handle on a header's right
+// Smallest height of the query box: one line of the editor.
+const QUERY_BOX_MIN_HEIGHT = 24;
+const QUERY_BOX_KEY_STEP = 20;
+
+// The height the user chose for the query box, or null when it follows the
+// statement. Anything that is not a positive number means "follow it".
+function normalizeQueryBoxHeight(value, max) {
+    const n = Number(value);
+    if (value === null || value === undefined || value === '' || !Number.isFinite(n) || n <= 0) return null;
+    return Math.round(Math.min(Math.max(n, QUERY_BOX_MIN_HEIGHT), Math.max(QUERY_BOX_MIN_HEIGHT, Number(max) || Infinity)));
+}
+
+// The query box height after a key press on its drag handle, or undefined
+// when the key does nothing there. Enter or Delete hands the height back to
+// the statement (null), like a double-click.
+function queryBoxHeightForKey(key, current, max) {
+    if (key === 'ArrowUp') return normalizeQueryBoxHeight(current - QUERY_BOX_KEY_STEP, max);
+    if (key === 'ArrowDown') return normalizeQueryBoxHeight(current + QUERY_BOX_KEY_STEP, max);
+    if (key === 'Enter' || key === 'Delete') return null;
+    return undefined;
+}
 // edge. `deltaX` is positive when the mouse moves right (= wider); the result is
 // clamped so a column stays grabbable and cannot swallow the whole viewport.
 function computeResizedColumnWidth(startWidth, deltaX, minWidth, maxWidth) {
@@ -4178,6 +4198,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const sqlDialogClose = document.getElementById('sqlDialogClose');
     const sqlDialogReset = document.getElementById('sqlDialogReset');
     const queryInput = document.getElementById('queryInput');
+    // The height the user dragged the query box to, or null (see applyQueryBoxHeight).
+    let queryBoxHeight = null;
     const queryRunBtn = document.getElementById('queryRunBtn');
     const queryFormatBtn = document.getElementById('queryFormatBtn');
     const queryHistoryContainer = document.getElementById('queryHistoryContainer');
@@ -4261,11 +4283,85 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     // Grow/shrink the query textarea to fit its content (bounded by the CSS
-    // max-height).
+    // max-height), or give it the height the user dragged the query bar to.
     function autoSizeQueryInput() {
         if (!queryInput) return;
+        if (queryBoxHeight !== null) {
+            queryInput.style.height = (queryBoxHeight + 2) + 'px';
+            return;
+        }
         queryInput.style.height = 'auto';
         queryInput.style.height = (queryInput.scrollHeight + 2) + 'px';
+    }
+
+    // ===== Height of the query box =====
+    // null: the box follows the statement. A number: the height in pixels the
+    // user dragged it to, kept by the extension for every Data Viewer.
+    const queryBar = document.getElementById('queryBar');
+    const queryBarResize = document.getElementById('queryBarResize');
+
+    // The query box may not push the grid out of the panel.
+    function queryBoxMaxHeight() {
+        return Math.max(QUERY_BOX_MIN_HEIGHT, Math.round(window.innerHeight * 0.8));
+    }
+
+    function applyQueryBoxHeight(height) {
+        queryBoxHeight = height;
+        if (queryBar) {
+            if (height === null) queryBar.style.removeProperty('--query-box-height');
+            else queryBar.style.setProperty('--query-box-height', height + 'px');
+            queryBar.classList.toggle('query-box-sized', height !== null);
+        }
+        autoSizeQueryInput();
+    }
+
+    function saveQueryBoxHeight() {
+        vscode.postMessage({ command: 'saveQueryBarHeight', height: queryBoxHeight });
+    }
+
+    // What the query box shows now, without its border: the Monaco editor once
+    // it is loaded, the textarea before.
+    function visibleQueryBoxHeight() {
+        const box = (queryBar && queryBar.querySelector('.query-editor')) || queryInput;
+        return box ? Math.max(QUERY_BOX_MIN_HEIGHT, box.getBoundingClientRect().height - 2) : QUERY_BOX_MIN_HEIGHT;
+    }
+
+    if (queryBarResize) {
+        queryBarResize.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            const startY = e.clientY;
+            const startHeight = visibleQueryBoxHeight();
+            queryBarResize.setPointerCapture(e.pointerId);
+            queryBarResize.classList.add('dragging');
+            const move = (ev) => {
+                applyQueryBoxHeight(normalizeQueryBoxHeight(
+                    computeResizedRowHeight(startHeight, ev.clientY - startY, QUERY_BOX_MIN_HEIGHT, queryBoxMaxHeight()),
+                    queryBoxMaxHeight()
+                ));
+            };
+            const end = () => {
+                queryBarResize.removeEventListener('pointermove', move);
+                queryBarResize.removeEventListener('pointerup', end);
+                queryBarResize.removeEventListener('pointercancel', end);
+                queryBarResize.classList.remove('dragging');
+                if (queryBoxHeight !== null) saveQueryBoxHeight();
+            };
+            queryBarResize.addEventListener('pointermove', move);
+            queryBarResize.addEventListener('pointerup', end);
+            queryBarResize.addEventListener('pointercancel', end);
+        });
+        queryBarResize.addEventListener('dblclick', () => {
+            applyQueryBoxHeight(null);
+            saveQueryBoxHeight();
+        });
+        queryBarResize.addEventListener('keydown', (e) => {
+            const next = queryBoxHeightForKey(e.key, visibleQueryBoxHeight(), queryBoxMaxHeight());
+            if (next === undefined) return;
+            e.preventDefault();
+            applyQueryBoxHeight(next);
+            saveQueryBoxHeight();
+        });
     }
 
     commitBtn.addEventListener('click', commitChanges);
@@ -5579,6 +5675,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'init':
                 handleInit(msg);
                 break;
+            case 'queryBarHeightChanged':
+                applyQueryBoxHeight(normalizeQueryBoxHeight(msg.height, queryBoxMaxHeight()));
+                break;
             case 'rowsLoaded':
                 if (isStaleLoadAnswer(msg.loadId, latestLoadId)) break;
                 if (msg.append && !msg.autoRefresh) {
@@ -5725,6 +5824,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     });
 
     function handleInit(msg) {
+        applyQueryBoxHeight(normalizeQueryBoxHeight(msg.queryBarHeight, queryBoxMaxHeight()));
         schema = msg.schema || '';
         table = msg.table || '';
         tableReference = msg.tableReference || '';
@@ -10488,6 +10588,8 @@ if (typeof module !== 'undefined' && module.exports) {
         assembleWhereQuery,
         assembleOrderQuery,
         keepsQueryPlaceholders,
+        normalizeQueryBoxHeight,
+        queryBoxHeightForKey,
         replaceHistoryQuery,
         hasSqlComment,
         collapseSqlWhitespace,

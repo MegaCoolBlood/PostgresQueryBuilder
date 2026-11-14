@@ -16,6 +16,8 @@ const {
     assembleWhereQuery,
     assembleOrderQuery,
     keepsQueryPlaceholders,
+    normalizeQueryBoxHeight,
+    queryBoxHeightForKey,
     replaceHistoryQuery,
     formatSql,
     buildNullConstraintClause,
@@ -1272,4 +1274,35 @@ test('a More or All that fails or brings nothing can be tried again from where i
     assert.match(js, /endAppendWithoutRows\(\);\s*showError\(msg\.text\);/);
     const run = js.slice(js.indexOf('function runQuery('), js.indexOf('function isDefaultQueryText('));
     assert.match(run, /appendRequest = null;\s*pendingAppendMessage = null;/, 'a new run forgets a page still on its way');
+});
+// ===== 3.5.4: the query box can be resized =====
+
+test('normalizeQueryBoxHeight keeps a chosen height within one line and the limit, or follows the query', () => {
+    assert.equal(normalizeQueryBoxHeight(100.6, 500), 101);
+    assert.equal(normalizeQueryBoxHeight(5, 500), 24);
+    assert.equal(normalizeQueryBoxHeight(900, 500), 500);
+    for (const v of [null, undefined, '', 0, -1, 'abc']) assert.equal(normalizeQueryBoxHeight(v, 500), null);
+});
+
+test('queryBoxHeightForKey moves the height with the arrow keys and hands it back with Enter', () => {
+    assert.equal(queryBoxHeightForKey('ArrowDown', 100, 500), 120);
+    assert.equal(queryBoxHeightForKey('ArrowUp', 100, 500), 80);
+    assert.equal(queryBoxHeightForKey('ArrowUp', 30, 500), 24);
+    assert.equal(queryBoxHeightForKey('ArrowDown', 495, 500), 500);
+    assert.equal(queryBoxHeightForKey('Enter', 100, 500), null);
+    assert.equal(queryBoxHeightForKey('a', 100, 500), undefined);
+});
+
+test('the query bar has a drag handle whose height both the textarea and the editor follow', () => {
+    const html = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.html'), 'utf8');
+    const css = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.css'), 'utf8');
+    const js = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    assert.match(html, /<div class="query-bar" id="queryBar">[\s\S]*?<div class="query-bar-resize" id="queryBarResize" role="separator"[^>]*tabindex="0"[^>]*title="[^"]+"><\/div>\s*<\/div>/);
+    assert.match(css, /\.query-editor \{[^}]*height: calc\(var\(--query-box-height, var\(--query-editor-height, 24px\)\) \+ 2px\)/);
+    assert.match(css, /\.query-bar-resize \{[^}]*cursor: row-resize;[^}]*z-index: var\(--z-sticky\);/);
+    const size = js.slice(js.indexOf('function autoSizeQueryInput('), js.indexOf('// ===== Height of the query box'));
+    assert.match(size, /if \(queryBoxHeight !== null\) \{\s*queryInput\.style\.height = \(queryBoxHeight \+ 2\) \+ 'px';/);
+    assert.match(js, /queryBarResize\.addEventListener\('dblclick', \(\) => \{\s*applyQueryBoxHeight\(null\);\s*saveQueryBoxHeight\(\);/);
+    assert.match(js, /function handleInit\(msg\) \{\s*applyQueryBoxHeight\(normalizeQueryBoxHeight\(msg\.queryBarHeight/);
+    assert.match(js, /case 'queryBarHeightChanged':\s*applyQueryBoxHeight\(/);
 });

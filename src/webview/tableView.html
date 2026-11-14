@@ -55,7 +55,7 @@
                 </div>
             </div>
         </div>
-        <div class="query-bar">
+        <div class="query-bar" id="queryBar">
             <div class="query-history" id="queryHistoryContainer">
                 <button type="button" class="btn query-history-toggle" id="queryHistoryToggle" title="Query history"><svg class="ico" aria-hidden="true"><use href="#icon-history"/></svg>History<svg class="ico" aria-hidden="true"><use href="#icon-chevron-down"/></svg></button>
                 <div class="query-history-panel" id="queryHistoryPanel" style="display:none;">
@@ -69,6 +69,7 @@
             <button class="btn btn-icon" id="querySaveBtn" title="Bookmark this query for reuse"><svg class="ico" aria-hidden="true"><use href="#icon-star"/></svg></button>
             <button class="btn btn-icon" id="queryFormatBtn" title="Format SQL"><svg class="ico" aria-hidden="true"><use href="#icon-format"/></svg></button>
             <button class="btn btn-primary" id="queryRunBtn" title="Run query (Ctrl+Enter)"><svg class="ico" aria-hidden="true"><use href="#icon-run"/></svg>Run</button>
+            <div class="query-bar-resize" id="queryBarResize" role="separator" aria-orientation="horizontal" aria-label="Height of the query box" tabindex="0" title="Drag to change the height of the query box. Double-click to let it follow the query again."></div>
         </div>
         <div class="table-area">
             <div class="table-wrapper" id="tableWrapper">

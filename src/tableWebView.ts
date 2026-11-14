@@ -226,6 +226,22 @@ export function queryEditorAssets(
     };
 }
 
+/** globalState key of the height the user dragged the Data Viewer's query box to. */
+export const QUERY_BAR_HEIGHT_KEY = 'dataViewer.queryBarHeight';
+const QUERY_BAR_HEIGHT_MIN = 24;
+const QUERY_BAR_HEIGHT_MAX = 4000;
+
+/**
+ * The stored height of the query box in pixels, or null when the box follows
+ * its statement. Anything that is not a positive number means null.
+ */
+export function normalizeQueryBarHeight(value: unknown): number | null {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+        return null;
+    }
+    return Math.round(Math.min(Math.max(value, QUERY_BAR_HEIGHT_MIN), QUERY_BAR_HEIGHT_MAX));
+}
+
 /**
  * Format the query bar's statement with the PL/pgSQL formatter and the user's
  * settings — the same result as Shift+Alt+F in a .sql file. A rejected or
@@ -602,7 +618,8 @@ export class TableWebViewManager {
             duplicateRowResetDefaults: vscode.workspace.getConfiguration('postgresQueryBuilder').get<string>('duplicateRowResetDefaults', 'volatile'),
             connectionName: this.getConnectionName(),
             permanentConstraints: this.permanentConstraintManager.getConstraints(schema, table),
-            permanentSorts: this.permanentConstraintManager.getSorts(schema, table)
+            permanentSorts: this.permanentConstraintManager.getSorts(schema, table),
+            queryBarHeight: this.getQueryBarHeight()
         });
         this.postSessionInfo(session);
     }
@@ -692,7 +709,8 @@ export class TableWebViewManager {
             savedQueryParameters: parameters,
             savedQueryValues: savedQuery?.values ?? {},
             // With placeholders the panel must collect values before it can run.
-            awaitParameters: parameters.length > 0
+            awaitParameters: parameters.length > 0,
+            queryBarHeight: this.getQueryBarHeight()
         });
         this.postSessionInfo(session);
         return session;
@@ -728,6 +746,7 @@ export class TableWebViewManager {
         openCellInEditor: this.handleOpenCellInEditor,
         openGeneratedStatement: this.handleOpenGeneratedStatement,
         queryEditorRequest: this.handleQueryEditorRequest,
+        saveQueryBarHeight: this.handleSaveQueryBarHeight,
         chooseAutoRefreshInterval: this.handleChooseAutoRefreshInterval,
         resetSession: this.handleResetSession,
         runExecutableValue: this.handleRunExecutableValue,
@@ -1724,6 +1743,21 @@ export class TableWebViewManager {
             command: 'exportDefaultsLoaded',
             defaults: this.exportService.getDefaults()
         });
+    }
+
+    private async handleSaveQueryBarHeight(ctx: MessageContext): Promise<void> {
+        const height = normalizeQueryBarHeight(ctx.message.height);
+        // Every open Data Viewer takes the new height over at once.
+        for (const other of this.sessions.values()) {
+            if (other !== ctx.session) {
+                this.post(other, { command: 'queryBarHeightChanged', height });
+            }
+        }
+        await this.context.globalState.update(QUERY_BAR_HEIGHT_KEY, height ?? undefined);
+    }
+
+    private getQueryBarHeight(): number | null {
+        return normalizeQueryBarHeight(this.context.globalState.get<unknown>(QUERY_BAR_HEIGHT_KEY));
     }
 
     private handleSaveExportDefaults(ctx: MessageContext): void {
