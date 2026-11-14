@@ -59,4 +59,5 @@ Each one bumps the version in `package.json`, runs `vsce package` and builds the
 CLI executable. Report the resulting `.vsix` file name and remind the user that
 the installed extension only picks up the change after reloading the window.
 
-Do not commit, tag or push unless the user asks.
+Do not commit, tag or push unless the user asks. `npm run d` tags the last
+commit with the version and pushes the tag, so run it only when asked to.

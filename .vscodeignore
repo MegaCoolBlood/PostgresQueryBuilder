@@ -8,6 +8,7 @@ eslint.config.*
 .eslintrc*
 tsconfig.json
 esbuild.js
+release-tag.js
 STYLEGUIDE.md
 AGENTS.md
 

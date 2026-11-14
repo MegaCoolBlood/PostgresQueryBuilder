@@ -45,7 +45,9 @@ A change is only visible in an installed VSIX after `npm run package` /
 | `npm run lint` | `eslint src server cli` (flat config, no type-aware rules) |
 | `npm run compile` / `watch` | esbuild dev build |
 | `npm run package` | minified bundle |
-| `npm run deploy` (`d`) | `vsce package` + CLI exe |
+| `npm run deploy` | `vsce package` + CLI exe |
+| `npm run d` | `deploy`, then `npm run tag` |
+| `npm run tag` | `release-tag.js`: tags the last commit `v<version>` and pushes the tag to `origin`; refuses when the committed `package.json` has another version or the tag already marks another commit |
 | `npm run build-cli-exe` | `dist/pgformat.exe` as a Node single executable (`sea-config.json`, needs Node ≥ 25.5); not pkg, whose appended payload makes Windows Defender scan the exe on every launch |
 
 Run `npm test` after every source change.

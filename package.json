@@ -1010,7 +1010,8 @@
     "deploy:patch": "npm run patch && npm run deploy",
     "deploy:minor": "npm run minor && npm run deploy",
     "deploy:major": "npm run major && npm run deploy",
-    "d": "npm run deploy",
+    "tag": "node release-tag.js",
+    "d": "npm run deploy && npm run tag",
     "d1": "npm run deploy:patch",
     "d2": "npm run deploy:minor",
     "d3": "npm run deploy:major"
