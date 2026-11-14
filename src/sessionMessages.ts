@@ -132,13 +132,10 @@ export function runTimeText(ms: number): string {
     return elapsedText(ms);
 }
 
-/** What the timer of an entry shows at `now`: `running for 5 s`, `done in 3.2 s`, `failed after …`, `cancelled after …`. */
+/** What the timer of an entry shows at `now`: `since 5 s` while it runs, `after 3.2 s` once it has ended. */
 export function timerText(timer: MessageTimer, now: number): string {
-    if (timer.status === 'running') return `running for ${elapsedText(now - timer.started)}`;
-    const took = runTimeText(timer.ms ?? 0);
-    if (timer.status === 'failed') return `failed after ${took}`;
-    if (timer.status === 'cancelled') return `cancelled after ${took}`;
-    return `done in ${took}`;
+    if (timer.status === 'running') return `since ${elapsedText(now - timer.started)}`;
+    return `after ${runTimeText(timer.ms ?? 0)}`;
 }
 
 /**
@@ -160,19 +157,25 @@ function runTimeText(ms) {
     return elapsedText(ms);
 }
 function timerText(timer, now) {
-    if (timer.status === 'running') return 'running for ' + elapsedText(now - timer.started);
-    const took = runTimeText(timer.ms == null ? 0 : timer.ms);
-    if (timer.status === 'failed') return 'failed after ' + took;
-    if (timer.status === 'cancelled') return 'cancelled after ' + took;
-    return 'done in ' + took;
+    if (timer.status === 'running') return 'since ' + elapsedText(now - timer.started);
+    return 'after ' + runTimeText(timer.ms == null ? 0 : timer.ms);
 }`;
 
 let entryCounter = 0;
 
+/** How the last line of a statement begins, by how it ended. */
+const ENDED_VERB: Record<Exclude<TimerStatus, 'running'>, string> = {
+    done: 'Finished',
+    failed: 'Failed',
+    cancelled: 'Cancelled'
+};
+
 /**
  * The entry a run adds when it starts a statement: `Started executing query
- * at line 12`, whose `line 12` leads to the statement and whose timer runs
- * until {@link SessionMessageSink.finish} stops it.
+ * at line 12`, whose `line 12` leads to the statement. Its running timer makes
+ * the log add, besides that line, a line of the running statement that stays
+ * below every other message — `Executing query at line 12 since 5 s` — until
+ * {@link SessionMessageSink.finish} ends it.
  */
 export function statementStartedMessage(
     source: string,
@@ -197,27 +200,41 @@ export function statementStartedMessage(
     };
 }
 
-/** The entry of a statement once it has ended: its timer stopped at how long the statement ran. */
-export function statementEndedMessage(started: SessionMessage, status: Exclude<TimerStatus, 'running'>, ms: number): SessionMessage {
-    return { ...started, timer: { started: started.timer?.started ?? 0, status, ms } };
+/** Where the statement of an entry is: `line 12`, or `query` without a link. */
+function statementPlace(entry: SessionMessage): string {
+    return entry.link ? `query at ${entry.link.text}` : 'query';
+}
+
+/** The line of a statement while it runs: `Executing query at line 12`, with its running timer. */
+export function statementRunningMessage(started: SessionMessage): SessionMessage {
+    return { ...started, text: `Executing ${statementPlace(started)}` };
 }
 
 /**
- * The line a log file gets when a statement has ended — `Query at line 12
- * done in 3.2 s` — as a file cannot change the line written when it started.
+ * The line the log gets once a statement has ended, below every message it
+ * caused: `Finished executing query at line 12 after 3.2 s`, or `Failed …` /
+ * `Cancelled …`.
  */
-export function statementEndedLine(ended: SessionMessage, now: Date = new Date()): string {
-    const where = ended.link ? `Query at ${ended.link.text}` : 'Query';
-    const timer = ended.timer ? ` ${timerText(ended.timer, now.getTime())}` : '';
-    return formatSessionMessage({ time: clockTime(now), source: ended.source, severity: ended.severity, text: `${where}${timer}`, details: [] });
+export function statementEndedMessage(
+    started: SessionMessage,
+    status: Exclude<TimerStatus, 'running'>,
+    ms: number,
+    now: Date = new Date()
+): SessionMessage {
+    return {
+        ...started,
+        time: clockTime(now),
+        text: `${ENDED_VERB[status]} executing ${statementPlace(started)}`,
+        timer: { started: started.timer?.started ?? 0, status, ms }
+    };
 }
 
 /**
  * A log entry as plain text, e.g. for the clipboard: one line plus its
- * indented detail lines. A statement that has ended says how long it ran.
+ * indented detail lines. The line of a statement says how long it has run.
  */
 export function formatSessionMessage(message: SessionMessage): string {
-    const timer = message.timer && message.timer.status !== 'running' ? ` · ${timerText(message.timer, 0)}` : '';
+    const timer = message.timer ? ` ${timerText(message.timer, Date.now())}` : '';
     const lines = [`[${message.time}] ${message.source} — ${message.severity}: ${message.text}${timer}`];
     for (const detail of message.details) {
         lines.push(`    ${detail.replace(/\n/g, '\n    ')}`);
@@ -252,6 +269,12 @@ export interface SessionLog {
     errors: number;
     /** Unique per log and renewed by Clear, so the panel can tell new messages from a new log. */
     id: number;
+    /**
+     * The lines of the statements running now, `Executing query at line 12`.
+     * They are no messages of the log: the panel shows them below every
+     * message, and once a statement ends its line becomes a message.
+     */
+    running: SessionMessage[];
 }
 
 type SpoolOperation = { kind: 'append'; text: string } | { kind: 'truncate' } | { kind: 'remove' };
@@ -374,7 +397,7 @@ export class SessionMessageLog {
     private readonly spools = new Map<string, MessageSpool>();
     /** Spools of discarded logs whose file is still being deleted. */
     private readonly retiring = new Set<MessageSpool>();
-    private readonly listeners = new Set<(key: string, updated?: SessionMessage) => void>();
+    private readonly listeners = new Set<(key: string) => void>();
     private readonly limit: number;
     private readonly spoolRoot?: string;
     private spoolDir?: string;
@@ -391,11 +414,22 @@ export class SessionMessageLog {
         return this.limit;
     }
 
+    /**
+     * Add `message` to the log of `ref`. The start of a statement — an entry
+     * with a running timer, see {@link statementStartedMessage} — is logged
+     * as `Started executing query at line 12`, and its running line is kept
+     * apart until {@link finish} ends it.
+     */
     append(ref: DbSessionRef, message: SessionMessage): void {
         let log = this.logs.get(ref.key);
         if (!log) {
-            log = { key: ref.key, label: ref.label, messages: [], total: 0, errors: 0, id: ++this.logCounter };
+            log = { key: ref.key, label: ref.label, messages: [], total: 0, errors: 0, id: ++this.logCounter, running: [] };
             this.logs.set(ref.key, log);
+        }
+        if (message.timer?.status === 'running') {
+            log.running.push(keptMessage(statementRunningMessage(message)));
+            // The started line leads to the statement as well, under an id of its own.
+            message = { ...message, id: ++entryCounter, timer: undefined };
         }
         log.messages.push(keptMessage(message));
         log.total++;
@@ -410,34 +444,25 @@ export class SessionMessageLog {
     }
 
     /**
-     * Stop the timer of the entry `started` of the log of `ref`: the entry
-     * the panel keeps shows how the statement ended, and the log file gets a
-     * line saying so. Nothing happens once the log has ended or the entry
-     * has ended before.
+     * End the statement `started` of the log of `ref`: its running line goes,
+     * and the log gets `Finished executing query at line 12 after 3.2 s` (or
+     * `Failed …` / `Cancelled …`) below every message the statement caused.
+     * Nothing happens once the log has ended or the statement has ended before.
      */
     finish(ref: DbSessionRef, started: SessionMessage, status: Exclude<TimerStatus, 'running'>, ms: number, now: Date = new Date()): void {
         const log = this.logs.get(ref.key);
         if (!log || started.id === undefined) return;
-        const ended = statementEndedMessage(started, status, ms);
-        let updated: SessionMessage | undefined;
-        for (let i = log.messages.length - 1; i >= 0; i--) {
-            if (log.messages[i].id !== started.id) continue;
-            if (log.messages[i].timer?.status !== 'running') return;
-            updated = keptMessage(ended);
-            log.messages[i] = updated;
-            break;
-        }
-        this.spools.get(ref.key)?.write(`${statementEndedLine(ended, now)}\n`);
-        if (updated) {
-            this.emit(ref.key, updated);
-        }
+        const at = log.running.findIndex((entry) => entry.id === started.id);
+        if (at < 0) return;
+        log.running.splice(at, 1);
+        this.append(ref, statementEndedMessage(started, status, ms, now));
     }
 
     get(key: string): SessionLog | undefined {
         return this.logs.get(key);
     }
 
-    /** Empty the log of `key`, which stays for further messages. */
+    /** Empty the log of `key`, which stays for further messages. Statements still running keep their line. */
     clear(key: string): void {
         const log = this.logs.get(key);
         if (!log || log.total === 0) return;
@@ -507,8 +532,7 @@ export class SessionMessageLog {
         await Promise.all([...this.spools.values(), ...this.retiring].map((spool) => spool.idle()));
     }
 
-    /** `updated` is the entry that changed in place, for a change that added or removed none. */
-    onDidChange(listener: (key: string, updated?: SessionMessage) => void): { dispose(): void } {
+    onDidChange(listener: (key: string) => void): { dispose(): void } {
         this.listeners.add(listener);
         return { dispose: () => { this.listeners.delete(listener); } };
     }
@@ -547,9 +571,9 @@ export class SessionMessageLog {
         return spool;
     }
 
-    private emit(key: string, updated?: SessionMessage): void {
+    private emit(key: string): void {
         for (const listener of [...this.listeners]) {
-            listener(key, updated);
+            listener(key);
         }
     }
 }
@@ -596,6 +620,13 @@ export interface MessagesViewState {
     countText: string;
     /** How many errors the session sent, e.g. `3 errors`; empty without any. */
     errorsText: string;
+    /** The lines of the statements running now, shown below every message. */
+    running: Array<SessionMessage & { tone: MessageTone }>;
+}
+
+/** The running lines of a log as the panel gets them. */
+function runningLines(log: SessionLog | undefined): Array<SessionMessage & { tone: MessageTone }> {
+    return (log?.running ?? []).map((message) => ({ ...message, tone: messageTone(message.severity) }));
 }
 
 /** The errors of a log for the header of the panel; empty when there are none. */
@@ -617,7 +648,8 @@ export function messagesViewState(shown: DbSessionRef | undefined, log: SessionL
         messages: messages.map((message) => ({ ...message, tone: messageTone(message.severity) })),
         total,
         countText: shown ? messagesCountText(messages.length, total) : '',
-        errorsText: shown ? errorsCountText(log?.errors ?? 0) : ''
+        errorsText: shown ? errorsCountText(log?.errors ?? 0) : '',
+        running: shown ? runningLines(log) : []
     };
 }
 
@@ -630,7 +662,10 @@ export interface SentLog {
     total: number;
 }
 
-/** A message to the panel: the whole log, only the messages that came since the last one, or entries that changed. */
+/**
+ * A message to the panel: the whole log, or only the messages that came since
+ * the last one. Both carry the lines of the statements running now.
+ */
 export type MessagesUpdate =
     | { type: 'log'; key: string | null; state: MessagesViewState }
     | {
@@ -642,9 +677,8 @@ export type MessagesUpdate =
         errorsText: string;
         /** The panel drops its oldest lines beyond this many. */
         limit: number;
-    }
-    /** Entries the panel already shows, changed in place: a statement that has ended. */
-    | { type: 'update'; key: string; messages: Array<SessionMessage & { tone: MessageTone }> };
+        running: Array<SessionMessage & { tone: MessageTone }>;
+    };
 
 /**
  * What to send the panel so it shows `log` of `shown`, given what it was sent
@@ -673,7 +707,8 @@ export function messagesUpdate(
                 total: log.total,
                 countText: messagesCountText(log.messages.length, log.total),
                 errorsText: errorsCountText(log.errors),
-                limit
+                limit,
+                running: runningLines(log)
             },
             sent: current
         };
@@ -705,8 +740,6 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
     /** What the panel was sent last; undefined when it needs the whole log. */
     private sent?: SentLog;
     private renderPending = false;
-    /** Entries of the shown log that changed in place since the last render, by id. */
-    private readonly updated = new Map<number, SessionMessage>();
     private readonly schedule: (render: () => void) => void;
     private readonly maxCopyBytes: number;
 
@@ -714,9 +747,8 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
         this.schedule = options.schedule ?? ((render) => { setTimeout(render, MESSAGES_RENDER_INTERVAL_MS); });
         this.maxCopyBytes = options.maxCopyBytes ?? MAX_COPY_BYTES;
         // A flood of messages becomes one update every few milliseconds, not one per message.
-        this.subscription = log.onDidChange((key, updated) => {
+        this.subscription = log.onDidChange((key) => {
             if (key !== this.shown?.key) return;
-            if (updated?.id !== undefined) this.updated.set(updated.id, updated);
             this.scheduleRender();
         });
         // The checkbox follows the setting, also when it is changed in the settings.
@@ -835,7 +867,8 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
      */
     private async openLink(id: number): Promise<void> {
         const shown = this.shown;
-        const link = shown ? this.log.get(shown.key)?.messages.find((m) => m.id === id)?.link : undefined;
+        const log = shown ? this.log.get(shown.key) : undefined;
+        const link = log ? [...log.messages, ...log.running].find((m) => m.id === id)?.link : undefined;
         if (!link) return;
         try {
             const range = new vscode.Range(link.start.line, link.start.character, link.end.line, link.end.character);
@@ -912,8 +945,6 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
 
     private render(): void {
         const view = this.view;
-        const updated = [...this.updated.values()];
-        this.updated.clear();
         if (!view) return;
         if (view.visible === false) {
             this.sent = undefined;
@@ -928,15 +959,6 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
         this.sent = sent;
         if (update) {
             Promise.resolve(view.webview.postMessage(update)).catch(() => undefined);
-        }
-        // The whole log already shows every entry as it is now.
-        if (updated.length > 0 && this.shown && update?.type !== 'log') {
-            const changed: MessagesUpdate = {
-                type: 'update',
-                key: this.shown.key,
-                messages: updated.map((message) => ({ ...message, tone: messageTone(message.severity) }))
-            };
-            Promise.resolve(view.webview.postMessage(changed)).catch(() => undefined);
         }
     }
 
@@ -971,6 +993,11 @@ body { padding: 0; display: flex; flex-direction: column; }
 /* How a statement ended is said in words as well, never by hue alone. */
 .msg-timer.status-failed { color: var(--c-danger); font-weight: 600; }
 .msg-timer.status-cancelled { color: var(--c-warning); }
+.msg.run-failed .msg-text { color: var(--c-danger); font-weight: 600; }
+.msg.run-cancelled .msg-text { color: var(--c-warning); }
+/* The statements running now, always below the newest message and never scrolled away. */
+.running { flex-shrink: 0; padding: var(--sp-1) 0; border-top: 1px solid var(--c-border); background: var(--c-surface); font-family: var(--font-mono); font-size: var(--fs-sm); }
+.running[hidden] { display: none; }
 .errors-btn { color: var(--c-danger); font-weight: 600; }
 .errors-btn[hidden] { display: none; }
 .clear-on-execute { display: inline-flex; align-items: center; gap: var(--sp-1); white-space: nowrap; cursor: pointer; }`;
@@ -987,10 +1014,12 @@ body { padding: 0; display: flex; flex-direction: column; }
         <button class="btn btn-sm" id="clearBtn" title="Clear the messages of this session">${icon('trash')}Clear</button>
     </div>
 </div>
-<div class="list" id="list"></div>`;
+<div class="list" id="list"></div>
+<div class="running" id="running" role="status" aria-live="off" hidden></div>`;
         const script = `
 const vscode = acquireVsCodeApi();
 const listEl = document.getElementById('list');
+const runningEl = document.getElementById('running');
 const labelEl = document.getElementById('label');
 const countEl = document.getElementById('count');
 const copyBtn = document.getElementById('copyBtn');
@@ -1027,13 +1056,13 @@ function timerHtml(m) {
     const t = m.timer;
     if (!t) return '';
     const running = t.status === 'running';
-    return ' · <span class="msg-timer status-' + escapeHtml(t.status) + '"'
+    return ' <span class="msg-timer status-' + escapeHtml(t.status) + '"'
         + (running ? ' data-running data-started="' + escapeHtml(String(Number(t.started))) + '"' : '')
         + '>' + escapeHtml(timerText(t, Date.now())) + '</span>';
 }
 
 function messageHtml(m) {
-    let html = '<div class="msg tone-' + escapeHtml(m.tone) + '"'
+    let html = '<div class="msg tone-' + escapeHtml(m.tone) + (m.timer ? ' run-' + escapeHtml(m.timer.status) : '') + '"'
         + (m.id != null ? ' data-id="' + escapeHtml(String(m.id)) + '"' : '') + '>'
         + '<span class="msg-time">[' + escapeHtml(m.time) + ']</span> '
         + (m.source && m.source !== shownLabel ? '<span class="msg-source">' + escapeHtml(m.source) + ' — </span>' : '')
@@ -1048,7 +1077,7 @@ function messageHtml(m) {
 // A running timer is renewed every second, and only while one is shown.
 let timerHandle = null;
 function tickTimers() {
-    const running = listEl.querySelectorAll('.msg-timer[data-running]');
+    const running = runningEl.querySelectorAll('.msg-timer[data-running]');
     if (running.length === 0) {
         clearInterval(timerHandle);
         timerHandle = null;
@@ -1060,17 +1089,27 @@ function tickTimers() {
     });
 }
 function watchTimers() {
-    if (timerHandle === null && listEl.querySelectorAll('.msg-timer[data-running]').length > 0) {
+    if (timerHandle === null && runningEl.querySelectorAll('.msg-timer[data-running]').length > 0) {
         timerHandle = setInterval(tickTimers, 1000);
     }
 }
 
-listEl.addEventListener('click', (e) => {
+// The lines of the statements running now, below every message.
+function showRunning(running) {
+    const lines = running || [];
+    runningEl.innerHTML = lines.map(messageHtml).join('');
+    runningEl.hidden = lines.length === 0;
+    watchTimers();
+}
+
+listEl.addEventListener('click', openClickedLink);
+runningEl.addEventListener('click', openClickedLink);
+function openClickedLink(e) {
     const link = e && e.target && e.target.closest ? e.target.closest('.msg-link') : null;
     if (!link) return;
     e.preventDefault();
     vscode.postMessage({ type: 'openLink', id: Number(link.dataset.linkId) });
-});
+}
 
 function isAtBottom() {
     return listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 4;
@@ -1108,6 +1147,7 @@ function render(key, state) {
     labelEl.textContent = state.label ? 'Session of ' + state.label : 'No session';
     labelEl.title = state.label ? 'The database session of ' + state.label + ' and every tab sharing it' : '';
     updateHeader(state.countText, state.total, state.errorsText);
+    showRunning(state.label ? state.running : []);
     if (!state.label) {
         listEl.innerHTML = '<div class="empty">Open a SQL file or a Data Viewer tab to see the messages of its database session.</div>';
         return;
@@ -1120,7 +1160,6 @@ function render(key, state) {
     if (switched || atBottom) {
         listEl.scrollTop = listEl.scrollHeight;
     }
-    watchTimers();
 }
 
 // New messages are added below and the oldest beyond the limit removed, so
@@ -1136,19 +1175,9 @@ function append(update) {
         listEl.firstElementChild.remove();
     }
     updateHeader(update.countText, update.total, update.errorsText);
+    showRunning(update.running);
     if (atBottom) {
         listEl.scrollTop = listEl.scrollHeight;
-    }
-    watchTimers();
-}
-
-// An entry that changed in place — a statement that ended — is drawn anew
-// where it is; one the panel no longer shows is left alone.
-function replace(update) {
-    if (update.key !== shownKey) return;
-    for (const m of update.messages) {
-        const el = listEl.querySelector('.msg[data-id="' + Number(m.id) + '"]');
-        if (el) el.outerHTML = messageHtml(m);
     }
 }
 
@@ -1158,8 +1187,6 @@ window.addEventListener('message', (ev) => {
         render(msg.key, msg.state);
     } else if (msg && msg.type === 'append') {
         append(msg);
-    } else if (msg && msg.type === 'update') {
-        replace(msg);
     } else if (msg && msg.type === 'options') {
         clearOnExecuteBox.checked = msg.clearOnExecute === true;
     }

@@ -25,7 +25,6 @@ import {
     noticeMessage,
     elapsedText,
     runTimeText,
-    statementEndedLine,
     statementStartedMessage,
     timerText,
     TIMER_TEXT_JS
@@ -132,8 +131,8 @@ test('the panel is told the session it shows and the tone of each message', () =
     assert.equal(state.label, 'payroll.sql');
     assert.equal(state.messages[0].tone, 'danger');
     assert.equal(state.countText, '1 message');
-    assert.deepEqual(messagesViewState(TAB, undefined), { label: 'View Data: SELECT 1', messages: [], total: 0, countText: '0 messages', errorsText: '' });
-    assert.deepEqual(messagesViewState(undefined, undefined), { label: null, messages: [], total: 0, countText: '', errorsText: '' });
+    assert.deepEqual(messagesViewState(TAB, undefined), { label: 'View Data: SELECT 1', messages: [], total: 0, countText: '0 messages', errorsText: '', running: [] });
+    assert.deepEqual(messagesViewState(undefined, undefined), { label: null, messages: [], total: 0, countText: '', errorsText: '', running: [] });
     assert.equal(state.errorsText, '1 error');
 });
 
@@ -391,7 +390,7 @@ test('a hidden panel is sent nothing and gets the whole log when it is shown aga
 // ===== messagesUpdate =====
 
 function logOf(texts: string[], id = 1, total = texts.length) {
-    return { key: FILE.key, label: FILE.label, id, total, errors: 0, messages: texts.map((text) => noticeMessage('f', { message: text }, AT)) };
+    return { key: FILE.key, label: FILE.label, id, total, errors: 0, messages: texts.map((text) => noticeMessage('f', { message: text }, AT)), running: [] };
 }
 
 test('messagesUpdate sends only what is new while the same log grows', () => {
@@ -893,16 +892,15 @@ test('a started statement is logged with a link to its line and a running timer'
     assert.equal(entry.text, 'Started executing query at line 12');
     assert.deepEqual(entry.link, { text: 'line 12', ...STATEMENT });
     assert.deepEqual(entry.timer, { started: AT.getTime(), status: 'running' });
-    assert.equal(formatSessionMessage(entry), '[09:05:07] payroll.sql — RUN: Started executing query at line 12');
     assert.notEqual(statementStartedMessage('payroll.sql', STATEMENT, AT).id, entry.id, 'every entry has an id of its own');
 });
 
-test('timerText counts a running statement and tells how one ended', () => {
+test('timerText counts a running statement and tells how long one ran', () => {
     const started = AT.getTime();
-    assert.equal(timerText({ started, status: 'running' }, started + 65_400), 'running for 1 min 05 s');
-    assert.equal(timerText({ started, status: 'done', ms: 3210 }, 0), 'done in 3.2 s');
-    assert.equal(timerText({ started, status: 'failed', ms: 12 }, 0), 'failed after 12 ms');
-    assert.equal(timerText({ started, status: 'cancelled', ms: 125_000 }, 0), 'cancelled after 2 min 05 s');
+    assert.equal(timerText({ started, status: 'running' }, started + 65_400), 'since 1 min 05 s');
+    assert.equal(timerText({ started, status: 'done', ms: 3210 }, 0), 'after 3.2 s');
+    assert.equal(timerText({ started, status: 'failed', ms: 12 }, 0), 'after 12 ms');
+    assert.equal(timerText({ started, status: 'cancelled', ms: 125_000 }, 0), 'after 2 min 05 s');
     assert.equal(runTimeText(999.6), '1000 ms');
     assert.equal(runTimeText(59_999), '60.0 s');
     assert.equal(runTimeText(60_000), '1 min 00 s');
@@ -920,32 +918,63 @@ test('the panel counts and words a timer exactly as the extension does', () => {
     assert.equal(elapsedText(65_000), '1 min 05 s');
 });
 
-test('finish stops the timer of the entry and copies say how long the statement ran', () => {
+test('a running statement keeps its line below every message until it ends', () => {
     const log = new SessionMessageLog();
-    const changes: Array<[string, any]> = [];
-    log.onDidChange((key, updated) => changes.push([key, updated]));
     const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
     log.append(FILE, entry);
-    log.append(FILE, noticeMessage('payroll.sql', { message: 'step 1' }, AT));
+    for (let i = 0; i < 3; i++) log.append(FILE, noticeMessage('payroll.sql', { message: `step ${i}` }, AT));
+
+    const running = log.get(FILE.key)!;
+    assert.deepEqual(running.messages.map((m) => m.text), ['Started executing query at line 12', 'step 0', 'step 1', 'step 2']);
+    assert.equal(running.messages[0].timer, undefined, 'the started line is a plain line');
+    assert.equal(running.messages[0].link?.text, 'line 12', 'it still leads to the statement');
+    assert.notEqual(running.messages[0].id, entry.id);
+    assert.deepEqual(running.running.map((m) => [m.id, m.text, m.timer?.status]), [[entry.id, 'Executing query at line 12', 'running']]);
+    assert.equal(running.total, 4, 'the running line is no message');
 
     log.finish(FILE, entry, 'done', 3210, AT);
 
-    const kept = log.get(FILE.key)?.messages[0];
-    assert.deepEqual(kept?.timer, { started: AT.getTime(), status: 'done', ms: 3210 });
-    assert.equal(kept?.link?.text, 'line 12', 'it still leads to the statement');
-    assert.equal(log.get(FILE.key)?.total, 2, 'it is no new message');
-    assert.equal(formatSessionMessage(kept!), '[09:05:07] payroll.sql — RUN: Started executing query at line 12 · done in 3.2 s');
-    assert.deepEqual(changes.at(-1), [FILE.key, kept]);
+    const ended = log.get(FILE.key)!;
+    assert.deepEqual(ended.running, []);
+    assert.equal(ended.total, 5);
+    const last = ended.messages.at(-1)!;
+    assert.equal(last.text, 'Finished executing query at line 12');
+    assert.deepEqual(last.timer, { started: AT.getTime(), status: 'done', ms: 3210 });
+    assert.equal(last.link?.text, 'line 12');
+    assert.equal(formatSessionMessage(last), '[09:05:07] payroll.sql — RUN: Finished executing query at line 12 after 3.2 s');
 
-    const before = changes.length;
     log.finish(FILE, entry, 'failed', 9999, AT);
-    assert.equal(log.get(FILE.key)?.messages[0].timer?.status, 'done', 'an entry ends only once');
-    assert.equal(changes.length, before);
+    assert.equal(log.get(FILE.key)!.total, 5, 'a statement ends only once');
 });
 
-test('the log file gets a line of its own when a statement ends', async (t) => {
+test('a failed or cancelled statement says so in its last line', () => {
+    const log = new SessionMessageLog();
+    const failed = statementStartedMessage('payroll.sql', STATEMENT, AT);
+    const cancelled = statementStartedMessage('payroll.sql', STATEMENT, AT);
+    log.append(FILE, failed);
+    log.append(FILE, cancelled);
+    log.finish(FILE, failed, 'failed', 420, AT);
+    log.finish(FILE, cancelled, 'cancelled', 61_000, AT);
+    assert.deepEqual(log.get(FILE.key)!.messages.slice(-2).map(formatSessionMessage), [
+        '[09:05:07] payroll.sql — RUN: Failed executing query at line 12 after 420 ms',
+        '[09:05:07] payroll.sql — RUN: Cancelled executing query at line 12 after 1 min 01 s'
+    ]);
+});
+
+test('Clear keeps the line of a statement that is still running', () => {
+    const log = new SessionMessageLog();
+    const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
+    log.append(FILE, entry);
+    log.clear(FILE.key);
+    assert.deepEqual(log.get(FILE.key)!.messages, []);
+    assert.equal(log.get(FILE.key)!.running.length, 1);
+    log.finish(FILE, entry, 'done', 1, AT);
+    assert.deepEqual(log.get(FILE.key)!.messages.map((m) => m.text), ['Finished executing query at line 12']);
+});
+
+test('the log file has the start, every message and the end of a statement in order', async (t) => {
     const root = tempRoot(t);
-    const log = new SessionMessageLog({ spoolRoot: root });
+    const log = new SessionMessageLog({ limit: 1, spoolRoot: root });
     t.after(() => log.dispose());
     const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
     log.append(FILE, entry);
@@ -953,68 +982,32 @@ test('the log file gets a line of its own when a statement ends', async (t) => {
     log.finish(FILE, entry, 'failed', 420, AT);
 
     const target = path.join(root, 'saved.log');
-    assert.equal(await log.saveTo(FILE.key, target), 2);
+    assert.equal(await log.saveTo(FILE.key, target), 3);
     assert.equal(fs.readFileSync(target, 'utf8'), [
         '[09:05:07] payroll.sql — RUN: Started executing query at line 12',
         '[09:05:07] payroll.sql — NOTICE: inside',
-        '[09:05:07] payroll.sql — RUN: Query at line 12 failed after 420 ms',
+        '[09:05:07] payroll.sql — RUN: Failed executing query at line 12 after 420 ms',
         ''
     ].join('\n'));
-    assert.equal(statementEndedLine({ ...entry, timer: { started: 0, status: 'cancelled', ms: 61_000 } }, AT),
-        '[09:05:07] payroll.sql — RUN: Query at line 12 cancelled after 1 min 01 s');
 });
 
-test('finish of an entry the log no longer keeps still writes its end to the log file', async (t) => {
-    const root = tempRoot(t);
-    const log = new SessionMessageLog({ limit: 1, spoolRoot: root });
-    t.after(() => log.dispose());
-    const changes: unknown[] = [];
-    log.onDidChange((_key, updated) => { if (updated) changes.push(updated); });
-    const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
-    log.append(FILE, entry);
-    log.append(FILE, noticeMessage('payroll.sql', { message: 'pushed it out' }, AT));
-
-    log.finish(FILE, entry, 'done', 5, AT);
-
-    assert.deepEqual(changes, [], 'the panel shows nothing that changed');
-    const target = path.join(root, 'saved.log');
-    await log.saveTo(FILE.key, target);
-    assert.match(fs.readFileSync(target, 'utf8'), /RUN: Query at line 12 done in 5 ms\n$/);
-});
-
-test('the panel gets an ended statement as an update of the entry it shows', () => {
-    const { view, posted, last } = resolveView();
+test('the panel gets the running line with every update and the end as a new message', () => {
+    const { view, last } = resolveView();
     view.show(FILE);
     const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
     view.append(FILE, entry);
     assert.equal(last().type, 'log');
-    const sentBefore = posted.length;
+    assert.deepEqual(last().state.running.map((m: any) => [m.text, m.tone]), [['Executing query at line 12', 'info']]);
+
+    view.append(FILE, noticeMessage('payroll.sql', { message: 'step' }, AT));
+    assert.equal(last().type, 'append');
+    assert.deepEqual(last().messages.map((m: any) => m.text), ['step']);
+    assert.equal(last().running.length, 1);
 
     view.finish(FILE, entry, 'done', 3210);
-
-    assert.equal(posted.length, sentBefore + 1);
-    assert.equal(last().type, 'update');
-    assert.equal(last().key, FILE.key);
-    assert.deepEqual(last().messages.map((m: any) => [m.id, m.timer.status, m.tone]), [[entry.id, 'done', 'info']]);
-});
-
-test('an ended statement of another session or a hidden panel is not sent as an update', () => {
-    const resolved = resolveView();
-    resolved.view.show(TAB);
-    const entry = statementStartedMessage('payroll.sql', STATEMENT, AT);
-    resolved.view.append(FILE, entry);
-    resolved.view.finish(FILE, entry, 'done', 1);
-    assert.ok(resolved.posted.every((m: any) => m.type !== 'update'), 'not the shown session');
-
-    resolved.view.show(FILE);
-    resolved.setVisible(false);
-    const other = statementStartedMessage('payroll.sql', STATEMENT, AT);
-    resolved.view.append(FILE, other);
-    resolved.view.finish(FILE, other, 'done', 1);
-    assert.ok(resolved.posted.every((m: any) => m.type !== 'update'), 'a hidden panel gets the whole log once shown');
-    resolved.setVisible(true);
-    assert.equal(resolved.last().type, 'log');
-    assert.deepEqual(resolved.last().state.messages.map((m: any) => m.timer.status), ['done', 'done']);
+    assert.equal(last().type, 'append');
+    assert.deepEqual(last().messages.map((m: any) => [m.text, m.timer.status]), [['Finished executing query at line 12', 'done']]);
+    assert.deepEqual(last().running, []);
 });
 
 test('a click on the line of an entry opens its file with the whole statement selected', async (t) => {
@@ -1094,20 +1087,24 @@ test('a statement that cannot be shown any more says so', async (t) => {
 
 const running = (startedAgoMs: number) => {
     const entry = statementStartedMessage('payroll.sql', STATEMENT, new Date(Date.now() - startedAgoMs));
-    return { ...entry, tone: 'info' };
+    return { ...entry, text: 'Executing query at line 12', tone: 'info' };
 };
+const logState = (messages: any[], runningLines: any[] = []) =>
+    ({ label: 'payroll.sql', messages, total: messages.length, countText: `${messages.length} messages`, running: runningLines });
 
 test('the panel shows the line of a statement as a link and asks the extension to open it', () => {
     const panel = runPanelScript();
     const entry = running(0);
-    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: [entry], total: 1, countText: '1 message' } });
+    panel.send({ type: 'log', key: FILE.key, state: logState([], [entry]) });
+    const runningEl = panel.elements.running;
 
-    assert.match(panel.list.entries[0], new RegExp(`data-id="${entry.id}"`));
-    assert.match(panel.list.entries[0],
-        new RegExp(`msg-text">Started executing query at <a href="#" class="msg-link" data-link-id="${entry.id}" title="[^"]+">line 12</a></span>`));
+    assert.equal(runningEl.hidden, false);
+    assert.match(runningEl.entries[0], new RegExp(`data-id="${entry.id}"`));
+    assert.match(runningEl.entries[0],
+        new RegExp(`msg-text">Executing query at <a href="#" class="msg-link" data-link-id="${entry.id}" title="[^"]+">line 12</a></span>`));
 
     let prevented = false;
-    panel.list.listeners.click({
+    runningEl.listeners.click({
         target: { closest: (selector: string) => (selector === '.msg-link' ? { dataset: { linkId: String(entry.id) } } : null) },
         preventDefault: () => { prevented = true; }
     });
@@ -1117,48 +1114,49 @@ test('the panel shows the line of a statement as a link and asks the extension t
     assert.deepEqual(panel.sent.slice(1), [{ type: 'openLink', id: entry.id }]);
 });
 
-test('the panel renews a running timer every second and stops once none runs', () => {
+test('the running line stays below the messages while they come and goes once the statement ended', () => {
     const panel = runPanelScript();
     const entry = running(65_000);
-    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: [entry], total: 1, countText: '1 message' } });
-    assert.match(panel.list.entries[0], /<span class="msg-timer status-running" data-running data-started="\d+">running for 1 min 0[56] s<\/span>/);
+    panel.send({ type: 'log', key: FILE.key, state: logState([tone('started')], [entry]) });
+    const runningEl = panel.elements.running;
+    assert.match(runningEl.entries[0], /<span class="msg-timer status-running" data-running data-started="\d+">since 1 min 0[56] s<\/span>/);
     assert.equal(panel.intervals.size, 1, 'a timer runs');
 
-    panel.list.entries[0] = panel.list.entries[0].replace(/running for [^<]*/, 'stale');
-    panel.tickTimers();
-    assert.match(panel.list.entries[0], /running for 1 min 0[56] s<\/span>/, 'renewed by the tick');
+    panel.send({ type: 'append', key: FILE.key, messages: [tone('a'), tone('b')], total: 3, countText: '3 messages', limit: 2000, running: [entry] });
+    assert.equal(panel.list.childElementCount, 3, 'the running line is no line of the list');
+    assert.equal(runningEl.entries.length, 1);
 
-    panel.send({ type: 'update', key: FILE.key, messages: [{ ...entry, timer: { ...entry.timer, status: 'done', ms: 65_000 } }] });
-    assert.match(panel.list.entries[0], /<span class="msg-timer status-done">done in 1 min 05 s<\/span>/);
-    assert.doesNotMatch(panel.list.entries[0], /data-running/);
+    runningEl.entries[0] = runningEl.entries[0].replace(/since [^<]*/, 'stale');
+    panel.tickTimers();
+    assert.match(runningEl.entries[0], /since 1 min 0[56] s<\/span>/, 'renewed by the tick');
+
+    const done = { ...entry, text: 'Finished executing query at line 12', timer: { ...entry.timer, status: 'done', ms: 65_000 } };
+    panel.send({ type: 'append', key: FILE.key, messages: [done], total: 4, countText: '4 messages', limit: 2000, running: [] });
+    assert.match(panel.list.entries[3], /msg-text">Finished executing query at <a[^>]*>line 12<\/a><\/span> <span class="msg-timer status-done">after 1 min 05 s<\/span>/);
+    assert.equal(runningEl.hidden, true);
+    assert.deepEqual(runningEl.entries, []);
     panel.tickTimers();
     assert.equal(panel.intervals.size, 0, 'no timer runs once every statement has ended');
 });
 
 test('the panel marks how a statement ended and starts no timer for one that has', () => {
     const panel = runPanelScript();
-    const ended = (status: string) => ({ ...running(0), timer: { started: 0, status, ms: 420 } });
-    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: [ended('failed'), ended('cancelled')], total: 2, countText: '2 messages' } });
-    assert.match(panel.list.entries[0], /<span class="msg-timer status-failed">failed after 420 ms<\/span>/);
-    assert.match(panel.list.entries[1], /<span class="msg-timer status-cancelled">cancelled after 420 ms<\/span>/);
+    const ended = (status: string, verb: string) => ({ ...running(0), text: `${verb} executing query at line 12`, timer: { started: 0, status, ms: 420 } });
+    panel.send({ type: 'log', key: FILE.key, state: logState([ended('failed', 'Failed'), ended('cancelled', 'Cancelled')]) });
+    assert.match(panel.list.entries[0], /^<div class="msg tone-info run-failed"/);
+    assert.match(panel.list.entries[0], /<span class="msg-timer status-failed">after 420 ms<\/span>/);
+    assert.match(panel.list.entries[1], /^<div class="msg tone-info run-cancelled"/);
+    assert.equal(panel.elements.running.hidden, true);
     assert.equal(panel.intervals.size, 0);
-});
-
-test('an update of an entry of another session or one no longer shown changes nothing', () => {
-    const panel = runPanelScript();
-    const entry = running(0);
-    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: [entry], total: 1, countText: '1 message' } });
-    const before = panel.list.innerHTML;
-    const done = { ...entry, timer: { ...entry.timer, status: 'done', ms: 1 } };
-    panel.send({ type: 'update', key: TAB.key, messages: [done] });
-    panel.send({ type: 'update', key: FILE.key, messages: [{ ...done, id: 999_999 }] });
-    assert.equal(panel.list.innerHTML, before);
 });
 
 test('the panel colours how a statement ended from tokens and says it in words', () => {
     const source = fs.readFileSync(path.join(ROOT, 'src', 'sessionMessages.ts'), 'utf8');
     assert.match(source, /\.msg-timer\.status-failed \{ color: var\(--c-danger\);/);
     assert.match(source, /\.msg-timer\.status-cancelled \{ color: var\(--c-warning\); \}/);
+    assert.match(source, /\.msg\.run-failed \.msg-text \{ color: var\(--c-danger\); font-weight: 600; \}/);
+    assert.match(source, /\.running \{ flex-shrink: 0;[^}]*border-top: 1px solid var\(--c-border\);/);
+    assert.match(source, /<div class="list" id="list"><\/div>\s*<div class="running" id="running"[^>]*hidden><\/div>/);
     assert.match(source, /\.msg-link \{ color: var\(--vscode-textLink-foreground\);/);
 });
 
