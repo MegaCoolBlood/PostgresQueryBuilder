@@ -1425,12 +1425,11 @@ function formatSql(sql) {
     return lines.join('\n');
 }
 
-// Whether a query the Data Viewer wrote into the query bar goes to the
-// extension's formatter as well: not when it is empty, and not while it holds
-// :name placeholders, which the formatter can split apart (`b=:name`).
-function shouldFormatGeneratedQuery(text) {
-    const s = String(text == null ? '' : text);
-    return s.trim() !== '' && placeholderNames(s).length === 0;
+// Whether the formatter's layout of a query the Data Viewer wrote may replace
+// it: only when it asks for the same :name placeholders, so a saved query's
+// parameters can never be lost to the layout.
+function keepsQueryPlaceholders(before, after) {
+    return placeholderNames(before).join('\n') === placeholderNames(after).join('\n');
 }
 
 // The undo history with every step that shows the query `from` showing `to`
@@ -4239,13 +4238,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         autoSizeQueryInput();
         recordEditHistory();
         const seq = ++queryFormatSeq;
-        if (!queryEditor || !queryEditor.formatQuietly || !shouldFormatGeneratedQuery(text)) {
+        if (!queryEditor || !queryEditor.formatQuietly || !text.trim()) {
             return Promise.resolve(true);
         }
         return queryEditor.formatQuietly(text).then(formatted => {
             if (seq !== queryFormatSeq) return false;
             // Text typed in the meantime is never overwritten.
-            if (formatted !== null && formatted !== text && queryInput.value === shown) {
+            if (formatted !== null && formatted !== text && queryInput.value === shown
+                && keepsQueryPlaceholders(text, formatted)) {
                 queryInput.value = formatted;
                 autoSizeQueryInput();
                 editHistory = replaceHistoryQuery(editHistory, shown, queryInput.value);
@@ -10487,7 +10487,7 @@ if (typeof module !== 'undefined' && module.exports) {
         appendSql,
         assembleWhereQuery,
         assembleOrderQuery,
-        shouldFormatGeneratedQuery,
+        keepsQueryPlaceholders,
         replaceHistoryQuery,
         hasSqlComment,
         collapseSqlWhitespace,

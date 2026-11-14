@@ -601,7 +601,7 @@
             "preserve"
           ],
           "default": "upper",
-          "description": "Letter case applied to data type names (integer, varchar, timestamp, ...)."
+          "description": "Letter case applied to data type names (integer, varchar, timestamp, ...) where they stand as a type. A column called like a type (name, date, text) follows identifierCase."
         },
         "postgresQueryBuilder.format.indentStyle": {
           "type": "string",

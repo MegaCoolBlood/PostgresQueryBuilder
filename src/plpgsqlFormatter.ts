@@ -730,6 +730,12 @@ interface Tok {
      * (`SET ROLE …`, `ALTER COLUMN … SET DEFAULT`, `ON DELETE SET NULL`).
      */
     notClause?: boolean;
+    /**
+     * A data type name that stands where PostgreSQL expects a data type (set by
+     * `markTypePositions()`). Only such a word follows `dataTypeCase`; the same
+     * word elsewhere — a column called `name`, `date` or `text` — is a name.
+     */
+    isType?: boolean;
 }
 
 interface TokMeta {
@@ -955,6 +961,10 @@ function tokenize(input: string): Tok[] {
             while (j < n && OP_CHARS.has(input[j])) {
                 if (input[j] === '-' && input[j + 1] === '-') break;
                 if (input[j] === '/' && input[j + 1] === '*') break;
+                // A colon belongs to no PostgreSQL operator but `::` and `:=`, so one
+                // that opens a psql variable (`=:name`, `>=:'name'`) starts the next
+                // token instead of turning the operator into `=:`.
+                if (input[j] === ':' && input[j - 1] !== ':' && bracket === 0 && /[A-Za-z_'"]/.test(input[j + 1] || '')) break;
                 j++;
             }
             toks.push({ type: 'operator', text: input.slice(i, j), nlBefore: nl });
@@ -982,9 +992,217 @@ function markQualifiedNames(toks: Tok[]): Tok[] {
         if (owner.type !== 'word' && owner.type !== 'quotedIdent' && owner.type !== 'name'
             && owner.text !== ')' && owner.text !== ']') return t;
         const w = t.text.toLowerCase();
-        if (!KEYWORDS.has(w) || DATATYPES.has(w)) return t;
+        if (!KEYWORDS.has(w) || t.isType) return t;
         return { ...t, type: 'name' };
     });
+}
+
+/** How a word is cased: as a data type, a keyword or an identifier. */
+function wordCategory(t: Tok): 'type' | 'keyword' | 'ident' {
+    if (t.isType) return 'type';
+    return KEYWORDS.has(t.text.toLowerCase()) ? 'keyword' : 'ident';
+}
+
+/** Leading words of a column-list element that start a table constraint, not a column. */
+const TABLE_CONSTRAINT_WORDS = new Set(['constraint', 'primary', 'unique', 'check', 'foreign', 'exclude', 'like']);
+const PARAMETER_MODES = new Set(['in', 'out', 'inout', 'variadic']);
+/** Words whose following `name(` is a list of parameter types. */
+const SIGNATURE_OWNERS = new Set(['function', 'procedure', 'routine', 'aggregate', 'prepare']);
+
+/**
+ * Mark every data type name that stands where PostgreSQL expects a data type:
+ * after `::`, in `CAST(… AS type)`, in front of a string (`DATE '2024-01-01'`),
+ * after RETURNS / SETOF, in the column list of CREATE TABLE, CREATE TYPE … AS,
+ * RETURNS TABLE and a column definition list (`AS r(a int)`), in a routine
+ * signature, in ALTER … ADD [COLUMN] / … TYPE, after CREATE DOMAIN / SEQUENCE
+ * … AS and in a PL/pgSQL DECLARE section. Everywhere else such a word is a
+ * name — `SELECT name, date FROM t` — and is cased like an identifier.
+ */
+function markTypePositions(toks: Tok[]): Tok[] {
+    const n = toks.length;
+    const isComment = (k: number): boolean =>
+        k >= 0 && k < n && (toks[k].type === 'lineComment' || toks[k].type === 'blockComment');
+    const next = (k: number): number => { let j = k + 1; while (j < n && isComment(j)) j++; return j; };
+    const prev = (k: number): number => { let j = k - 1; while (j >= 0 && isComment(j)) j--; return j; };
+    const word = (k: number): string => (k >= 0 && k < n && toks[k].type === 'word' ? toks[k].text.toLowerCase() : '');
+    const punct = (k: number, p: string): boolean => k >= 0 && k < n && toks[k].type === 'punct' && toks[k].text === p;
+    const operator = (k: number, op: string): boolean => k >= 0 && k < n && toks[k].type === 'operator' && toks[k].text === op;
+    const isName = (k: number): boolean => k >= 0 && k < n && (toks[k].type === 'word' || toks[k].type === 'quotedIdent');
+    const closeOf = (open: number, o = '(', c = ')'): number => {
+        let d = 0;
+        for (let j = open; j < n; j++) {
+            if (punct(j, o)) d++;
+            else if (punct(j, c) && --d === 0) return j;
+        }
+        return n;
+    };
+    // Last token of the qualified name `a.b.c` that starts at `k`.
+    const chainEnd = (k: number): number => {
+        let j = k;
+        while (punct(next(j), '.') && isName(next(next(j)))) j = next(next(j));
+        return j;
+    };
+    const chainStart = (k: number): number => {
+        let j = k;
+        while (punct(prev(j), '.') && isName(prev(prev(j)))) j = prev(prev(j));
+        return j;
+    };
+
+    // The data type that starts at `k`: its words and the token after it.
+    const typeAt = (k: number): { words: number[]; end: number } | null => {
+        if (!isName(k)) return null;
+        const j = chainEnd(k);
+        const words = [j];
+        const afterModifier = (x: number): number => (punct(x, '(') ? next(closeOf(x)) : x);
+        const w = word(j);
+        let end = afterModifier(next(j));
+        if ((w === 'double' && word(end) === 'precision')
+            || ((w === 'character' || w === 'char' || w === 'bit') && word(end) === 'varying')) {
+            words.push(end);
+            end = afterModifier(next(end));
+        }
+        if ((w === 'timestamp' || w === 'time') && (word(end) === 'with' || word(end) === 'without')
+            && word(next(end)) === 'time' && word(next(next(end))) === 'zone') {
+            words.push(end, next(end));
+            end = next(next(next(end)));
+        }
+        while (punct(end, '[')) end = next(closeOf(end, '[', ']'));
+        // `t.col%TYPE` refers to a column, it does not spell a type.
+        if (end < n && toks[end].type === 'operator' && toks[end].text.startsWith('%')) return null;
+        return { words, end };
+    };
+
+    const typed = new Set<number>();
+    // The WITH of `timestamp with time zone`, which must not open a WITH clause.
+    const inType = new Set<number>();
+    const markType = (k: number): void => {
+        const t = typeAt(k);
+        if (!t) return;
+        for (const w of t.words) {
+            if (DATATYPES.has(word(w))) typed.add(w);
+            else inType.add(w);
+        }
+    };
+
+    // The significant tokens of each top-level element of the list opened at `open`.
+    const elements = (open: number): number[][] => {
+        const close = closeOf(open);
+        const out: number[][] = [];
+        let cur: number[] = [];
+        let d = 0;
+        for (let j = open + 1; j < close; j++) {
+            if (isComment(j)) continue;
+            if (punct(j, '(') || punct(j, '[')) d++;
+            else if (punct(j, ')') || punct(j, ']')) d--;
+            else if (d === 0 && punct(j, ',')) { out.push(cur); cur = []; continue; }
+            cur.push(j);
+        }
+        if (cur.length) out.push(cur);
+        return out;
+    };
+    // `name type …` per element.
+    const columnList = (open: number): void => {
+        for (const el of elements(open)) {
+            if (el.length >= 2 && isName(el[0]) && !TABLE_CONSTRAINT_WORDS.has(word(el[0]))) markType(el[1]);
+        }
+    };
+    // `[mode] [name] type [DEFAULT …]` per element: `p name` names a parameter
+    // `p`, while `double precision` is the type of an unnamed one.
+    const signature = (open: number): void => {
+        for (const el of elements(open)) {
+            const a = PARAMETER_MODES.has(word(el[0])) && el.length > 1 ? 1 : 0;
+            let stop = el.findIndex((j, idx) => idx > a && (word(j) === 'default' || operator(j, '=')));
+            if (stop === -1) stop = el.length;
+            if (a >= stop) continue;
+            const limit = stop < el.length ? el[stop] : next(el[el.length - 1]);
+            const t = typeAt(el[a]);
+            if (t && t.end === limit) markType(el[a]);
+            else if (a + 1 < stop) markType(el[a + 1]);
+        }
+    };
+
+    let declare = false;
+    let declStart = -1;
+    for (let k = 0; k < n; k++) {
+        if (isComment(k)) continue;
+        const w = word(k);
+        if (w === 'declare') { declare = true; declStart = next(k); continue; }
+        if (w === 'begin') { declare = false; continue; }
+        if (punct(k, ';')) { if (declare) declStart = next(k); continue; }
+        // `name [CONSTANT] type [NOT NULL] [:= …];`
+        if (declare && k === declStart && isName(k)) {
+            let j = next(k);
+            if (word(j) === 'constant') j = next(j);
+            const t = typeAt(j);
+            if (t) {
+                const e = t.end;
+                if (e >= n || punct(e, ';') || operator(e, ':=') || operator(e, '=')
+                    || ['not', 'default', 'collate'].includes(word(e))) markType(j);
+            }
+        }
+        if (operator(k, '::')) { markType(next(k)); continue; }
+        if (toks[k].type === 'word' && DATATYPES.has(w) && next(k) < n && toks[next(k)].type === 'string'
+            && !punct(prev(k), '.')) {
+            typed.add(k);
+            continue;
+        }
+        if (w === 'returns') {
+            let j = next(k);
+            if (word(j) === 'setof') j = next(j);
+            if (word(j) !== 'table') markType(j);
+            continue;
+        }
+        if (w === 'setof') { markType(next(k)); continue; }
+        if (w === 'type') {
+            const p = prev(k);
+            if (word(p) === 'data' || (isName(p) && ['column', 'alter', 'attribute'].includes(word(prev(p))))) markType(next(k));
+            continue;
+        }
+        if (w === 'add') {
+            let j = next(k);
+            if (word(j) === 'column' || word(j) === 'attribute') j = next(j);
+            if (word(j) === 'if' && word(next(j)) === 'not' && word(next(next(j))) === 'exists') j = next(next(next(j)));
+            if (isName(j) && !TABLE_CONSTRAINT_WORDS.has(word(j))) markType(next(j));
+            continue;
+        }
+        if (w === 'domain' || w === 'sequence') {
+            const name = next(k);
+            if (!isName(name)) continue;
+            const j = next(chainEnd(name));
+            if (word(j) === 'as') markType(next(j));
+            else if (w === 'domain') markType(j);
+            continue;
+        }
+        if (!punct(k, '(')) continue;
+        const p = prev(k);
+        const pw = word(p);
+        if (pw === 'cast') {
+            const close = closeOf(k);
+            let d = 0;
+            for (let j = k + 1; j < close; j++) {
+                if (punct(j, '(')) d++;
+                else if (punct(j, ')')) d--;
+                else if (d === 0 && word(j) === 'as') markType(next(j));
+            }
+        } else if (pw === 'table' && word(prev(p)) === 'returns') {
+            columnList(k);
+        } else if (pw === 'as') {
+            // CREATE TYPE name AS (attribute type, …)
+            if (isName(prev(p)) && word(prev(chainStart(prev(p)))) === 'type') columnList(k);
+        } else if (isName(p)) {
+            let before = prev(chainStart(p));
+            if (word(before) === 'exists') {
+                before = prev(before);
+                if (word(before) === 'not') before = prev(before);
+                if (word(before) === 'if') before = prev(before);
+            }
+            const bw = word(before);
+            // CREATE TABLE name (…) and a column definition list `AS r(a int)`
+            if (bw === 'table' || bw === 'as') columnList(k);
+            else if (SIGNATURE_OWNERS.has(bw) && word(prev(before)) !== 'execute') signature(k);
+        }
+    }
+    return toks.map((t, k) => (typed.has(k) ? { ...t, isType: true } : inType.has(k) ? { ...t, notClause: true } : t));
 }
 
 /**
@@ -1852,6 +2070,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
     const trailingNewline = /\n\s*$/.test(input);
     const typeAliases = buildTypePhraseAliases(normalizeDataTypeAliasTable(opt.dataTypeAliases as Record<string, unknown>));
     let toks = opt.normalizeDataTypes ? normalizeTypePhrases(tokenize(input), typeAliases) : tokenize(input);
+    toks = markTypePositions(toks);
     toks = markQualifiedNames(toks);
     toks = markDistinctFrom(toks);
     toks = markNonUpdateSet(toks);
@@ -3028,8 +3247,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
         // --- Words (keywords / identifiers / types) -------------------------
         if (t.type === 'word') {
             const w = t.text.toLowerCase();
-            const cat: 'type' | 'keyword' | 'ident' =
-                DATATYPES.has(w) ? 'type' : (KEYWORDS.has(w) ? 'keyword' : 'ident');
+            const cat = wordCategory(t);
             const rendered = cat === 'type'
                 ? applyCase(t.text, opt.dataTypeCase)
                 : cat === 'keyword'
@@ -3711,9 +3929,7 @@ function formatSqlOnce(input: string, options?: Partial<FormatOptions>): string 
             return;
         }
         if (tk.type === 'word') {
-            const w = tk.text.toLowerCase();
-            const cat: 'type' | 'keyword' | 'ident' =
-                DATATYPES.has(w) ? 'type' : (KEYWORDS.has(w) ? 'keyword' : 'ident');
+            const cat = wordCategory(tk);
             const rendered = cat === 'type'
                 ? applyCase(tk.text, opt.dataTypeCase)
                 : cat === 'keyword'

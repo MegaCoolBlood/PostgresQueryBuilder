@@ -1268,6 +1268,52 @@ test('keeps a psql variable glued to its colon in an ordinary statement', () => 
         "SELECT *\nFROM t\nWHERE id = :var1\n  AND n = :'name';");
 });
 
+test('a psql variable written right behind an operator is not merged into the operator', () => {
+    const src = "select * from t where a=:name and b>=:'other' and c=:x::int and d||:y = e;";
+    const r = formatSqlChecked(src);
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.text,
+        "SELECT *\nFROM t\nWHERE a = :name\n  AND b >= :'other'\n  AND c = :x::INT\n  AND d || :y = e;");
+    assert.equal(formatSql(r.text), r.text);
+    assert.equal(formatSql('do $$ begin x:=:y; end $$;'), 'DO $$\nBEGIN\n  x := :y;\nEND\n$$;');
+});
+
+// ===== data type names used as names =====
+
+test('a column named like a data type keeps the case of an identifier', () => {
+    const src = 'select u.name, date, text, path from users u join t on t.path = u.path where u.name = 1 and date > now() order by name, date desc';
+    assert.equal(formatSql(formatSql(src)), formatSql(src));
+    assert.equal(formatSql(src), [
+        'SELECT',
+        '  u.name,',
+        '  date,',
+        '  text,',
+        '  path',
+        'FROM users u',
+        'JOIN t ON t.path = u.path',
+        'WHERE u.name = 1',
+        '  AND date > now()',
+        'ORDER BY name, date DESC'
+    ].join('\n'));
+    assert.equal(formatSql('insert into t (name, date) values (1, 2) returning name;'),
+        'INSERT INTO t(name, date)\nVALUES (1, 2)\nRETURNING name;');
+    assert.equal(formatSql('update t set name = 1 where text is null;'), 'UPDATE t\nSET\n  name = 1\nWHERE text IS NULL;');
+    assert.equal(formatSql('select x as date, u.time from u;'), 'SELECT x AS date, u.time\nFROM u;');
+});
+
+test('a data type name is cased as a type wherever PostgreSQL expects a type', () => {
+    assert.equal(formatSql("select x::name, cast(y as text), date '2020-01-01', interval '1 day', z::double precision, w::timestamp with time zone, v::character varying(10)[] from t;", { normalizeDataTypes: false }),
+        "SELECT\n  x::NAME,\n  CAST (y AS TEXT),\n  DATE '2020-01-01',\n  INTERVAL '1 day',\n  z::DOUBLE PRECISION,\n  w::TIMESTAMP WITH TIME ZONE,\n  v::CHARACTER VARYING(10)[]\nFROM t;");
+    assert.equal(formatSql('create table if not exists t (id int, name text not null, date date, primary key (id));'),
+        'CREATE TABLE IF NOT EXISTS t(\n  id INT,\n  name TEXT NOT NULL,\n  date DATE,\n  PRIMARY KEY (id)\n);');
+    const fn = formatSql('create function f(text, p_name name, out date date, n int default 1) returns setof text language sql as $$ select $1 $$;');
+    assert.match(fn, /^CREATE FUNCTION f\(\n {2}TEXT,\n {2}p_name NAME,\n {2}OUT date DATE,\n {2}n INT DEFAULT 1\n\) RETURNS SETOF TEXT/);
+    assert.equal(formatSql('alter table t add column name text, alter column date TYPE timestamp;'),
+        'ALTER TABLE t ADD COLUMN name TEXT, ALTER COLUMN date TYPE TIMESTAMP;');
+    assert.equal(formatSql('do $$ declare name text; date CONSTANT date := now(); r t.name%type; begin name := date::text; end $$;'),
+        'DO $$\nDECLARE\n  name TEXT;\n  date CONSTANT DATE := now();\n  r t.name%TYPE;\nBEGIN\n  name := date::TEXT;\nEND\n$$;');
+});
+
 test('a psql meta-command ends the statement before it and is not indented', () => {
     const src = [
         "COPY (select line_text from gen_interface_expfiles order by line_no) TO STDOUT WITH (FORMAT csv) \\g :outfile",

@@ -15,7 +15,7 @@ const {
     appendSql,
     assembleWhereQuery,
     assembleOrderQuery,
-    shouldFormatGeneratedQuery,
+    keepsQueryPlaceholders,
     replaceHistoryQuery,
     formatSql,
     buildNullConstraintClause,
@@ -356,11 +356,10 @@ test('appendSql glues with a space normally and with a line break after a commen
 
 // ===== 3.5.4: generated queries are laid out by the extension's formatter =====
 
-test('shouldFormatGeneratedQuery formats a written query but never one with :name placeholders', () => {
-    assert.equal(shouldFormatGeneratedQuery("SELECT * FROM t WHERE state = 'active'"), true);
-    assert.equal(shouldFormatGeneratedQuery("SELECT * FROM t WHERE a = ':x' -- :y"), true);
-    assert.equal(shouldFormatGeneratedQuery('SELECT * FROM t WHERE b=:other'), false);
-    assert.equal(shouldFormatGeneratedQuery('   '), false);
+test('keepsQueryPlaceholders accepts a layout only when it asks for the same :name placeholders', () => {
+    assert.equal(keepsQueryPlaceholders('select * from t where b=:other', 'SELECT *\nFROM t\nWHERE b = :other'), true);
+    assert.equal(keepsQueryPlaceholders('select * from t where b=:other', 'SELECT *\nFROM t\nWHERE b =: other'), false);
+    assert.equal(keepsQueryPlaceholders('select a[1:n] from t', 'SELECT a[1 : n]\nFROM t'), false);
 });
 
 test('replaceHistoryQuery puts the formatted text into the steps that showed the generated one', () => {
