@@ -16,6 +16,7 @@ const {
     assembleWhereQuery,
     assembleOrderQuery,
     keepsQueryPlaceholders,
+    queryTextChange,
     normalizeQueryBoxHeight,
     queryBoxHeightForKey,
     replaceHistoryQuery,
@@ -1305,4 +1306,59 @@ test('the query bar has a drag handle whose height both the textarea and the edi
     assert.match(js, /queryBarResize\.addEventListener\('dblclick', \(\) => \{\s*applyQueryBoxHeight\(null\);\s*saveQueryBoxHeight\(\);/);
     assert.match(js, /function handleInit\(msg\) \{\s*applyQueryBoxHeight\(normalizeQueryBoxHeight\(msg\.queryBarHeight/);
     assert.match(js, /case 'queryBarHeightChanged':\s*applyQueryBoxHeight\(/);
+});
+
+// ===== 3.5.4: the query box shows what a filter or a sort changed =====
+
+const ACTIVITY_BEFORE = [
+    'SELECT',
+    '  psa.pid,',
+    '  psa.state',
+    'FROM pg_stat_activity AS psa',
+    '  --WHERE cardinality(pg_blocking_pids(psa.pid)) > 0',
+    'ORDER BY query_start ASC'
+].join('\n');
+
+const litText = (after: string, change: any) => change.ranges.map((r: any) => after.slice(r.start, r.end));
+
+test('queryTextChange lights up a new WHERE condition and nothing that only moved', () => {
+    const after = ACTIVITY_BEFORE.replace('ORDER BY', "WHERE state::TEXT ILIKE '%active%'\nORDER BY");
+    const change = queryTextChange(ACTIVITY_BEFORE, after);
+    assert.deepEqual(litText(after, change), ["WHERE state::TEXT ILIKE '%active%'"]);
+    assert.equal(change.focus, after.indexOf('WHERE state'));
+});
+
+test('queryTextChange lights up only the value of a changed filter', () => {
+    const before = "SELECT *\nFROM t\nWHERE state ILIKE '%active%'\n  AND pid > 5";
+    const after = "SELECT *\nFROM t\nWHERE state ILIKE '%idle%'\n  AND pid > 5";
+    assert.deepEqual(litText(after, queryTextChange(before, after)), ["'%idle%'"]);
+});
+
+test('queryTextChange ignores a change of layout and lights up the added sort', () => {
+    const before = 'SELECT a, b FROM t WHERE a = 1';
+    const after = 'SELECT\n  a,\n  b\nFROM t\nWHERE a = 1\nORDER BY b DESC';
+    assert.deepEqual(litText(after, queryTextChange(before, after)), ['ORDER BY b DESC']);
+});
+
+test('queryTextChange scrolls to where a removed filter was and lights nothing up', () => {
+    const before = 'SELECT *\nFROM t\nWHERE a = 1\n  AND b = 2\nORDER BY a';
+    const after = 'SELECT *\nFROM t\nWHERE a = 1\nORDER BY a';
+    const change = queryTextChange(before, after);
+    assert.deepEqual(change.ranges, []);
+    assert.equal(change.focus, after.indexOf('ORDER BY'));
+    assert.equal(queryTextChange(after, after), null);
+});
+
+test('the grid filters and sorts ask the query box to show their change', () => {
+    const js = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    assert.match(js, /setQueryTextAndRun\(assembleWhereQuery\(parsed, existing\), \{ highlight: true \}\)/);
+    assert.match(js, /setQueryTextAndRun\(assembleWhereQuery\(parsed, clauses\), \{ highlight: true \}\)/);
+    assert.match(js, /setQueryTextAndRun\(assembleOrderQuery\(parsed\.base, parts\), \{ highlight: true \}\)/);
+    assert.match(js, /setQueryTextAndRun\(assembleOrderQuery\(parsed\.base, newOrder\), \{ highlight: true \}\)/);
+    assert.match(js, /setQueryTextAndRun\(parsed\.base, \{ highlight: true \}\)/);
+    const editor = fs.readFileSync(path.join(__dirname, '../../../src/webview/queryEditor.js'), 'utf8');
+    assert.match(editor, /editor\.revealRangeInCenterIfOutsideViewport\(/);
+    assert.match(editor, /inlineClassName: 'query-change-flash'/);
+    const css = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.css'), 'utf8');
+    assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{\s*\.query-editor \.query-change-flash \{\s*animation: none;/);
 });

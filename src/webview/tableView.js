@@ -1439,6 +1439,64 @@ function replaceHistoryQuery(history, from, to) {
     return (history || []).map(step => (step && step.query === from ? Object.assign({}, step, { query: to }) : step));
 }
 
+// The tokens of a query with their offsets: words, literals, quoted names and
+// -- comments as a whole, every other character on its own; whitespace is no
+// token, so a change of layout alone is no change.
+function queryChangeTokens(text) {
+    const out = [];
+    const re = /--[^\n]*|'(?:[^']|'')*'?|"(?:[^"]|"")*"?|[A-Za-z0-9_$\u0080-\uffff]+|\S/g;
+    let m;
+    while ((m = re.exec(text)) !== null) out.push({ text: m[0], start: m.index, end: m.index + m[0].length });
+    return out;
+}
+
+// What a filter or a sort changed in the query text: the ranges of `after`
+// that are new (to light up) and the offset to scroll to — the first new part,
+// or where something was removed. Null when nothing changed.
+function queryTextChange(before, after) {
+    const a = queryChangeTokens(String(before == null ? '' : before));
+    const b = queryChangeTokens(String(after == null ? '' : after));
+    const text = String(after == null ? '' : after);
+    // matchedB[j]: token j of `after` also stands in `before` (longest common subsequence).
+    const matchedB = new Array(b.length).fill(false);
+    // removedBefore[j]: tokens of `before` were dropped right in front of token j.
+    const removedBefore = new Array(b.length + 1).fill(false);
+    let lo = 0;
+    while (lo < a.length && lo < b.length && a[lo].text === b[lo].text) { matchedB[lo] = true; lo++; }
+    let hiA = a.length, hiB = b.length;
+    while (hiA > lo && hiB > lo && a[hiA - 1].text === b[hiB - 1].text) { hiA--; hiB--; matchedB[hiB] = true; }
+    const n = hiA - lo, m = hiB - lo;
+    if (n > 0 && m > 0 && n * m <= 250000) {
+        const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+        for (let i = n - 1; i >= 0; i--) {
+            for (let j = m - 1; j >= 0; j--) {
+                dp[i][j] = a[lo + i].text === b[lo + j].text ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+            }
+        }
+        let i = 0, j = 0;
+        while (i < n && j < m) {
+            if (a[lo + i].text === b[lo + j].text) { matchedB[lo + j] = true; i++; j++; }
+            else if (dp[i + 1][j] >= dp[i][j + 1]) { removedBefore[lo + j] = true; i++; }
+            else j++;
+        }
+        if (i < n) removedBefore[lo + j] = true;
+    } else if (n > 0) {
+        removedBefore[lo] = true;
+    }
+    const ranges = [];
+    for (let j = 0; j < b.length; j++) {
+        if (matchedB[j]) continue;
+        const last = ranges[ranges.length - 1];
+        if (last && last.endToken === j - 1) { last.end = b[j].end; last.endToken = j; }
+        else ranges.push({ start: b[j].start, end: b[j].end, endToken: j });
+    }
+    const removedAt = removedBefore.indexOf(true);
+    if (ranges.length === 0 && removedAt === -1) return null;
+    const removedOffset = removedAt === -1 ? -1 : (removedAt < b.length ? b[removedAt].start : text.length);
+    const focus = ranges.length > 0 && (removedOffset === -1 || ranges[0].start <= removedOffset) ? ranges[0].start : removedOffset;
+    return { ranges: ranges.map(r => ({ start: r.start, end: r.end })), focus };
+}
+
 // ===== Group Edit: turn the current SELECT into an UPDATE/DELETE template =====
 
 // Split a fragment on top-level whitespace, ignoring whitespace inside string
@@ -4250,9 +4308,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // Set the query bar text and resize the textarea to fit. The text is laid
     // out by the built-in pretty-printer at once and then, like the Format
     // button does, by the extension's formatter. Resolves to true once that
-    // has happened (or failed) and no newer text was set meanwhile.
+    // has happened (or failed) and no newer text was set meanwhile. With
+    // `options.highlight` the query box then scrolls to what changed and
+    // lights it up once — used for the filters and sorts of the grid.
     let queryFormatSeq = 0;
-    function setQueryText(sql) {
+    function setQueryText(sql, options) {
+        const highlight = !!(options && options.highlight);
+        const before = queryInput.value;
         const text = formatSql(sql == null ? '' : String(sql));
         queryInput.value = text;
         // What the editor shows, which is what the undo history records.
@@ -4260,7 +4322,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         autoSizeQueryInput();
         recordEditHistory();
         const seq = ++queryFormatSeq;
+        const showChange = () => {
+            if (highlight) revealQueryChange(before, queryInput.value);
+        };
         if (!queryEditor || !queryEditor.formatQuietly || !text.trim()) {
+            showChange();
             return Promise.resolve(true);
         }
         return queryEditor.formatQuietly(text).then(formatted => {
@@ -4272,14 +4338,29 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 autoSizeQueryInput();
                 editHistory = replaceHistoryQuery(editHistory, shown, queryInput.value);
             }
+            // Nothing lights up over text typed in the meantime.
+            if (queryInput.value === shown || queryInput.value === formatted) showChange();
             return true;
-        }, () => seq === queryFormatSeq);
+        }, () => {
+            if (seq !== queryFormatSeq) return false;
+            if (queryInput.value === shown) showChange();
+            return true;
+        });
+    }
+
+    // Scroll the query box to what changed between two query texts and light
+    // the new parts up once.
+    function revealQueryChange(before, after) {
+        const change = queryTextChange(before, after);
+        if (change && queryEditor && queryEditor.revealChange) {
+            queryEditor.revealChange(change.ranges, change.focus);
+        }
     }
 
     // Show `sql` in the query bar and run it once it is formatted, unless a
     // newer query was set in the meantime — that one runs instead.
-    function setQueryTextAndRun(sql) {
-        return setQueryText(sql).then(latest => { if (latest) runQuery(); });
+    function setQueryTextAndRun(sql, options) {
+        return setQueryText(sql, options).then(latest => { if (latest) runQuery(); });
     }
 
     // Grow/shrink the query textarea to fit its content (bounded by the CSS
@@ -6244,7 +6325,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const baseSql = (queryInput.value || '').trim() || `SELECT * FROM ${getDefaultTableReference()}`;
         const parsed = parseSqlForWhere(baseSql);
         const existing = mergeWhereClauses(parsed.where ? splitWhereByAnd(parsed.where) : [], clausesByCol);
-        setQueryTextAndRun(assembleWhereQuery(parsed, existing));
+        setQueryTextAndRun(assembleWhereQuery(parsed, existing), { highlight: true });
     }
 
     function updateRowCount() {
@@ -6715,7 +6796,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     );
                     const clauses = parsed.where ? splitWhereByAnd(parsed.where) : [];
                     clauses.push(excludeClause);
-                    setQueryTextAndRun(assembleWhereQuery(parsed, clauses));
+                    setQueryTextAndRun(assembleWhereQuery(parsed, clauses), { highlight: true });
                 }
             });
         }
@@ -6900,7 +6981,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             .split(',')
             .map(p => p.trim())
             .filter(p => p && !orderByMatchesColumn(p, colName));
-        setQueryTextAndRun(assembleOrderQuery(parsed.base, parts));
+        setQueryTextAndRun(assembleOrderQuery(parsed.base, parts), { highlight: true });
     }
 
     function applyOrderBy(colName, direction, mode) {
@@ -6918,14 +6999,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 .filter(p => p && !orderByMatchesColumn(p, colName));
             newOrder.push(`${fmtCol} ${direction}`);
         }
-        setQueryTextAndRun(assembleOrderQuery(parsed.base, newOrder));
+        setQueryTextAndRun(assembleOrderQuery(parsed.base, newOrder), { highlight: true });
     }
 
     function clearOrderBy() {
         const baseSql = (queryInput.value || '').trim();
         if (!baseSql) return;
         const parsed = parseSqlForOrder(baseSql);
-        setQueryTextAndRun(parsed.base);
+        setQueryTextAndRun(parsed.base, { highlight: true });
     }
 
     // A table with many foreign keys produces a menu nobody can scan, so from
@@ -10588,6 +10669,8 @@ if (typeof module !== 'undefined' && module.exports) {
         assembleWhereQuery,
         assembleOrderQuery,
         keepsQueryPlaceholders,
+        queryChangeTokens,
+        queryTextChange,
         normalizeQueryBoxHeight,
         queryBoxHeightForKey,
         replaceHistoryQuery,

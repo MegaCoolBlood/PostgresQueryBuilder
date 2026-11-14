@@ -168,6 +168,25 @@ body {
     border-color: var(--c-accent);
 }
 
+/* What a filter or a sort of the grid changed in the query lights up once
+   (queryEditor.js removes the decoration after the animation). */
+.query-editor .query-change-flash {
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--c-accent) 40%, transparent);
+    animation: query-change-flash 1.6s ease-out forwards;
+}
+
+@keyframes query-change-flash {
+    0%, 35% { background: color-mix(in srgb, var(--c-accent) 40%, transparent); }
+    100% { background: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .query-editor .query-change-flash {
+        animation: none;
+    }
+}
+
 /* Query history typeahead */
 .query-history {
     position: relative;

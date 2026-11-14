@@ -559,6 +559,14 @@
         return Math.max(min, Math.min(max, h));
     }
 
+    // 1-based line and column of `offset` in `text`, as Monaco counts them.
+    function positionOfOffset(text, offset) {
+        const s = String(text == null ? '' : text);
+        const at = Math.max(0, Math.min(s.length, Number(offset) || 0));
+        const lineStart = s.lastIndexOf('\n', at - 1) + 1;
+        return { lineNumber: s.slice(0, at).split('\n').length, column: at - lineStart + 1 };
+    }
+
     // The blob URL Monaco's workers start from. A webview cannot start a worker
     // from its resource URL directly, so a tiny script that imports the real one
     // is wrapped in a blob. The URL is created once, on first use, and shared by
@@ -598,6 +606,7 @@
         monacoBaseTheme,
         themeColorsFrom,
         editorHeight,
+        positionOfOffset,
         createWorkerUrlProvider
     };
 
@@ -614,6 +623,8 @@
     const MAX_HEIGHT = 320;
     const CATALOG_TTL_MS = 60000;
     const THEME_NAME = 'pgqb-theme';
+    // How long a change made by a filter or a sort stays lit up (see tableView.css).
+    const FLASH_MS = 1600;
 
     const defaultQuote = name => (/^[a-z_][a-z0-9_$]*$/.test(name) ? name : `"${String(name).replace(/"/g, '""')}"`);
 
@@ -627,6 +638,9 @@
         const pending = new Map();
         let seq = 0;
         let editor = null;
+        let monacoApi = null;
+        let flash = null;
+        let flashTimer = null;
         let catalog = null;
         let catalogAt = 0;
         const columns = new Map();
@@ -785,6 +799,7 @@
         }
 
         function upgrade(monaco) {
+            monacoApi = monaco;
             defineTheme(monaco);
             new MutationObserver(() => {
                 defineTheme(monaco);
@@ -899,11 +914,40 @@
             .then(monaco => { if (monaco) upgrade(monaco); })
             .catch(err => console.warn('The SQL editor could not be loaded; the plain text box stays.', err));
 
+        // Scroll to what a filter or a sort changed (`focus`, an offset in the
+        // text) and light the new parts (`ranges` of offsets) up once. The
+        // plain textarea can only scroll.
+        function revealChange(ranges, focus) {
+            const text = textarea.value;
+            if (!editor || !monacoApi) {
+                const at = positionOfOffset(text, focus);
+                const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 18;
+                textarea.scrollTop = Math.max(0, (at.lineNumber - 1) * lineHeight - textarea.clientHeight / 2);
+                return;
+            }
+            const toRange = (start, end) => {
+                const s = positionOfOffset(text, start);
+                const e = positionOfOffset(text, end);
+                return new monacoApi.Range(s.lineNumber, s.column, e.lineNumber, e.column);
+            };
+            const lit = (ranges || []).filter(r => r.end > r.start).map(r => toRange(r.start, r.end));
+            editor.revealRangeInCenterIfOutsideViewport(lit.length ? lit[0] : toRange(focus, focus));
+            if (flash) flash.clear();
+            clearTimeout(flashTimer);
+            if (!lit.length) return;
+            flash = editor.createDecorationsCollection(lit.map(range => ({
+                range,
+                options: { inlineClassName: 'query-change-flash', isWholeLine: false }
+            })));
+            flashTimer = setTimeout(() => { if (flash) flash.clear(); }, FLASH_MS);
+        }
+
         return {
             isEditor: () => !!editor,
             hasFocus: () => !!editor && (editor.hasTextFocus() || editor.hasWidgetFocus()),
             format,
-            formatQuietly
+            formatQuietly,
+            revealChange
         };
     }
 

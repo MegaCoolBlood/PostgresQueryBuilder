@@ -19,6 +19,7 @@ const {
     monacoBaseTheme,
     themeColorsFrom,
     editorHeight,
+    positionOfOffset,
     createWorkerUrlProvider
 } = editor;
 
@@ -359,4 +360,12 @@ test('editorHeight keeps the editor between one line and the maximum', () => {
     assert.equal(editorHeight(57.4, 26, 320), 58);
     assert.equal(editorHeight(900, 26, 320), 320);
     assert.equal(editorHeight(NaN, 26, 320), 26);
+});
+
+test('positionOfOffset gives the 1-based line and column Monaco counts', () => {
+    const text = 'SELECT *\nFROM t\nWHERE a = 1';
+    assert.deepEqual(positionOfOffset(text, 0), { lineNumber: 1, column: 1 });
+    assert.deepEqual(positionOfOffset(text, text.indexOf('FROM')), { lineNumber: 2, column: 1 });
+    assert.deepEqual(positionOfOffset(text, text.indexOf('a = 1')), { lineNumber: 3, column: 7 });
+    assert.deepEqual(positionOfOffset(text, 999), { lineNumber: 3, column: 12 });
 });
