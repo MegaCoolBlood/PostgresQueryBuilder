@@ -8,13 +8,14 @@ import {
     MatcherCache,
     UnmarkedObjects,
     databaseObjectStatus,
+    type ComparisonMarks,
     type DefinitionMatcher,
     type LocatedDefinition,
     type RepoStatus,
     type RepositorySource
 } from './repositoryComparison';
 import type { RepoObjectKind } from './repositoryScanner';
-import { statusHint, statusUri } from './objectDecorations';
+import { differenceLines, statusHint, statusUri } from './objectDecorations';
 import { docSummary } from './docComments';
 
 export interface SchemaNode {
@@ -42,6 +43,8 @@ export interface TableNode {
     status?: RepoStatus;
     /** Its CREATE statements in the repository. */
     definitions?: LocatedDefinition[];
+    /** What the last *Compare Repository with Database* found different. */
+    differences?: ReadonlyArray<{ path: string; message: string }>;
 }
 
 export type TreeNode = SchemaNode | CategoryNode | TableNode;
@@ -172,6 +175,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
 
     private emptySchemas = false;
     private state?: ToggleState;
+    private marks: ComparisonMarks | null = null;
 
     constructor(connectionManager: ConnectionManager) {
         this.connectionManager = connectionManager;
@@ -191,6 +195,12 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
         this.emptySchemas = value;
         await this.state?.update(TABLES_EMPTY_SCHEMAS_KEY, value);
         this._onDidChangeTreeData.fire();
+    }
+
+    /** Mark what the last full comparison found different; null forgets it. */
+    setComparisonMarks(marks: ComparisonMarks | null): void {
+        this.marks = marks;
+        this.rerender();
     }
 
     /** Compare the relations with the CREATE statements of the repository. */
@@ -298,7 +308,8 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                 };
             }
             const summary = docSummary(element.definitions);
-            const tooltip = `${element.schema}.${element.table} (${meta.label})${summary ? `\n\n${summary}` : ''}`;
+            const differences = element.differences?.length ? `\n\n${differenceLines(element.differences).join('\n')}` : '';
+            const tooltip = `${element.schema}.${element.table} (${meta.label})${summary ? `\n\n${summary}` : ''}${differences}`;
             this.decorate(item, element.status, tooltip);
             return item;
         }
@@ -439,6 +450,11 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
         if (comparison.unmarked.relation(node.schema, node.table)) return;
         node.definitions = comparison.matcher.find({ kind: node.kind, schema: node.schema, name: node.table });
         node.status = databaseObjectStatus(node.definitions);
+        const differences = this.marks?.differences(node.kind, node.schema, node.table);
+        if (differences && differences.length > 0 && node.status === 'both') {
+            node.status = 'differs';
+            node.differences = differences;
+        }
     }
 
     private allowedSchema(schema: string): boolean {

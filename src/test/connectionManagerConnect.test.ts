@@ -578,7 +578,16 @@ test('the connection form has an application name field that is prefilled and po
     assert.match(html, /<label for="applicationName">Application name \(optional, shown in pg_stat_activity\)<\/label>/);
     assert.match(html, /<input type="text" id="applicationName" placeholder="PostgreSQL Query Booster" \/>/);
     assert.match(html, /if \(msg\.applicationName\) document\.getElementById\('applicationName'\)\.value = msg\.applicationName;/);
-    assert.match(html, /sslMode, caFile, applicationName,\s*\n\s*commitMode\s*\n\s*\}\);/);
+    assert.match(html, /sslMode, caFile, applicationName,\s*\n\s*commitMode, plpgsqlCheck\s*\n\s*\}\);/);
+});
+
+test('the connection form marks a connection for plpgsql_check with a checkbox, prefilled and posted', () => {
+    const cm = createManager(fakePoolFactory().factory);
+    const html: string = (cm as any).getConnectionFormHtml({ cspSource: 'vscode-webview:' });
+    assert.match(html, /<input type="checkbox" id="plpgsqlCheck" \/> Check SQL files with plpgsql_check in this database/);
+    assert.match(html, /document\.getElementById\('plpgsqlCheck'\)\.checked = msg\.plpgsqlCheck === true;/);
+    assert.equal(connectionConfigFromForm({ ...formMessage, plpgsqlCheck: true }).plpgsqlCheck, true);
+    assert.equal('plpgsqlCheck' in connectionConfigFromForm(formMessage), false, 'an unmarked connection stores nothing');
 });
 
 test('connectionConfigFromForm stores a commit mode other than auto-commit, and nothing for auto-commit', () => {
@@ -596,4 +605,18 @@ test('the connection form offers the commit behaviour of new sessions, prefilled
     assert.match(html, /<label for="commitMode">Commit behaviour of new sessions<\/label>\s*<select id="commitMode">\s*<option value="auto">Auto-commit<\/option>\s*<option value="manual">Manual commit<\/option>\s*<option value="run">Commit per run<\/option>\s*<\/select>/);
     assert.match(html, /if \(msg\.commitMode\) document\.getElementById\('commitMode'\)\.value = msg\.commitMode;/);
     assert.match(html, /const commitMode = document\.getElementById\('commitMode'\)\.value;/);
+});
+
+// ===== a client for another connection =====
+
+test('openClientFor connects to a saved connection that is not the active one, with its stored password', async () => {
+    const sessions = fakeSessionClients();
+    const secrets: Record<string, string> = {};
+    const cm = createManager(fakePoolFactory().factory, secrets, sessions.factory);
+    const check: ConnectionConfig = { name: 'check', host: '127.0.0.1', port: 5433, database: 'qa', user: 'bob', sslMode: 'disable', plpgsqlCheck: true };
+    await (cm as any).storePassword(check, 'secret');
+    const client = await cm.openClientFor(check);
+    assert.equal(client, sessions.clients[0]);
+    assert.deepEqual([sessions.clients[0].config.database, sessions.clients[0].config.port, sessions.clients[0].config.password], ['qa', 5433, 'secret']);
+    assert.equal(cm.isConnected(), false, 'the active connection is not touched');
 });

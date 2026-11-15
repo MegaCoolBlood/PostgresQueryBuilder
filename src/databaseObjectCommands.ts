@@ -50,6 +50,9 @@ import {
     type ViewNode
 } from './objectDependencies';
 import { formatSqlChecked } from './plpgsqlFormatter';
+import { entryNode } from './comparisonView';
+import type { ComparisonEntry } from './databaseComparison';
+import { stripSqlComments } from './repositoryScanner';
 import { getFormatOptions } from './formatSettings';
 
 /** A node of either view. */
@@ -68,6 +71,7 @@ export function unwrapNode(node: unknown): DatabaseNode | undefined {
     const n = node as DatabaseNode | DependencyNode;
     if (n.type === 'dependency') return n.node as DatabaseNode | undefined;
     if (n.type === 'dependencyRoot') return n.root.node as DatabaseNode | undefined;
+    if ((n as { type: string }).type === 'comparisonEntry') return entryNode((n as unknown as { entry: ComparisonEntry }).entry) as unknown as DatabaseNode;
     if (n.type === 'object' || n.type === 'table' || n.type === 'schema' || n.type === 'category' || n.type === 'extensions') return n;
     return undefined;
 }
@@ -127,18 +131,26 @@ export function statementText(text: string, def: LocatedDefinition): string {
 /**
  * A script formatted with the user's formatter options, so a comparison shows
  * only real differences; as is when the formatter refuses. The options that
- * keep an author's one-line layout are off, so both sides get the same layout.
+ * keep an author's one-line layout are off, so both sides get the same layout,
+ * and blank lines go, as the formatter keeps them where the author left them.
+ * With `ignoreComments`, comments are left out first: a migration tool that
+ * turned line comments into block comments must not make every line differ.
  */
-export function formatForCompare(script: string): string {
+export function formatForCompare(script: string, ignoreComments = false): string {
     // Bodies saved from Windows keep CRLF in pg_proc; only the text is compared, not its line ends.
-    const text = script.replace(/\r\n?/g, '\n');
+    const lf = script.replace(/\r\n?/g, '\n');
+    const text = ignoreComments ? stripSqlComments(lf) : lf;
     try {
         const outcome = formatSqlChecked(text, { ...getFormatOptions(), preserveSingleLineRoutineHeaders: false, preserveSingleLineIfBlocks: false });
-        return outcome.ok ? outcome.text : text;
+        return outcome.ok ? withoutBlankLines(outcome.text) : text;
     } catch (err: unknown) {
         Logger.error('DatabaseObjects.formatForCompare', err);
         return text;
     }
+}
+
+function withoutBlankLines(text: string): string {
+    return text.split('\n').filter(line => line.trim() !== '').join('\n');
 }
 
 /** Read-only documents for the two sides of *Compare with Database*. */
@@ -287,6 +299,31 @@ export interface ObjectCommandDeps {
     clearSearchFilter(): void;
     intel: SqlIntel;
     dependencies: DependenciesProvider;
+}
+
+/** The object a command is about: the node it was run on, else the name under the cursor of the SQL editor. */
+export async function resolveCommandTarget(arg: unknown, intel: SqlIntel): Promise<ResolvedObject | undefined> {
+    const sources = await intel.sources();
+    const node = unwrapNode(arg);
+    if (node) return resolvedFromNode(node, sources);
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showInformationMessage('Place the cursor on the name of a database object in a SQL file.');
+        return undefined;
+    }
+    const { at } = await intel.objectsAt(editor.document, editor.selection.active);
+    if (!at || at.objects.length === 0) {
+        vscode.window.showInformationMessage(at
+            ? `${at.reference.schema ? `${at.reference.schema}.` : ''}${at.reference.name} was found neither in the database nor in the repository.`
+            : 'There is no name of a database object at the cursor.');
+        return undefined;
+    }
+    if (at.objects.length === 1) return at.objects[0];
+    const pick = await vscode.window.showQuickPick(
+        at.objects.map(object => ({ label: objectSignature(object), object })),
+        { placeHolder: `${at.reference.name} stands for ${at.objects.length} objects — choose one` }
+    );
+    return pick?.object;
 }
 
 export function registerDatabaseObjectCommands(context: vscode.ExtensionContext, deps: ObjectCommandDeps): void {
@@ -445,30 +482,7 @@ export function registerDatabaseObjectCommands(context: vscode.ExtensionContext,
         return true;
     };
 
-    /** The object a command is about: the node it was run on, else the name under the cursor of the SQL editor. */
-    const targetObject = async (arg: unknown): Promise<ResolvedObject | undefined> => {
-        const sources = await deps.intel.sources();
-        const node = unwrapNode(arg);
-        if (node) return resolvedFromNode(node, sources);
-        const editor = vscode.window.activeTextEditor;
-        if (!editor) {
-            vscode.window.showInformationMessage('Place the cursor on the name of a database object in a SQL file.');
-            return undefined;
-        }
-        const { at } = await deps.intel.objectsAt(editor.document, editor.selection.active);
-        if (!at || at.objects.length === 0) {
-            vscode.window.showInformationMessage(at
-                ? `${at.reference.schema ? `${at.reference.schema}.` : ''}${at.reference.name} was found neither in the database nor in the repository.`
-                : 'There is no name of a database object at the cursor.');
-            return undefined;
-        }
-        if (at.objects.length === 1) return at.objects[0];
-        const pick = await vscode.window.showQuickPick(
-            at.objects.map(object => ({ label: objectSignature(object), object })),
-            { placeHolder: `${at.reference.name} stands for ${at.objects.length} objects — choose one` }
-        );
-        return pick?.object;
-    };
+    const targetObject = (arg: unknown): Promise<ResolvedObject | undefined> => resolveCommandTarget(arg, deps.intel);
 
     const revealInObjectView = async (arg?: unknown): Promise<void> => {
         try {
@@ -536,7 +550,8 @@ export function registerDatabaseObjectCommands(context: vscode.ExtensionContext,
             const def = await pickDefinition(object, at);
             if (!def || !(await connectionManager.ensureConnected())) return;
             const repoDoc = await vscode.workspace.openTextDocument(vscode.Uri.parse(def.uri));
-            const left = formatForCompare(statementText(repoDoc.getText(), def));
+            const ignoreComments = vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('repository.compareIgnoresComments', true);
+            const left = formatForCompare(statementText(repoDoc.getText(), def), ignoreComments);
             const script = await vscode.window.withProgress(
                 { location: vscode.ProgressLocation.Window, title: 'Reading the CREATE script' },
                 async () => {
@@ -558,7 +573,7 @@ export function registerDatabaseObjectCommands(context: vscode.ExtensionContext,
                     }
                 }
             );
-            const right = formatForCompare(script);
+            const right = formatForCompare(script, ignoreComments);
             const name = qualifiedName(object);
             await vscode.commands.executeCommand(
                 'vscode.diff',

@@ -46,6 +46,7 @@ import {
 import type { ResolvedObject } from './sqlResolution';
 import { readRepositorySettings } from './repositoryIndex';
 import { Logger } from './logger';
+import { debugAvailability } from './plpgsqlDebugger';
 
 /** The part of the repository index the features need. */
 export interface IntelRepository {
@@ -84,7 +85,7 @@ export class SqlIntel {
     async sources(options: { builtins?: boolean } = {}): Promise<IntelSources> {
         this.repository.ensureScanned();
         let defaultSchema = 'public';
-        const sources: IntelSources = { matcher: null, db: null, searchPath: null, allowedSchema: (s) => this.catalog.allowedSchema(s) };
+        const sources: IntelSources = { matcher: null, db: null, searchPath: null, allowedSchema: (s) => this.catalog.allowedSchema(s), bodies: this.catalog.bodies };
         if (this.catalog.isConnected()) {
             try {
                 const data = await this.catalog.load();
@@ -345,6 +346,10 @@ export class SqlCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
                 lenses.push(new vscode.CodeLens(range, { title: 'Compare with Database', command: 'postgresQueryBuilder.compareWithDatabase', arguments: [node, at] }));
             }
             lenses.push(new vscode.CodeLens(range, { title: 'Reveal in Objects View', command: 'postgresQueryBuilder.revealInObjectView', arguments: [node] }));
+            const routine = lens.object.db?.object;
+            if (debugAvailability.available && routine && (routine.kind === 'function' || routine.kind === 'procedure') && routine.language === 'plpgsql') {
+                lenses.push(new vscode.CodeLens(range, { title: '$(debug-alt) Debug', command: 'postgresQueryBuilder.debugFunction', arguments: [node] }));
+            }
         }
         return lenses;
     }
@@ -491,6 +496,8 @@ export function registerSqlLanguageFeatures(intel: SqlIntel, languages: readonly
             codeLens.refresh();
             diagnostics.refreshAll();
         }),
+        intel.catalog.bodies.onDidChange(() => codeLens.refresh()),
+        debugAvailability.onDidChange(() => codeLens.refresh()),
         intel.repository.onDidChange(() => {
             codeLens.refresh();
             diagnostics.refreshAll();

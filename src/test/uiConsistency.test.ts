@@ -569,3 +569,48 @@ test('the settings of the editor features are opt-out, the diagnostics opt-in, a
     };
     for (const [key, value] of Object.entries(expected)) assert.equal(objects.properties[key]?.default, value, key);
 });
+
+/**
+ * 4.0.0 also compares the whole repository with the database, checks files
+ * with plpgsql_check and debugs PL/pgSQL.
+ */
+test('the Comparison view starts collapsed, explains itself and offers no connection actions', () => {
+    const view = manifest.contributes.views.postgresQueryBuilderExplorer.find((v: { id: string }) => v.id === 'postgresComparison');
+    assert.ok(view, 'the Comparison view is not contributed');
+    assert.equal(view.visibility, 'collapsed');
+    const titleMenu: Array<{ command: string; when: string }> = manifest.contributes.menus['view/title'];
+    const actions = titleMenu.filter(m => m.when.includes('view == postgresComparison')).map(m => m.command);
+    assert.deepEqual(actions, ['compareRepositoryWithDatabase', 'filterComparison', 'exportComparison', 'clearComparison'].map(c => `postgresQueryBuilder.${c}`));
+    assert.ok(titleMenu.some(m => m.command === 'postgresQueryBuilder.compareRepositoryWithDatabase' && m.when === 'view == postgresObjectNavigator'), 'the Objects view does not offer the comparison');
+    const welcome = manifest.contributes.viewsWelcome.find((w: { view: string }) => w.view === 'postgresComparison');
+    assert.ok(welcome?.contents.includes('(command:postgresQueryBuilder.compareRepositoryWithDatabase)'));
+    const palette: Array<{ command: string; when: string }> = manifest.contributes.menus.commandPalette;
+    assert.equal(palette.find(p => p.command === 'postgresQueryBuilder.filterComparison')?.when, 'false');
+});
+
+test('the entries of the Comparison view get the same context menu as in the Objects and Tables views', () => {
+    const context: Array<{ command: string; when: string }> = manifest.contributes.menus['view/item/context'];
+    for (const command of [...OBJECT_NODE_COMMANDS, 'postgresQueryBuilder.showDependencies', 'postgresQueryBuilder.findUsages', 'postgresQueryBuilder.compareWithDatabase']) {
+        assert.ok(context.some(m => m.command === command && m.when.includes('view == postgresComparison')), `${command} is missing from the Comparison view`);
+    }
+});
+
+test('the debugger is contributed for every SQL language and only offered where pldbgapi is available', () => {
+    const [debuggerEntry] = manifest.contributes.debuggers;
+    assert.equal(debuggerEntry.type, 'pgqb-plpgsql');
+    assert.deepEqual(debuggerEntry.languages, SQL_LANGUAGES);
+    assert.deepEqual(manifest.contributes.breakpoints.map((b: { language: string }) => b.language), SQL_LANGUAGES);
+    assert.ok(manifest.activationEvents.includes('onDebugResolve:pgqb-plpgsql'));
+    for (const [where, entries] of Object.entries(manifest.contributes.menus as Record<string, Array<{ command: string; when?: string }>>)) {
+        for (const entry of entries.filter(e => /^postgresQueryBuilder\.debug(Function|Statement)$/.test(e.command))) {
+            assert.ok(entry.when?.startsWith('postgresQueryBuilder.debugAvailable && '), `${entry.command} in ${where} is offered without pldbgapi`);
+        }
+    }
+});
+
+test('the editor context menu of every SQL language offers the plpgsql_check run', () => {
+    const editor: Array<{ command: string; when: string }> = manifest.contributes.menus['editor/context'];
+    const entry = editor.find(m => m.command === 'postgresQueryBuilder.checkFilePlpgsql');
+    assert.ok(entry, 'the plpgsql_check run is not in the editor context menu');
+    for (const language of SQL_LANGUAGES) assert.ok(entry.when.includes(`resourceLangId == ${language}`), `missing for ${language}`);
+});

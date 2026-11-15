@@ -43,9 +43,11 @@ import {
     type DocComment,
     type DocFinding
 } from './docComments';
-import type { DbEntry } from './databaseCatalog';
+import type { DbEntry, DbObject } from './databaseCatalog';
 
 export interface IntelSources extends ResolutionSources {
+    /** The exact comparison of routine bodies (comments ignored); the fast hash alone when missing. */
+    bodies?: { status(db: DbObject, definitions: readonly LocatedDefinition[]): RepoStatus } | null;
     /** Names of built-in and extension functions and of every type; null when not connected. */
     builtins?: { functions: Set<string>; types: Set<string> } | null;
     /** What extensions and PostgreSQL provide, which is never compared with the repository. */
@@ -95,7 +97,7 @@ export function docOf(o: ResolvedObject): DocComment | undefined {
 // ===== Objects =====
 
 /** Where the object exists; undefined when that is unknown (no repository, no connection) or never compared. */
-export function objectStatus(o: ResolvedObject, sources: Pick<IntelSources, 'matcher' | 'db' | 'unmarked'>): RepoStatus | undefined {
+export function objectStatus(o: ResolvedObject, sources: Pick<IntelSources, 'matcher' | 'db' | 'unmarked' | 'bodies'>): RepoStatus | undefined {
     if (!sources.matcher || !sources.db) return undefined;
     if (!o.db) return o.definitions.length > 0 ? 'repoOnly' : undefined;
     const object = o.db.object;
@@ -103,7 +105,8 @@ export function objectStatus(o: ResolvedObject, sources: Pick<IntelSources, 'mat
     if (o.kind === 'schema' && (sources.unmarked?.schema(o.name) || (o.name === 'public' && o.definitions.length === 0))) return undefined;
     if (o.db.relation && sources.unmarked?.relation(o.schema, o.name)) return undefined;
     if (o.kind !== 'schema' && o.kind !== 'extension' && sources.unmarked?.schema(o.schema)) return undefined;
-    return object ? routineStatus(object, o.definitions) : databaseObjectStatus(o.definitions);
+    if (!object) return databaseObjectStatus(o.definitions);
+    return sources.bodies ? sources.bodies.status(object, o.definitions) : routineStatus(object, o.definitions);
 }
 
 /** `schema.name`, or the name alone for schemas and extensions. */

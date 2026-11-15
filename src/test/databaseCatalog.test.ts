@@ -1,8 +1,8 @@
 import './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BUILTIN_NAMES_QUERY, DatabaseCatalog, DbIndex, buildObjectCatalogQuery, toDbObject, type CatalogConnection } from '../databaseCatalog';
-import { routineBodyHash } from '../repositoryScanner';
+import { BUILTIN_NAMES_QUERY, DatabaseCatalog, DbIndex, ROUTINE_BODIES_QUERY, RoutineBodies, buildObjectCatalogQuery, toDbObject, type CatalogConnection } from '../databaseCatalog';
+import { routineBodyHash, routineTokenHash, scanSqlText } from '../repositoryScanner';
 
 function row(extra: Record<string, unknown>): Record<string, unknown> {
     return {
@@ -100,4 +100,58 @@ test('builtins separates function and type names; index combines objects, relati
     const index = await catalog.index();
     assert.equal(index.lookup('function', 'app', 'f')[0].object?.oid, 7);
     assert.equal(index.lookup('schema', null, 'app').length, 1);
+});
+
+// ===== RoutineBodies =====
+
+function bodiesConnection(bodies: Record<number, string>) {
+    const asked: number[][] = [];
+    const connection = {
+        isConnected: () => true,
+        getActiveConnectionConfig: () => ({}),
+        clearMetadataCache: () => {},
+        queryMetadata: async () => [],
+        query: async (sql: string, params?: unknown[]) => {
+            assert.equal(sql, ROUTINE_BODIES_QUERY);
+            const oids = params![0] as number[];
+            asked.push(oids);
+            return { rows: oids.filter(o => bodies[o] !== undefined).map(o => ({ oid: o, prosrc: bodies[o] })) };
+        }
+    };
+    return { connection, asked };
+}
+
+test('a routine the fast hash calls different counts as the same until its body is compared, comments ignored', async () => {
+    const { connection, asked } = bodiesConnection({ 1: ' SELECT 1 /* moved */ ', 2: ' SELECT 2 ' });
+    const bodies = new RoutineBodies(connection, 1);
+    const defs = scanSqlText('CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 -- moved\n$$;').map(d => ({ ...d, uri: 'x' }));
+    const commented = toDbObject(row({ oid: 1, body_hash: routineBodyHash(' SELECT 1 /* moved */ ') }))!;
+    const changed = toDbObject(row({ oid: 2, body_hash: routineBodyHash(' SELECT 2 ') }))!;
+    let changes = 0;
+    bodies.onDidChange(() => changes++);
+    assert.equal(bodies.status(commented, defs), 'both');
+    assert.equal(bodies.status(changed, defs), 'both');
+    assert.equal(bodies.busy, true);
+    await bodies.settled();
+    assert.deepEqual(asked, [[1], [2]], 'read in batches, without the metadata cache');
+    assert.equal(changes, 2);
+    assert.equal(bodies.status(commented, defs), 'both');
+    assert.equal(bodies.status(changed, defs), 'differs');
+    assert.equal(bodies.tokenHashOf(changed), routineTokenHash(' SELECT 2 '));
+});
+
+test('a routine without a body row is not asked for again; clear forgets everything', async () => {
+    const { connection, asked } = bodiesConnection({});
+    const bodies = new RoutineBodies(connection);
+    const defs = scanSqlText('CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;').map(d => ({ ...d, uri: 'x' }));
+    const gone = toDbObject(row({ oid: 9, body_hash: routineBodyHash('SELECT 9') }))!;
+    bodies.status(gone, defs);
+    await bodies.settled();
+    assert.equal(bodies.status(gone, defs), 'differs', 'the fast answer stands');
+    await bodies.settled();
+    assert.equal(asked.length, 1);
+    bodies.clear();
+    bodies.status(gone, defs);
+    await bodies.settled();
+    assert.equal(asked.length, 2);
 });

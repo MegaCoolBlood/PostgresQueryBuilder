@@ -327,3 +327,15 @@ test('the Search filter shows matching schemas with relations only, whatever Sho
     p.setFilter('orders');
     assert.deepEqual((await p.getChildren()).map((s: any) => s.schema), ['sales']);
 });
+
+// ===== marks of a full comparison =====
+
+test('a table the full comparison found different is marked as differing, with what differs in its tooltip', async () => {
+    const p = createProviderWithRepository(SALES, { 'a.sql': 'CREATE TABLE sales.orders (id int); CREATE TABLE sales.legacy (id int);' });
+    p.setComparisonMarks({ differences: (kind: string, schema: string, name: string) => (name === 'orders' ? [{ path: 'column id', message: 'missing in the database' }] : undefined) });
+    const tables = await p.getChildren({ type: 'category', schema: 'sales', kind: 'table' });
+    assert.deepEqual(tables.map((t: any) => [t.table, t.status]), [['orders', 'differs'], ['legacy', 'both']]);
+    assert.match(String(p.getTreeItem(tables[0]).tooltip), /• column id: missing in the database/);
+    p.setComparisonMarks(null);
+    assert.equal((await p.getChildren({ type: 'category', schema: 'sales', kind: 'table' }))[0].status, 'both');
+});

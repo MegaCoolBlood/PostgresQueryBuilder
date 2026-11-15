@@ -49,6 +49,13 @@ import { dependencyRowNode, registerDatabaseObjectCommands } from './databaseObj
 import { DatabaseCatalog } from './databaseCatalog';
 import { SqlIntel, registerSqlLanguageFeatures } from './sqlLanguageFeatures';
 import { DependenciesProvider } from './objectDependencies';
+import { ComparisonProvider, registerComparison } from './comparisonView';
+import { registerPlpgsqlCheck } from './plpgsqlCheck';
+import { registerDebugger } from './plpgsqlDebugger';
+import { resolveCommandTarget } from './databaseObjectCommands';
+import { paramsOf } from './sqlCodeIntel';
+import { referencesIn } from './sqlReferences';
+import { resolveReference } from './sqlResolution';
 
 /**
  * Surface the non-blocking warnings an enabled formatter check produced. The
@@ -619,6 +626,7 @@ export function activate(context: vscode.ExtensionContext) {
                 objectNavigator.rerender();
                 tableExplorer.rerender();
             }),
+            catalog.bodies.onDidChange(() => objectNavigator.rerender()),
             connectionManager.onConnectionChanged(() => {
                 objectNavigator.reset();
                 dependencies.clear();
@@ -639,6 +647,48 @@ export function activate(context: vscode.ExtensionContext) {
             intel,
             dependencies
         });
+        registerComparison(context, new ComparisonProvider(), {
+            connectionManager,
+            catalog,
+            repositoryIndex,
+            trees: [objectNavigator, tableExplorer]
+        });
+        registerPlpgsqlCheck(context, connectionManager, FORMATTER_LANGUAGES);
+        registerDebugger(context, {
+            env: {
+                openClient: () => connectionManager.openSessionClient(),
+                query: async (sql, params) => (await connectionManager.query(sql, params)).rows,
+                snapshot: () => repositoryIndex.snapshot(),
+                readFile: async (uri) => {
+                    const open = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri);
+                    if (open) return open.getText();
+                    return new TextDecoder('utf-8').decode(await vscode.workspace.fs.readFile(vscode.Uri.parse(uri)));
+                },
+                toPath: (uri) => vscode.Uri.parse(uri).fsPath,
+                toUri: (path) => vscode.Uri.file(path).toString()
+            },
+            isConnected: () => connectionManager.isConnected(),
+            pickRoutine: async (arg) => {
+                const object = await resolveCommandTarget(arg, intel);
+                const routine = object?.db?.object;
+                if (!object || !routine || (routine.kind !== 'function' && routine.kind !== 'procedure')) {
+                    if (object) vscode.window.showInformationMessage('Only functions and procedures of the database can be debugged.');
+                    return undefined;
+                }
+                return { oid: routine.oid, kind: routine.kind, qualifiedName: `${routine.schema}.${routine.name}`, params: paramsOf(object), language: routine.language };
+            },
+            entryOfStatement: async (statement) => {
+                const sources = await intel.sources();
+                for (const ref of referencesIn(statement)) {
+                    if (!ref.call || ref.declaration || (ref.kinds[0] !== 'function' && ref.kinds[0] !== 'procedure')) continue;
+                    const routine = resolveReference(ref, sources).map(o => o.db?.object).find(o => o?.language === 'plpgsql');
+                    if (routine) return { oid: routine.oid, qualifiedName: `${routine.schema}.${routine.name}` };
+                }
+                return undefined;
+            },
+            state: context.workspaceState,
+            onDidChangeConnection: connectionManager.onConnectionChanged
+        }, FORMATTER_LANGUAGES);
 
         searchViewProvider.onDidChangeFilter((filter) => {
             tableExplorer.setFilter(filter);

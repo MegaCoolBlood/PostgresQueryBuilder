@@ -38,6 +38,7 @@
     
     
     
+    "onDebugResolve:pgqb-plpgsql",
     "onStartupFinished"
   ],
   "main": "./dist/extension.js",
@@ -81,6 +82,12 @@
           "id": "postgresObjectDependencies",
           "name": "Dependencies",
           "icon": "$(type-hierarchy)",
+          "visibility": "collapsed"
+        },
+        {
+          "id": "postgresComparison",
+          "name": "Comparison",
+          "icon": "$(git-compare)",
           "visibility": "collapsed"
         },
         {
@@ -430,6 +437,54 @@
         "title": "Hide Empty Schemas",
         "category": "PostgreSQL Query Booster",
         "icon": "$(eye-closed)"
+      },
+      {
+        "command": "postgresQueryBuilder.compareRepositoryWithDatabase",
+        "title": "Compare Repository with Database",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "postgresQueryBuilder.filterComparison",
+        "title": "Show Kinds in Comparison",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "postgresQueryBuilder.exportComparison",
+        "title": "Export Comparison Report",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(export)"
+      },
+      {
+        "command": "postgresQueryBuilder.clearComparison",
+        "title": "Clear Comparison",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "postgresQueryBuilder.checkFilePlpgsql",
+        "title": "Check File with plpgsql_check",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "postgresQueryBuilder.selectPlpgsqlCheckConnection",
+        "title": "Select plpgsql_check Connection",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(database)"
+      },
+      {
+        "command": "postgresQueryBuilder.debugFunction",
+        "title": "Debug Function",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "postgresQueryBuilder.debugStatement",
+        "title": "Debug Statement",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(debug-alt)"
       }
     ],
     "menus": {
@@ -535,6 +590,31 @@
           "group": "navigation@1"
         },
         {
+          "command": "postgresQueryBuilder.compareRepositoryWithDatabase",
+          "when": "view == postgresObjectNavigator",
+          "group": "1_repository@2"
+        },
+        {
+          "command": "postgresQueryBuilder.compareRepositoryWithDatabase",
+          "when": "view == postgresComparison",
+          "group": "navigation@1"
+        },
+        {
+          "command": "postgresQueryBuilder.filterComparison",
+          "when": "view == postgresComparison",
+          "group": "navigation@2"
+        },
+        {
+          "command": "postgresQueryBuilder.exportComparison",
+          "when": "view == postgresComparison",
+          "group": "navigation@3"
+        },
+        {
+          "command": "postgresQueryBuilder.clearComparison",
+          "when": "view == postgresComparison",
+          "group": "navigation@4"
+        },
+        {
           "command": "postgresQueryBuilder.clearDependencies",
           "when": "view == postgresObjectDependencies",
           "group": "navigation@2"
@@ -603,88 +683,93 @@
         },
         {
           "command": "postgresQueryBuilder.openCreateScript",
-          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
           "group": "inline"
         },
         {
           "command": "postgresQueryBuilder.goToRepositoryDefinition",
-          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject\\..+|repoObject\\..+|objectSchema|objectSchema\\.repoOnly)$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(dbObject\\..+|repoObject\\..+|objectSchema|objectSchema\\.repoOnly)$/",
           "group": "0_repository@1"
         },
         {
           "command": "postgresQueryBuilder.openCreateScript",
-          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
           "group": "1_ddl@1"
         },
         {
           "command": "postgresQueryBuilder.copyCreateScript",
-          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
           "group": "1_ddl@2"
         },
         {
           "command": "postgresQueryBuilder.openDropScript",
-          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
           "group": "2_drop@1"
         },
         {
           "command": "postgresQueryBuilder.copyDropScript",
-          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
           "group": "2_drop@2"
         },
         {
           "command": "postgresQueryBuilder.goToRepositoryDefinition",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem =~ /^(schema|table)(\\.repoOnly)?$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table)(\\.repoOnly)?$/",
           "group": "0_repository@1"
         },
         {
           "command": "postgresQueryBuilder.openCreateScript",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem =~ /^(schema|table)$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table)$/",
           "group": "1_ddl@1"
         },
         {
           "command": "postgresQueryBuilder.copyCreateScript",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem =~ /^(schema|table)$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table)$/",
           "group": "1_ddl@2"
         },
         {
           "command": "postgresQueryBuilder.openDropScript",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem =~ /^(schema|table)$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table)$/",
           "group": "2_drop@1"
         },
         {
           "command": "postgresQueryBuilder.copyDropScript",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem =~ /^(schema|table)$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table)$/",
           "group": "2_drop@2"
         },
         {
           "command": "postgresQueryBuilder.compareWithDatabase",
-          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^dbObject\\.(function|procedure|aggregate|type|domain|sequence|trigger)$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^dbObject\\.(function|procedure|aggregate|type|domain|sequence|trigger)$/",
           "group": "0_repository@2"
         },
         {
           "command": "postgresQueryBuilder.compareWithDatabase",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem == table",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem == table",
           "group": "0_repository@2"
         },
         {
           "command": "postgresQueryBuilder.findUsages",
-          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject|repoObject)\\..+$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(dbObject|repoObject)\\..+$/",
           "group": "0_repository@3"
         },
         {
           "command": "postgresQueryBuilder.findUsages",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem =~ /^table(\\.repoOnly)?$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^table(\\.repoOnly)?$/",
           "group": "0_repository@3"
         },
         {
           "command": "postgresQueryBuilder.showDependencies",
-          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
           "group": "3_dependencies@1"
         },
         {
           "command": "postgresQueryBuilder.showDependencies",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem =~ /^(schema|table)$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table)$/",
           "group": "3_dependencies@1"
+        },
+        {
+          "command": "postgresQueryBuilder.debugFunction",
+          "when": "postgresQueryBuilder.debugAvailable && (view == postgresObjectNavigator || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^dbObject\\.(function|procedure)$/",
+          "group": "4_debug@1"
         }
       ],
       "commandPalette": [
@@ -755,6 +840,22 @@
         {
           "command": "postgresQueryBuilder.hideEmptyObjectSchemas",
           "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.filterComparison",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.checkFilePlpgsql",
+          "when": "editorLangId =~ /^(sql|postgres|pgsql)$/"
+        },
+        {
+          "command": "postgresQueryBuilder.debugFunction",
+          "when": "postgresQueryBuilder.debugAvailable && editorLangId =~ /^(sql|postgres|pgsql)$/"
+        },
+        {
+          "command": "postgresQueryBuilder.debugStatement",
+          "when": "postgresQueryBuilder.debugAvailable && editorLangId =~ /^(sql|postgres|pgsql)$/"
         }
       ],
       "editor/title": [
@@ -814,9 +915,80 @@
           "command": "postgresQueryBuilder.showDependencies",
           "when": "editorTextFocus && (resourceLangId == sql || resourceLangId == postgres || resourceLangId == pgsql)",
           "group": "0_pgqbObjects@3"
+        },
+        {
+          "command": "postgresQueryBuilder.checkFilePlpgsql",
+          "when": "editorTextFocus && (resourceLangId == sql || resourceLangId == postgres || resourceLangId == pgsql)",
+          "group": "0_pgqbObjects@4"
+        },
+        {
+          "command": "postgresQueryBuilder.debugStatement",
+          "when": "postgresQueryBuilder.debugAvailable && editorTextFocus && (resourceLangId == sql || resourceLangId == postgres || resourceLangId == pgsql)",
+          "group": "0_pgqbObjects@5"
         }
       ]
     },
+    "debuggers": [
+      {
+        "type": "pgqb-plpgsql",
+        "label": "PL/pgSQL (PostgreSQL Query Booster)",
+        "languages": ["sql", "postgres", "pgsql"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["statement"],
+            "properties": {
+              "statement": {
+                "type": "string",
+                "description": "The statement to run, e.g. CALL pk_payroll.p_close_month(DATE '2024-01-01')."
+              },
+              "function": {
+                "type": "string",
+                "description": "The function the debugger stops in first, e.g. pk_payroll.p_close_month(date); by default the first PL/pgSQL routine the statement calls."
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "default": true,
+                "description": "Stop at the first statement of the function."
+              },
+              "rollback": {
+                "type": "boolean",
+                "default": true,
+                "description": "Roll the statement's transaction back at the end, so debugging changes nothing in the database."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "pgqb-plpgsql",
+            "request": "launch",
+            "name": "Debug PL/pgSQL",
+            "statement": "SELECT * FROM my_schema.my_function()",
+            "stopOnEntry": true,
+            "rollback": true
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "PL/pgSQL: Debug a statement",
+            "description": "Run a CALL or SELECT and debug the PL/pgSQL it calls",
+            "body": {
+              "type": "pgqb-plpgsql",
+              "request": "launch",
+              "name": "Debug PL/pgSQL",
+              "statement": "${1:CALL my_schema.my_procedure()}",
+              "stopOnEntry": true,
+              "rollback": true
+            }
+          }
+        ]
+      }
+    ],
+    "breakpoints": [
+      { "language": "sql" },
+      { "language": "postgres" },
+      { "language": "pgsql" }
+    ],
     "keybindings": [
       {
         "command": "postgresQueryBuilder.executeStatement",
@@ -843,6 +1015,10 @@
       {
         "view": "postgresObjectDependencies",
         "contents": "No object chosen.\nRight-click an object in the Objects or Tables view, or a name in a SQL file, and choose \"Show Dependencies\" to see what uses it and what it uses in the database, and where the repository refers to it."
+      },
+      {
+        "view": "postgresComparison",
+        "contents": "Compare every function, procedure, table, view, type, sequence and trigger of the database with the CREATE statements of the repository. The database is only read; nothing is changed.\n[$(git-compare) Compare Repository with Database](command:postgresQueryBuilder.compareRepositoryWithDatabase)"
       },
       {
         "view": "postgresSavedQueries",
@@ -1468,6 +1644,95 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "Check the doc comments of the functions and procedures in open SQL files: a missing doc comment, documented parameters that do not exist, undocumented parameters and documented types that contradict the signature. Quick Fixes add a comment or the missing entries, or remove an entry."
+        },
+        "postgresQueryBuilder.repository.compareIgnoresComments": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Leave comments out of both sides of **Compare with Database**, so a line comment that a migration turned into a block comment, with or without its line break, shows no difference. Turn it off to see the comments in the diff. The marks of the *Objects* view always ignore comments."
+        },
+        "postgresQueryBuilder.comparison.columnOrder": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Report in **Compare Repository with Database** when the columns of a table are in another order in the database than in the repository."
+        }
+      }
+    },
+    {
+      "title": "plpgsql_check",
+      "order": 6,
+      "properties": {
+        "postgresQueryBuilder.plpgsqlCheck.onSave": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Check a SQL file with plpgsql_check when it is saved. With `#files.autoSave#` on, the check waits `#postgresQueryBuilder.plpgsqlCheck.delayMs#` after the last save."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.onType": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Also check a SQL file while typing, `#postgresQueryBuilder.plpgsqlCheck.delayMs#` after the last change."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.delayMs": {
+          "type": "integer",
+          "default": 1500,
+          "minimum": 200,
+          "markdownDescription": "How many milliseconds after the last change or auto save a check starts."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.timeoutMs": {
+          "type": "integer",
+          "default": 10000,
+          "minimum": 1000,
+          "markdownDescription": "The `statement_timeout` of a check, in milliseconds."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.extraSeverity": {
+          "type": "string",
+          "enum": ["information", "warning", "error"],
+          "default": "information",
+          "markdownDescription": "How extra, performance, security and compatibility warnings of plpgsql_check are shown; plain warnings are warnings and errors are errors."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.fatalErrors": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "`fatal_errors` of plpgsql_check: stop at the first error of a function instead of listing all of them."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.otherWarnings": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "`other_warnings`: report unused variables, overlapping variable names and similar."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.extraWarnings": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "`extra_warnings`: report unused parameters, missing RETURN and similar."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.performanceWarnings": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "`performance_warnings`: report casts that keep an index from being used and similar."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.securityWarnings": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "`security_warnings`: report SQL injection risks in dynamic SQL."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.compatibilityWarnings": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "`compatibility_warnings`: report what older or newer PostgreSQL versions treat differently."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.constantTracing": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "`constant_tracing`: follow constant values through the code to check dynamic SQL."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.useIncommentOptions": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "`use_incomment_options`: honour `@plpgsql_check_options:` comments in the function body."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.withoutWarnings": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "`without_warnings`: report errors only."
         }
       }
     }

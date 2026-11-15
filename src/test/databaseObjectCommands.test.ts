@@ -157,3 +157,17 @@ test('the compare documents are served by URI and old ones are dropped', () => {
     for (let i = 0; i < 40; i++) provider.add(`x${i}`, '');
     assert.equal(provider.provideTextDocumentContent(left), '');
 });
+
+test('formatForCompare can leave out the comments, so a line comment turned into a block comment or a lost line break is no difference', () => {
+    const repo = 'CREATE FUNCTION f() RETURNS int LANGUAGE plpgsql AS $$\nBEGIN\n  -- why\n\n  RETURN SIGN(1) -- note\n  + 1;\nEND $$;';
+    const db = 'CREATE FUNCTION f() RETURNS int LANGUAGE plpgsql AS $$\nBEGIN\n  RETURN SIGN(1) /* note*/ + 1;\nEND $$;';
+    assert.notEqual(formatForCompare(repo), formatForCompare(db));
+    assert.equal(formatForCompare(repo, true), formatForCompare(db, true));
+});
+
+test('an entry of the Comparison view is unwrapped to the node of its view', () => {
+    const db = dbObject({ kind: 'function', oid: 3 });
+    const node = unwrapNode({ type: 'comparisonEntry', entry: { kind: 'function', schema: 'app', name: 'f', args: '', status: 'differs', differences: [], definitions: [], db } });
+    assert.equal((node as any).type, 'object');
+    assert.equal((node as any).db.oid, 3);
+});

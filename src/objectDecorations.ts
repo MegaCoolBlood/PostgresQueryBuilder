@@ -50,3 +50,10 @@ export class ObjectStatusDecorationProvider implements vscode.FileDecorationProv
         return statusDecoration(uri.query);
     }
 }
+
+/** The first differences of a full comparison, for a tooltip. */
+export function differenceLines(differences: ReadonlyArray<{ path: string; message: string }>, max = 6): string[] {
+    const lines = differences.slice(0, max).map(d => `• ${d.path}: ${d.message}`);
+    if (differences.length > max) lines.push(`… and ${differences.length - max} more`);
+    return lines;
+}

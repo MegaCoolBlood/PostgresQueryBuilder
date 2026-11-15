@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { acceptsArgCount, normalizeRoutineBody, normalizeTypeName, routineBodyHash, scanSqlText } from '../repositoryScanner';
+import { acceptsArgCount, normalizeRoutineBody, normalizeTypeName, routineBodyHash, routineTokenHash, routineTokenText, scanSqlText, stripSqlComments } from '../repositoryScanner';
 
 function summary(sql: string): Array<string> {
     return scanSqlText(sql).map(d => {
@@ -291,4 +291,24 @@ test('the body hash ignores whitespace and the case of ASCII letters, nothing el
     assert.notEqual(a.bodyHash, c.bodyHash);
     assert.equal(a.bodyHash, routineBodyHash('BEGIN RETURN 1; END;'));
     assert.equal(normalizeRoutineBody('Ä  Bc\n'), 'Äbc', 'only ASCII letters are folded, as the SQL side does');
+});
+
+// ===== comments in routine bodies =====
+
+test('the token hash of a body ignores comments, also a line comment that became a block comment', () => {
+    const a = "BEGIN\n  x := SIGN(1) -- note\n  + 2;\nEND;";
+    const b = 'begin x := sign(1) /* note*/ + 2; end;';
+    assert.equal(routineTokenHash(a), routineTokenHash(b));
+    assert.notEqual(routineTokenHash("x := '-- a';"), routineTokenHash("x := '/* a */';"), 'what looks like a comment inside a string counts');
+    assert.notEqual(routineTokenHash('x := "MyCol";'), routineTokenHash('x := "mycol";'), 'quoted names keep their case');
+    assert.equal(routineTokenText('EXECUTE $q$ SELECT 1 -- x\n $q$;'), routineTokenText('execute $q$select 1$q$;'), 'nested bodies too');
+    const [def] = scanSqlText('CREATE FUNCTION f() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RETURN 1; -- x\nEND $$;');
+    assert.equal(def.tokenHash, routineTokenHash('BEGIN RETURN 1; END'));
+});
+
+test('stripSqlComments removes comments, also inside dollar-quoted bodies; a comment ending a line takes the line break along', () => {
+    const sql = "-- header\nCREATE FUNCTION f() AS $$\nBEGIN\n  x := 1; -- tail\n  /* block\n  more */\n  y := '-- not';\nEND $$;\n";
+    assert.equal(stripSqlComments(sql), "CREATE FUNCTION f() AS $$\nBEGIN\n  x := 1; y := '-- not';\nEND $$;\n");
+    assert.equal(stripSqlComments('x -- note\n  + 1'), stripSqlComments('x /* note*/ + 1').replace(/ +/g, ' '));
+    assert.equal(stripSqlComments('a /* x */ b'), 'a   b');
 });

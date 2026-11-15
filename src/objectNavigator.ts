@@ -13,14 +13,14 @@ import { filterHighlights, parseFilterTerms, scoreFilterText } from './tableExpl
 import {
     MatcherCache,
     databaseObjectStatus,
-    routineStatus,
+    type ComparisonMarks,
     type DefinitionMatcher,
     type LocatedDefinition,
     type RepoStatus,
     type RepositorySource,
     type UnmarkedObjects
 } from './repositoryComparison';
-import { statusHint, statusUri } from './objectDecorations';
+import { differenceLines, statusHint, statusUri } from './objectDecorations';
 import { docSummary } from './docComments';
 import { Logger, getErrorMessage } from './logger';
 import {
@@ -85,6 +85,8 @@ export interface ObjectNode {
     repoTable?: string;
     status?: RepoStatus;
     definitions: LocatedDefinition[];
+    /** What the last *Compare Repository with Database* found different. */
+    differences?: ReadonlyArray<{ path: string; message: string }>;
 }
 
 export type NavigatorNode = ObjectSchemaNode | ObjectCategoryNode | ExtensionsNode | ObjectNode;
@@ -191,6 +193,7 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
     private readonly matchers = new MatcherCache();
     private onlyDifferences: boolean;
     private emptySchemas: boolean;
+    private marks: ComparisonMarks | null = null;
     /** The catalog of the connection, shared with the SQL editor features. */
     readonly catalog: DatabaseCatalog;
 
@@ -235,6 +238,12 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
         this.model = undefined;
         await this.state?.update(EMPTY_SCHEMAS_KEY, value);
         this._onDidChangeTreeData.fire();
+    }
+
+    /** Mark what the last full comparison found different; null forgets it. */
+    setComparisonMarks(marks: ComparisonMarks | null): void {
+        this.marks = marks;
+        this.rerender();
     }
 
     /** Re-render from what is loaded: the settings, the repository or the filter changed. */
@@ -296,7 +305,12 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
                     definitions = matcher.find({ kind: 'table', schema: db.relSchema, name: db.relName });
                 }
                 node.definitions = definitions;
-                node.status = routineStatus(db, definitions);
+                node.status = this.catalog.bodies.status(db, definitions);
+                const differences = this.marks?.differences(db.kind, db.schema, db.name, db.relName ?? undefined);
+                if (differences && differences.length > 0 && node.status !== 'dbOnly') {
+                    node.status = 'differs';
+                    node.differences = differences;
+                }
             }
             objects.push(node);
         }
@@ -530,6 +544,7 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
         }
         const summary = docSummary(node.definitions);
         if (summary && summary !== db?.comment) lines.push('', summary);
+        if (node.differences?.length) lines.push('', ...differenceLines(node.differences));
         return lines;
     }
 

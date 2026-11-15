@@ -11,9 +11,9 @@
 import * as vscode from 'vscode';
 import { buildSchemaListQuery, toRelationKind, type RelationKind } from './tableExplorer';
 import { buildRelationListQuery } from './queryRunner';
-import { CURRENT_SCHEMAS_QUERY, EXTENSION_MEMBERS_QUERY, UnmarkedObjects, type ObjectIdentity } from './repositoryComparison';
+import { CURRENT_SCHEMAS_QUERY, EXTENSION_MEMBERS_QUERY, UnmarkedObjects, routineStatus, type LocatedDefinition, type ObjectIdentity, type RepoStatus } from './repositoryComparison';
 import { SERVER_VERSION_QUERY } from './ddlGenerator';
-import type { ArgCount, RepoObjectKind } from './repositoryScanner';
+import { routineBodyHash, routineTokenHash, type ArgCount, type RepoObjectKind } from './repositoryScanner';
 import { Logger } from './logger';
 
 export type NavigatorKind = 'function' | 'procedure' | 'aggregate' | 'type' | 'domain' | 'sequence' | 'trigger' | 'extension';
@@ -63,6 +63,8 @@ export interface CatalogConnection {
     getActiveConnectionConfig(): { schemas?: string[] } | null | undefined;
     queryMetadata(sql: string, params?: unknown[]): Promise<Array<Record<string, unknown>>>;
     clearMetadataCache(): void;
+    /** An uncached query, for large results that should not stay in the metadata cache. */
+    query?(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
 }
 
 export interface CatalogData {
@@ -295,8 +297,12 @@ export class DatabaseCatalog implements vscode.Disposable {
     private readonly _onDidReset = new vscode.EventEmitter<void>();
     /** Fires when everything loaded was forgotten (connection changed, Refresh). */
     readonly onDidReset = this._onDidReset.event;
+    /** The exact comparison of routine bodies, filled in the background. */
+    readonly bodies: RoutineBodies;
 
-    constructor(private readonly connection: CatalogConnection) {}
+    constructor(private readonly connection: CatalogConnection) {
+        this.bodies = new RoutineBodies(connection);
+    }
 
     isConnected(): boolean {
         return this.connection.isConnected();
@@ -309,6 +315,7 @@ export class DatabaseCatalog implements vscode.Disposable {
         this.unmarkedObjects = undefined;
         this.builtinNames = undefined;
         this.dbIndex = undefined;
+        this.bodies.clear();
         this._onDidReset.fire();
     }
 
@@ -400,5 +407,109 @@ export class DatabaseCatalog implements vscode.Disposable {
 
     dispose(): void {
         this._onDidReset.dispose();
+        this.bodies.dispose();
+    }
+}
+
+/** Reads the bodies of routines by oid; `$1` is an `oid[]`. */
+export const ROUTINE_BODIES_QUERY = 'SELECT p.oid::bigint AS oid, p.prosrc FROM pg_catalog.pg_proc p WHERE p.oid = ANY($1::oid[])';
+
+/** How many bodies one query reads. */
+const BODY_BATCH = 200;
+
+/**
+ * The exact comparison of routine bodies, the second of two stages. The
+ * catalog query's hash ignores whitespace and letter case only; a routine it
+ * calls different may still differ in comments alone, e.g. a `-- note` that a
+ * migration tool turned into `/* note *\/`. Only for those routines the bodies
+ * are read — in batches, in the background, without the metadata cache — and
+ * compared token by token without comments. Until the answer is in, such a
+ * routine counts as the same, so nothing is marked that turns out equal.
+ */
+export class RoutineBodies implements vscode.Disposable {
+    private readonly hashes = new Map<number, { bodyHash: string; tokenHash: string }>();
+    private readonly pending = new Set<number>();
+    private readonly failed = new Set<number>();
+    private running?: Promise<void>;
+    private generation = 0;
+    private readonly _onDidChange = new vscode.EventEmitter<void>();
+    /** Fires after a batch of bodies was compared. */
+    readonly onDidChange = this._onDidChange.event;
+
+    constructor(private readonly connection: CatalogConnection, private readonly batchSize = BODY_BATCH) {}
+
+    /** Where a database routine exists, with comments and whitespace of its body ignored. */
+    status(db: DbObject, definitions: readonly LocatedDefinition[]): RepoStatus {
+        const fast = routineStatus(db, definitions);
+        if (fast !== 'differs' || !db.bodyHash) return fast;
+        const known = this.hashes.get(db.oid);
+        if (known && known.bodyHash === db.bodyHash) {
+            const tokens = definitions.map(d => d.tokenHash).filter((h): h is string => !!h);
+            return tokens.length === 0 || tokens.includes(known.tokenHash) ? 'both' : 'differs';
+        }
+        if (this.failed.has(db.oid)) return fast;
+        this.request(db.oid);
+        return 'both';
+    }
+
+    /** True while bodies are waiting to be compared. */
+    get busy(): boolean {
+        return this.pending.size > 0 || this.running !== undefined;
+    }
+
+    /** The comment-insensitive hash of a body read so far, while it still matches the catalog's hash. */
+    tokenHashOf(db: Pick<DbObject, 'oid' | 'bodyHash'>): string | undefined {
+        const known = this.hashes.get(db.oid);
+        return known && known.bodyHash === db.bodyHash ? known.tokenHash : undefined;
+    }
+
+    /** Wait until every requested body has been compared (tests, the full comparison). */
+    async settled(): Promise<void> {
+        while (this.running) await this.running;
+    }
+
+    clear(): void {
+        this.generation++;
+        this.hashes.clear();
+        this.pending.clear();
+        this.failed.clear();
+    }
+
+    private request(oid: number): void {
+        this.pending.add(oid);
+        if (!this.running) {
+            this.running = this.drain().finally(() => { this.running = undefined; });
+        }
+    }
+
+    private async drain(): Promise<void> {
+        // Collect what the current render asks for before the first query.
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        const generation = this.generation;
+        while (this.pending.size > 0 && generation === this.generation) {
+            const batch = [...this.pending].slice(0, this.batchSize);
+            batch.forEach(oid => this.pending.delete(oid));
+            try {
+                const rows = this.connection.query
+                    ? (await this.connection.query(ROUTINE_BODIES_QUERY, [batch])).rows
+                    : await this.connection.queryMetadata(ROUTINE_BODIES_QUERY, [batch]);
+                if (generation !== this.generation) return;
+                for (const row of rows) {
+                    const source = String(row.prosrc ?? '');
+                    this.hashes.set(Number(row.oid), { bodyHash: routineBodyHash(source), tokenHash: routineTokenHash(source) });
+                }
+                // A routine dropped meanwhile has no row; it is not asked for again.
+                for (const oid of batch) if (!this.hashes.has(oid)) this.failed.add(oid);
+            } catch (err: unknown) {
+                Logger.error('RoutineBodies.drain', err);
+                batch.forEach(oid => this.failed.add(oid));
+            }
+            this._onDidChange.fire();
+        }
+    }
+
+    dispose(): void {
+        this.clear();
+        this._onDidChange.dispose();
     }
 }

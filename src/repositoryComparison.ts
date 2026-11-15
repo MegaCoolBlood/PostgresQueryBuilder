@@ -127,6 +127,11 @@ export function routineStatus(db: { kind: string; bodyHash?: string | null }, de
     return hashes.length > 0 && !hashes.includes(db.bodyHash) ? 'differs' : status;
 }
 
+/** The differences a full comparison found, by object; the trees mark these objects as differing. */
+export interface ComparisonMarks {
+    differences(kind: RepoObjectKind, schema: string, name: string, table?: string): ReadonlyArray<{ path: string; message: string }> | undefined;
+}
+
 /** A definition together with the identity it stands for. */
 export interface IndexedDefinition {
     def: LocatedDefinition;

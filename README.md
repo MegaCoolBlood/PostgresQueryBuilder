@@ -36,8 +36,14 @@ SQL before it is written.
   standalone CLI.
 - **Every object, its DDL, and your repository.** Functions with their
   signature, procedures, types, sequences, triggers and extensions in a view
-  of their own; CREATE and DROP scripts of any object or table; and red marks
-  for whatever the SQL files of your workspace do not create.
+  of their own; CREATE and DROP scripts of any object or table; red marks
+  for whatever the SQL files of your workspace do not create; and one click
+  that compares every table, view, type, sequence, trigger and routine of the
+  database with the repository, column by column.
+- **plpgsql_check and a debugger.** Check the PL/pgSQL of the open file against
+  a database with plpgsql_check — not necessarily the one you are connected
+  to — and see the findings like those of a linter; step through a function
+  with breakpoints and variables where pldbgapi is installed.
 - **SQL files that know your database.** Go to Definition and Find All
   References across the repository, hovers with the doc comment and the
   columns, parameter hints while typing a call, completion of your own
@@ -75,6 +81,7 @@ under the category **PostgreSQL Query Booster**.
 | CA certificate file | no | PEM file with the CA certificate(s) used to verify the server; the system's trusted certificates when empty |
 | Application name | no | The `application_name` the server shows for this connection in `pg_stat_activity` and its logs; `PostgreSQL Query Booster` when empty |
 | Commit behaviour of new sessions | yes | *Auto-commit* (default), *Manual commit* or *Commit per run* — how the database sessions of this connection commit until you choose otherwise in the *PostgreSQL Messages* panel; see [Commit behaviour](#commit-behaviour) |
+| Check SQL files with plpgsql_check in this database | no | Offer this connection for [plpgsql_check](#plpgsql_check); only kept when the database has the extension |
 
 Connections saved before the SSL option existed keep their old behaviour,
 *Prefer SSL*: SSL is attempted first and falls back to an unencrypted
@@ -185,13 +192,34 @@ nothing. Changed files are rescanned as they are saved; **Rescan Repository**
 starts over. `postgresQueryBuilder.repository.compare` turns the comparison
 off, and `…include`, `…exclude` and `…maxFileSizeKb` choose the files.
 
-Bodies are compared without whitespace and letter case, so a repository run
-through the formatter does not count as different; matching any one of several
-`CREATE` statements — an older migration, say — is enough. **Compare with
-Database** (context menu, editor and CodeLens) opens the `CREATE` statement of
-the repository next to the one of the database in a diff editor, both
-formatted with your formatter settings and without comments, owner and grants,
-so only real differences remain.
+Bodies are compared without whitespace, letter case and comments, so a
+repository run through the formatter does not count as different, and neither
+does a function whose `-- line comments` the database keeps as `/* block
+comments */` or whose line breaks it lost; matching any one of several `CREATE`
+statements — an older migration, say — is enough. **Compare with Database**
+(context menu, editor and CodeLens) opens the `CREATE` statement of the
+repository next to the one of the database in a diff editor, both formatted
+with your formatter settings and without owner and grants, so only real
+differences remain. Comments are left out too, unless
+`postgresQueryBuilder.repository.compareIgnoresComments` is turned off.
+
+**Compare Repository with Database** — in the *Comparison* view and the menu
+of the *Objects* title bar — compares everything at once: functions,
+procedures and aggregates by their code, tables by their columns, types,
+defaults, `NOT NULL`, constraints and indexes, views by their query, types by
+their values, attributes or base type, sequences by their options and triggers
+by their timing, events and function. A table is compared with what its
+`CREATE TABLE` and every later `ALTER TABLE`, `CREATE INDEX` and `DROP INDEX`
+of the repository make of it, in the order of the files; a view's query is
+compared after the database has normalised both. The *Comparison* view lists
+the result under *Differs*, *Only in the database* and *Only in the repository*,
+each difference on a line of its own (`column amount: type numeric(10,2) in the
+database, numeric(12,2) in the repository`), and the entries carry the same
+context menu as in the other views; the marks also show in the *Objects* and
+*Tables* views. The funnel limits the view to some kinds, **Export Comparison
+Report** writes it as Markdown and **Clear Comparison** removes it. The
+database is only read, in a transaction that is rolled back; a different column
+order counts only with `postgresQueryBuilder.comparison.columnOrder`.
 
 ### Working in SQL files
 
@@ -253,6 +281,55 @@ function, a column default that calls `nextval`, a foreign key. Each entry
 expands further and has the same context menu as in the *Objects* and *Tables*
 views. Since PostgreSQL does not record what a PL/pgSQL body calls, *Used in
 the repository* adds the references found in the SQL files.
+
+### plpgsql_check
+
+[plpgsql_check](https://github.com/okbob/plpgsql_check) finds what PostgreSQL
+only reports when a PL/pgSQL function runs: a misspelt column, a wrong type, an
+unused variable, a missing `RETURN`. To use it, tick *Check SQL files with
+plpgsql_check in this database* in the connection form of a database that has
+the extension (`CREATE EXTENSION plpgsql_check`); when it is missing, the mark
+is dropped with a warning on saving. That connection does not have to be the
+active one: the status bar shows *plpgsql_check: name*, and a click on it — or
+**Select plpgsql_check Connection** — chooses among the marked connections for
+this workspace.
+
+Each `CREATE FUNCTION` and `CREATE PROCEDURE` in PL/pgSQL of the file is
+created in a transaction on that database, checked and rolled back; trigger
+functions are checked on the table of a `CREATE TRIGGER` in the same file. The
+findings appear as squiggles and in the *Problems* panel on the line they
+concern, errors as errors, warnings as warnings and the extra, performance,
+security and compatibility warnings as `postgresQueryBuilder.plpgsqlCheck.extraSeverity`
+says; a statement the database rejects is reported where it fails. A file is
+checked when it is saved, after `…plpgsqlCheck.delayMs` with auto save, while
+typing with `…plpgsqlCheck.onType`, and on demand with **Check File with
+plpgsql_check** in the editor's context menu. Only one check runs at a time,
+and an outdated result is dropped. The other `postgresQueryBuilder.plpgsqlCheck.*`
+settings are the options of `plpgsql_check_function` — `fatal_errors`,
+`other_warnings`, `extra_warnings` and so on — and are passed only where the
+installed version knows them.
+
+### Debugging PL/pgSQL
+
+Where the database has the `pldbgapi` extension and the server loads
+`plugin_debugger` (`shared_preload_libraries`), PL/pgSQL can be debugged with
+VS Code's debugger. **Debug Function** — in the context menu of a function or
+procedure of the views and, as a CodeLens, above its `CREATE` — asks for the
+statement that calls it, prefilled with a call with every parameter;
+**Debug Statement** in the editor's context menu runs the statement at the
+cursor. Execution stops at the first line of the routine; then *Continue*,
+*Step Over*, *Step Into* and *Step Out* work as usual, the *Variables* view shows
+arguments and locals — and can change them —, and the call stack lists every
+PL/pgSQL frame. Breakpoints set in a SQL file of the repository are honoured
+when the file's code equals the code in the database; otherwise the debugger
+shows the code of the database, read-only, and breakpoints are set there.
+
+The statement runs on a session of its own on the active connection, in a
+transaction that is rolled back when debugging ends, so the data stays as it
+was; `"rollback": false` in a launch configuration of type `pgqb-plpgsql`
+commits instead. What a function does outside the database, such as sending
+mail through an extension, cannot be rolled back. *Pause* is not supported;
+set a breakpoint instead.
 
 ---
 
@@ -782,6 +859,13 @@ Every command lives in the Command Palette (`Ctrl+Shift+P`) under the category
 | Compare with Database | Show the `CREATE` statement of the repository next to the one of the database |
 | Find Usages | List every place in the repository that uses the object |
 | Show Dependencies | Show what uses the object and what it uses in the *Dependencies* view |
+| Compare Repository with Database | Compare every routine, table, view, type, sequence and trigger and list the differences in the *Comparison* view |
+| Export Comparison Report | Write the result of the comparison as Markdown |
+| Clear Comparison | Empty the *Comparison* view and remove its marks |
+| Check File with plpgsql_check | Check the PL/pgSQL of the SQL file on the plpgsql_check connection |
+| Select plpgsql_check Connection | Choose the connection files are checked against |
+| Debug Function | Debug a PL/pgSQL function or procedure with a call you enter |
+| Debug Statement | Debug the statement at the cursor |
 
 Bookmarked queries and mappings carry further commands for renaming,
 duplicating, deleting and moving between the personal and the workspace scope.
@@ -838,6 +922,14 @@ Empty Schemas** / **Hide Empty Schemas**.
 | `postgresQueryBuilder.repository.exclude` | `**/node_modules/**`, `**/.git/**` | Files and folders left out of the scan |
 | `postgresQueryBuilder.repository.maxFileSizeKb` | `5120` | Larger files are not scanned |
 | `postgresQueryBuilder.repository.codeLens` | `true` | Show above each `CREATE` whether the database has the object, with Compare and Reveal |
+| `postgresQueryBuilder.repository.compareIgnoresComments` | `true` | Leave comments out of both sides of **Compare with Database** |
+| `postgresQueryBuilder.comparison.columnOrder` | `false` | Report a different column order in **Compare Repository with Database** |
+| `postgresQueryBuilder.plpgsqlCheck.onSave` | `true` | Check a SQL file with plpgsql_check when it is saved |
+| `postgresQueryBuilder.plpgsqlCheck.onType` | `false` | Also check while typing |
+| `postgresQueryBuilder.plpgsqlCheck.delayMs` | `1500` | Wait after the last change or auto save before checking |
+| `postgresQueryBuilder.plpgsqlCheck.timeoutMs` | `10000` | `statement_timeout` of a check |
+| `postgresQueryBuilder.plpgsqlCheck.extraSeverity` | `information` | How extra, performance, security and compatibility warnings are shown |
+| `postgresQueryBuilder.plpgsqlCheck.*` | as plpgsql_check | `fatalErrors` (`false`), `otherWarnings`, `extraWarnings`, `constantTracing`, `useIncommentOptions` (`true`), `performanceWarnings`, `securityWarnings`, `compatibilityWarnings`, `withoutWarnings` (`false`): the options of `plpgsql_check_function` |
 | `postgresQueryBuilder.editor.hover` | `true` | Show the hover on database objects in SQL files |
 | `postgresQueryBuilder.editor.signatureHelp` | `true` | Show the parameters while typing the arguments of a call |
 | `postgresQueryBuilder.diagnostics.unknownRoutines` | `false` | Warn about calls of unknown routines and wrong argument counts |
@@ -854,6 +946,9 @@ all of them can be moved into a `.pgformat.json`.
 - VS Code 1.85 or newer
 - Network access to a PostgreSQL server
 - For the psql console only: the PostgreSQL client tools (`psql`)
+- For checking PL/pgSQL only: the `plpgsql_check` extension in the database
+- For debugging only: the `pldbgapi` extension and `plugin_debugger` in the
+  server's `shared_preload_libraries`
 
 Passwords are kept in the SecretStorage of VS Code, not in `settings.json`, and
 nothing is sent anywhere except to the database you connect to.

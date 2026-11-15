@@ -42,6 +42,7 @@ function createConnection(catalog: Row[] = CATALOG) {
         clearMetadataCache: () => {},
         queryMetadata: async (sql: string) => {
             calls.push(sql);
+            if (sql.includes('p.prosrc FROM pg_catalog.pg_proc')) return catalog.filter(r => r.prosrc !== undefined).map(r => ({ oid: r.oid, prosrc: r.prosrc }));
             if (sql.includes('server_version_num')) return [{ server_version_num: 160000 }];
             if (sql.includes('information_schema.schemata')) return [{ schema_name: 'app' }, { schema_name: 'billing' }, { schema_name: 'public' }];
             if (sql.includes('current_schemas')) return [{ schema_name: 'public' }];
@@ -317,24 +318,42 @@ test('while filtering, Show Empty Schemas adds nothing', async () => {
 
 // ===== differs =====
 
-test('a function whose body matches none of its definitions is marked as differing and stays under Show Only Differences', async () => {
+test('a function whose code differs is marked once the exact comparison has read its body; comments do not count', async () => {
     const catalog = [
-        dbRow('function', 'app', 'same', { args: '', arg_types: [], body_hash: routineBodyHash('SELECT 1') }),
-        dbRow('function', 'app', 'changed', { args: '', arg_types: [], body_hash: routineBodyHash('SELECT 2') })
+        dbRow('function', 'app', 'same', { args: '', arg_types: [], body_hash: routineBodyHash(' SELECT 1 '), prosrc: ' SELECT 1 ' }),
+        dbRow('function', 'app', 'changed', { args: '', arg_types: [], body_hash: routineBodyHash(' SELECT 2 '), prosrc: ' SELECT 2 ' }),
+        dbRow('function', 'app', 'commented', { args: '', arg_types: [], body_hash: routineBodyHash(' SELECT 1 /* note */ '), prosrc: ' SELECT 1 /* note */ ' })
     ];
     const { provider } = createProvider({
         catalog,
         files: {
-            'r.sql': 'CREATE FUNCTION app.same() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;\nCREATE FUNCTION app.changed() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;'
+            'r.sql': [
+                'CREATE FUNCTION app.same() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;',
+                'CREATE FUNCTION app.changed() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;',
+                'CREATE FUNCTION app.commented() RETURNS int LANGUAGE sql AS $$ SELECT 1 -- note',
+                '$$;'
+            ].join('\n')
         }
     });
+    assert.equal((await findObject(provider, 'changed()')).status, 'both', 'not marked before the body was compared');
+    await provider.catalog.bodies.settled();
+    provider.rerender();
     const same = await findObject(provider, 'same()');
     const changed = await findObject(provider, 'changed()');
-    assert.deepEqual([same.status, changed.status], ['both', 'differs']);
+    const commented = await findObject(provider, 'commented()');
+    assert.deepEqual([same.status, changed.status, commented.status], ['both', 'differs', 'both']);
     const item = provider.getTreeItem(changed);
     assert.match(String(item.tooltip), /differs from the repository/);
     assert.ok(item.resourceUri, 'a differing entry is decorated');
     await provider.setOnlyDifferences(true);
     assert.equal(provider.isHidden(changed), false);
     assert.equal(provider.isHidden(same), true);
+});
+
+test('an object the full comparison found different is marked, and its tooltip says what differs', async () => {
+    const { provider } = createProvider({ files: { 'r.sql': "CREATE TYPE app.mood AS ENUM ('a');" } });
+    provider.setComparisonMarks({ differences: (kind, schema, name) => (kind === 'type' && name === 'mood' ? [{ path: "value 'b'", message: 'missing in the repository' }] : undefined) });
+    const mood = await findObject(provider, 'mood');
+    assert.equal(mood.status, 'differs');
+    assert.match(String(provider.getTreeItem(mood).tooltip), /• value 'b': missing in the repository/);
 });

@@ -83,6 +83,8 @@ export interface ConnectionConfig {
     applicationName?: string;
     /** The commit mode a new database session of this connection starts with; missing means `auto`. */
     commitMode?: CommitMode;
+    /** Open SQL files are checked with the plpgsql_check extension of this database. */
+    plpgsqlCheck?: boolean;
 }
 
 /** The `application_name` of a connection that has none of its own. */
@@ -123,6 +125,7 @@ export interface ConnectionFormMessage {
     caFile?: string;
     applicationName?: string;
     commitMode?: string;
+    plpgsqlCheck?: boolean;
 }
 
 /** The connection the connection form describes; optional fields left empty are not stored. */
@@ -152,8 +155,14 @@ export function connectionConfigFromForm(msg: ConnectionFormMessage): Connection
     if (commitMode !== 'auto') {
         config.commitMode = commitMode;
     }
+    if (msg.plpgsqlCheck === true) {
+        config.plpgsqlCheck = true;
+    }
     return config;
 }
+
+/** Tells whether the plpgsql_check extension is installed: one row with its version, or none. */
+export const PLPGSQL_CHECK_VERSION_QUERY = `SELECT extversion FROM pg_catalog.pg_extension WHERE extname = 'plpgsql_check'`;
 
 /** The `sslMode` as written, normalised; '' when it is missing. */
 function rawSslMode(config: Pick<ConnectionConfig, 'sslMode'>): string {
@@ -548,12 +557,14 @@ export class ConnectionManager {
                 caFile: existingConfig.caFile ?? '',
                 applicationName: customApplicationName(existingConfig) ?? '',
                 commitMode: parseCommitMode(existingConfig.commitMode),
+                plpgsqlCheck: existingConfig.plpgsqlCheck === true,
                 title: `Edit: ${existingConfig.name}`
             }
             : {
                 name: 'My Database', host: defaultHost, port: String(defaultPort), database: defaultDatabase,
                 user: 'postgres', schemas: '', sslMode: 'verify-full' as SslMode, caFile: '', applicationName: '',
                 commitMode: 'auto' as CommitMode,
+                plpgsqlCheck: false,
                 title: 'New Connection'
             };
 
@@ -594,6 +605,16 @@ export class ConnectionManager {
                     }
                     try {
                         await this.connect(connConfig, password);
+                        if (connConfig.plpgsqlCheck) {
+                            const rows = (await this.query(PLPGSQL_CHECK_VERSION_QUERY)).rows;
+                            if (rows.length === 0) {
+                                delete connConfig.plpgsqlCheck;
+                                vscode.window.showWarningMessage(
+                                    `The database ${msg.database} has no plpgsql_check extension, so "${connConfig.name}" is not used for plpgsql_check. `
+                                    + 'Install it with CREATE EXTENSION plpgsql_check and edit the connection again.'
+                                );
+                            }
+                        }
                         await this.saveConnection(connConfig, password);
                         vscode.window.showInformationMessage(`Connected to ${msg.database} on ${msg.host}:${msg.port}`);
                         panel.dispose();
@@ -612,6 +633,8 @@ export class ConnectionManager {
         .form-group { margin-bottom: var(--sp-3); }
         label { display: block; margin-bottom: var(--sp-1); font-weight: 500; }
         input, select { width: 100%; max-width: 400px; }
+        label.checkbox { display: flex; align-items: center; gap: var(--sp-2); font-weight: normal; }
+        label.checkbox input { width: auto; }
         .button-row { margin-top: var(--sp-5); display: flex; gap: var(--sp-2); }
         .error {
             color: var(--c-danger);
@@ -672,6 +695,9 @@ export class ConnectionManager {
                 ${COMMIT_MODES.map((mode) => `<option value="${mode}">${COMMIT_MODE_LABELS[mode]}</option>`).join('\n                ')}
             </select>
         </div>
+        <div class="form-group">
+            <label class="checkbox"><input type="checkbox" id="plpgsqlCheck" /> Check SQL files with plpgsql_check in this database</label>
+        </div>
         <div class="error" id="error"></div>
         <div class="button-row">
             <button type="submit" class="btn btn-primary">${icon('plug')}Connect</button>
@@ -694,6 +720,7 @@ export class ConnectionManager {
                 if (msg.caFile) document.getElementById('caFile').value = msg.caFile;
                 if (msg.applicationName) document.getElementById('applicationName').value = msg.applicationName;
                 if (msg.commitMode) document.getElementById('commitMode').value = msg.commitMode;
+                document.getElementById('plpgsqlCheck').checked = msg.plpgsqlCheck === true;
                 if (msg.title) document.getElementById('title').textContent = msg.title;
             } else if (msg.type === 'error') {
                 const el = document.getElementById('error');
@@ -715,6 +742,7 @@ export class ConnectionManager {
             const caFile = document.getElementById('caFile').value.trim();
             const applicationName = document.getElementById('applicationName').value.trim();
             const commitMode = document.getElementById('commitMode').value;
+            const plpgsqlCheck = document.getElementById('plpgsqlCheck').checked;
 
             if (!name || !host || !port || !database || !user) {
                 const el = document.getElementById('error');
@@ -727,7 +755,7 @@ export class ConnectionManager {
             vscode.postMessage({
                 type: 'connect',
                 name, host, port: parseInt(port, 10), database, user, password, schemas, sslMode, caFile, applicationName,
-                commitMode
+                commitMode, plpgsqlCheck
             });
         });
 
@@ -815,6 +843,34 @@ export class ConnectionManager {
      * leaves the previous connection (if any) fully intact.
      */
     private async connect(config: ConnectionConfig, password: string): Promise<void> {
+        const { poolConfig, sslMode } = await this.buildPoolConfig(config, password);
+
+        // A new connection starts with the server's default search_path.
+        let activePoolConfig = poolConfig;
+        let pool = this.createPool(activePoolConfig, null);
+        try {
+            await this.verifyPool(pool);
+        } catch (err: unknown) {
+            await this.endQuietly(pool);
+            if (!allowsPlainFallback(sslMode) || !getErrorMessage(err).includes('does not support SSL')) {
+                throw err;
+            }
+            Logger.log('connection', 'The server does not support SSL, retrying without SSL');
+            activePoolConfig = { ...poolConfig };
+            delete activePoolConfig.ssl;
+            pool = this.createPool(activePoolConfig, null);
+            try {
+                await this.verifyPool(pool);
+            } catch (retryErr: unknown) {
+                await this.endQuietly(pool);
+                throw retryErr;
+            }
+        }
+        await this.activate(config, pool, activePoolConfig);
+    }
+
+    /** The pool options of a connection: resolved host, SSL, CA certificate and application name. */
+    private async buildPoolConfig(config: ConnectionConfig, password: string): Promise<{ poolConfig: PoolConfig; sslMode: SslMode }> {
         // Resolve hostname via OS resolver (respects hosts file)
         let resolvedHost = config.host;
         try {
@@ -858,29 +914,56 @@ export class ConnectionManager {
             max: 10,
             connectionTimeoutMillis: 5000
         };
+        return { poolConfig, sslMode };
+    }
 
-        // A new connection starts with the server's default search_path.
-        let activePoolConfig = poolConfig;
-        let pool = this.createPool(activePoolConfig, null);
-        try {
-            await this.verifyPool(pool);
-        } catch (err: unknown) {
-            await this.endQuietly(pool);
-            if (!allowsPlainFallback(sslMode) || !getErrorMessage(err).includes('does not support SSL')) {
-                throw err;
-            }
-            Logger.log('connection', 'The server does not support SSL, retrying without SSL');
-            activePoolConfig = { ...poolConfig };
-            delete activePoolConfig.ssl;
-            pool = this.createPool(activePoolConfig, null);
-            try {
-                await this.verifyPool(pool);
-            } catch (retryErr: unknown) {
-                await this.endQuietly(pool);
-                throw retryErr;
-            }
+    /** The saved connections marked for plpgsql_check. */
+    getPlpgsqlCheckConnections(): ConnectionConfig[] {
+        return this.getSavedConnections().filter(c => c.plpgsqlCheck === true);
+    }
+
+    /**
+     * Open a client for a saved connection — not necessarily the active one —
+     * with its stored password, or one asked for and then stored. The client
+     * belongs to the caller, who has to end it.
+     */
+    async openClientFor(config: ConnectionConfig): Promise<ConnectableSessionClient> {
+        let password = await this.getStoredPassword(config);
+        const asked = password === undefined;
+        if (asked) {
+            password = await vscode.window.showInputBox({ prompt: `Password for ${config.name}`, password: true, ignoreFocusOut: true });
+            if (password === undefined) throw new Error(`No password for ${config.name}`);
         }
+        const { poolConfig, sslMode } = await this.buildPoolConfig(config, password!);
+        const open = async (options: PoolConfig): Promise<ConnectableSessionClient> => {
+            const client = this.sessionClientFactory(sessionClientConfig(options));
+            const onEarlyError = (err: Error) => Logger.error('ConnectionManager.openClientFor', err);
+            client.on('error', onEarlyError);
+            try {
+                await client.connect();
+            } catch (err: unknown) {
+                client.end().catch(() => undefined);
+                throw err;
+            } finally {
+                client.removeListener('error', onEarlyError);
+            }
+            return client;
+        };
+        let client: ConnectableSessionClient;
+        try {
+            client = await open(poolConfig);
+        } catch (err: unknown) {
+            if (!allowsPlainFallback(sslMode) || !getErrorMessage(err).includes('does not support SSL')) throw err;
+            const plain = { ...poolConfig };
+            delete plain.ssl;
+            client = await open(plain);
+        }
+        if (asked) await this.storePassword(config, password!);
+        return client;
+    }
 
+    /** Make the verified pool the active connection. */
+    private async activate(config: ConnectionConfig, pool: Pool, activePoolConfig: PoolConfig): Promise<void> {
         const oldPool = this.pool;
         this.pool = pool;
         this.connectionGeneration++;

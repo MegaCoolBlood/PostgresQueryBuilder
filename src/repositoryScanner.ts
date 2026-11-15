@@ -55,6 +55,8 @@ export interface RepoDefinition {
     doc?: RepoDoc;
     /** md5 of the normalised body of a function or procedure (see {@link normalizeRoutineBody}). */
     bodyHash?: string;
+    /** md5 of the body's tokens without comments (see {@link routineTokenText}). */
+    tokenHash?: string;
 }
 
 export interface RepoParam {
@@ -101,6 +103,80 @@ export function normalizeRoutineBody(body: string): string {
 
 export function routineBodyHash(body: string): string {
     return createHash('md5').update(normalizeRoutineBody(body), 'utf8').digest('hex');
+}
+
+/**
+ * The body of a routine as the exact comparison sees it: its tokens without
+ * comments and whitespace, words in lower case, strings and quoted names as
+ * written. A `-- note` that became `/* note *\/`, with or without its line
+ * break, is no difference; a changed string literal is. Bodies nested in
+ * dollar quotes (`EXECUTE $q$ … $q$`) are compared the same way.
+ */
+export function routineTokenText(body: string): string {
+    return tokenize(body).map(t => {
+        if (t.type === 'word') return t.value;
+        if (t.type === 'dollar') {
+            const inner = dollarContent(t.text);
+            return inner === null ? t.text : `$$${routineTokenText(inner)}$$`;
+        }
+        return t.text;
+    }).join(' ');
+}
+
+export function routineTokenHash(body: string): string {
+    return createHash('md5').update(routineTokenText(body), 'utf8').digest('hex');
+}
+
+/**
+ * The SQL without its comments, also those inside dollar-quoted bodies, the
+ * same way on both sides of a comparison:
+ * - a comment on lines of its own goes with its lines;
+ * - a comment at the end of a line goes with that line break, so
+ *   `x -- note` + new line + `+ 1` and `x /* note *\/ + 1` both become `x + 1`;
+ * - a comment between code becomes a space.
+ */
+export function stripSqlComments(sql: string): string {
+    return stripComments(stripComments(sql, 'ownLines'), 'rest');
+}
+
+function stripComments(sql: string, pass: 'ownLines' | 'rest'): string {
+    const comments: SqlComment[] = [];
+    const toks = tokenize(sql, comments);
+    const cuts: Array<{ start: number; end: number; text: string }> = [];
+    for (const c of comments) {
+        const lineStart = sql.lastIndexOf('\n', c.start - 1) + 1;
+        const nl = sql.indexOf('\n', c.end);
+        const lineEnd = nl < 0 ? sql.length : nl;
+        const before = sql.slice(lineStart, c.start);
+        const after = sql.slice(c.end, lineEnd);
+        const ownLines = /^[ \t]*$/.test(before) && /^[ \t\r]*$/.test(after);
+        if (pass === 'ownLines') {
+            if (ownLines) cuts.push({ start: lineStart, end: nl < 0 ? sql.length : nl + 1, text: '' });
+        } else if (/^[ \t\r]*$/.test(after)) {
+            // At the end of a line: the line break and the next line's indentation go too.
+            let end = nl < 0 ? sql.length : nl + 1;
+            while (end < sql.length && (sql[end] === ' ' || sql[end] === '\t')) end++;
+            cuts.push({ start: c.start - (before.length - before.trimEnd().length), end, text: nl < 0 ? '' : ' ' });
+        } else {
+            cuts.push({ start: c.start, end: c.end, text: ' ' });
+        }
+    }
+    for (const t of toks) {
+        if (t.type !== 'dollar') continue;
+        const inner = dollarContent(t.text);
+        if (inner === null) continue;
+        const tag = t.text.slice(0, t.text.indexOf('$', 1) + 1);
+        cuts.push({ start: t.start, end: t.end, text: tag + stripComments(inner, pass) + tag });
+    }
+    cuts.sort((a, b) => a.start - b.start);
+    let out = '';
+    let at = 0;
+    for (const cut of cuts) {
+        if (cut.start < at) continue;
+        out += sql.slice(at, cut.start) + cut.text;
+        at = cut.end;
+    }
+    return out + sql.slice(at);
 }
 
 // ===== Tokenizer ===============================================================
@@ -766,7 +842,10 @@ function parseCreate(toks: Tok[], ctx: ScanContext, schemaOverride: string | nul
             def.argCount = argCountOf(def.params, kind);
             const tail = routineTail(toks, close + 1, ctx.text);
             if (tail.returns !== undefined && kind === 'function') def.returns = tail.returns;
-            if (tail.body !== undefined) def.bodyHash = routineBodyHash(tail.body);
+            if (tail.body !== undefined) {
+                def.bodyHash = routineBodyHash(tail.body);
+                def.tokenHash = routineTokenHash(tail.body);
+            }
         }
     } else if (kind === 'trigger') {
         let depth = 0;

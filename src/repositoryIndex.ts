@@ -143,10 +143,22 @@ export class RepositoryIndex implements RepositorySource, vscode.Disposable {
      */
     async filesContaining(word: string): Promise<Array<{ uri: string; text: string }>> {
         const needle = word.toLowerCase();
-        const open = new Map(vscode.workspace.textDocuments.map(d => [d.uri.toString(), d]));
         const found: Array<{ uri: string; text: string }> = [];
+        await this.readAll((uri, text) => {
+            if (text.toLowerCase().includes(needle)) found.push({ uri, text });
+        });
+        return found.sort((a, b) => a.uri.localeCompare(b.uri));
+    }
+
+    /**
+     * Read every scanned file — from the open editor when it is open — and
+     * hand it to `visit`; files are read a few at a time, none is kept.
+     */
+    async readAll(visit: (uri: string, text: string) => void, isCancelled: () => boolean = () => false): Promise<void> {
+        const open = new Map(vscode.workspace.textDocuments.map(d => [d.uri.toString(), d]));
         const maxBytes = this.settings().maxFileSizeKb * 1024;
         await forEachLimited([...this.allFiles], CONCURRENCY, async (uri) => {
+            if (isCancelled()) return;
             try {
                 const doc = open.get(uri);
                 let text: string;
@@ -157,17 +169,26 @@ export class RepositoryIndex implements RepositorySource, vscode.Disposable {
                     if (bytes.byteLength > maxBytes) return;
                     text = new TextDecoder('utf-8').decode(bytes);
                 }
-                if (text.toLowerCase().includes(needle)) found.push({ uri, text });
+                visit(uri, text);
             } catch (err: unknown) {
-                Logger.error('RepositoryIndex.filesContaining', err);
+                Logger.error('RepositoryIndex.readAll', err);
             }
         });
-        return found.sort((a, b) => a.uri.localeCompare(b.uri));
     }
 
     /** True once the first scan has finished. */
     get isReady(): boolean {
         return this.ready;
+    }
+
+    /** Start the scan if needed and wait for it to finish. */
+    async whenScanned(): Promise<void> {
+        this.ensureScanned();
+        while (this.scanning && !this.ready) {
+            const current = this.scanning;
+            await current;
+            if (current === this.scanning) break;
+        }
     }
 
     ensureScanned(): void {
