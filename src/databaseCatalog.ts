@@ -414,6 +414,11 @@ export class DatabaseCatalog implements vscode.Disposable {
 /** Reads the bodies of routines by oid; `$1` is an `oid[]`. */
 export const ROUTINE_BODIES_QUERY = 'SELECT p.oid::bigint AS oid, p.prosrc FROM pg_catalog.pg_proc p WHERE p.oid = ANY($1::oid[])';
 
+/** The token hash of a definition's body, with type spellings unified or as written. */
+export function definitionTokenHash(def: { tokenHash?: string; exactTokenHash?: string }, ignoreTypeSpelling: boolean): string | undefined {
+    return ignoreTypeSpelling ? def.tokenHash : def.exactTokenHash;
+}
+
 /** How many bodies one query reads. */
 const BODY_BATCH = 200;
 
@@ -427,25 +432,37 @@ const BODY_BATCH = 200;
  * routine counts as the same, so nothing is marked that turns out equal.
  */
 export class RoutineBodies implements vscode.Disposable {
-    private readonly hashes = new Map<number, { bodyHash: string; tokenHash: string }>();
+    private readonly hashes = new Map<number, { bodyHash: string; tokenHash: string; exactTokenHash: string }>();
     private readonly pending = new Set<number>();
     private readonly failed = new Set<number>();
     private running?: Promise<void>;
     private generation = 0;
+    private _ignoreTypeSpelling = true;
     private readonly _onDidChange = new vscode.EventEmitter<void>();
-    /** Fires after a batch of bodies was compared. */
+    /** Fires after a batch of bodies was compared, or when the type spelling setting changes. */
     readonly onDidChange = this._onDidChange.event;
 
     constructor(private readonly connection: CatalogConnection, private readonly batchSize = BODY_BATCH) {}
+
+    /** Whether `varchar` and `character varying` and the like count as the same in a body. */
+    get ignoreTypeSpelling(): boolean {
+        return this._ignoreTypeSpelling;
+    }
+
+    set ignoreTypeSpelling(value: boolean) {
+        if (value === this._ignoreTypeSpelling) return;
+        this._ignoreTypeSpelling = value;
+        this._onDidChange.fire();
+    }
 
     /** Where a database routine exists, with comments and whitespace of its body ignored. */
     status(db: DbObject, definitions: readonly LocatedDefinition[]): RepoStatus {
         const fast = routineStatus(db, definitions);
         if (fast !== 'differs' || !db.bodyHash) return fast;
-        const known = this.hashes.get(db.oid);
-        if (known && known.bodyHash === db.bodyHash) {
-            const tokens = definitions.map(d => d.tokenHash).filter((h): h is string => !!h);
-            return tokens.length === 0 || tokens.includes(known.tokenHash) ? 'both' : 'differs';
+        const known = this.tokenHashOf(db);
+        if (known !== undefined) {
+            const tokens = definitions.map(d => definitionTokenHash(d, this._ignoreTypeSpelling)).filter((h): h is string => !!h);
+            return tokens.length === 0 || tokens.includes(known) ? 'both' : 'differs';
         }
         if (this.failed.has(db.oid)) return fast;
         this.request(db.oid);
@@ -460,7 +477,8 @@ export class RoutineBodies implements vscode.Disposable {
     /** The comment-insensitive hash of a body read so far, while it still matches the catalog's hash. */
     tokenHashOf(db: Pick<DbObject, 'oid' | 'bodyHash'>): string | undefined {
         const known = this.hashes.get(db.oid);
-        return known && known.bodyHash === db.bodyHash ? known.tokenHash : undefined;
+        if (!known || known.bodyHash !== db.bodyHash) return undefined;
+        return this._ignoreTypeSpelling ? known.tokenHash : known.exactTokenHash;
     }
 
     /** Wait until every requested body has been compared (tests, the full comparison). */
@@ -496,7 +514,7 @@ export class RoutineBodies implements vscode.Disposable {
                 if (generation !== this.generation) return;
                 for (const row of rows) {
                     const source = String(row.prosrc ?? '');
-                    this.hashes.set(Number(row.oid), { bodyHash: routineBodyHash(source), tokenHash: routineTokenHash(source) });
+                    this.hashes.set(Number(row.oid), { bodyHash: routineBodyHash(source), tokenHash: routineTokenHash(source), exactTokenHash: routineTokenHash(source, false) });
                 }
                 // A routine dropped meanwhile has no row; it is not asked for again.
                 for (const oid of batch) if (!this.hashes.has(oid)) this.failed.add(oid);

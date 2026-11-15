@@ -55,8 +55,10 @@ export interface RepoDefinition {
     doc?: RepoDoc;
     /** md5 of the normalised body of a function or procedure (see {@link normalizeRoutineBody}). */
     bodyHash?: string;
-    /** md5 of the body's tokens without comments (see {@link routineTokenText}). */
+    /** md5 of the body's tokens without comments, type spellings unified (see {@link routineTokenText}). */
     tokenHash?: string;
+    /** The same with the types as spelt in the file. */
+    exactTokenHash?: string;
 }
 
 export interface RepoParam {
@@ -106,25 +108,111 @@ export function routineBodyHash(body: string): string {
 }
 
 /**
+ * Spellings of the same built-in type, longest first, each with the one it is
+ * compared as. The short forms are the targets, so a lone `time` or
+ * `timestamp` stays as it is and `AT TIME ZONE` is left alone.
+ */
+const TYPE_SPELLINGS: ReadonlyArray<[readonly string[], string]> = ([
+    ['national character varying', 'varchar'],
+    ['national char varying', 'varchar'],
+    ['timestamp without time zone', 'timestamp'],
+    ['timestamp with time zone', 'timestamptz'],
+    ['time without time zone', 'time'],
+    ['time with time zone', 'timetz'],
+    ['character varying', 'varchar'],
+    ['char varying', 'varchar'],
+    ['national character', 'char'],
+    ['national char', 'char'],
+    ['double precision', 'float8'],
+    ['bit varying', 'varbit'],
+    ['integer', 'int'],
+    ['int4', 'int'],
+    ['smallint', 'int2'],
+    ['bigint', 'int8'],
+    ['boolean', 'bool'],
+    ['decimal', 'numeric'],
+    ['character', 'char'],
+    ['bpchar', 'char'],
+    ['nchar', 'char'],
+    ['real', 'float4'],
+    ['float', 'float8']
+] as Array<[string, string]>).map(([spelling, short]) => [spelling.split(' '), short]);
+
+/**
+ * The type spelling that starts at `toks[k]`, if any: how many tokens it
+ * takes and its short form. A word after a `.` is a member name, not a type,
+ * and `float(n)` depends on `n`, so neither is touched.
+ */
+function typeSpellingAt(toks: readonly Tok[], k: number): { length: number; short: string } | null {
+    if (toks[k].type !== 'word' || (k > 0 && isPunct(toks[k - 1], '.'))) return null;
+    for (const [words, short] of TYPE_SPELLINGS) {
+        if (!words.every((w, i) => toks[k + i]?.type === 'word' && toks[k + i].value === w)) continue;
+        if (words.length === 1 && words[0] === 'float' && isPunct(toks[k + 1], '(')) return null;
+        return { length: words.length, short };
+    }
+    return null;
+}
+
+/**
  * The body of a routine as the exact comparison sees it: its tokens without
  * comments and whitespace, words in lower case, strings and quoted names as
  * written. A `-- note` that became `/* note *\/`, with or without its line
  * break, is no difference; a changed string literal is. Bodies nested in
- * dollar quotes (`EXECUTE $q$ … $q$`) are compared the same way.
+ * dollar quotes (`EXECUTE $q$ … $q$`) are compared the same way. With
+ * `ignoreTypeSpelling`, `varchar` and `character varying`, `int` and
+ * `integer` and the other spellings of one type count as the same.
  */
-export function routineTokenText(body: string): string {
-    return tokenize(body).map(t => {
-        if (t.type === 'word') return t.value;
-        if (t.type === 'dollar') {
+export function routineTokenText(body: string, ignoreTypeSpelling = true): string {
+    const toks = tokenize(body);
+    const out: string[] = [];
+    for (let k = 0; k < toks.length; k++) {
+        const t = toks[k];
+        const spelling = ignoreTypeSpelling ? typeSpellingAt(toks, k) : null;
+        if (spelling) {
+            out.push(spelling.short);
+            k += spelling.length - 1;
+        } else if (t.type === 'word') {
+            out.push(t.value);
+        } else if (t.type === 'dollar') {
             const inner = dollarContent(t.text);
-            return inner === null ? t.text : `$$${routineTokenText(inner)}$$`;
+            out.push(inner === null ? t.text : `$$${routineTokenText(inner, ignoreTypeSpelling)}$$`);
+        } else {
+            out.push(t.text);
         }
-        return t.text;
-    }).join(' ');
+    }
+    return out.join(' ');
 }
 
-export function routineTokenHash(body: string): string {
-    return createHash('md5').update(routineTokenText(body), 'utf8').digest('hex');
+export function routineTokenHash(body: string, ignoreTypeSpelling = true): string {
+    return createHash('md5').update(routineTokenText(body, ignoreTypeSpelling), 'utf8').digest('hex');
+}
+
+/**
+ * The SQL with every spelling of a built-in type replaced by its short form
+ * (`character varying` → `varchar`), also inside dollar-quoted bodies, so a
+ * diff of two scripts does not show them; everything else stays as written.
+ */
+export function unifyTypeSpelling(sql: string): string {
+    const toks = tokenize(sql);
+    let out = '';
+    let at = 0;
+    for (let k = 0; k < toks.length; k++) {
+        const t = toks[k];
+        const spelling = typeSpellingAt(toks, k);
+        if (spelling) {
+            const last = toks[k + spelling.length - 1];
+            out += sql.slice(at, t.start) + spelling.short;
+            at = last.end;
+            k += spelling.length - 1;
+        } else if (t.type === 'dollar') {
+            const inner = dollarContent(t.text);
+            if (inner === null) continue;
+            const tag = t.text.slice(0, t.text.indexOf('$', 1) + 1);
+            out += sql.slice(at, t.start) + tag + unifyTypeSpelling(inner) + tag;
+            at = t.end;
+        }
+    }
+    return out + sql.slice(at);
 }
 
 /**
@@ -845,6 +933,7 @@ function parseCreate(toks: Tok[], ctx: ScanContext, schemaOverride: string | nul
             if (tail.body !== undefined) {
                 def.bodyHash = routineBodyHash(tail.body);
                 def.tokenHash = routineTokenHash(tail.body);
+                def.exactTokenHash = routineTokenHash(tail.body, false);
             }
         }
     } else if (kind === 'trigger') {

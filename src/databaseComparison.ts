@@ -9,7 +9,7 @@
  * query is created as a temporary view in that transaction and both are
  * printed by `pg_get_viewdef` — the temporary view is gone with the rollback.
  */
-import { dbObjectIdentity, type CatalogData, type DbObject, type DbRelation } from './databaseCatalog';
+import { dbObjectIdentity, definitionTokenHash, type CatalogData, type DbObject, type DbRelation } from './databaseCatalog';
 import type { DefinitionMatcher, LocatedDefinition, ObjectIdentity, UnmarkedObjects } from './repositoryComparison';
 import { ROUTINE_KINDS, type RepoObjectKind } from './repositoryScanner';
 import { parseArgumentList } from './sqlCodeIntel';
@@ -107,6 +107,8 @@ export interface ComparisonInput {
         status(db: DbObject, definitions: readonly LocatedDefinition[]): unknown;
         settled(): Promise<void>;
         tokenHashOf(db: DbObject): string | undefined;
+        /** Whether `varchar` and `character varying` and the like count as the same; true when missing. */
+        readonly ignoreTypeSpelling?: boolean;
     };
     kinds?: readonly ComparisonKind[];
     columnOrder?: boolean;
@@ -438,7 +440,7 @@ export async function runComparison(input: ComparisonInput): Promise<ComparisonR
             switch (kind) {
                 case 'function':
                 case 'procedure':
-                    differences = routineDifferences(item.db!, item.definitions, input.bodies.tokenHashOf(item.db!));
+                    differences = routineDifferences(item.db!, item.definitions, input.bodies.tokenHashOf(item.db!), input.bodies.ignoreTypeSpelling ?? true);
                     break;
                 case 'table': {
                     const db: TableModel = {
@@ -525,7 +527,7 @@ export async function runComparison(input: ComparisonInput): Promise<ComparisonR
 }
 
 /** Signature and body of a routine against its best-matching definition. */
-export function routineDifferences(db: DbObject, definitions: readonly LocatedDefinition[], dbTokenHash: string | undefined): Difference[] {
+export function routineDifferences(db: DbObject, definitions: readonly LocatedDefinition[], dbTokenHash: string | undefined, ignoreTypeSpelling = true): Difference[] {
     const dbParams = db.fullArgs !== undefined && db.fullArgs !== null ? parseArgumentList(db.kind, db.fullArgs) : null;
     return best(definitions.map(def => {
         const out: Difference[] = [];
@@ -535,8 +537,8 @@ export function routineDifferences(db: DbObject, definitions: readonly LocatedDe
                 { params: dbParams, returns: db.kind === 'function' ? db.detail : undefined }
             ));
         }
-        if (db.bodyHash && def.bodyHash && def.bodyHash !== db.bodyHash && !(dbTokenHash && def.tokenHash === dbTokenHash)) {
-            out.push({ path: 'body', message: 'the code differs (comments and white space ignored)' });
+        if (db.bodyHash && def.bodyHash && def.bodyHash !== db.bodyHash && !(dbTokenHash && definitionTokenHash(def, ignoreTypeSpelling) === dbTokenHash)) {
+            out.push({ path: 'body', message: ignoreTypeSpelling ? 'the code differs (comments, white space and type spellings ignored)' : 'the code differs (comments and white space ignored)' });
         }
         return out;
     }));

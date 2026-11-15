@@ -52,7 +52,7 @@ import {
 import { formatSqlChecked } from './plpgsqlFormatter';
 import { entryNode } from './comparisonView';
 import type { ComparisonEntry } from './databaseComparison';
-import { stripSqlComments } from './repositoryScanner';
+import { stripSqlComments, unifyTypeSpelling } from './repositoryScanner';
 import { getFormatOptions } from './formatSettings';
 
 /** A node of either view. */
@@ -135,11 +135,14 @@ export function statementText(text: string, def: LocatedDefinition): string {
  * and blank lines go, as the formatter keeps them where the author left them.
  * With `ignoreComments`, comments are left out first: a migration tool that
  * turned line comments into block comments must not make every line differ.
+ * With `ignoreTypeSpelling`, every spelling of a type is written the same way,
+ * so `varchar` against `character varying` is no difference either.
  */
-export function formatForCompare(script: string, ignoreComments = false): string {
+export function formatForCompare(script: string, ignoreComments = false, ignoreTypeSpelling = false): string {
     // Bodies saved from Windows keep CRLF in pg_proc; only the text is compared, not its line ends.
     const lf = script.replace(/\r\n?/g, '\n');
-    const text = ignoreComments ? stripSqlComments(lf) : lf;
+    const uncommented = ignoreComments ? stripSqlComments(lf) : lf;
+    const text = ignoreTypeSpelling ? unifyTypeSpelling(uncommented) : uncommented;
     try {
         const outcome = formatSqlChecked(text, { ...getFormatOptions(), preserveSingleLineRoutineHeaders: false, preserveSingleLineIfBlocks: false });
         return outcome.ok ? withoutBlankLines(outcome.text) : text;
@@ -550,8 +553,10 @@ export function registerDatabaseObjectCommands(context: vscode.ExtensionContext,
             const def = await pickDefinition(object, at);
             if (!def || !(await connectionManager.ensureConnected())) return;
             const repoDoc = await vscode.workspace.openTextDocument(vscode.Uri.parse(def.uri));
-            const ignoreComments = vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('repository.compareIgnoresComments', true);
-            const left = formatForCompare(statementText(repoDoc.getText(), def), ignoreComments);
+            const config = vscode.workspace.getConfiguration('postgresQueryBuilder');
+            const ignoreComments = config.get<boolean>('repository.compareIgnoresComments', true);
+            const ignoreTypeSpelling = config.get<boolean>('repository.compareIgnoresTypeSpelling', true);
+            const left = formatForCompare(statementText(repoDoc.getText(), def), ignoreComments, ignoreTypeSpelling);
             const script = await vscode.window.withProgress(
                 { location: vscode.ProgressLocation.Window, title: 'Reading the CREATE script' },
                 async () => {
@@ -573,7 +578,7 @@ export function registerDatabaseObjectCommands(context: vscode.ExtensionContext,
                     }
                 }
             );
-            const right = formatForCompare(script, ignoreComments);
+            const right = formatForCompare(script, ignoreComments, ignoreTypeSpelling);
             const name = qualifiedName(object);
             await vscode.commands.executeCommand(
                 'vscode.diff',

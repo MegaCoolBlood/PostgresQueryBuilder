@@ -118,7 +118,7 @@ test('the comparison reports what differs, what exists only on one side, and cou
     const result = await runComparison(value);
     const summary = result.entries.map(e => `${e.status} ${e.kind} ${e.schema}.${e.name}${e.differences.length ? `: ${e.differences.map(d => `${d.path} ${d.message}`).join('; ')}` : ''}`);
     assert.deepEqual(summary, [
-        'differs function app.changed: body the code differs (comments and white space ignored)',
+        'differs function app.changed: body the code differs (comments, white space and type spellings ignored)',
         'dbOnly function app.legacy',
         'differs table app.orders: column note type text in the repository, character varying(200) in the database',
         'repoOnly table app.planned'
@@ -206,4 +206,12 @@ test('the view groups by status and kind, filters by kind, and the report lists 
     const report = comparisonReport(result, null);
     assert.match(report, /## Differs \(2\)/);
     assert.match(report, /- \*\*Tables\*\* `app\.orders`\n {4}- column note: type text in the repository, character varying\(200\) in the database/);
+});
+
+test('a routine body that differs only in type spellings is no difference, unless asked', () => {
+    const db = routine('f', ' DECLARE v character varying; BEGIN END ');
+    const defs = scanSqlText('CREATE FUNCTION app.f() RETURNS int LANGUAGE plpgsql AS $$ DECLARE v varchar; BEGIN END $$;').map(d => ({ ...d, uri: 'x' }));
+    const body = ' DECLARE v character varying; BEGIN END ';
+    assert.deepEqual(routineDifferences(db, defs, routineTokenHash(body)), []);
+    assert.deepEqual(routineDifferences(db, defs, routineTokenHash(body, false), false).map(d => d.path), ['body']);
 });

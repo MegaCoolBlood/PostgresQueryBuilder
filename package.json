@@ -1650,6 +1650,11 @@
           "default": true,
           "markdownDescription": "Leave comments out of both sides of **Compare with Database**, so a line comment that a migration turned into a block comment, with or without its line break, shows no difference. Turn it off to see the comments in the diff. The marks of the *Objects* view always ignore comments."
         },
+        "postgresQueryBuilder.repository.compareIgnoresTypeSpelling": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Treat the spellings of one type as the same when the code of functions and procedures is compared with the repository: `varchar` and `character varying`, `int`, `int4` and `integer`, `timestamptz` and `timestamp with time zone` and so on. Applies to the marks of the *Objects* view, **Compare Repository with Database** and **Compare with Database**. Turn it off to have such a body marked as different."
+        },
         "postgresQueryBuilder.comparison.columnOrder": {
           "type": "boolean",
           "default": false,

@@ -195,7 +195,11 @@ off, and `…include`, `…exclude` and `…maxFileSizeKb` choose the files.
 Bodies are compared without whitespace, letter case and comments, so a
 repository run through the formatter does not count as different, and neither
 does a function whose `-- line comments` the database keeps as `/* block
-comments */` or whose line breaks it lost; matching any one of several `CREATE`
+comments */` or whose line breaks it lost. Spellings of one type count as the
+same too — `varchar` and `character varying`, `int` and `integer`,
+`timestamptz` and `timestamp with time zone` — unless
+`postgresQueryBuilder.repository.compareIgnoresTypeSpelling` is turned off.
+Matching any one of several `CREATE`
 statements — an older migration, say — is enough. **Compare with Database**
 (context menu, editor and CodeLens) opens the `CREATE` statement of the
 repository next to the one of the database in a diff editor, both formatted
@@ -923,6 +927,7 @@ Empty Schemas** / **Hide Empty Schemas**.
 | `postgresQueryBuilder.repository.maxFileSizeKb` | `5120` | Larger files are not scanned |
 | `postgresQueryBuilder.repository.codeLens` | `true` | Show above each `CREATE` whether the database has the object, with Compare and Reveal |
 | `postgresQueryBuilder.repository.compareIgnoresComments` | `true` | Leave comments out of both sides of **Compare with Database** |
+| `postgresQueryBuilder.repository.compareIgnoresTypeSpelling` | `true` | Treat `varchar` and `character varying` and the other spellings of a type as the same when code is compared |
 | `postgresQueryBuilder.comparison.columnOrder` | `false` | Report a different column order in **Compare Repository with Database** |
 | `postgresQueryBuilder.plpgsqlCheck.onSave` | `true` | Check a SQL file with plpgsql_check when it is saved |
 | `postgresQueryBuilder.plpgsqlCheck.onType` | `false` | Also check while typing |

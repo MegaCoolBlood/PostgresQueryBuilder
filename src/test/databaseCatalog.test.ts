@@ -155,3 +155,20 @@ test('a routine without a body row is not asked for again; clear forgets everyth
     await bodies.settled();
     assert.equal(asked.length, 2);
 });
+
+test('a body that differs only in how its types are spelt counts as the same, unless the setting says otherwise', async () => {
+    const { connection } = bodiesConnection({ 1: ' DECLARE v character varying; BEGIN END ' });
+    const bodies = new RoutineBodies(connection);
+    const defs = scanSqlText('CREATE FUNCTION f() RETURNS int LANGUAGE plpgsql AS $$ DECLARE v varchar; BEGIN END $$;').map(d => ({ ...d, uri: 'x' }));
+    const fn = toDbObject(row({ oid: 1, body_hash: routineBodyHash(' DECLARE v character varying; BEGIN END ') }))!;
+    bodies.status(fn, defs);
+    await bodies.settled();
+    assert.equal(bodies.status(fn, defs), 'both');
+    let changes = 0;
+    bodies.onDidChange(() => changes++);
+    bodies.ignoreTypeSpelling = false;
+    assert.equal(changes, 1, 'the views are told to render again');
+    assert.equal(bodies.status(fn, defs), 'differs');
+    bodies.ignoreTypeSpelling = false;
+    assert.equal(changes, 1);
+});

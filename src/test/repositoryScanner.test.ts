@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { acceptsArgCount, normalizeRoutineBody, normalizeTypeName, routineBodyHash, routineTokenHash, routineTokenText, scanSqlText, stripSqlComments } from '../repositoryScanner';
+import { acceptsArgCount, normalizeRoutineBody, normalizeTypeName, routineBodyHash, routineTokenHash, routineTokenText, scanSqlText, stripSqlComments, unifyTypeSpelling } from '../repositoryScanner';
 
 function summary(sql: string): Array<string> {
     return scanSqlText(sql).map(d => {
@@ -311,4 +311,25 @@ test('stripSqlComments removes comments, also inside dollar-quoted bodies; a com
     assert.equal(stripSqlComments(sql), "CREATE FUNCTION f() AS $$\nBEGIN\n  x := 1; y := '-- not';\nEND $$;\n");
     assert.equal(stripSqlComments('x -- note\n  + 1'), stripSqlComments('x /* note*/ + 1').replace(/ +/g, ' '));
     assert.equal(stripSqlComments('a /* x */ b'), 'a   b');
+});
+
+test('the token text writes every spelling of a type the same way, unless asked not to', () => {
+    const repo = 'DECLARE v varchar := p; n int4; t timestamp with time zone; d double precision; BEGIN END';
+    const db = 'declare v character varying := p; n integer; t timestamptz; d float8; begin end';
+    assert.equal(routineTokenText(repo), routineTokenText(db));
+    assert.equal(routineTokenHash(repo), routineTokenHash(db));
+    assert.notEqual(routineTokenHash(repo, false), routineTokenHash(db, false));
+    assert.equal(routineTokenText('EXECUTE $q$ SELECT 1::integer $q$'), routineTokenText('execute $q$select 1::int$q$'), 'nested bodies too');
+});
+
+test('what only looks like a type spelling is left alone', () => {
+    assert.equal(routineTokenText('r.integer'), 'r . integer', 'a member name');
+    assert.equal(routineTokenText('"integer"'), '"integer"', 'a quoted name');
+    assert.equal(routineTokenText('float(10)'), 'float ( 10 )', 'float(n) depends on n');
+    assert.equal(routineTokenText("x AT TIME ZONE 'UTC'"), "x at time zone 'UTC'");
+});
+
+test('unifyTypeSpelling rewrites the type spellings of a script and nothing else', () => {
+    const sql = "CREATE FUNCTION f(p character varying) RETURNS integer AS $$\nDECLARE v timestamp without time zone := now(); -- integer\nBEGIN RETURN 'integer'; END $$;";
+    assert.equal(unifyTypeSpelling(sql), "CREATE FUNCTION f(p varchar) RETURNS int AS $$\nDECLARE v timestamp := now(); -- integer\nBEGIN RETURN 'integer'; END $$;");
 });

@@ -171,3 +171,10 @@ test('an entry of the Comparison view is unwrapped to the node of its view', () 
     assert.equal((node as any).type, 'object');
     assert.equal((node as any).db.oid, 3);
 });
+
+test('formatForCompare can write every spelling of a type the same way', () => {
+    const repo = 'CREATE FUNCTION f(p varchar) RETURNS int LANGUAGE sql AS $$ SELECT 1::int4 $$;';
+    const db = 'CREATE FUNCTION f(p character varying) RETURNS integer LANGUAGE sql AS $$ SELECT 1::integer $$;';
+    assert.notEqual(formatForCompare(repo, true), formatForCompare(db, true));
+    assert.equal(formatForCompare(repo, true, true), formatForCompare(db, true, true));
+});

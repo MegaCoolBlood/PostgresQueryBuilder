@@ -603,6 +603,9 @@ export function activate(context: vscode.ExtensionContext) {
         const repositoryIndex = new RepositoryIndex('postgresObjectNavigator');
         // One catalog for the Objects view and the SQL editor features.
         const catalog = new DatabaseCatalog(connectionManager);
+        const readIgnoreTypeSpelling = (): boolean =>
+            vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('repository.compareIgnoresTypeSpelling', true);
+        catalog.bodies.ignoreTypeSpelling = readIgnoreTypeSpelling();
         const objectNavigator = new ObjectNavigatorProvider(connectionManager, readNavigatorSettings, repositoryIndex, context.workspaceState, catalog);
         tableExplorer.setRepository(repositoryIndex);
         tableExplorer.setState(context.workspaceState);
@@ -633,6 +636,9 @@ export function activate(context: vscode.ExtensionContext) {
             }),
             vscode.workspace.onDidChangeConfiguration((e) => {
                 if (e.affectsConfiguration('postgresQueryBuilder.objectNavigator')) objectNavigator.rerender();
+                if (e.affectsConfiguration('postgresQueryBuilder.repository.compareIgnoresTypeSpelling')) {
+                    catalog.bodies.ignoreTypeSpelling = readIgnoreTypeSpelling();
+                }
             }),
             ...registerSqlLanguageFeatures(intel, FORMATTER_LANGUAGES, (schema, table) => loadCompletionColumns(connectionManager, schema, table))
         );
