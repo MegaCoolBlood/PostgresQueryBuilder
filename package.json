@@ -78,6 +78,12 @@
           "visibility": "collapsed"
         },
         {
+          "id": "postgresObjectDependencies",
+          "name": "Dependencies",
+          "icon": "$(type-hierarchy)",
+          "visibility": "collapsed"
+        },
+        {
           "id": "postgresModifyHistory",
           "name": "Modify History",
           "type": "webview",
@@ -364,6 +370,66 @@
         "title": "Rescan Repository",
         "category": "PostgreSQL Query Booster",
         "icon": "$(sync)"
+      },
+      {
+        "command": "postgresQueryBuilder.revealInObjectView",
+        "title": "Reveal in Objects View",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "postgresQueryBuilder.compareWithDatabase",
+        "title": "Compare with Database",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "postgresQueryBuilder.findUsages",
+        "title": "Find Usages",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(references)"
+      },
+      {
+        "command": "postgresQueryBuilder.showDependencies",
+        "title": "Show Dependencies",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "postgresQueryBuilder.refreshDependencies",
+        "title": "Refresh Dependencies",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "postgresQueryBuilder.clearDependencies",
+        "title": "Clear Dependencies",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "postgresQueryBuilder.showEmptySchemas",
+        "title": "Show Empty Schemas",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "postgresQueryBuilder.hideEmptySchemas",
+        "title": "Hide Empty Schemas",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "postgresQueryBuilder.showEmptyObjectSchemas",
+        "title": "Show Empty Schemas",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "postgresQueryBuilder.hideEmptyObjectSchemas",
+        "title": "Hide Empty Schemas",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(eye-closed)"
       }
     ],
     "menus": {
@@ -392,6 +458,16 @@
           "command": "postgresQueryBuilder.refreshExplorer",
           "when": "view == postgresTableExplorer",
           "group": "navigation@5"
+        },
+        {
+          "command": "postgresQueryBuilder.showEmptySchemas",
+          "when": "view == postgresTableExplorer && !postgresQueryBuilder.tables.showEmptySchemas",
+          "group": "navigation@6"
+        },
+        {
+          "command": "postgresQueryBuilder.hideEmptySchemas",
+          "when": "view == postgresTableExplorer && postgresQueryBuilder.tables.showEmptySchemas",
+          "group": "navigation@6"
         },
         {
           "command": "postgresQueryBuilder.saveQueryFromEditor",
@@ -434,14 +510,34 @@
           "group": "navigation@2"
         },
         {
+          "command": "postgresQueryBuilder.showEmptyObjectSchemas",
+          "when": "view == postgresObjectNavigator && !postgresQueryBuilder.objectNavigator.showEmptySchemas",
+          "group": "navigation@3"
+        },
+        {
+          "command": "postgresQueryBuilder.hideEmptyObjectSchemas",
+          "when": "view == postgresObjectNavigator && postgresQueryBuilder.objectNavigator.showEmptySchemas",
+          "group": "navigation@3"
+        },
+        {
           "command": "postgresQueryBuilder.refreshObjectNavigator",
           "when": "view == postgresObjectNavigator",
-          "group": "navigation@3"
+          "group": "navigation@4"
         },
         {
           "command": "postgresQueryBuilder.rescanRepository",
           "when": "view == postgresObjectNavigator",
           "group": "1_repository@1"
+        },
+        {
+          "command": "postgresQueryBuilder.refreshDependencies",
+          "when": "view == postgresObjectDependencies",
+          "group": "navigation@1"
+        },
+        {
+          "command": "postgresQueryBuilder.clearDependencies",
+          "when": "view == postgresObjectDependencies",
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
@@ -507,58 +603,88 @@
         },
         {
           "command": "postgresQueryBuilder.openCreateScript",
-          "when": "view == postgresObjectNavigator && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
           "group": "inline"
         },
         {
           "command": "postgresQueryBuilder.goToRepositoryDefinition",
-          "when": "view == postgresObjectNavigator && viewItem =~ /^(dbObject\\..+|repoObject\\..+|objectSchema|objectSchema\\.repoOnly)$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject\\..+|repoObject\\..+|objectSchema|objectSchema\\.repoOnly)$/",
           "group": "0_repository@1"
         },
         {
           "command": "postgresQueryBuilder.openCreateScript",
-          "when": "view == postgresObjectNavigator && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
           "group": "1_ddl@1"
         },
         {
           "command": "postgresQueryBuilder.copyCreateScript",
-          "when": "view == postgresObjectNavigator && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
           "group": "1_ddl@2"
         },
         {
           "command": "postgresQueryBuilder.openDropScript",
-          "when": "view == postgresObjectNavigator && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
           "group": "2_drop@1"
         },
         {
           "command": "postgresQueryBuilder.copyDropScript",
-          "when": "view == postgresObjectNavigator && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
           "group": "2_drop@2"
         },
         {
           "command": "postgresQueryBuilder.goToRepositoryDefinition",
-          "when": "view == postgresTableExplorer && viewItem =~ /^(schema|table)(\\.repoOnly)?$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem =~ /^(schema|table)(\\.repoOnly)?$/",
           "group": "0_repository@1"
         },
         {
           "command": "postgresQueryBuilder.openCreateScript",
-          "when": "view == postgresTableExplorer && viewItem =~ /^(schema|table)$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem =~ /^(schema|table)$/",
           "group": "1_ddl@1"
         },
         {
           "command": "postgresQueryBuilder.copyCreateScript",
-          "when": "view == postgresTableExplorer && viewItem =~ /^(schema|table)$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem =~ /^(schema|table)$/",
           "group": "1_ddl@2"
         },
         {
           "command": "postgresQueryBuilder.openDropScript",
-          "when": "view == postgresTableExplorer && viewItem =~ /^(schema|table)$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem =~ /^(schema|table)$/",
           "group": "2_drop@1"
         },
         {
           "command": "postgresQueryBuilder.copyDropScript",
-          "when": "view == postgresTableExplorer && viewItem =~ /^(schema|table)$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem =~ /^(schema|table)$/",
           "group": "2_drop@2"
+        },
+        {
+          "command": "postgresQueryBuilder.compareWithDatabase",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^dbObject\\.(function|procedure|aggregate|type|domain|sequence|trigger)$/",
+          "group": "0_repository@2"
+        },
+        {
+          "command": "postgresQueryBuilder.compareWithDatabase",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem == table",
+          "group": "0_repository@2"
+        },
+        {
+          "command": "postgresQueryBuilder.findUsages",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject|repoObject)\\..+$/",
+          "group": "0_repository@3"
+        },
+        {
+          "command": "postgresQueryBuilder.findUsages",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem =~ /^table(\\.repoOnly)?$/",
+          "group": "0_repository@3"
+        },
+        {
+          "command": "postgresQueryBuilder.showDependencies",
+          "when": "(view == postgresObjectNavigator || view == postgresObjectDependencies) && viewItem =~ /^(dbObject\\..+|objectSchema)$/",
+          "group": "3_dependencies@1"
+        },
+        {
+          "command": "postgresQueryBuilder.showDependencies",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies) && viewItem =~ /^(schema|table)$/",
+          "group": "3_dependencies@1"
         }
       ],
       "commandPalette": [
@@ -589,6 +715,46 @@
         {
           "command": "postgresQueryBuilder.showAllObjects",
           "when": "postgresQueryBuilder.objectNavigator.onlyDifferences"
+        },
+        {
+          "command": "postgresQueryBuilder.revealInObjectView",
+          "when": "editorLangId =~ /^(sql|postgres|pgsql)$/"
+        },
+        {
+          "command": "postgresQueryBuilder.compareWithDatabase",
+          "when": "editorLangId =~ /^(sql|postgres|pgsql)$/"
+        },
+        {
+          "command": "postgresQueryBuilder.findUsages",
+          "when": "editorLangId =~ /^(sql|postgres|pgsql)$/"
+        },
+        {
+          "command": "postgresQueryBuilder.showDependencies",
+          "when": "editorLangId =~ /^(sql|postgres|pgsql)$/"
+        },
+        {
+          "command": "postgresQueryBuilder.refreshDependencies",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.clearDependencies",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.showEmptySchemas",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.hideEmptySchemas",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.showEmptyObjectSchemas",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.hideEmptyObjectSchemas",
+          "when": "false"
         }
       ],
       "editor/title": [
@@ -633,6 +799,21 @@
           "command": "postgresQueryBuilder.formatSql",
           "when": "editorTextFocus && (resourceLangId == sql || resourceLangId == postgres || resourceLangId == pgsql)",
           "group": "1_modification@10"
+        },
+        {
+          "command": "postgresQueryBuilder.revealInObjectView",
+          "when": "editorTextFocus && (resourceLangId == sql || resourceLangId == postgres || resourceLangId == pgsql)",
+          "group": "0_pgqbObjects@1"
+        },
+        {
+          "command": "postgresQueryBuilder.compareWithDatabase",
+          "when": "editorTextFocus && (resourceLangId == sql || resourceLangId == postgres || resourceLangId == pgsql)",
+          "group": "0_pgqbObjects@2"
+        },
+        {
+          "command": "postgresQueryBuilder.showDependencies",
+          "when": "editorTextFocus && (resourceLangId == sql || resourceLangId == postgres || resourceLangId == pgsql)",
+          "group": "0_pgqbObjects@3"
         }
       ]
     },
@@ -658,6 +839,10 @@
       {
         "view": "postgresObjectNavigator",
         "contents": "No database objects to show.\nFunctions, procedures, types, sequences, triggers and extensions of the active connection are listed here. Choose the connection in the Tables view; the setting postgresQueryBuilder.objectNavigator.objectKinds decides which kinds are shown."
+      },
+      {
+        "view": "postgresObjectDependencies",
+        "contents": "No object chosen.\nRight-click an object in the Objects or Tables view, or a name in a SQL file, and choose \"Show Dependencies\" to see what uses it and what it uses in the database, and where the repository refers to it."
       },
       {
         "view": "postgresSavedQueries",
@@ -1228,7 +1413,7 @@
         "postgresQueryBuilder.repository.compare": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Compare the **Objects** and **Tables** views with the `CREATE` statements in the SQL files of the workspace: an object missing from the repository is shown in red, an object that exists only in the repository is listed in the colour of an untracked file. A workspace without any `CREATE` statement marks nothing."
+          "markdownDescription": "Compare the **Objects** and **Tables** views with the `CREATE` statements in the SQL files of the workspace: an object missing from the repository is shown in red, an object that exists only in the repository is listed in the colour of an untracked file, and a function or procedure whose body in the database differs from every definition in the repository is marked as modified (whitespace and letter case are ignored). The SQL editor features use the same scan: Go to Definition, Find All References, Go to Symbol in Workspace, CodeLens and Find Usages. A workspace without any `CREATE` statement marks nothing."
         },
         "postgresQueryBuilder.repository.include": {
           "type": "array",
@@ -1258,6 +1443,31 @@
           "default": 5120,
           "minimum": 1,
           "markdownDescription": "Files larger than this many kilobytes are not scanned for `CREATE` statements."
+        },
+        "postgresQueryBuilder.repository.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show above each `CREATE` statement of a SQL file whether the object is in the database (`✓`), differs from it (`≠`) or is missing, with the actions **Compare with Database** and **Reveal in Objects View**. Shown only while connected and while `#postgresQueryBuilder.repository.compare#` is on."
+        },
+        "postgresQueryBuilder.editor.hover": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show a hover on the names of database objects in SQL files: the signature, the doc comment of the repository and the `COMMENT ON` text of the database, the columns of a relation, where the object exists, and links to its CREATE script, the comparison and the Objects view."
+        },
+        "postgresQueryBuilder.editor.signatureHelp": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show the parameters of the function or procedure being called while typing its arguments in a SQL file, with the documentation of the current parameter."
+        },
+        "postgresQueryBuilder.diagnostics.unknownRoutines": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Warn in open SQL files about calls of functions and procedures that neither PostgreSQL, an extension, the database nor the repository has, and about calls whose number of arguments no overload takes. Only while connected, so the built-in functions are known; dynamic SQL in strings is never checked."
+        },
+        "postgresQueryBuilder.diagnostics.docComments": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Check the doc comments of the functions and procedures in open SQL files: a missing doc comment, documented parameters that do not exist, undocumented parameters and documented types that contradict the signature. Quick Fixes add a comment or the missing entries, or remove an entry."
         }
       }
     }

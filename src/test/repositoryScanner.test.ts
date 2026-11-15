@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeTypeName, scanSqlText } from '../repositoryScanner';
+import { acceptsArgCount, normalizeRoutineBody, normalizeTypeName, routineBodyHash, scanSqlText } from '../repositoryScanner';
 
 function summary(sql: string): Array<string> {
     return scanSqlText(sql).map(d => {
@@ -238,4 +238,57 @@ test('normalizeTypeName maps the spellings of a type to the one format_type uses
     for (const [input, expected] of cases) {
         assert.equal(normalizeTypeName(input), expected, input);
     }
+});
+
+// ===== scanSqlText: parameters, argument counts, statement range, doc comment and body =====
+
+test('the parameters of a routine are read with name, mode, type and default', () => {
+    const [def] = scanSqlText("CREATE FUNCTION f(p_a integer, INOUT p_b varchar(20) DEFAULT 'x', OUT p_c date, VARIADIC p_d text[]) RETURNS record LANGUAGE sql AS $$ SELECT 1 $$;");
+    assert.deepEqual(def.params?.map(p => [p.name, p.mode, p.type, p.defaultValue]), [
+        ['p_a', 'in', 'integer', null],
+        ['p_b', 'inout', 'varchar(20)', "'x'"],
+        ['p_c', 'out', 'date', null],
+        ['p_d', 'variadic', 'text[]', null]
+    ]);
+    assert.deepEqual(def.params?.[0].start, { line: 0, character: 18 });
+});
+
+test('the Oracle-style mode after the name is read as well', () => {
+    const [def] = scanSqlText('CREATE PROCEDURE p(p_a IN integer, p_b OUT text) LANGUAGE plpgsql AS $$ BEGIN NULL; END $$;');
+    assert.deepEqual(def.params?.map(p => [p.name, p.mode, p.type]), [['p_a', 'in', 'integer'], ['p_b', 'out', 'text']]);
+});
+
+test('a function call passes no OUT arguments, a CALL passes all; defaults lower the minimum, VARIADIC lifts the maximum', () => {
+    const [f, p, v] = scanSqlText([
+        "CREATE FUNCTION f(a int, b int DEFAULT 1, OUT c int) RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;",
+        'CREATE PROCEDURE p(a int, OUT c int) LANGUAGE sql AS $$ SELECT 1 $$;',
+        'CREATE FUNCTION v(a int, VARIADIC r int[]) RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;'
+    ].join('\n'));
+    assert.deepEqual(f.argCount, { min: 1, max: 2 });
+    assert.deepEqual(p.argCount, { min: 2, max: 2 });
+    assert.deepEqual(v.argCount, { min: 2, max: Infinity });
+    assert.equal(acceptsArgCount(v.argCount, 7), true);
+    assert.equal(acceptsArgCount(f.argCount, 3), false);
+    assert.equal(acceptsArgCount(undefined, 3), true, 'an unknown range accepts any count');
+});
+
+test('a definition knows its whole statement, its result type and the doc comment above it', () => {
+    const text = '/** Doubles it. */\nCREATE FUNCTION app.twice(x int)\n  RETURNS integer\n  LANGUAGE sql AS $$ SELECT x * 2 $$;\nSELECT 1;';
+    const [def] = scanSqlText(text);
+    assert.deepEqual([def.statementStart, def.statementEnd], [{ line: 1, character: 0 }, { line: 3, character: 36 }]);
+    assert.equal(def.returns, 'integer');
+    assert.deepEqual([def.doc?.text, def.doc?.block, def.doc?.start], ['/** Doubles it. */', true, { line: 0, character: 0 }]);
+});
+
+test('the body hash ignores whitespace and the case of ASCII letters, nothing else', () => {
+    const [a, b, c] = scanSqlText([
+        'CREATE FUNCTION a() RETURNS int LANGUAGE plpgsql AS $$\r\nBEGIN\r\n    RETURN 1;\r\nEND;\r\n$$;',
+        "CREATE FUNCTION b() RETURNS int LANGUAGE plpgsql AS 'begin return 1; end;';",
+        'CREATE FUNCTION c() RETURNS int LANGUAGE plpgsql AS $f$ BEGIN RETURN 2; END; $f$;'
+    ].join('\n'));
+    assert.ok(a.bodyHash);
+    assert.equal(a.bodyHash, b.bodyHash);
+    assert.notEqual(a.bodyHash, c.bodyHash);
+    assert.equal(a.bodyHash, routineBodyHash('BEGIN RETURN 1; END;'));
+    assert.equal(normalizeRoutineBody('Ä  Bc\n'), 'Äbc', 'only ASCII letters are folded, as the SQL side does');
 });

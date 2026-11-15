@@ -59,7 +59,13 @@ class DocumentDropEdit {
     constructor(public insertText: any) {}
 }
 
-const CompletionItemKind = { Text: 0, Function: 2, Field: 4, Variable: 5, Class: 6, Interface: 7, Module: 8, Property: 9, Value: 11, Keyword: 13, Snippet: 14, EnumMember: 19 };
+const CompletionItemKind = { Text: 0, Method: 1, Function: 2, Field: 4, Variable: 5, Class: 6, Interface: 7, Module: 8, Property: 9, Value: 11, Keyword: 13, Snippet: 14, EnumMember: 19 };
+const CompletionItemTag = { Deprecated: 1 };
+const SymbolKind = {
+    File: 0, Module: 1, Namespace: 2, Package: 3, Class: 4, Method: 5, Property: 6, Field: 7, Constructor: 8, Enum: 9,
+    Interface: 10, Function: 11, Variable: 12, Constant: 13, String: 14, Number: 15, Boolean: 16, Array: 17, Object: 18,
+    Key: 19, Null: 20, EnumMember: 21, Struct: 22, Event: 23, Operator: 24, TypeParameter: 25
+};
 const CompletionTriggerKind = { Invoke: 0, TriggerCharacter: 1, TriggerForIncompleteCompletions: 2 };
 const CodeActionTriggerKind = { Invoke: 1, Automatic: 2 };
 const DiagnosticSeverity = { Error: 0, Warning: 1, Information: 2, Hint: 3 };
@@ -83,7 +89,40 @@ class Diagnostic {
 }
 
 class MarkdownString {
+    isTrusted?: boolean | { enabledCommands: string[] };
     constructor(public value: string = '') {}
+}
+
+class Location {
+    constructor(public uri: any, public range: any) {}
+}
+
+class DocumentSymbol {
+    children: DocumentSymbol[] = [];
+    constructor(public name: string, public detail: string, public kind: number, public range: any, public selectionRange: any) {}
+}
+
+class SymbolInformation {
+    constructor(public name: string, public kind: number, public containerName: string, public location: Location) {}
+}
+
+class ParameterInformation {
+    constructor(public label: string | [number, number], public documentation?: any) {}
+}
+
+class SignatureInformation {
+    parameters: ParameterInformation[] = [];
+    constructor(public label: string, public documentation?: any) {}
+}
+
+class SignatureHelp {
+    signatures: SignatureInformation[] = [];
+    activeSignature = 0;
+    activeParameter = 0;
+}
+
+class CodeLens {
+    constructor(public range: any, public command?: any) {}
 }
 
 class Hover {
@@ -103,8 +142,17 @@ const languageRegistrations = {
     completion: [] as Array<{ selector: any; provider: any; triggers: string[] }>,
     hover: [] as Array<{ selector: any; provider: any }>,
     codeActions: [] as Array<{ selector: any; provider: any; metadata: any }>,
-    diagnostics: [] as any[]
+    diagnostics: [] as any[],
+    /** Definition, reference, symbol, signature help and CodeLens providers, by kind. */
+    other: [] as Array<{ kind: string; selector: any; provider: any; triggers: string[] }>
 };
+
+function registerOther(kind: string) {
+    return (selector: any, provider: any, ...triggers: string[]) => {
+        languageRegistrations.other.push({ kind, selector, provider, triggers });
+        return { dispose() {} };
+    };
+}
 
 function createDiagnosticCollection(name?: string) {
     const entries = new Map<string, any[]>();
@@ -124,6 +172,9 @@ class CompletionItem {
     insertText?: any;
     detail?: string;
     sortText?: string;
+    filterText?: string;
+    documentation?: any;
+    tags?: number[];
     range?: any;
     constructor(public label: string, public kind?: number) {}
 }
@@ -225,8 +276,17 @@ const vscodeStub = {
     DataTransferItem,
     DocumentDropEdit,
     CompletionItemKind,
+    CompletionItemTag,
     CompletionTriggerKind,
     CompletionItem,
+    SymbolKind,
+    Location,
+    DocumentSymbol,
+    SymbolInformation,
+    ParameterInformation,
+    SignatureInformation,
+    SignatureHelp,
+    CodeLens,
     SnippetString,
     CodeAction,
     CodeActionKind,
@@ -255,7 +315,13 @@ const vscodeStub = {
         registerCodeActionsProvider: (selector: any, provider: any, metadata?: any) => {
             languageRegistrations.codeActions.push({ selector, provider, metadata });
             return { dispose() {} };
-        }
+        },
+        registerDefinitionProvider: registerOther('definition'),
+        registerReferenceProvider: registerOther('reference'),
+        registerDocumentSymbolProvider: registerOther('documentSymbol'),
+        registerWorkspaceSymbolProvider: (provider: any) => registerOther('workspaceSymbol')(undefined, provider),
+        registerSignatureHelpProvider: registerOther('signatureHelp'),
+        registerCodeLensProvider: registerOther('codeLens')
     },
     workspace: {
         workspaceFolders: undefined as any,
@@ -267,6 +333,8 @@ const vscodeStub = {
         onDidOpenTextDocument: (listener: any) => registerDocumentListener(documentListeners.open, listener),
         onDidChangeTextDocument: (listener: any) => registerDocumentListener(documentListeners.change, listener),
         applyEdit: (_edit: any): Promise<boolean> => Promise.resolve(true),
+        registerTextDocumentContentProvider: (_scheme: string, _provider: any) => ({ dispose() {} }),
+        asRelativePath: (pathOrUri: any, _includeFolder?: boolean): string => String(pathOrUri?.fsPath ?? pathOrUri),
         openTextDocument: (uri: any): Promise<any> => Promise.resolve({ uri, getText: () => '' }),
         getConfiguration: (_section?: string) => ({
             get<T>(_key: string, defaultValue?: T): T {

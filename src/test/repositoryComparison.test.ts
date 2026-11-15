@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { scanSqlText } from '../repositoryScanner';
-import { DefinitionMatcher, MatcherCache, argumentTypesMatch, type LocatedDefinition } from '../repositoryComparison';
+import { DefinitionMatcher, MatcherCache, argumentTypesMatch, routineStatus, type LocatedDefinition } from '../repositoryComparison';
 
 function definitions(files: Record<string, string>): LocatedDefinition[] {
     return Object.entries(files).flatMap(([uri, sql]) => scanSqlText(sql).map(d => ({ ...d, uri })));
@@ -114,4 +114,33 @@ test('MatcherCache reuses the matcher until the definitions or the default schem
     assert.equal(cache.get(snapshot, 'public'), first);
     assert.notEqual(cache.get(snapshot, 'other'), first);
     assert.notEqual(cache.get({ ...snapshot, version: 2 }, 'other'), first);
+});
+
+// ===== DefinitionMatcher.lookup =====
+
+test('lookup finds the definitions of a kind and name in one schema or in any', () => {
+    const matcher = new DefinitionMatcher(definitions({
+        'a.sql': 'CREATE FUNCTION app.f(a int) RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;',
+        'b.sql': 'SET search_path = billing;\nCREATE FUNCTION f(a text) RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;',
+        'c.sql': 'CREATE SCHEMA app;'
+    }), 'public');
+    assert.deepEqual(matcher.lookup('function', 'app', 'f').map(e => e.def.uri), ['a.sql']);
+    assert.deepEqual(matcher.lookup('function', 'billing', 'f').map(e => e.identity.argTypes), [['text']]);
+    assert.equal(matcher.lookup('function', null, 'f').length, 2);
+    assert.equal(matcher.lookup('schema', 'whatever', 'app').length, 1, 'schemas have no schema');
+    assert.equal([...matcher.entries()].length, 3);
+});
+
+// ===== routineStatus =====
+
+test('a routine differs when its body matches none of its definitions; matching any one is enough', () => {
+    const defs = definitions({
+        'old.sql': 'CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;',
+        'new.sql': 'CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 2 $$;'
+    });
+    assert.equal(routineStatus({ kind: 'function', bodyHash: defs[0].bodyHash }, defs), 'both');
+    assert.equal(routineStatus({ kind: 'function', bodyHash: 'other' }, defs), 'differs');
+    assert.equal(routineStatus({ kind: 'function', bodyHash: null }, defs), 'both', 'no hash (e.g. a C function) compares nothing');
+    assert.equal(routineStatus({ kind: 'type', bodyHash: 'other' }, defs), 'both', 'only functions and procedures are compared');
+    assert.equal(routineStatus({ kind: 'function', bodyHash: 'other' }, []), 'dbOnly');
 });

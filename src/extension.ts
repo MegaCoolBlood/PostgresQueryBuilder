@@ -41,11 +41,14 @@ import { PsqlConsole } from './psqlConsole';
 import { ExecutableValueRunner } from './executableColumns';
 import { ExportService } from './exportService';
 import { ADD_EXPORT_INSTRUCTION_COMMAND, ExportInstructionAssist } from './exportInstructionAssist';
-import { CompletionCatalogCache, SqlFileCompletionProvider, loadSqlCompletionApi, loadSqlWords } from './sqlCompletion';
+import { CompletionCatalogCache, SqlFileCompletionProvider, loadCompletionColumns, loadSqlCompletionApi, loadSqlWords } from './sqlCompletion';
 import { ObjectNavigatorProvider, readNavigatorSettings } from './objectNavigator';
 import { RepositoryIndex } from './repositoryIndex';
 import { ObjectStatusDecorationProvider } from './objectDecorations';
-import { registerDatabaseObjectCommands } from './databaseObjectCommands';
+import { dependencyRowNode, registerDatabaseObjectCommands } from './databaseObjectCommands';
+import { DatabaseCatalog } from './databaseCatalog';
+import { SqlIntel, registerSqlLanguageFeatures } from './sqlLanguageFeatures';
+import { DependenciesProvider } from './objectDependencies';
 
 /**
  * Surface the non-blocking warnings an enabled formatter check produced. The
@@ -591,25 +594,39 @@ export function activate(context: vscode.ExtensionContext) {
         // The Objects view and the comparison with the repository. Neither
         // queries the database nor reads a file before one of the trees asks.
         const repositoryIndex = new RepositoryIndex('postgresObjectNavigator');
-        const objectNavigator = new ObjectNavigatorProvider(connectionManager, readNavigatorSettings, repositoryIndex, context.workspaceState);
+        // One catalog for the Objects view and the SQL editor features.
+        const catalog = new DatabaseCatalog(connectionManager);
+        const objectNavigator = new ObjectNavigatorProvider(connectionManager, readNavigatorSettings, repositoryIndex, context.workspaceState, catalog);
         tableExplorer.setRepository(repositoryIndex);
+        tableExplorer.setState(context.workspaceState);
         const objectsTreeView = vscode.window.createTreeView('postgresObjectNavigator', {
             treeDataProvider: objectNavigator,
             showCollapseAll: true,
             canSelectMany: true
         });
+        const intel = new SqlIntel(catalog, repositoryIndex);
+        const dependencies = new DependenciesProvider({
+            query: (sql, params) => connectionManager.queryMetadata(sql, params),
+            toNode: (row) => dependencyRowNode(row, intel)
+        });
         context.subscriptions.push(
             repositoryIndex,
+            catalog,
             objectsTreeView,
+            vscode.window.createTreeView('postgresObjectDependencies', { treeDataProvider: dependencies, showCollapseAll: true }),
             vscode.window.registerFileDecorationProvider(new ObjectStatusDecorationProvider()),
             repositoryIndex.onDidChange(() => {
                 objectNavigator.rerender();
                 tableExplorer.rerender();
             }),
-            connectionManager.onConnectionChanged(() => objectNavigator.reset()),
+            connectionManager.onConnectionChanged(() => {
+                objectNavigator.reset();
+                dependencies.clear();
+            }),
             vscode.workspace.onDidChangeConfiguration((e) => {
                 if (e.affectsConfiguration('postgresQueryBuilder.objectNavigator')) objectNavigator.rerender();
-            })
+            }),
+            ...registerSqlLanguageFeatures(intel, FORMATTER_LANGUAGES, (schema, table) => loadCompletionColumns(connectionManager, schema, table))
         );
         registerDatabaseObjectCommands(context, {
             connectionManager,
@@ -618,7 +635,9 @@ export function activate(context: vscode.ExtensionContext) {
             repositoryIndex,
             objectsTreeView,
             tablesTreeView: treeView,
-            clearSearchFilter: () => searchViewProvider.clearFilter()
+            clearSearchFilter: () => searchViewProvider.clearFilter(),
+            intel,
+            dependencies
         });
 
         searchViewProvider.onDidChangeFilter((filter) => {

@@ -1,10 +1,23 @@
 import './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildDropScript, buildGoToItems, ddlTargetOf, ddlTargetsOf, sortDefinitions } from '../databaseObjectCommands';
+import {
+    DdlContentProvider,
+    buildDropScript,
+    buildGoToItems,
+    ddlTargetOf,
+    ddlTargetsOf,
+    formatForCompare,
+    resolvedFromNode,
+    sortDefinitions,
+    statementText,
+    unwrapNode
+} from '../databaseObjectCommands';
 import type { DbObject, ObjectNode } from '../objectNavigator';
 import type { TableNode } from '../tableExplorer';
-import type { LocatedDefinition } from '../repositoryComparison';
+import { DefinitionMatcher, type LocatedDefinition } from '../repositoryComparison';
+import { DbIndex } from '../databaseCatalog';
+import { scanSqlText } from '../repositoryScanner';
 
 function dbObject(overrides: Partial<DbObject>): DbObject {
     return {
@@ -81,4 +94,66 @@ test('sortDefinitions orders the places of a definition by file and line', () =>
     });
     assert.deepEqual(sortDefinitions([def('b.sql', 1), def('a.sql', 9), def('a.sql', 2)]).map(d => `${d.uri}:${d.start.line}`),
         ['a.sql:2', 'a.sql:9', 'b.sql:1']);
+});
+
+// ===== editor commands =====
+
+const REPO_SQL = [
+    'CREATE FUNCTION app.f(a integer) RETURNS integer',
+    '  LANGUAGE sql AS $$ SELECT a $$ ;',
+    'CREATE TABLE app.orders (id int);',
+    'CREATE FUNCTION app.repo_only() RETURNS void LANGUAGE sql AS $$ SELECT 1 $$'
+].join('\n');
+
+function repoDefinitions(): LocatedDefinition[] {
+    return scanSqlText(REPO_SQL).map(d => ({ ...d, uri: 'file:///repo.sql' }));
+}
+
+test('statementText cuts the CREATE statement out of its file and ends it with a semicolon', () => {
+    const [f, , repoOnly] = repoDefinitions();
+    assert.equal(statementText(REPO_SQL, f), 'CREATE FUNCTION app.f(a integer) RETURNS integer\n  LANGUAGE sql AS $$ SELECT a $$ ;');
+    assert.equal(statementText(REPO_SQL, repoOnly), 'CREATE FUNCTION app.repo_only() RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;');
+});
+
+test('formatForCompare makes layout and keyword case differences of the two sides disappear', () => {
+    const repo = formatForCompare('create function f() returns int language sql as $$ select 1 $$;');
+    const db = formatForCompare('CREATE FUNCTION f()\n RETURNS int\n LANGUAGE sql\nAS $$ select 1 $$;');
+    assert.equal(repo, db);
+    assert.notEqual(formatForCompare('SELECT 1;'), formatForCompare('SELECT 2;'));
+    const crlf = 'CREATE FUNCTION f() RETURNS int LANGUAGE plpgsql AS $$\r\nBEGIN\r\n  RETURN 1;\r\nEND$$;';
+    assert.equal(formatForCompare(crlf), formatForCompare(crlf.replace(/\r\n/g, '\n')), 'a body stored with CRLF compares equal');
+});
+
+test('resolvedFromNode gives a tree node the definitions and database entry the editor features use', () => {
+    const db = dbObject({ kind: 'function', oid: 7, schema: 'app', name: 'f', args: 'a integer', argTypes: ['integer'] });
+    const sources = { matcher: new DefinitionMatcher(repoDefinitions(), 'app'), db: new DbIndex([db], [{ schema: 'app', name: 'orders', kind: 'table' }], ['app']), searchPath: ['app'] };
+    const fromObject = resolvedFromNode(objectNode(db), sources);
+    assert.deepEqual([fromObject?.db?.object?.oid, fromObject?.definitions.map(d => d.start.line)], [7, [0]]);
+    const table: TableNode = { type: 'table', schema: 'app', table: 'orders', kind: 'table' };
+    const fromTable = resolvedFromNode(table, sources);
+    assert.deepEqual([fromTable?.db?.relation?.name, fromTable?.definitions.length], ['orders', 1]);
+    const repoOnly = resolvedFromNode(objectNode(undefined, { name: 'repo_only', status: 'repoOnly', repoArgTypes: [] }), sources);
+    assert.deepEqual([repoOnly?.db, repoOnly?.definitions.length], [undefined, 1]);
+    assert.equal(resolvedFromNode({ type: 'category', schema: 'app', kind: 'function' }, sources), undefined);
+});
+
+test('unwrapNode takes the view node out of an entry of the Dependencies view and ignores anything else', () => {
+    const node = objectNode(dbObject({}));
+    assert.equal(unwrapNode(node), node);
+    assert.equal(unwrapNode({ type: 'dependency', node }), node);
+    assert.equal(unwrapNode({ type: 'dependencyRoot', root: { node } }), node);
+    assert.equal(unwrapNode({ type: 'dependencyGroup' }), undefined);
+    assert.equal(unwrapNode('click'), undefined);
+    assert.equal(unwrapNode(undefined), undefined);
+});
+
+test('the compare documents are served by URI and old ones are dropped', () => {
+    const provider = new DdlContentProvider();
+    const left = provider.add('app.f (repository)', 'CREATE A;');
+    const right = provider.add('app.f (database)', 'CREATE B;');
+    assert.notEqual(left.toString(), right.toString());
+    assert.equal(provider.provideTextDocumentContent(left), 'CREATE A;');
+    assert.match(left.toString(), /^pgqb-ddl:\/app\.f%20\(repository\)\.sql\?\d+$/);
+    for (let i = 0; i < 40; i++) provider.add(`x${i}`, '');
+    assert.equal(provider.provideTextDocumentContent(left), '');
 });

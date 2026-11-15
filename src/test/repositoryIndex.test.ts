@@ -140,3 +140,25 @@ test('deleting a folder forgets the definitions of every file in it', async (t) 
     folderWatcher.onDelete({ toString: () => 'file:///w/db' });
     assert.deepEqual(index.snapshot()?.definitions.map(d => d.name), ['c'], 'only the file outside the folder is left');
 });
+
+test('filesContaining searches every scanned file, also those without a CREATE, and prefers the open editor text', async (t) => {
+    stubWorkspace(t, {
+        'file:///w/a.sql': 'CREATE FUNCTION app.f_total() RETURNS int AS $$ select 1 $$ LANGUAGE sql;',
+        'file:///w/b.sql': 'SELECT APP.F_TOTAL();',
+        'file:///w/c.sql': 'SELECT 1;',
+        'file:///w/open.sql': 'SELECT 2;'
+    });
+    const ws = vscodeStub.workspace as any;
+    const savedDocs = ws.textDocuments;
+    ws.textDocuments = [{ uri: { toString: () => 'file:///w/open.sql' }, getText: () => 'SELECT f_total();' }];
+    t.after(() => { ws.textDocuments = savedDocs; });
+    const index = new RepositoryIndex('postgresObjectNavigator', () => SETTINGS);
+    t.after(() => index.dispose());
+    const done = new Promise<void>(resolve => index.onDidChange(() => resolve()));
+    index.ensureScanned();
+    await done;
+    assert.equal(index.isReady, true);
+    const found = await index.filesContaining('f_total');
+    assert.deepEqual(found.map(f => f.uri), ['file:///w/a.sql', 'file:///w/b.sql', 'file:///w/open.sql']);
+    assert.equal(found[2].text, 'SELECT f_total();', 'unsaved changes count');
+});

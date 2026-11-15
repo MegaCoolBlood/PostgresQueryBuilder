@@ -101,6 +101,8 @@ async function forEachLimited<T>(items: readonly T[], limit: number, fn: (item: 
 
 export class RepositoryIndex implements RepositorySource, vscode.Disposable {
     private files = new Map<string, LocatedDefinition[]>();
+    /** Every scanned file, also those without a CREATE statement, for searching references. */
+    private allFiles = new Set<string>();
     private version = 0;
     private started = false;
     private ready = false;
@@ -135,6 +137,39 @@ export class RepositoryIndex implements RepositorySource, vscode.Disposable {
         return this.cached;
     }
 
+    /**
+     * The text of every repository file that contains `word` (case-insensitive),
+     * read from the open editor when the file is open, so unsaved changes count.
+     */
+    async filesContaining(word: string): Promise<Array<{ uri: string; text: string }>> {
+        const needle = word.toLowerCase();
+        const open = new Map(vscode.workspace.textDocuments.map(d => [d.uri.toString(), d]));
+        const found: Array<{ uri: string; text: string }> = [];
+        const maxBytes = this.settings().maxFileSizeKb * 1024;
+        await forEachLimited([...this.allFiles], CONCURRENCY, async (uri) => {
+            try {
+                const doc = open.get(uri);
+                let text: string;
+                if (doc) {
+                    text = doc.getText();
+                } else {
+                    const bytes = await vscode.workspace.fs.readFile(vscode.Uri.parse(uri));
+                    if (bytes.byteLength > maxBytes) return;
+                    text = new TextDecoder('utf-8').decode(bytes);
+                }
+                if (text.toLowerCase().includes(needle)) found.push({ uri, text });
+            } catch (err: unknown) {
+                Logger.error('RepositoryIndex.filesContaining', err);
+            }
+        });
+        return found.sort((a, b) => a.uri.localeCompare(b.uri));
+    }
+
+    /** True once the first scan has finished. */
+    get isReady(): boolean {
+        return this.ready;
+    }
+
     ensureScanned(): void {
         if (this.started || !this.settings().compare) return;
         this.started = true;
@@ -154,6 +189,7 @@ export class RepositoryIndex implements RepositorySource, vscode.Disposable {
         this.started = false;
         this.ready = false;
         this.files = new Map();
+        this.allFiles = new Set();
         this.disposeWatchers();
         this.changed();
     }
@@ -177,6 +213,7 @@ export class RepositoryIndex implements RepositorySource, vscode.Disposable {
         const settings = this.settings();
         const include = combineGlobs(settings.include);
         const next = new Map<string, LocatedDefinition[]>();
+        const nextAll = new Set<string>();
         if (include && vscode.workspace.workspaceFolders?.length) {
             const started = Date.now();
             await vscode.window.withProgress(
@@ -186,6 +223,7 @@ export class RepositoryIndex implements RepositorySource, vscode.Disposable {
                     await forEachLimited(uris, CONCURRENCY, async (uri) => {
                         if (generation !== this.generation) return;
                         const definitions = await this.readDefinitions(uri, settings.maxFileSizeKb);
+                        nextAll.add(uri.toString());
                         if (definitions.length > 0) next.set(uri.toString(), definitions);
                     });
                     Logger.log('RepositoryIndex.fullScan', `${uris.length} files scanned in ${Date.now() - started} ms`);
@@ -194,6 +232,7 @@ export class RepositoryIndex implements RepositorySource, vscode.Disposable {
         }
         if (generation !== this.generation) return;
         this.files = next;
+        this.allFiles = nextAll;
         this.ready = true;
         this.changed();
     }
@@ -234,6 +273,7 @@ export class RepositoryIndex implements RepositorySource, vscode.Disposable {
             const generation = this.generation;
             void this.readDefinitions(uri, this.settings().maxFileSizeKb).then((definitions) => {
                 if (generation !== this.generation || !this.ready) return;
+                this.allFiles.add(uri.toString());
                 if (definitions.length > 0) this.files.set(uri.toString(), definitions);
                 else this.files.delete(uri.toString());
                 this.changed();
@@ -246,6 +286,9 @@ export class RepositoryIndex implements RepositorySource, vscode.Disposable {
         const key = uri.toString();
         const prefix = key.endsWith('/') ? key : `${key}/`;
         let removed = false;
+        for (const file of [...this.allFiles]) {
+            if (file === key || file.startsWith(prefix)) this.allFiles.delete(file);
+        }
         for (const file of [...this.files.keys()]) {
             if (file === key || file.startsWith(prefix)) {
                 this.files.delete(file);

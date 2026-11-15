@@ -282,6 +282,8 @@ test('what an extension or PostgreSQL itself provides is never marked', async ()
         SALES_REPO,
         [{ member_kind: 'schema', schema_name: 'oracle', name: null }, { member_kind: 'relation', schema_name: 'sales', name: 'stats' }]
     );
+    // pg_temp_56 holds no relation; Show Empty Schemas lists it, unmarked.
+    await p.setShowEmptySchemas(true);
     const schemas = await p.getChildren();
     assert.deepEqual(schemas.filter((s: any) => s.schema !== 'archive').map((s: any) => [s.schema, s.status]),
         [['oracle', undefined], ['pg_temp_56', undefined], ['sales', 'both']]);
@@ -289,4 +291,39 @@ test('what an extension or PostgreSQL itself provides is never marked', async ()
     assert.equal(dual.status, undefined);
     const views = await p.getChildren({ type: 'category', schema: 'sales', kind: 'view' });
     assert.equal(views.find((v: any) => v.table === 'stats').status, undefined, 'a view of an extension is not marked');
+});
+
+// ===== Show Empty Schemas =====
+
+function toggleState(initial: Record<string, unknown> = {}) {
+    const stored = new Map<string, unknown>(Object.entries(initial));
+    return { stored, get: <T>(key: string, d: T): T => (stored.has(key) ? stored.get(key) as T : d), update: async (key: string, v: unknown) => { stored.set(key, v); } };
+}
+
+test('schemas without relations are hidden until Show Empty Schemas is on, and the choice is kept', async () => {
+    const p = createProviderWithRepository({ empty: [], sales: [{ table_name: 'orders', rel_kind: 'table' }] }, null);
+    const state = toggleState();
+    p.setState(state);
+    assert.deepEqual((await p.getChildren()).map((s: any) => s.schema), ['sales']);
+    assert.equal(await p.isEmptySchema('empty'), true);
+    await p.setShowEmptySchemas(true);
+    assert.deepEqual((await p.getChildren()).map((s: any) => s.schema), ['empty', 'sales']);
+    assert.equal(state.stored.get('postgresQueryBuilder.tables.showEmptySchemas'), true);
+    const restored = createProviderWithRepository({ empty: [] }, null);
+    restored.setState(state);
+    assert.equal(restored.showsEmptySchemas, true);
+});
+
+test('a schema only the repository creates stays visible, as a difference, with Show Empty Schemas off', async () => {
+    const p = createProviderWithRepository({ sales: [{ table_name: 'orders', rel_kind: 'table' }] }, { 'a.sql': 'CREATE SCHEMA planned;' });
+    p.setState(toggleState());
+    const roots = await p.getChildren();
+    assert.deepEqual(roots.map((s: any) => [s.schema, s.status]), [['planned', 'repoOnly'], ['sales', 'dbOnly']]);
+});
+
+test('the Search filter shows matching schemas with relations only, whatever Show Empty Schemas says', async () => {
+    const p = createProviderWithRepository({ sales_empty: [], sales: [{ table_name: 'orders', rel_kind: 'table' }] }, null);
+    p.setState(toggleState({ 'postgresQueryBuilder.tables.showEmptySchemas': true }));
+    p.setFilter('orders');
+    assert.deepEqual((await p.getChildren()).map((s: any) => s.schema), ['sales']);
 });

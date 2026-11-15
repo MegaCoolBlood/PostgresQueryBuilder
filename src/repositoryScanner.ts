@@ -7,6 +7,7 @@
  * function body or an `EXECUTE '…'` string is never mistaken for a definition.
  * The body of a DO block is the exception: it runs when the file is deployed.
  */
+import { createHash } from 'crypto';
 
 export type RepoObjectKind =
     | 'function' | 'procedure' | 'aggregate'
@@ -41,13 +42,80 @@ export interface RepoDefinition {
     /** Range of the (qualified) object name. */
     start: SourcePosition;
     end: SourcePosition;
+    /** Range of the whole statement, from CREATE to its last token. */
+    statementStart?: SourcePosition;
+    statementEnd?: SourcePosition;
+    /** Parameters of a function or procedure, in signature order. */
+    params?: RepoParam[];
+    /** How many arguments a call may pass: OUT parameters count for procedures only (CALL passes them). */
+    argCount?: ArgCount;
+    /** The result type of a function as written after RETURNS. */
+    returns?: string;
+    /** The doc comment right above the statement, as written. */
+    doc?: RepoDoc;
+    /** md5 of the normalised body of a function or procedure (see {@link normalizeRoutineBody}). */
+    bodyHash?: string;
+}
+
+export interface RepoParam {
+    /** Name as written (folded unless quoted); null for an unnamed parameter. */
+    name: string | null;
+    mode: 'in' | 'out' | 'inout' | 'variadic';
+    /** The type as written, e.g. `VARCHAR(20)`. */
+    type: string;
+    /** The default as written, without `DEFAULT` / `=`. */
+    defaultValue: string | null;
+    /** Range of the name, or of the type when the parameter has no name. */
+    start: SourcePosition;
+    end: SourcePosition;
+}
+
+export interface ArgCount {
+    min: number;
+    /** `Infinity` with a VARIADIC parameter. */
+    max: number;
+}
+
+export interface RepoDoc {
+    /** The comment as written: a `/** … *\/` block, or consecutive `--` lines. */
+    text: string;
+    block: boolean;
+    start: SourcePosition;
+    end: SourcePosition;
+}
+
+/** True when a call with `count` arguments fits `range`. */
+export function acceptsArgCount(range: ArgCount | undefined | null, count: number): boolean {
+    return !range || (count >= range.min && count <= range.max);
+}
+
+/**
+ * The body of a routine the way it is compared with `pg_proc.prosrc`: without
+ * whitespace and with ASCII letters in lower case, so a reformatted repository
+ * does not count as different. Only ASCII is folded, so the database side,
+ * which does the same in SQL (see the catalog query), cannot depend on its locale.
+ */
+export function normalizeRoutineBody(body: string): string {
+    return body.replace(/[ \t\n\r\f\v]+/g, '').replace(/[A-Z]+/g, s => s.toLowerCase());
+}
+
+export function routineBodyHash(body: string): string {
+    return createHash('md5').update(normalizeRoutineBody(body), 'utf8').digest('hex');
 }
 
 // ===== Tokenizer ===============================================================
 
-type TokType = 'word' | 'qident' | 'string' | 'dollar' | 'number' | 'punct' | 'op';
+export type TokType = 'word' | 'qident' | 'string' | 'dollar' | 'number' | 'punct' | 'op';
 
-interface Tok {
+/** A comment the tokenizer skipped, kept for doc comments. */
+export interface SqlComment {
+    start: number;
+    end: number;
+    text: string;
+    block: boolean;
+}
+
+export interface Tok {
     type: TokType;
     /** Source text of the token. */
     text: string;
@@ -85,7 +153,11 @@ function readQuoted(src: string, i: number, quote: string, backslashEscapes: boo
     return n;
 }
 
-function tokenize(src: string): Tok[] {
+/**
+ * Break SQL text into tokens with their offsets. Comments are skipped; when
+ * `comments` is given they are collected there, in source order.
+ */
+export function tokenize(src: string, comments?: SqlComment[]): Tok[] {
     const toks: Tok[] = [];
     const n = src.length;
     let i = 0;
@@ -102,10 +174,13 @@ function tokenize(src: string): Tok[] {
         }
         if (c === '-' && c2 === '-') {
             const nl = src.indexOf('\n', i);
+            const end = nl < 0 ? n : nl;
+            comments?.push({ start: i, end, text: src.slice(i, end).replace(/\r$/, ''), block: false });
             i = nl < 0 ? n : nl + 1;
             continue;
         }
         if (c === '/' && c2 === '*') {
+            const start = i;
             let depth = 1;
             i += 2;
             while (i < n && depth > 0) {
@@ -119,6 +194,7 @@ function tokenize(src: string): Tok[] {
                     i++;
                 }
             }
+            comments?.push({ start, end: i, text: src.slice(start, i), block: true });
             continue;
         }
         // A psql meta-command (\i, \set, \connect …) runs to the end of the line.
@@ -211,16 +287,16 @@ function tokenize(src: string): Tok[] {
 
 // ===== Helpers over token lists ================================================
 
-function isWord(t: Tok | undefined, value: string): boolean {
+export function isWord(t: Tok | undefined, value: string): boolean {
     return !!t && t.type === 'word' && t.value === value;
 }
 
-function isPunct(t: Tok | undefined, text: string): boolean {
+export function isPunct(t: Tok | undefined, text: string): boolean {
     return !!t && t.type === 'punct' && t.text === text;
 }
 
 /** Split `toks` at top-level tokens for which `isSep` holds (parentheses and brackets nest). */
-function splitTopLevel(toks: Tok[], isSep: (t: Tok) => boolean): Tok[][] {
+export function splitTopLevel(toks: Tok[], isSep: (t: Tok) => boolean): Tok[][] {
     const parts: Tok[][] = [];
     let current: Tok[] = [];
     let depth = 0;
@@ -239,7 +315,7 @@ function splitTopLevel(toks: Tok[], isSep: (t: Tok) => boolean): Tok[][] {
 }
 
 /** Index of the parenthesis closing the one at `open`, or -1. */
-function matchingParen(toks: Tok[], open: number): number {
+export function matchingParen(toks: Tok[], open: number): number {
     let depth = 0;
     for (let k = open; k < toks.length; k++) {
         if (isPunct(toks[k], '(')) depth++;
@@ -251,7 +327,7 @@ function matchingParen(toks: Tok[], open: number): number {
     return -1;
 }
 
-interface QualifiedName {
+export interface QualifiedName {
     parts: string[];
     first: Tok;
     last: Tok;
@@ -259,7 +335,7 @@ interface QualifiedName {
     next: number;
 }
 
-function readQualifiedName(toks: Tok[], i: number): QualifiedName | null {
+export function readQualifiedName(toks: Tok[], i: number): QualifiedName | null {
     const t = toks[i];
     if (!t || (t.type !== 'word' && t.type !== 'qident')) return null;
     const parts = [t.value];
@@ -273,7 +349,7 @@ function readQualifiedName(toks: Tok[], i: number): QualifiedName | null {
     return { parts, first: t, last, next: j };
 }
 
-function splitName(parts: string[]): { schema: string | null; name: string } {
+export function splitName(parts: string[]): { schema: string | null; name: string } {
     const name = parts[parts.length - 1];
     const schema = parts.length >= 2 ? parts[parts.length - 2] : null;
     return { schema, name };
@@ -323,7 +399,7 @@ const MULTIWORD_TYPE_STARTS: Record<string, string[]> = {
     interval: ['year', 'month', 'day', 'hour', 'minute', 'second']
 };
 
-function normalizeTypeTokens(toks: Tok[]): string {
+export function normalizeTypeTokens(toks: Tok[]): string {
     if (toks.length === 0) return '?';
     if (toks.some(t => t.type === 'op' && t.text.startsWith('%'))) return '?';
     let words: Array<{ value: string; quoted: boolean }> = [];
@@ -380,7 +456,7 @@ export function normalizeTypeName(typeText: string): string {
 }
 
 /** The tokens of one argument without its name, e.g. `p_id integer` → `integer`. */
-function dropArgumentName(arg: Tok[]): Tok[] {
+export function dropArgumentName(arg: Tok[]): Tok[] {
     if (arg.length <= 1) return arg;
     const [t0, t1] = arg;
     if (t1.type !== 'word' && t1.type !== 'qident') return arg;
@@ -391,34 +467,78 @@ function dropArgumentName(arg: Tok[]): Tok[] {
 
 const ARG_MODES = new Set(['in', 'out', 'inout', 'variadic']);
 
-/** Identity argument types of a parameter list (the tokens between the parentheses). */
-function parseRoutineArguments(toks: Tok[]): string[] {
+interface ParsedParam {
+    param: RepoParam;
+    /** The type tokens, for the identity type. */
+    typeToks: Tok[];
+}
+
+/** The parameters of a parameter list (the tokens between the parentheses). */
+function parseParams(toks: Tok[], ctx: ScanContext): ParsedParam[] {
     if (toks.length === 0) return [];
-    const result: string[] = [];
+    const result: ParsedParam[] = [];
     for (const rawArg of splitTopLevel(toks, t => isPunct(t, ','))) {
         let arg = rawArg;
+        let defaultToks: Tok[] = [];
         const cut = arg.findIndex((t, k) => isWord(t, 'default') || (t.type === 'op' && t.text === '=' && k > 0));
-        if (cut >= 0) arg = arg.slice(0, cut);
+        if (cut >= 0) {
+            defaultToks = arg.slice(cut + 1);
+            arg = arg.slice(0, cut);
+        }
         if (arg.length === 0) continue;
-        let mode = 'in';
+        let mode: RepoParam['mode'] = 'in';
         if (arg[0].type === 'word' && ARG_MODES.has(arg[0].value) && arg.length > 1) {
-            mode = arg[0].value;
+            mode = arg[0].value as RepoParam['mode'];
             arg = arg.slice(1);
         } else if (arg.length > 2 && arg[1].type === 'word' && ARG_MODES.has(arg[1].value)) {
             // PostgreSQL also takes the mode after the name: `p_id IN integer`.
-            mode = arg[1].value;
+            mode = arg[1].value as RepoParam['mode'];
             arg = [arg[0], ...arg.slice(2)];
         }
-        // OUT parameters are no part of the signature pg_proc.proargtypes records,
-        // for functions as for procedures.
-        if (mode === 'out') continue;
-        result.push(normalizeTypeTokens(dropArgumentName(arg)));
+        const typeToks = dropArgumentName(arg);
+        const named = typeToks !== arg;
+        const first = named ? arg[0] : typeToks[0];
+        const last = named ? arg[0] : typeToks[typeToks.length - 1];
+        result.push({
+            param: {
+                name: named ? arg[0].value : null,
+                mode,
+                type: sourceOf(typeToks, ctx.text),
+                defaultValue: defaultToks.length > 0 ? sourceOf(defaultToks, ctx.text) : null,
+                start: ctx.toPosition(first.start),
+                end: ctx.toPosition(last.end)
+            },
+            typeToks
+        });
     }
     return result;
 }
 
+/** The source text of a run of tokens, with runs of white space folded. */
+function sourceOf(toks: Tok[], text: string): string {
+    if (toks.length === 0) return '';
+    return text.slice(toks[0].start, toks[toks.length - 1].end).replace(/\s+/g, ' ');
+}
+
+/**
+ * Identity argument types: OUT parameters are no part of the signature
+ * pg_proc.proargtypes records, for functions as for procedures.
+ */
+function identityTypes(params: ParsedParam[]): string[] {
+    return params.filter(p => p.param.mode !== 'out').map(p => normalizeTypeTokens(p.typeToks));
+}
+
+/** How many arguments a call may pass; CALL passes the OUT parameters of a procedure too. */
+function argCountOf(params: RepoParam[], kind: RepoObjectKind): ArgCount {
+    const passed = kind === 'procedure' ? params : params.filter(p => p.mode !== 'out');
+    return {
+        min: passed.filter(p => p.defaultValue === null).length,
+        max: passed.some(p => p.mode === 'variadic') ? Infinity : passed.length
+    };
+}
+
 /** Identity argument types of an aggregate from the parentheses after its name. */
-function parseAggregateArguments(toks: Tok[]): string[] | null {
+function parseAggregateArguments(toks: Tok[], ctx: ScanContext): string[] | null {
     if (toks.length === 1 && toks[0].type === 'op' && toks[0].text === '*') return [];
     // The old syntax: CREATE AGGREGATE name (BASETYPE = type, SFUNC = …).
     const options = splitTopLevel(toks, t => isPunct(t, ','));
@@ -435,11 +555,56 @@ function parseAggregateArguments(toks: Tok[]): string[] | null {
     const orderAt = toks.findIndex((t, k) => isWord(t, 'order') && isWord(toks[k + 1], 'by'));
     if (orderAt >= 0) {
         return [
-            ...parseRoutineArguments(toks.slice(0, orderAt)),
-            ...parseRoutineArguments(toks.slice(orderAt + 2))
+            ...identityTypes(parseParams(toks.slice(0, orderAt), ctx)),
+            ...identityTypes(parseParams(toks.slice(orderAt + 2), ctx))
         ];
     }
-    return parseRoutineArguments(toks);
+    return identityTypes(parseParams(toks, ctx));
+}
+
+/** Words that end the RETURNS clause of a routine. */
+const ROUTINE_OPTION_WORDS = new Set([
+    'language', 'as', 'immutable', 'stable', 'volatile', 'strict', 'called', 'security', 'external', 'parallel',
+    'cost', 'rows', 'set', 'window', 'leakproof', 'not', 'support', 'transform', 'begin', 'return', 'returns'
+]);
+
+/** RETURNS text and body of a routine, from the tokens after its parameter list. */
+function routineTail(toks: Tok[], from: number, text: string): { returns?: string; body?: string } {
+    const result: { returns?: string; body?: string } = {};
+    let depth = 0;
+    for (let k = from; k < toks.length; k++) {
+        const t = toks[k];
+        if (isPunct(t, '(')) depth++;
+        else if (isPunct(t, ')')) depth--;
+        if (depth !== 0) continue;
+        if (isWord(t, 'returns') && result.returns === undefined && !isWord(toks[k + 1], 'null')) {
+            let end = k + 1;
+            let inner = 0;
+            while (end < toks.length) {
+                const u = toks[end];
+                if (isPunct(u, '(')) inner++;
+                else if (isPunct(u, ')')) inner--;
+                if (inner === 0 && u.type === 'word' && ROUTINE_OPTION_WORDS.has(u.value) && end > k + 1) break;
+                end++;
+            }
+            result.returns = sourceOf(toks.slice(k + 1, end), text);
+            k = end - 1;
+        } else if (isWord(t, 'as') && result.body === undefined) {
+            const first = toks[k + 1];
+            // `AS 'obj_file', 'link_symbol'`: prosrc holds the link symbol.
+            const bodyTok = first?.type === 'string' && isPunct(toks[k + 2], ',') && toks[k + 3]?.type === 'string' ? toks[k + 3] : first;
+            if (bodyTok?.type === 'dollar') result.body = dollarContent(bodyTok.text) ?? undefined;
+            else if (bodyTok?.type === 'string') result.body = bodyTok.value;
+        }
+    }
+    return result;
+}
+
+/** The text between the tags of a dollar-quoted string; null when it is not terminated. */
+export function dollarContent(text: string): string | null {
+    const tag = /^\$[^$]*\$/.exec(text)?.[0];
+    if (!tag || text.length < tag.length * 2 || !text.endsWith(tag)) return null;
+    return text.slice(tag.length, text.length - tag.length);
 }
 
 // ===== Statements ==============================================================
@@ -469,7 +634,7 @@ function searchPathEntries(values: string[]): string[] {
 }
 
 /** The search_path a `SET search_path …` or `set_config('search_path', …)` statement sets; undefined when it is none. */
-function searchPathOf(stmt: Tok[]): string[] | null | undefined {
+export function searchPathOf(stmt: Tok[]): string[] | null | undefined {
     if (isWord(stmt[0], 'set')) {
         let k = 1;
         if (isWord(stmt[k], 'session') || isWord(stmt[k], 'local')) k++;
@@ -493,7 +658,53 @@ function searchPathOf(stmt: Tok[]): string[] | null | undefined {
 
 interface ScanContext {
     searchPath: string[] | null;
+    /** The text the token offsets refer to (the inner text of a DO block). */
+    text: string;
+    comments: SqlComment[];
     toPosition(offset: number): SourcePosition;
+    /** The doc comment of the enclosing statement (a DO block), for statements without one of their own. */
+    outerDoc?: RepoDoc;
+}
+
+/**
+ * The doc comment right before `offset`: the last `/** … *\/` block with only
+ * white space up to it, else the `--` lines directly above.
+ */
+function docBefore(offset: number, ctx: ScanContext): RepoDoc | undefined {
+    const { comments, text } = ctx;
+    let lo = 0;
+    let hi = comments.length - 1;
+    let at = -1;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (comments[mid].end <= offset) {
+            at = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if (at < 0) return undefined;
+    const last = comments[at];
+    const gap = text.slice(last.end, offset);
+    if (!/^\s*$/.test(gap)) return undefined;
+    if (last.block) {
+        if (!last.text.startsWith('/**') || last.text.startsWith('/**/')) return undefined;
+        return { text: last.text, block: true, start: ctx.toPosition(last.start), end: ctx.toPosition(last.end) };
+    }
+    // `--` lines: directly above (at most one line break), each on its own line.
+    if ((gap.match(/\n/g) ?? []).length > 1) return undefined;
+    let first = at;
+    while (first > 0) {
+        const prev = comments[first - 1];
+        const between = text.slice(prev.end, comments[first].start);
+        if (prev.block || !/^[ \t\r]*\n[ \t]*$/.test(between)) break;
+        first--;
+    }
+    const lineStart = text.lastIndexOf('\n', comments[first].start - 1) + 1;
+    if (!/^[ \t]*$/.test(text.slice(lineStart, comments[first].start))) return undefined;
+    const lines = comments.slice(first, at + 1).map(c => c.text);
+    return { text: lines.join('\n'), block: false, start: ctx.toPosition(comments[first].start), end: ctx.toPosition(last.end) };
 }
 
 /** The definition a CREATE statement makes (`toks[0]` is the CREATE). */
@@ -532,8 +743,12 @@ function parseCreate(toks: Tok[], ctx: ScanContext, schemaOverride: string | nul
         argTypes: null,
         searchPath: ctx.searchPath,
         start: ctx.toPosition(qname.first.start),
-        end: ctx.toPosition(qname.last.end)
+        end: ctx.toPosition(qname.last.end),
+        statementStart: ctx.toPosition(toks[0].start),
+        statementEnd: ctx.toPosition(toks[toks.length - 1].end)
     };
+    const doc = docBefore(toks[0].start, ctx) ?? ctx.outerDoc;
+    if (doc) def.doc = doc;
     let k = qname.next;
 
     if (kind === 'function' || kind === 'procedure' || kind === 'aggregate') {
@@ -541,7 +756,18 @@ function parseCreate(toks: Tok[], ctx: ScanContext, schemaOverride: string | nul
         const close = matchingParen(toks, k);
         if (close < 0) return;
         const inner = toks.slice(k + 1, close);
-        def.argTypes = kind === 'aggregate' ? parseAggregateArguments(inner) : parseRoutineArguments(inner);
+        if (kind === 'aggregate') {
+            def.argTypes = parseAggregateArguments(inner, ctx);
+            if (def.argTypes) def.argCount = { min: def.argTypes.length, max: def.argTypes.length };
+        } else {
+            const params = parseParams(inner, ctx);
+            def.argTypes = identityTypes(params);
+            def.params = params.map(p => p.param);
+            def.argCount = argCountOf(def.params, kind);
+            const tail = routineTail(toks, close + 1, ctx.text);
+            if (tail.returns !== undefined && kind === 'function') def.returns = tail.returns;
+            if (tail.body !== undefined) def.bodyHash = routineBodyHash(tail.body);
+        }
     } else if (kind === 'trigger') {
         let depth = 0;
         for (; k < toks.length; k++) {
@@ -578,6 +804,21 @@ function lineStarts(text: string): number[] {
     return starts;
 }
 
+/** Maps offsets of a text to line and character. */
+export function positionMapper(text: string): (offset: number) => SourcePosition {
+    const starts = lineStarts(text);
+    return (offset: number): SourcePosition => {
+        let lo = 0;
+        let hi = starts.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (starts[mid] <= offset) lo = mid;
+            else hi = mid - 1;
+        }
+        return { line: lo, character: offset - starts[lo] };
+    };
+}
+
 /**
  * The CREATE statements in the body of a DO block. Unlike a function body, a
  * DO block runs when the file is deployed, so `BEGIN CREATE TYPE …; EXCEPTION
@@ -587,11 +828,18 @@ function lineStarts(text: string): number[] {
 function scanDoBlock(stmt: Tok[], ctx: ScanContext, out: RepoDefinition[]): void {
     const body = stmt.find(t => t.type === 'dollar');
     if (!body) return;
-    const tag = /^\$[^$]*\$/.exec(body.text)?.[0];
-    if (!tag || body.text.length < tag.length * 2 || !body.text.endsWith(tag)) return;
-    const base = body.start + tag.length;
-    const inner: ScanContext = { searchPath: ctx.searchPath, toPosition: (offset) => ctx.toPosition(base + offset) };
-    const toks = tokenize(body.text.slice(tag.length, body.text.length - tag.length));
+    const content = dollarContent(body.text);
+    if (content === null) return;
+    const base = body.start + (body.text.length - content.length) / 2;
+    const comments: SqlComment[] = [];
+    const toks = tokenize(content, comments);
+    const inner: ScanContext = {
+        searchPath: ctx.searchPath,
+        text: content,
+        comments,
+        toPosition: (offset) => ctx.toPosition(base + offset),
+        outerDoc: docBefore(stmt[0].start, ctx)
+    };
     for (const part of splitTopLevel(toks, t => isPunct(t, ';'))) {
         // The CREATE can follow BEGIN, THEN or ELSE within the same statement.
         const at = part.findIndex(t => isWord(t, 'create'));
@@ -605,22 +853,11 @@ function scanDoBlock(stmt: Tok[], ctx: ScanContext, out: RepoDefinition[]): void
  * languages, …) are left out.
  */
 export function scanSqlText(text: string): RepoDefinition[] {
-    const starts = lineStarts(text);
-    const ctx: ScanContext = {
-        searchPath: null,
-        toPosition(offset: number): SourcePosition {
-            let lo = 0;
-            let hi = starts.length - 1;
-            while (lo < hi) {
-                const mid = (lo + hi + 1) >> 1;
-                if (starts[mid] <= offset) lo = mid;
-                else hi = mid - 1;
-            }
-            return { line: lo, character: offset - starts[lo] };
-        }
-    };
+    const comments: SqlComment[] = [];
+    const toks = tokenize(text, comments);
+    const ctx: ScanContext = { searchPath: null, text, comments, toPosition: positionMapper(text) };
     const out: RepoDefinition[] = [];
-    for (const stmt of splitTopLevel(tokenize(text), t => isPunct(t, ';'))) {
+    for (const stmt of splitTopLevel(toks, t => isPunct(t, ';'))) {
         if (stmt.length === 0) continue;
         const searchPath = searchPathOf(stmt);
         if (searchPath !== undefined) {

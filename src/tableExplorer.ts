@@ -15,6 +15,7 @@ import {
 } from './repositoryComparison';
 import type { RepoObjectKind } from './repositoryScanner';
 import { statusHint, statusUri } from './objectDecorations';
+import { docSummary } from './docComments';
 
 export interface SchemaNode {
     type: 'schema';
@@ -54,6 +55,14 @@ const RELATION_KINDS: ReadonlySet<RepoObjectKind> = new Set<RepoObjectKind>(['ta
 
 /** Passed as second argument by a tree item's click, so the command can tell a click from a menu entry. */
 const CLICK_ARGUMENT = 'click';
+
+/** Where the Show Empty Schemas state is kept (the workspace state). */
+export interface ToggleState {
+    get<T>(key: string, defaultValue: T): T;
+    update(key: string, value: unknown): Thenable<void>;
+}
+
+export const TABLES_EMPTY_SCHEMAS_KEY = 'postgresQueryBuilder.tables.showEmptySchemas';
 
 /**
  * Display metadata for each relation kind: the category label shown in the
@@ -161,8 +170,27 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
     private repoOnlyCache?: { matcher: DefinitionMatcher; nodes: Promise<TableNode[]> };
     private unmarkedCache?: { rows: unknown; unmarked: UnmarkedObjects };
 
+    private emptySchemas = false;
+    private state?: ToggleState;
+
     constructor(connectionManager: ConnectionManager) {
         this.connectionManager = connectionManager;
+    }
+
+    /** Keep the Show Empty Schemas state in `state` (the workspace state). */
+    setState(state: ToggleState): void {
+        this.state = state;
+        this.emptySchemas = state.get<boolean>(TABLES_EMPTY_SCHEMAS_KEY, false);
+    }
+
+    get showsEmptySchemas(): boolean {
+        return this.emptySchemas;
+    }
+
+    async setShowEmptySchemas(value: boolean): Promise<void> {
+        this.emptySchemas = value;
+        await this.state?.update(TABLES_EMPTY_SCHEMAS_KEY, value);
+        this._onDidChangeTreeData.fire();
     }
 
     /** Compare the relations with the CREATE statements of the repository. */
@@ -222,7 +250,7 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
     }
 
     private decorate(item: vscode.TreeItem, status: RepoStatus | undefined, tooltip: string): void {
-        if (status === 'dbOnly' || status === 'repoOnly') item.resourceUri = statusUri(item.id ?? '', status);
+        if (status && status !== 'both') item.resourceUri = statusUri(item.id ?? '', status);
         item.tooltip = status ? `${tooltip}\n\n${statusHint(status)}` : tooltip;
     }
 
@@ -269,7 +297,9 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                     arguments: [element.schema, element.table]
                 };
             }
-            this.decorate(item, element.status, `${element.schema}.${element.table} (${meta.label})`);
+            const summary = docSummary(element.definitions);
+            const tooltip = `${element.schema}.${element.table} (${meta.label})${summary ? `\n\n${summary}` : ''}`;
+            this.decorate(item, element.status, tooltip);
             return item;
         }
     }
@@ -322,7 +352,10 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
                     return scored.map(s => s.schema);
                 }
 
-                return schemas;
+                if (this.emptySchemas) return schemas;
+                // A schema without relations has nothing to show here, unless only the repository has it.
+                const filled = await this.schemasWithRelations(comparison);
+                return schemas.filter(s => s.status === 'repoOnly' || filled.has(s.schema));
             } else if (element.type === 'schema') {
                 // Group the schema's relations into auto-expanded category nodes
                 // (Tables / Views / Materialized Views / Foreign Tables). Only
@@ -422,6 +455,19 @@ export class TableExplorerProvider implements vscode.TreeDataProvider<TreeNode> 
         // Every database has the public schema; no repository has to create it.
         const status = definitions.length === 0 && schema === 'public' ? undefined : databaseObjectStatus(definitions);
         return { type: 'schema', schema, status, definitions };
+    }
+
+    /** The schemas that hold a relation of the database or one only the repository creates. */
+    private async schemasWithRelations(comparison: Comparison | null): Promise<Set<string>> {
+        const schemas = new Set((await this.databaseRelations()).map(r => r.schema));
+        if (comparison) for (const r of await this.repoOnlyRelations(comparison.matcher)) schemas.add(r.schema);
+        return schemas;
+    }
+
+    /** True when the schema has no relation, so it shows only while Show Empty Schemas is on. */
+    async isEmptySchema(schema: string): Promise<boolean> {
+        const comparison = await this.getComparison();
+        return !(await this.schemasWithRelations(comparison)).has(schema);
     }
 
     /** Every relation of the database the view may show; one cached query across all schemas. */

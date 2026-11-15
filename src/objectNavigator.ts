@@ -9,27 +9,33 @@
  * all work on that result in memory. DDL is fetched per object, on demand.
  */
 import * as vscode from 'vscode';
-import { buildSchemaListQuery, filterHighlights, parseFilterTerms, scoreFilterText } from './tableExplorer';
+import { filterHighlights, parseFilterTerms, scoreFilterText } from './tableExplorer';
 import {
-    CURRENT_SCHEMAS_QUERY,
-    EXTENSION_MEMBERS_QUERY,
     MatcherCache,
-    UnmarkedObjects,
     databaseObjectStatus,
+    routineStatus,
     type DefinitionMatcher,
     type LocatedDefinition,
-    type ObjectIdentity,
     type RepoStatus,
-    type RepositorySource
+    type RepositorySource,
+    type UnmarkedObjects
 } from './repositoryComparison';
 import { statusHint, statusUri } from './objectDecorations';
-import { SERVER_VERSION_QUERY } from './ddlGenerator';
+import { docSummary } from './docComments';
 import { Logger, getErrorMessage } from './logger';
+import {
+    DatabaseCatalog,
+    NAVIGATOR_KINDS,
+    dbObjectIdentity,
+    type CatalogConnection,
+    type CatalogData,
+    type DbObject,
+    type NavigatorKind
+} from './databaseCatalog';
 
-export type NavigatorKind = 'function' | 'procedure' | 'aggregate' | 'type' | 'domain' | 'sequence' | 'trigger' | 'extension';
-
-/** Every kind, in the order the categories appear under a schema. */
-export const NAVIGATOR_KINDS: readonly NavigatorKind[] = ['function', 'procedure', 'aggregate', 'type', 'domain', 'sequence', 'trigger', 'extension'];
+export { NAVIGATOR_KINDS, buildObjectCatalogQuery, dbObjectIdentity, toDbObject } from './databaseCatalog';
+export { routineStatus } from './repositoryComparison';
+export type { DbObject, NavigatorKind } from './databaseCatalog';
 
 export const KIND_META: Record<NavigatorKind, { label: string; singular: string; icon: string }> = {
     function: { label: 'Functions', singular: 'Function', icon: 'symbol-method' },
@@ -46,29 +52,6 @@ const TYPE_ICONS: Record<string, string> = { enum: 'symbol-enum', composite: 'sy
 
 /** Passed as second argument by a tree item's click, so the command can tell a click from a menu entry. */
 export const CLICK_ARGUMENT = 'click';
-
-/** An object as the catalog query returns it. */
-export interface DbObject {
-    kind: NavigatorKind;
-    oid: number;
-    schema: string;
-    name: string;
-    /** Identity arguments of a routine (`pg_get_function_identity_arguments`). */
-    args: string | null;
-    /** `format_type` of each identity argument of a routine. */
-    argTypes: string[] | null;
-    /** Result type, type flavour, base type, data type or version, depending on the kind. */
-    detail: string | null;
-    /** Table of a trigger; table and column a sequence is owned by. */
-    relSchema: string | null;
-    relName: string | null;
-    relColumn: string | null;
-    owner: string | null;
-    language: string | null;
-    comment: string | null;
-    /** The object belongs to an extension (PostGIS functions and the like). */
-    fromExtension: boolean;
-}
 
 export interface ObjectSchemaNode {
     type: 'schema';
@@ -113,12 +96,7 @@ export interface NavigatorSettings {
 }
 
 /** The part of the connection manager the view needs. */
-export interface NavigatorConnection {
-    isConnected(): boolean;
-    getActiveConnectionConfig(): { schemas?: string[] } | null | undefined;
-    queryMetadata(sql: string, params?: unknown[]): Promise<Array<Record<string, unknown>>>;
-    clearMetadataCache(): void;
-}
+export type NavigatorConnection = CatalogConnection;
 
 /** Where the Show Only Differences state is kept (the workspace state). */
 export interface NavigatorState {
@@ -127,6 +105,7 @@ export interface NavigatorState {
 }
 
 export const ONLY_DIFFERENCES_KEY = 'postgresQueryBuilder.objectNavigator.onlyDifferences';
+export const EMPTY_SCHEMAS_KEY = 'postgresQueryBuilder.objectNavigator.showEmptySchemas';
 
 export function readNavigatorSettings(): NavigatorSettings {
     const cfg = vscode.workspace.getConfiguration('postgresQueryBuilder');
@@ -135,135 +114,6 @@ export function readNavigatorSettings(): NavigatorSettings {
         objectKinds: Array.isArray(kinds) ? kinds.map(String) : [...NAVIGATOR_KINDS],
         showExtensionObjects: cfg.get<boolean>('objectNavigator.showExtensionObjects', false)
     };
-}
-
-const SYSTEM_SCHEMAS = new Set(['pg_catalog', 'information_schema', 'pg_toast']);
-
-/**
- * The one catalog query of the view. Light columns only — no DDL — and
- * extension members are always read but flagged, so hiding them is a filter in
- * memory and a repository definition of such an object is never mistaken for
- * one that exists only in the repository.
- */
-export function buildObjectCatalogQuery(serverVersion: number, restrictToSchemas: boolean): string {
-    const inSchemas = (col: string): string => (restrictToSchemas
-        ? `${col} = ANY($1::text[])`
-        : `${col} NOT IN ('pg_catalog', 'information_schema') AND ${col} NOT LIKE 'pg\\_%'`);
-    const member = (catalog: string, oidCol: string): string =>
-        `EXISTS (SELECT 1 FROM pg_catalog.pg_depend d WHERE d.classid = 'pg_catalog.${catalog}'::regclass AND d.objid = ${oidCol} AND d.deptype = 'e')`;
-    const routineKind = serverVersion >= 110000
-        ? `CASE p.prokind WHEN 'p' THEN 'procedure' WHEN 'a' THEN 'aggregate' ELSE 'function' END`
-        : `CASE WHEN p.proisagg THEN 'aggregate' ELSE 'function' END`;
-    const isProcedure = serverVersion >= 110000 ? `p.prokind = 'p'` : 'false';
-    const triggerFilter = serverVersion >= 130000 ? 'NOT tg.tgisinternal AND tg.tgparentid = 0' : 'NOT tg.tgisinternal';
-    return `SELECT kind, oid, schema_name, name, args, arg_types, detail, rel_schema, rel_name, rel_column, owner, language, comment, from_extension FROM (
-    SELECT ${routineKind} AS kind, p.oid, n.nspname::text AS schema_name, p.proname::text AS name,
-           pg_catalog.pg_get_function_identity_arguments(p.oid) AS args,
-           ARRAY(SELECT pg_catalog.format_type(u.t, NULL) FROM unnest(p.proargtypes::oid[]) WITH ORDINALITY AS u(t, i) ORDER BY u.i) AS arg_types,
-           CASE WHEN ${isProcedure} THEN NULL ELSE pg_catalog.pg_get_function_result(p.oid) END AS detail,
-           NULL::text AS rel_schema, NULL::text AS rel_name, NULL::text AS rel_column,
-           pg_catalog.pg_get_userbyid(p.proowner)::text AS owner, l.lanname::text AS language,
-           pg_catalog.obj_description(p.oid, 'pg_proc') AS comment,
-           ${member('pg_proc', 'p.oid')} AS from_extension
-    FROM pg_catalog.pg_proc p
-    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-    LEFT JOIN pg_catalog.pg_language l ON l.oid = p.prolang
-    WHERE ${inSchemas('n.nspname')}
-      -- The constructors PostgreSQL creates with a range type are part of that type.
-      AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend di
-                      WHERE di.classid = 'pg_catalog.pg_proc'::regclass AND di.objid = p.oid AND di.deptype = 'i')
-    UNION ALL
-    SELECT CASE t.typtype WHEN 'd' THEN 'domain' ELSE 'type' END, t.oid, n.nspname::text, t.typname::text,
-           NULL::text, NULL::text[],
-           CASE t.typtype WHEN 'e' THEN 'enum' WHEN 'r' THEN 'range' WHEN 'c' THEN 'composite'
-                ELSE pg_catalog.format_type(t.typbasetype, t.typtypmod) END,
-           NULL::text, NULL::text, NULL::text,
-           pg_catalog.pg_get_userbyid(t.typowner)::text, NULL::text,
-           pg_catalog.obj_description(t.oid, 'pg_type'),
-           ${member('pg_type', 't.oid')}
-    FROM pg_catalog.pg_type t
-    JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
-    LEFT JOIN pg_catalog.pg_class c ON c.oid = t.typrelid
-    WHERE (t.typtype IN ('e', 'r', 'd') OR (t.typtype = 'c' AND c.relkind = 'c')) AND ${inSchemas('n.nspname')}
-    UNION ALL
-    SELECT 'sequence', c.oid, n.nspname::text, c.relname::text, NULL::text, NULL::text[],
-           pg_catalog.format_type(s.seqtypid, NULL),
-           tn.nspname::text, tc.relname::text, ta.attname::text,
-           pg_catalog.pg_get_userbyid(c.relowner)::text, NULL::text,
-           pg_catalog.obj_description(c.oid, 'pg_class'),
-           ${member('pg_class', 'c.oid')}
-    FROM pg_catalog.pg_class c
-    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-    JOIN pg_catalog.pg_sequence s ON s.seqrelid = c.oid
-    LEFT JOIN pg_catalog.pg_depend d ON d.classid = 'pg_catalog.pg_class'::regclass AND d.objid = c.oid
-         AND d.refclassid = 'pg_catalog.pg_class'::regclass AND d.deptype = 'a'
-    LEFT JOIN pg_catalog.pg_class tc ON tc.oid = d.refobjid
-    LEFT JOIN pg_catalog.pg_namespace tn ON tn.oid = tc.relnamespace
-    LEFT JOIN pg_catalog.pg_attribute ta ON ta.attrelid = d.refobjid AND ta.attnum = d.refobjsubid
-    WHERE c.relkind = 'S' AND ${inSchemas('n.nspname')}
-      AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend di
-                      WHERE di.classid = 'pg_catalog.pg_class'::regclass AND di.objid = c.oid AND di.deptype = 'i')
-    UNION ALL
-    SELECT 'trigger', tg.oid, n.nspname::text, tg.tgname::text, NULL::text, NULL::text[], NULL::text,
-           n.nspname::text, c.relname::text, NULL::text, NULL::text, NULL::text,
-           pg_catalog.obj_description(tg.oid, 'pg_trigger'),
-           ${member('pg_class', 'c.oid')}
-    FROM pg_catalog.pg_trigger tg
-    JOIN pg_catalog.pg_class c ON c.oid = tg.tgrelid
-    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-    WHERE ${triggerFilter} AND ${inSchemas('n.nspname')}
-    UNION ALL
-    SELECT 'extension', e.oid, n.nspname::text, e.extname::text, NULL::text, NULL::text[], e.extversion::text,
-           NULL::text, NULL::text, NULL::text,
-           pg_catalog.pg_get_userbyid(e.extowner)::text, NULL::text,
-           pg_catalog.obj_description(e.oid, 'pg_extension'), false
-    FROM pg_catalog.pg_extension e
-    JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace
-) objects
-ORDER BY schema_name, name`;
-}
-
-/**
- * PL/pgSQL is installed into every database, so the view does not list it; it
- * stays in the catalog result so a repository that creates it still matches.
- */
-function isBuiltInExtension(obj: DbObject): boolean {
-    return obj.kind === 'extension' && obj.name === 'plpgsql';
-}
-
-function text(row: Record<string, unknown>, key: string): string | null {
-    const v = row[key];
-    return v === null || v === undefined ? null : String(v);
-}
-
-/** One catalog row as a {@link DbObject}. */
-export function toDbObject(row: Record<string, unknown>): DbObject | null {
-    const kind = String(row.kind) as NavigatorKind;
-    if (!NAVIGATOR_KINDS.includes(kind)) return null;
-    const argTypes = row.arg_types;
-    return {
-        kind,
-        oid: Number(row.oid),
-        schema: String(row.schema_name),
-        name: String(row.name),
-        args: text(row, 'args'),
-        argTypes: Array.isArray(argTypes) ? argTypes.map(String) : null,
-        detail: text(row, 'detail'),
-        relSchema: text(row, 'rel_schema'),
-        relName: text(row, 'rel_name'),
-        relColumn: text(row, 'rel_column'),
-        owner: text(row, 'owner'),
-        language: text(row, 'language'),
-        comment: text(row, 'comment'),
-        fromExtension: row.from_extension === true || row.from_extension === 't'
-    };
-}
-
-/** How the object is matched against the repository. */
-export function dbObjectIdentity(obj: DbObject): ObjectIdentity {
-    if (obj.kind === 'extension') return { kind: 'extension', schema: '', name: obj.name };
-    if (obj.kind === 'trigger') return { kind: 'trigger', schema: obj.schema, name: obj.name, table: obj.relName ?? '' };
-    return { kind: obj.kind, schema: obj.schema, name: obj.name, argTypes: obj.argTypes };
 }
 
 const ROUTINE_KINDS = new Set<NavigatorKind>(['function', 'procedure', 'aggregate']);
@@ -305,13 +155,6 @@ function objectKey(node: ObjectNode): string {
     return `repo:${node.kind}:${node.schema}.${node.repoTable ?? ''}.${node.name}(${(node.repoArgTypes ?? []).join(',')})`;
 }
 
-interface Catalog {
-    objects: DbObject[];
-    /** Schemas of the database that the view may show. */
-    schemas: Set<string>;
-    defaultSchema: string;
-}
-
 interface Model {
     roots: NavigatorNode[];
     schemaNodes: Map<string, ObjectSchemaNode>;
@@ -329,25 +172,38 @@ interface AllNodes {
 
 const groupKey = (schema: string, kind: NavigatorKind): string => `${schema}\u0000${kind}`;
 
+/**
+ * PL/pgSQL is installed into every database, so the view does not list it; it
+ * stays in the catalog result so a repository that creates it still matches.
+ */
+function isBuiltInExtension(obj: DbObject): boolean {
+    return obj.kind === 'extension' && obj.name === 'plpgsql';
+}
+
 export class ObjectNavigatorProvider implements vscode.TreeDataProvider<NavigatorNode> {
     private readonly _onDidChangeTreeData = new vscode.EventEmitter<NavigatorNode | undefined | void>();
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
     private filterText = '';
     private filterTerms: string[] = [];
-    private catalog?: Promise<Catalog>;
     private allNodes?: AllNodes;
     private model?: Model;
     private readonly matchers = new MatcherCache();
     private onlyDifferences: boolean;
+    private emptySchemas: boolean;
+    /** The catalog of the connection, shared with the SQL editor features. */
+    readonly catalog: DatabaseCatalog;
 
     constructor(
         private readonly connection: NavigatorConnection,
         private readonly settings: () => NavigatorSettings,
         private readonly repository?: RepositorySource,
-        private readonly state?: NavigatorState
+        private readonly state?: NavigatorState,
+        catalog?: DatabaseCatalog
     ) {
+        this.catalog = catalog ?? new DatabaseCatalog(connection);
         this.onlyDifferences = state?.get<boolean>(ONLY_DIFFERENCES_KEY, false) ?? false;
+        this.emptySchemas = state?.get<boolean>(EMPTY_SCHEMAS_KEY, false) ?? false;
     }
 
     // ===== State changes =====
@@ -370,6 +226,17 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
         this._onDidChangeTreeData.fire();
     }
 
+    get showsEmptySchemas(): boolean {
+        return this.emptySchemas;
+    }
+
+    async setShowEmptySchemas(value: boolean): Promise<void> {
+        this.emptySchemas = value;
+        this.model = undefined;
+        await this.state?.update(EMPTY_SCHEMAS_KEY, value);
+        this._onDidChangeTreeData.fire();
+    }
+
     /** Re-render from what is loaded: the settings, the repository or the filter changed. */
     rerender(): void {
         this.allNodes = undefined;
@@ -379,58 +246,20 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
 
     /** Forget the loaded catalog; the next render queries it again (connection changed). */
     reset(): void {
-        this.catalog = undefined;
+        this.catalog.reset();
         this.rerender();
     }
 
     /** Reload from the database, bypassing the metadata cache. */
     refresh(): void {
-        this.connection.clearMetadataCache();
-        this.reset();
+        this.catalog.refresh();
+        this.rerender();
     }
 
     // ===== Loading =====
 
-    private allowedSchema(schema: string, configSchemas: readonly string[] | undefined): boolean {
-        if (configSchemas && configSchemas.length > 0) return configSchemas.includes(schema);
-        return !SYSTEM_SCHEMAS.has(schema) && !schema.startsWith('pg_');
-    }
-
-    private loadCatalog(): Promise<Catalog> {
-        if (!this.catalog) {
-            this.catalog = this.fetchCatalog();
-            // A failed load is not kept, so the next expand tries again.
-            this.catalog.catch(() => { this.catalog = undefined; });
-        }
-        return this.catalog;
-    }
-
-    private async fetchCatalog(): Promise<Catalog> {
-        const started = Date.now();
-        const configSchemas = this.connection.getActiveConnectionConfig()?.schemas;
-        const restrict = !!configSchemas && configSchemas.length > 0;
-        const schemaQuery = buildSchemaListQuery(configSchemas);
-        const [versionRows, schemaRows, searchPathRows] = await Promise.all([
-            this.connection.queryMetadata(SERVER_VERSION_QUERY),
-            this.connection.queryMetadata(schemaQuery.sql, schemaQuery.params),
-            this.connection.queryMetadata(CURRENT_SCHEMAS_QUERY)
-        ]);
-        const version = Number(versionRows[0]?.server_version_num ?? 0);
-        const rows = await this.connection.queryMetadata(
-            buildObjectCatalogQuery(version, restrict),
-            restrict ? [configSchemas] : undefined
-        );
-        const objects = rows.map(toDbObject).filter((o): o is DbObject => o !== null);
-        const schemas = new Set(schemaRows.map(r => String(r.schema_name)));
-        for (const o of objects) {
-            if (o.kind !== 'extension') schemas.add(o.schema);
-        }
-        Logger.log('ObjectNavigator.fetchCatalog', `${objects.length} objects in ${Date.now() - started} ms`);
-        return {
-            objects,
-            schemas,
-            defaultSchema: searchPathRows.length > 0 ? String(searchPathRows[0].schema_name) : 'public'
-        };
+    private loadCatalog(): Promise<CatalogData> {
+        return this.catalog.load();
     }
 
     private enabledKinds(): Set<NavigatorKind> {
@@ -444,9 +273,8 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
         const catalog = await this.loadCatalog();
         const kinds = this.enabledKinds();
         const { showExtensionObjects } = this.settings();
-        const configSchemas = this.connection.getActiveConnectionConfig()?.schemas;
         const matcher = this.matchers.get(this.repository?.snapshot() ?? null, catalog.defaultSchema);
-        const unmarked = matcher ? new UnmarkedObjects(await this.connection.queryMetadata(EXTENSION_MEMBERS_QUERY)) : null;
+        const unmarked = matcher ? await this.catalog.unmarked() : null;
         const objects: ObjectNode[] = [];
         for (const db of catalog.objects) {
             if (!kinds.has(db.kind) || isBuiltInExtension(db)) continue;
@@ -468,7 +296,7 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
                     definitions = matcher.find({ kind: 'table', schema: db.relSchema, name: db.relName });
                 }
                 node.definitions = definitions;
-                node.status = databaseObjectStatus(definitions);
+                node.status = routineStatus(db, definitions);
             }
             objects.push(node);
         }
@@ -477,7 +305,7 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
             const identities = catalog.objects.map(dbObjectIdentity);
             for (const repo of matcher.unmatched(identities, kinds)) {
                 const id = repo.identity;
-                if (id.kind !== 'extension' && !this.allowedSchema(id.schema, configSchemas)) continue;
+                if (id.kind !== 'extension' && !this.catalog.allowedSchema(id.schema)) continue;
                 const routine = ROUTINE_KINDS.has(id.kind as NavigatorKind);
                 objects.push({
                     type: 'object',
@@ -495,7 +323,7 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
                 [...catalog.schemas].map(s => ({ kind: 'schema' as const, schema: '', name: s })),
                 new Set(['schema'] as const)
             )) {
-                if (!this.allowedSchema(repo.identity.name, configSchemas)) continue;
+                if (!this.catalog.allowedSchema(repo.identity.name)) continue;
                 repoSchemas.push({ type: 'schema', schema: repo.identity.name, status: 'repoOnly', definitions: repo.definitions });
             }
         }
@@ -503,7 +331,7 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
         return this.allNodes;
     }
 
-    private schemaNode(schema: string, catalog: Catalog, all: AllNodes): ObjectSchemaNode {
+    private schemaNode(schema: string, catalog: CatalogData, all: AllNodes): ObjectSchemaNode {
         const { matcher, unmarked } = all;
         if (!matcher) return { type: 'schema', schema, definitions: [] };
         if (!catalog.schemas.has(schema)) return { type: 'schema', schema, status: 'repoOnly', definitions: [] };
@@ -558,6 +386,14 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
             categories.set(schema, NAVIGATOR_KINDS
                 .filter(kind => kind !== 'extension' && objects.has(groupKey(schema, kind)))
                 .map(kind => ({ type: 'category' as const, schema, kind })));
+        }
+        // Schemas with nothing to show in this view, only when asked for.
+        if (this.emptySchemas && !filtering) {
+            for (const schema of catalog.schemas) {
+                if (schemaNodes.has(schema) || !this.catalog.allowedSchema(schema)) continue;
+                schemaNodes.set(schema, this.schemaNode(schema, catalog, all));
+                categories.set(schema, []);
+            }
         }
         for (const repoSchema of all.repoSchemas) {
             if (schemaNodes.has(repoSchema.schema)) {
@@ -624,7 +460,7 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
     }
 
     private decorate(item: vscode.TreeItem, id: string, status: RepoStatus | undefined, tooltip: string[]): void {
-        if (status === 'dbOnly' || status === 'repoOnly') item.resourceUri = statusUri(id, status);
+        if (status && status !== 'both') item.resourceUri = statusUri(id, status);
         if (status) tooltip.push('', statusHint(status));
         item.tooltip = tooltip.join('\n');
     }
@@ -692,6 +528,8 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
         } else if (node.kind === 'trigger' && node.repoTable) {
             lines.push(`On table: ${node.schema}.${node.repoTable}`);
         }
+        const summary = docSummary(node.definitions);
+        if (summary && summary !== db?.comment) lines.push('', summary);
         return lines;
     }
 
@@ -713,5 +551,16 @@ export class ObjectNavigatorProvider implements vscode.TreeDataProvider<Navigato
     /** True when the Search filter alone hides the entry. */
     isFilteredOut(node: ObjectNode): boolean {
         return this.filterTerms.length > 0 && scoreFilterText(filterText(node), this.filterTerms) === 0;
+    }
+
+    /** True while the Search filter is set. */
+    get isFiltering(): boolean {
+        return this.filterTerms.length > 0;
+    }
+
+    /** The entry of a schema while the view shows it; undefined when the filter or Show Empty Schemas hides it. */
+    async shownSchema(schema: string): Promise<ObjectSchemaNode | undefined> {
+        if (!this.connection.isConnected()) return undefined;
+        return (await this.getModel()).schemaNodes.get(schema);
     }
 }

@@ -22,8 +22,12 @@ export interface ObjectIdentity {
     table?: string;
 }
 
-/** Where an object exists: in both places, only in the database, or only in the repository. */
-export type RepoStatus = 'both' | 'dbOnly' | 'repoOnly';
+/**
+ * Where an object exists: in both places, only in the database, or only in the
+ * repository; `differs` when the body of a routine in the database matches
+ * none of its definitions in the repository.
+ */
+export type RepoStatus = 'both' | 'dbOnly' | 'repoOnly' | 'differs';
 
 /** Definitions in the repository that no object in the database answers to. */
 export interface RepoOnlyObject {
@@ -111,7 +115,20 @@ export function databaseObjectStatus(definitions: readonly LocatedDefinition[]):
     return definitions.length > 0 ? 'both' : 'dbOnly';
 }
 
-interface IndexedDefinition {
+/**
+ * Where a database object exists. A routine whose body matches none of its
+ * repository definitions differs; matching any definition — also an older
+ * migration — counts as the same.
+ */
+export function routineStatus(db: { kind: string; bodyHash?: string | null }, definitions: readonly LocatedDefinition[]): RepoStatus {
+    const status = databaseObjectStatus(definitions);
+    if (status !== 'both' || (db.kind !== 'function' && db.kind !== 'procedure') || !db.bodyHash) return status;
+    const hashes = definitions.map(d => d.bodyHash).filter((h): h is string => !!h);
+    return hashes.length > 0 && !hashes.includes(db.bodyHash) ? 'differs' : status;
+}
+
+/** A definition together with the identity it stands for. */
+export interface IndexedDefinition {
     def: LocatedDefinition;
     identity: ObjectIdentity;
 }
@@ -141,17 +158,38 @@ export function argumentTypesMatch(repo: readonly string[], db: readonly string[
  */
 export class DefinitionMatcher {
     private readonly byBase = new Map<string, IndexedDefinition[]>();
+    private readonly byName = new Map<string, IndexedDefinition[]>();
     private readonly count: number;
 
     constructor(definitions: readonly LocatedDefinition[], private readonly defaultSchema: string) {
         for (const def of definitions) {
             const identity = this.identityOf(def);
+            const entry = { def, identity };
             const key = baseKey(identity);
             const list = this.byBase.get(key);
-            if (list) list.push({ def, identity });
-            else this.byBase.set(key, [{ def, identity }]);
+            if (list) list.push(entry);
+            else this.byBase.set(key, [entry]);
+            const nameKey = `${identity.kind}:${identity.name}`;
+            const named = this.byName.get(nameKey);
+            if (named) named.push(entry);
+            else this.byName.set(nameKey, [entry]);
         }
         this.count = definitions.length;
+    }
+
+    /**
+     * The definitions of a kind and name in a schema — any schema when
+     * `schema` is null. A trigger's schema is the schema of its table;
+     * schemas and extensions have none.
+     */
+    lookup(kind: RepoObjectKind, schema: string | null, name: string): IndexedDefinition[] {
+        const list = this.byName.get(`${kind}:${name}`) ?? [];
+        return schema === null || kind === 'schema' || kind === 'extension' ? list : list.filter(e => e.identity.schema === schema);
+    }
+
+    /** Every definition with its identity, for searches over all of them. */
+    *entries(): IterableIterator<IndexedDefinition> {
+        for (const list of this.byBase.values()) yield* list;
     }
 
     /** True when the repository has no definition at all — then nothing is marked. */

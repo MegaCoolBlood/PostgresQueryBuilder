@@ -499,3 +499,73 @@ test('every command a menu offers is contributed, with an icon where it shows as
         }
     }
 });
+
+/**
+ * 4.0.0 also brought the SQL editor features, the Dependencies view and the
+ * Show Empty Schemas toggles.
+ */
+const SQL_LANGUAGES = ['sql', 'postgres', 'pgsql'];
+
+test('the Dependencies view starts collapsed, explains itself and offers no connection actions', () => {
+    const view = manifest.contributes.views.postgresQueryBuilderExplorer.find((v: { id: string }) => v.id === 'postgresObjectDependencies');
+    assert.ok(view, 'the Dependencies view is not contributed');
+    assert.equal(view.visibility, 'collapsed');
+    const titleMenu: Array<{ command: string; when: string }> = manifest.contributes.menus['view/title'];
+    const actions = titleMenu.filter(m => m.when.includes('view == postgresObjectDependencies')).map(m => m.command);
+    assert.deepEqual(actions, ['postgresQueryBuilder.refreshDependencies', 'postgresQueryBuilder.clearDependencies']);
+    const welcome = manifest.contributes.viewsWelcome.find((w: { view: string }) => w.view === 'postgresObjectDependencies');
+    assert.ok(welcome?.contents.includes('Show Dependencies'));
+});
+
+test('the entries of the Dependencies view get the same context menu as in the Objects and Tables views', () => {
+    const context: Array<{ command: string; when: string }> = manifest.contributes.menus['view/item/context'];
+    for (const command of [...OBJECT_NODE_COMMANDS, 'postgresQueryBuilder.showDependencies', 'postgresQueryBuilder.findUsages', 'postgresQueryBuilder.compareWithDatabase']) {
+        assert.ok(context.some(m => m.command === command && m.when.includes('view == postgresObjectDependencies')), `${command} is missing from the Dependencies view`);
+    }
+});
+
+test('the Tables title bar keeps the connection actions first; both views toggle empty schemas with one icon pair', () => {
+    const titleMenu: Array<{ command: string; when: string; group: string }> = manifest.contributes.menus['view/title'];
+    const tables = titleMenu.filter(m => m.when.startsWith('view == postgresTableExplorer'));
+    assert.deepEqual(tables.slice(0, TITLE_BAR_ACTIONS.length).map(m => m.command), TITLE_BAR_ACTIONS.map(a => a.command));
+    const pairs: Array<[string, string, string, string]> = [
+        ['postgresTableExplorer', 'postgresQueryBuilder.showEmptySchemas', 'postgresQueryBuilder.hideEmptySchemas', 'postgresQueryBuilder.tables.showEmptySchemas'],
+        ['postgresObjectNavigator', 'postgresQueryBuilder.showEmptyObjectSchemas', 'postgresQueryBuilder.hideEmptyObjectSchemas', 'postgresQueryBuilder.objectNavigator.showEmptySchemas']
+    ];
+    const palette: Array<{ command: string; when: string }> = manifest.contributes.menus.commandPalette;
+    for (const [view, show, hide, key] of pairs) {
+        const showEntry = titleMenu.find(m => m.command === show);
+        const hideEntry = titleMenu.find(m => m.command === hide);
+        assert.equal(showEntry?.when, `view == ${view} && !${key}`);
+        assert.equal(hideEntry?.when, `view == ${view} && ${key}`);
+        assert.equal(showEntry?.group, hideEntry?.group, 'the pair swaps in one place');
+        for (const command of [show, hide]) assert.equal(palette.find(p => p.command === command)?.when, 'false', `${command} appears in the Command Palette`);
+    }
+    const order = (group: string): number => Number(group.split('@')[1]);
+    const toggle = order(titleMenu.find(m => m.command === 'postgresQueryBuilder.showEmptySchemas')!.group);
+    const others = tables.filter(m => !m.command.endsWith('EmptySchemas')).map(m => order(m.group));
+    assert.ok(others.every(o => o < toggle), 'the toggle comes after every other action of the Tables view');
+});
+
+test('the editor context menu of every SQL language offers Reveal, Compare and Show Dependencies', () => {
+    const editor: Array<{ command: string; when: string }> = manifest.contributes.menus['editor/context'];
+    for (const command of ['postgresQueryBuilder.revealInObjectView', 'postgresQueryBuilder.compareWithDatabase', 'postgresQueryBuilder.showDependencies']) {
+        const entry = editor.find(m => m.command === command);
+        assert.ok(entry, `${command} is not in the editor context menu`);
+        for (const language of SQL_LANGUAGES) assert.ok(entry.when.includes(`resourceLangId == ${language}`), `${command} is missing for ${language}`);
+    }
+});
+
+test('the settings of the editor features are opt-out, the diagnostics opt-in, all in the Database Objects group', () => {
+    const groups = manifest.contributes.configuration as Array<{ title: string; properties: Record<string, { default: unknown }> }>;
+    const objects = groups.find(g => g.title === 'Database Objects');
+    assert.ok(objects);
+    const expected: Record<string, boolean> = {
+        'postgresQueryBuilder.repository.codeLens': true,
+        'postgresQueryBuilder.editor.hover': true,
+        'postgresQueryBuilder.editor.signatureHelp': true,
+        'postgresQueryBuilder.diagnostics.unknownRoutines': false,
+        'postgresQueryBuilder.diagnostics.docComments': false
+    };
+    for (const [key, value] of Object.entries(expected)) assert.equal(objects.properties[key]?.default, value, key);
+});

@@ -1,7 +1,8 @@
 /**
  * Colours the entries of the Objects and Tables views by where the object
  * exists: red when the repository has no CREATE statement for it, in the
- * theme's "untracked" colour when it exists only in the repository.
+ * theme's "untracked" colour when it exists only in the repository, in the
+ * "modified" colour when the routine in the database differs.
  *
  * Tree items carry a `resourceUri` of a private scheme whose query is the
  * status; VS Code asks this provider for the decoration of that URI. Only
@@ -15,7 +16,8 @@ export const OBJECT_STATUS_SCHEME = 'pgqb-object';
 const STATUS_HINT: Record<RepoStatus, string> = {
     both: 'Defined in the repository.',
     dbOnly: 'Not found in the repository.',
-    repoOnly: 'Exists only in the repository, not in the database.'
+    repoOnly: 'Exists only in the repository, not in the database.',
+    differs: 'The definition in the database differs from the repository.'
 };
 
 /** The sentence the tooltip of an entry ends with, telling where the object exists. */
@@ -35,6 +37,9 @@ export function statusDecoration(status: string): vscode.FileDecoration | undefi
     }
     if (status === 'repoOnly') {
         return { badge: '+', color: new vscode.ThemeColor('gitDecoration.untrackedResourceForeground'), tooltip: STATUS_HINT.repoOnly };
+    }
+    if (status === 'differs') {
+        return { badge: '~', color: new vscode.ThemeColor('gitDecoration.modifiedResourceForeground'), tooltip: STATUS_HINT.differs };
     }
     return undefined;
 }

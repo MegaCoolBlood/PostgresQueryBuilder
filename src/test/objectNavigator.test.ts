@@ -9,7 +9,7 @@ import {
     type NavigatorSettings,
     type ObjectNode
 } from '../objectNavigator';
-import { scanSqlText } from '../repositoryScanner';
+import { routineBodyHash, scanSqlText } from '../repositoryScanner';
 import type { LocatedDefinition, RepositorySnapshot } from '../repositoryComparison';
 
 type Row = Record<string, unknown>;
@@ -283,4 +283,58 @@ test('objects of an extension are not marked, even when the setting shows them',
     const stX = await findObject(provider, 'st_x(geometry)');
     assert.equal(stX.status, undefined);
     assert.equal(provider.getTreeItem(stX).resourceUri, undefined);
+});
+
+// ===== Show Empty Schemas =====
+
+test('a schema with nothing to show is hidden until Show Empty Schemas is on; the choice is kept', async () => {
+    const { provider, stored } = createProvider();
+    // public holds only extension objects, which the view hides by default.
+    assert.deepEqual((await provider.getChildren()).map(n => labelOf(provider, n)), ['app', 'billing', 'Extensions']);
+    await provider.setShowEmptySchemas(true);
+    const roots = await provider.getChildren();
+    assert.deepEqual(roots.map(n => labelOf(provider, n)), ['app', 'billing', 'public', 'Extensions']);
+    assert.deepEqual(await provider.getChildren(roots[2]), [], 'an empty schema has no categories');
+    assert.equal(stored.get('postgresQueryBuilder.objectNavigator.showEmptySchemas'), true);
+    assert.equal((await provider.shownSchema('public'))?.schema, 'public');
+});
+
+test('empty is what the settings leave: with extension objects shown, public is no longer empty', async () => {
+    const { provider } = createProvider({ settings: { showExtensionObjects: true } });
+    assert.ok((await provider.getChildren()).some(n => labelOf(provider, n) === 'public'));
+    const { provider: noTypes } = createProvider({ settings: { objectKinds: ['type', 'extension'] } });
+    assert.deepEqual((await noTypes.getChildren()).map(n => labelOf(noTypes, n)), ['app', 'Extensions'], 'billing holds only a domain, which is switched off');
+});
+
+test('while filtering, Show Empty Schemas adds nothing', async () => {
+    const { provider } = createProvider();
+    await provider.setShowEmptySchemas(true);
+    provider.setFilter('tax');
+    assert.deepEqual((await provider.getChildren()).map(n => labelOf(provider, n)), ['app']);
+    assert.equal(provider.isFiltering, true);
+    assert.equal(await provider.shownSchema('public'), undefined);
+});
+
+// ===== differs =====
+
+test('a function whose body matches none of its definitions is marked as differing and stays under Show Only Differences', async () => {
+    const catalog = [
+        dbRow('function', 'app', 'same', { args: '', arg_types: [], body_hash: routineBodyHash('SELECT 1') }),
+        dbRow('function', 'app', 'changed', { args: '', arg_types: [], body_hash: routineBodyHash('SELECT 2') })
+    ];
+    const { provider } = createProvider({
+        catalog,
+        files: {
+            'r.sql': 'CREATE FUNCTION app.same() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;\nCREATE FUNCTION app.changed() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;'
+        }
+    });
+    const same = await findObject(provider, 'same()');
+    const changed = await findObject(provider, 'changed()');
+    assert.deepEqual([same.status, changed.status], ['both', 'differs']);
+    const item = provider.getTreeItem(changed);
+    assert.match(String(item.tooltip), /differs from the repository/);
+    assert.ok(item.resourceUri, 'a differing entry is decorated');
+    await provider.setOnlyDifferences(true);
+    assert.equal(provider.isHidden(changed), false);
+    assert.equal(provider.isHidden(same), true);
 });

@@ -38,6 +38,11 @@ SQL before it is written.
   signature, procedures, types, sequences, triggers and extensions in a view
   of their own; CREATE and DROP scripts of any object or table; and red marks
   for whatever the SQL files of your workspace do not create.
+- **SQL files that know your database.** Go to Definition and Find All
+  References across the repository, hovers with the doc comment and the
+  columns, parameter hints while typing a call, completion of your own
+  functions, a CodeLens above every `CREATE` that says whether the database
+  has it — or a different version of it — and the dependencies of any object.
 
 ---
 
@@ -97,8 +102,11 @@ and lets you override it.
 
 The *Tables* view lists the schemas and their tables. The system schemas
 `pg_catalog`, `information_schema` and `pg_toast` stay hidden, and if a
-connection names specific schemas, only those are shown. **Refresh** in the
-title bar reloads the tree; a double click on a table opens it.
+connection names specific schemas, only those are shown. A schema without any
+table, view or foreign table is hidden too, until **Show Empty Schemas** (the
+eye in the title bar) is turned on; **Hide Empty Schemas** turns it off again,
+and the choice is kept per workspace. **Refresh** in the title bar reloads the
+tree; a double click on a table opens it.
 
 The *Search* view below it filters the tables — and the *Objects* view — while
 you type, across all schemas, and understands the `schema.name` notation.
@@ -115,7 +123,10 @@ extensions. It starts collapsed and reads nothing until you open it; then one
 query loads the whole catalog, and filtering happens without asking the
 database again. Objects that belong to an extension, such as the functions of
 PostGIS, stay hidden unless `postgresQueryBuilder.objectNavigator.showExtensionObjects`
-is on; `postgresQueryBuilder.objectNavigator.objectKinds` chooses the kinds.
+is on; `postgresQueryBuilder.objectNavigator.objectKinds` chooses the kinds. A
+schema with nothing left to show after these settings is hidden until **Show
+Empty Schemas** in the title bar is on — the way to reach the CREATE and DROP
+scripts of an empty schema.
 
 **Go to Database Object** (the search icon in the title bar, or the Command
 Palette) offers every object and table by name, kind and schema. The chosen
@@ -153,6 +164,7 @@ statements, and both views show how the database compares with them:
 |------|---------|
 | red, with `!` | the object exists in the database but no file creates it |
 | colour of an untracked file, with `+` | a file creates it, but the database does not have it |
+| colour of a modified file, with `~` | the body of the function or procedure in the database matches none of its `CREATE` statements |
 | unchanged | both have it |
 
 A double click on an object of the *Objects* view jumps to its `CREATE`
@@ -172,6 +184,75 @@ hides what both sides have. A workspace without any `CREATE` statement marks
 nothing. Changed files are rescanned as they are saved; **Rescan Repository**
 starts over. `postgresQueryBuilder.repository.compare` turns the comparison
 off, and `…include`, `…exclude` and `…maxFileSizeKb` choose the files.
+
+Bodies are compared without whitespace and letter case, so a repository run
+through the formatter does not count as different; matching any one of several
+`CREATE` statements — an older migration, say — is enough. **Compare with
+Database** (context menu, editor and CodeLens) opens the `CREATE` statement of
+the repository next to the one of the database in a diff editor, both
+formatted with your formatter settings and without comments, owner and grants,
+so only real differences remain.
+
+### Working in SQL files
+
+In `sql`, `postgres` and `pgsql` files the names of database objects work like
+code symbols. Everything below reads the repository scan and, while connected,
+the catalog of the database; nothing is loaded before a feature asks for it.
+
+- **Go to Definition** (`F12`, `Ctrl+Click`) on a call, a table, a type or a
+  sequence in `nextval('…')` jumps to its `CREATE` statement — also from inside
+  function bodies and `DO` blocks. Names are resolved like PostgreSQL does: a
+  `SET search_path` earlier in the file, otherwise the connection's
+  `search_path`, the first schema with a hit wins, and a call goes to the
+  overload that takes as many arguments. An object that exists only in the
+  database is reported in the status bar.
+- **Find All References** (`Shift+F12`) lists every place in the repository
+  that uses the object, including calls inside PL/pgSQL. **Find Usages** in the
+  context menu of the *Objects* and *Tables* views does the same for an entry.
+- The **Outline** and the breadcrumbs list the `CREATE` statements of a file;
+  **Go to Symbol in Workspace** (`Ctrl+T`) finds any of the repository.
+- **Hover** shows the signature, the doc comment, the `COMMENT ON` text of the
+  database when it says something else, the first columns of a table, where the
+  object exists, and links to its CREATE script, the comparison, the *Objects*
+  view and its dependencies.
+- **Parameter hints** appear while typing the arguments of a call, for every
+  overload, with the documentation of the current parameter; named notation
+  (`p_rate => …`) is understood.
+- **Completion** offers your own functions — and procedures after `CALL` — as
+  snippets with their required parameters, schema-qualified when the schema is
+  not on the `search_path`. Deprecated ones are struck through.
+- A **CodeLens** above each `CREATE` says *In database*, *Differs from database*
+  or *Not in database*, with **Compare with Database** and **Reveal in Objects
+  View** next to it (`postgresQueryBuilder.repository.codeLens`).
+- The editor's context menu offers **Reveal in Objects View**, **Compare with
+  Database** and **Show Dependencies** for the name under the cursor.
+
+**Doc comments.** The `/** … */` block — or the `--` lines — right above a
+`CREATE` is its documentation. Both common styles are read, also mixed:
+sections such as `Purpose:`, `Explanation:`, `Parameters:` with one
+`- name (TYPE, MODE): text` entry each and `Returns:`, and Javadoc tags such as
+`@param`, `@return`, `@throws`, `@deprecated`, `@see` and `@example`. Typing
+`/**` on the line above a `CREATE FUNCTION` or `PROCEDURE` offers a complete
+comment with one entry per parameter.
+
+**Checks (opt-in).** `postgresQueryBuilder.diagnostics.unknownRoutines` warns
+about calls of functions and procedures nobody has — not PostgreSQL, an
+extension, the database or the repository — and about calls with a number of
+arguments no overload takes; it needs a connection, so the built-in functions
+are known. `postgresQueryBuilder.diagnostics.docComments` reports functions and
+procedures without a doc comment, undocumented parameters, documented ones that
+do not exist and documented types that contradict the signature; Quick Fixes
+add the comment or the missing entries, or remove an entry.
+
+### Dependencies
+
+**Show Dependencies** — in the context menu of both views and of the editor —
+fills the *Dependencies* view with what uses the object and what it uses, as
+the database records it: a view that reads a table, a trigger that calls a
+function, a column default that calls `nextval`, a foreign key. Each entry
+expands further and has the same context menu as in the *Objects* and *Tables*
+views. Since PostgreSQL does not record what a PL/pgSQL body calls, *Used in
+the repository* adds the references found in the SQL files.
 
 ---
 
@@ -697,12 +778,17 @@ Every command lives in the Command Palette (`Ctrl+Shift+P`) under the category
 | Refresh Objects | Reload the *Objects* view from the database |
 | Show Only Differences to the Repository | Hide the objects the database and the repository both have |
 | Rescan Repository | Read the `CREATE` statements of the workspace's SQL files again |
+| Reveal in Objects View | Select the object under the cursor in the *Objects* or *Tables* view |
+| Compare with Database | Show the `CREATE` statement of the repository next to the one of the database |
+| Find Usages | List every place in the repository that uses the object |
+| Show Dependencies | Show what uses the object and what it uses in the *Dependencies* view |
 
 Bookmarked queries and mappings carry further commands for renaming,
 duplicating, deleting and moving between the personal and the workspace scope.
 The entries of the *Objects* and *Tables* views carry **Open CREATE Script**,
 **Copy CREATE Script**, **Open DROP Script**, **Copy DROP Script** and **Go to
-Definition in Repository** in their context menu.
+Definition in Repository** in their context menu; their title bars carry **Show
+Empty Schemas** / **Hide Empty Schemas**.
 
 ---
 
@@ -751,6 +837,11 @@ Definition in Repository** in their context menu.
 | `postgresQueryBuilder.repository.include` | `**/*.sql`, `**/*.pgsql`, `**/*.psql` | Files scanned for `CREATE` statements |
 | `postgresQueryBuilder.repository.exclude` | `**/node_modules/**`, `**/.git/**` | Files and folders left out of the scan |
 | `postgresQueryBuilder.repository.maxFileSizeKb` | `5120` | Larger files are not scanned |
+| `postgresQueryBuilder.repository.codeLens` | `true` | Show above each `CREATE` whether the database has the object, with Compare and Reveal |
+| `postgresQueryBuilder.editor.hover` | `true` | Show the hover on database objects in SQL files |
+| `postgresQueryBuilder.editor.signatureHelp` | `true` | Show the parameters while typing the arguments of a call |
+| `postgresQueryBuilder.diagnostics.unknownRoutines` | `false` | Warn about calls of unknown routines and wrong argument counts |
+| `postgresQueryBuilder.diagnostics.docComments` | `false` | Check the doc comments of functions and procedures |
 
 The formatter brings around twenty further settings under
 `postgresQueryBuilder.format.*`; the settings UI describes each of them, and
