@@ -333,7 +333,10 @@ transaction that is rolled back when debugging ends, so the data stays as it
 was; `"rollback": false` in a launch configuration of type `pgqb-plpgsql`
 commits instead. What a function does outside the database, such as sending
 mail through an extension, cannot be rolled back. *Pause* is not supported;
-set a breakpoint instead.
+set a breakpoint instead. A statement that runs for long — a query over
+foreign tables, say — cannot be interrupted while stepping; the *Debug
+Console* says so after a few seconds, and *Stop* cancels the statement on
+the server and rolls it back.
 
 ---
 

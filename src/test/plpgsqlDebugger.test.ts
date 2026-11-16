@@ -36,16 +36,19 @@ interface Fake {
     env: DebugEnvironment;
     target: { sent: string[]; ended: boolean };
     proxy: { sent: string[]; ended: boolean };
+    /** The backends cancelled with pg_cancel_backend. */
+    cancelled: number[];
     finish(): void;
 }
 
 /** Target and proxy sessions that behave as pldbgapi does: the target stops at line 2 and steps line by line. */
-function fake(options: { repoBody?: string; callsFunction?: boolean } = {}): Fake {
+function fake(options: { repoBody?: string; callsFunction?: boolean; stepHangs?: boolean } = {}): Fake {
     let line = 2;
     let finish!: () => void;
     const finished = new Promise<void>(resolve => { finish = resolve; });
     const target = { sent: [] as string[], ended: false };
     const proxy = { sent: [] as string[], ended: false };
+    const cancelled: number[] = [];
     let opened = 0;
     const never = new Promise<{ rows: Array<Record<string, unknown>> }>(() => undefined);
     const makeTarget = (): DebugClient => {
@@ -72,6 +75,7 @@ function fake(options: { repoBody?: string; callsFunction?: boolean } = {}): Fak
         } as DebugClient;
     };
     const makeProxy = (): DebugClient => ({
+        processID: 4712,
         on() { return this; },
         async end() { proxy.ended = true; },
         query: async (sql: string) => {
@@ -83,6 +87,7 @@ function fake(options: { repoBody?: string; callsFunction?: boolean } = {}): Fak
             if (sql.includes('pldbg_get_variables')) return rows([{ name: 'p_n', varclass: 'A', linenumber: 0, value: '3' }, { name: 'v_sum', varclass: 'L', linenumber: 3, value: String(line > 5 ? 6 : 0) }]);
             if (sql.includes('pldbg_set_breakpoint')) return rows([{ ok: true }]);
             if (sql.includes('pldbg_step_over')) {
+                if (options.stepHangs) return never;
                 line++;
                 if (line > 6) {
                     finish();
@@ -100,7 +105,12 @@ function fake(options: { repoBody?: string; callsFunction?: boolean } = {}): Fak
     const definitions = scanSqlText(REPO_FILE.replace(BODY, options.repoBody ?? BODY)).map(d => ({ ...d, uri: 'file:///repo/f.sql' }));
     const env: DebugEnvironment = {
         openClient: async () => (opened++ === 0 ? makeTarget() : makeProxy()),
-        query: async (sql: string) => {
+        query: async (sql: string, params?: unknown[]) => {
+            if (sql.includes('pg_cancel_backend')) {
+                cancelled.push(Number(params![0]));
+                finish();
+                return [{ pg_cancel_backend: true }];
+            }
             if (sql.includes('to_regprocedure')) return [{ oid: 100 }];
             if (sql.includes('WHERE p.oid = $1')) return [{ oid: 100, schema_name: 'app', name: 'f', args: 'p_n integer', arg_types: ['integer'], prosrc: BODY }];
             if (sql.includes('p.proname = $1')) return [{ oid: 100, schema_name: 'app', arg_types: ['integer'], prosrc: BODY }];
@@ -111,7 +121,7 @@ function fake(options: { repoBody?: string; callsFunction?: boolean } = {}): Fak
         toPath: (uri) => uri.replace('file://', ''),
         toUri: (path) => `file://${path}`
     };
-    return { env, target, proxy, finish };
+    return { env, target, proxy, cancelled, finish };
 }
 
 type Message = Record<string, unknown> & { type: string; event?: string; body?: Record<string, any>; success?: boolean; message?: string };
@@ -144,7 +154,7 @@ function drive(session: PlpgsqlDebugSession) {
     /** The n-th event of a name (1-based). */
     const nth = (name: string, n: number): Promise<Message> =>
         wait(m => m.type === 'event' && m.event === name && messages.filter(x => x.event === name).indexOf(m) === n - 1);
-    return { messages, request, event, nth };
+    return { messages, request, event, nth, wait };
 }
 
 test('a session stops on entry in the repository file, shows variables, steps, and ends with a rollback', async () => {
@@ -229,4 +239,22 @@ test('a statement that never calls the function ends the session with a message;
     const response = await bad.request('launch', { statement: ' ' });
     assert.equal(response.success, false);
     assert.match(String(response.message), /no "statement"/);
+});
+
+test('a step that takes long is reported, and Stop cancels the running statement on the server instead of leaving it running', async () => {
+    const f = fake({ stepHangs: true });
+    const d = drive(new PlpgsqlDebugSession(f.env, { slowStepMs: 10 }));
+    await d.request('initialize');
+    const launch = d.request('launch', { statement: 'SELECT app.f(3)', functionOid: 100 });
+    await d.request('configurationDone');
+    await launch;
+    await d.event('stopped');
+    await d.request('next', { threadId: 1 });
+    const slow = await d.wait(m => m.event === 'output' && /has been running for/.test(String(m.body!.output)));
+    assert.match(String(slow.body!.output), /Stop cancels it/);
+    await d.request('disconnect');
+    assert.deepEqual(f.cancelled, [4711, 4712], 'the target and the waiting proxy call are cancelled');
+    assert.ok(!f.proxy.sent.some(s => s.includes('pldbg_abort_target')), 'a running target cannot be aborted through pldbgapi');
+    assert.equal(f.target.ended && f.proxy.ended, true);
+    assert.ok(!d.messages.some(m => m.event === 'output' && /lost the target/.test(String(m.body!.output))));
 });

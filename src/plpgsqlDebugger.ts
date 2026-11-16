@@ -151,6 +151,12 @@ interface UserBreakpoint {
 
 const THREAD_ID = 1;
 
+/** A step that has not finished after this long is reported in the Debug Console. */
+const SLOW_STEP_MS = 5000;
+
+/** How long Stop waits for a cancelled statement to roll back before closing its session. */
+const CANCEL_WAIT_MS = 5000;
+
 /**
  * The inline debug adapter. One instance per debug session; it owns the two
  * database sessions and ends both when the session ends.
@@ -176,8 +182,12 @@ export class PlpgsqlDebugSession implements vscode.DebugAdapter {
     /** Proxy calls run one at a time. */
     private proxyChain: Promise<unknown> = Promise.resolve();
     private running = false;
+    private readonly slowStepMs: number;
 
-    constructor(private readonly env: DebugEnvironment) {}
+    /** `slowStepMs`: after how long a step that has not finished is reported. */
+    constructor(private readonly env: DebugEnvironment, options: { slowStepMs?: number } = {}) {
+        this.slowStepMs = options.slowStepMs ?? SLOW_STEP_MS;
+    }
 
     // ----- Messages -----
 
@@ -383,6 +393,7 @@ export class PlpgsqlDebugSession implements vscode.DebugAdapter {
 
     private async resume(fn: 'pldbg_continue' | 'pldbg_step_over' | 'pldbg_step_into', reason: string): Promise<void> {
         this.running = true;
+        const slow = this.reportSlowStep();
         try {
             const rows = await this.proxyCall(`SELECT * FROM ${fn}($1)`);
             this.running = false;
@@ -394,14 +405,29 @@ export class PlpgsqlDebugSession implements vscode.DebugAdapter {
             this.event('stopped', { reason, threadId: THREAD_ID, allThreadsStopped: true });
         } catch (err: unknown) {
             this.running = false;
-            this.output(`The debugger lost the target: ${getErrorMessage(err)}`, 'stderr');
+            if (!this.ended) this.output(`The debugger lost the target: ${getErrorMessage(err)}`, 'stderr');
             await this.end();
+        } finally {
+            clearTimeout(slow);
         }
+    }
+
+    /**
+     * A single statement can run for long — a query over foreign tables that
+     * fetches millions of rows, say — and pldbgapi cannot interrupt it. Say so,
+     * instead of leaving the user with a debugger that seems to hang.
+     */
+    private reportSlowStep(): ReturnType<typeof setTimeout> {
+        return setTimeout(() => {
+            if (!this.running || this.ended) return;
+            this.output(`The current statement has been running for ${Math.round(this.slowStepMs / 1000)} s. It cannot be paused; the debugger stops at the next line or breakpoint once it is done. Stop cancels it and rolls the transaction back.`);
+        }, this.slowStepMs);
     }
 
     /** pldbgapi has no step out: step over until the current frame is gone. */
     private async stepOut(): Promise<void> {
         this.running = true;
+        const slow = this.reportSlowStep();
         try {
             const depth = (await this.proxyCall('SELECT level FROM pldbg_get_stack($1)'))?.length ?? 0;
             for (let i = 0; i < 100000; i++) {
@@ -418,8 +444,10 @@ export class PlpgsqlDebugSession implements vscode.DebugAdapter {
             this.event('stopped', { reason: 'step', threadId: THREAD_ID, allThreadsStopped: true });
         } catch (err: unknown) {
             this.running = false;
-            this.output(`The debugger lost the target: ${getErrorMessage(err)}`, 'stderr');
+            if (!this.ended) this.output(`The debugger lost the target: ${getErrorMessage(err)}`, 'stderr');
             await this.end();
+        } finally {
+            clearTimeout(slow);
         }
     }
 
@@ -448,7 +476,25 @@ export class PlpgsqlDebugSession implements vscode.DebugAdapter {
         if (this.proxy && this.session !== undefined && !this.finished && !this.running) {
             await this.proxy.query('SELECT pldbg_abort_target($1)', [this.session]).catch(() => undefined);
         }
+        const busy = this.running && !this.finished;
         this.ended = true;
+        if (busy) {
+            // The target is inside a statement and reads nothing until it is done, so closing
+            // its connection would leave it running — maybe for hours, holding its locks and
+            // the remote transactions of foreign tables. Cancel it on the server instead.
+            this.output('Cancelling the running statement…');
+            for (const pid of [this.target?.processID, this.proxy?.processID]) {
+                if (pid) await this.env.query('SELECT pg_cancel_backend($1)', [pid]).catch((err: unknown) => Logger.error('PlpgsqlDebugSession.cancel', err));
+            }
+            if (this.targetDone) {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                await Promise.race([
+                    this.targetDone.catch(() => undefined),
+                    new Promise<void>(resolve => { timer = setTimeout(resolve, CANCEL_WAIT_MS); })
+                ]);
+                clearTimeout(timer);
+            }
+        }
         await this.closeClients();
     }
 
