@@ -69,19 +69,21 @@ test('columnType keeps the modifiers and maps aliases and serials', () => {
 // ===== constraints, indexes, tables =====
 
 test('constraints are read from a table definition and from pg_get_constraintdef alike', () => {
-    const repo = parseConstraint(toks('CONSTRAINT fk_x FOREIGN KEY (a, b) REFERENCES app.other (x, y) ON DELETE CASCADE'));
-    const db = parseConstraint(toks('FOREIGN KEY (a, b) REFERENCES app.other(x, y) ON DELETE CASCADE'));
+    // The text as written differs by nature; what is compared is the rest.
+    const shape = (c: ReturnType<typeof parseConstraint>) => { const { sql: _sql, ...rest } = c!; return rest; };
+    const repo = shape(parseConstraint(toks('CONSTRAINT fk_x FOREIGN KEY (a, b) REFERENCES app.other (x, y) ON DELETE CASCADE')));
+    const db = shape(parseConstraint(toks('FOREIGN KEY (a, b) REFERENCES app.other(x, y) ON DELETE CASCADE')));
     assert.deepEqual(repo, { kind: 'foreign', name: 'fk_x', columns: ['a', 'b'], refTable: 'other', refColumns: ['x', 'y'], onDelete: 'cascade', onUpdate: 'no action' });
     assert.deepEqual({ ...db, name: 'fk_x' }, repo);
-    assert.deepEqual(parseConstraint(toks('CHECK ((amount > (0)::numeric))')), { kind: 'check', name: undefined, columns: [], expression: 'amount > 0' });
-    assert.deepEqual(parseConstraint(toks('UNIQUE NULLS NOT DISTINCT (a)')), { kind: 'unique', name: undefined, columns: ['a'] });
+    assert.deepEqual(shape(parseConstraint(toks('CHECK ((amount > (0)::numeric))'))), { kind: 'check', name: undefined, columns: [], expression: 'amount > 0' });
+    assert.deepEqual(shape(parseConstraint(toks('UNIQUE NULLS NOT DISTINCT (a)'))), { kind: 'unique', name: undefined, columns: ['a'] });
 });
 
 test('indexes are read from CREATE INDEX and from pg_get_indexdef alike, defaults dropped', () => {
     const repo = parseCreateIndex(toks('CREATE UNIQUE INDEX IF NOT EXISTS ix_a ON app.t (a ASC, lower(b)) WHERE c IS NULL'));
     const db = parseCreateIndex(toks('CREATE UNIQUE INDEX ix_a ON app.t USING btree (a, lower((b)::text)) WHERE (c IS NULL)'));
     assert.ok(repo && db);
-    assert.deepEqual({ ...repo, table: null }, { ...db, table: null });
+    assert.deepEqual({ ...repo, table: null, sql: null }, { ...db, table: null, sql: null });
     assert.deepEqual(repo.keys, ['a', 'lower b']);
     assert.equal(parseCreateIndex(toks('CREATE INDEX ON t (a DESC NULLS FIRST)'))?.keys[0], 'a desc');
     assert.equal(parseCreateIndex(toks('CREATE INDEX ON t (a)'))?.name, 't_a_idx', 'an unnamed index gets the name PostgreSQL gives it');

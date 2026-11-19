@@ -718,6 +718,31 @@ function selectAllCorners(rowCount, colCount, inTextEntry, overlayOpen) {
     return { anchor: { r: 0, c: 0 }, focus: { r: rowCount - 1, c: colCount - 1 } };
 }
 
+// The next step of Shift+Ctrl+A, which loads every row and then selects every
+// cell: 'wait' while rows, a count or the question about many rows are on
+// their way, 'select' once nothing is missing — every row was loaded, or the
+// query has a LIMIT of its own, so there is nothing to page —, 'confirm' to
+// let the extension count the rows and ask before loading many, and 'load'
+// once that is answered.
+function selectAllLoadStep(s) {
+    if (s.busy) { return 'wait'; }
+    if (s.userPaged || !s.hasQuery || s.allLoaded) { return 'select'; }
+    const missing = typeof s.totalCount === 'number'
+        ? remainingRowCount(s.loadedRows, s.totalCount) > 0
+        : !!s.moreAvailable;
+    if (!missing) { return 'select'; }
+    return s.confirmed ? 'load' : 'confirm';
+}
+
+// VS Code passes every key of a webview on to its own key bindings, so a
+// Ctrl+A the grid has taken still runs VS Code's Select All a moment later,
+// which selects the text of the whole page. Until `guardUntil` — shortly after
+// the grid selected its cells — that page-wide selection is refused; in a
+// field or the code editor, Ctrl+A selects their text as always.
+function blocksPageSelectAll(now, guardUntil, inTextEntry) {
+    return !inTextEntry && now < guardUntil;
+}
+
 // Which row numbers and column headers to mark for a selection rectangle
 // ({minR, maxR, minC, maxC}): rows whose every column is selected, and columns
 // whose every row is selected. Each part is {min, max} or null.
@@ -5202,6 +5227,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             }
             return;
         }
+        // Shift+Ctrl/Cmd+A loads every row first, then selects every cell.
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && e.shiftKey && (e.key === 'a' || e.key === 'A')) {
+            if (startSelectAllWithRows()) {
+                e.preventDefault();
+            }
+            return;
+        }
         if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && rangeAnchor && rangeFocus) {
             // In the code editor Ctrl+C copies the editor's text (VS Code copies
             // the current line when nothing is selected), never the cell range.
@@ -5223,6 +5255,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             return;
         }
         if (e.key === 'Escape') {
+            pendingSelectAll = null;
             if (multiEditBounds) {
                 cancelMultiEdit();
             } else if (rangeAnchor) {
@@ -5257,16 +5290,91 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // Select every cell of the grid, unless the focus or an open dialog or menu
     // keeps Ctrl+A for itself. The view stays where it is scrolled to.
     function selectAllCells() {
-        const overlayOpen = isVisible(contextMenu) || isVisible(queryHistoryPanel)
-            || Array.from(document.querySelectorAll('.sql-dialog-overlay, .dlg-overlay')).some(isVisible);
         const corners = selectAllCorners(renderPlan.length, columns.length,
-            isTextEntryElement(document.activeElement), overlayOpen);
+            isTextEntryElement(document.activeElement), selectAllOverlayOpen());
         if (!corners) { return false; }
         rangeAnchor = corners.anchor;
         rangeFocus = corners.focus;
         applyCellRangeHighlight();
         clearNativeTextSelection();
+        selectAllGuardUntil = Date.now() + SELECT_ALL_GUARD_MS;
         return true;
+    }
+
+    function selectAllOverlayOpen() {
+        return isVisible(contextMenu) || isVisible(queryHistoryPanel)
+            || Array.from(document.querySelectorAll('.sql-dialog-overlay, .dlg-overlay')).some(isVisible);
+    }
+
+    // VS Code's own Select All follows the Ctrl+A the grid has taken (see
+    // blocksPageSelectAll): for this long afterwards it may not select the page.
+    const SELECT_ALL_GUARD_MS = 800;
+    let selectAllGuardUntil = 0;
+    document.addEventListener('selectstart', (e) => {
+        if (blocksPageSelectAll(Date.now(), selectAllGuardUntil, isTextEntryElement(document.activeElement))) {
+            e.preventDefault();
+        }
+    }, true);
+    // Should a Select All not announce itself by selectstart, its selection is
+    // taken away again.
+    document.addEventListener('selectionchange', () => {
+        if (blocksPageSelectAll(Date.now(), selectAllGuardUntil, isTextEntryElement(document.activeElement))) {
+            clearNativeTextSelection();
+        }
+    });
+
+    // ===== Shift+Ctrl+A: load every row, then select every cell =====
+    // { confirmed, asking }: confirmed once the extension said the rows may be
+    // loaded, asking while it counts them or asks the user.
+    let pendingSelectAll = null;
+
+    function startSelectAllWithRows() {
+        if (isTextEntryElement(document.activeElement) || selectAllOverlayOpen()) { return false; }
+        pendingSelectAll = { confirmed: false, asking: false };
+        advanceSelectAll();
+        return true;
+    }
+
+    // Take the next step; called again whenever rows or an answer arrive.
+    function advanceSelectAll() {
+        const pending = pendingSelectAll;
+        if (!pending) return;
+        const step = selectAllLoadStep({
+            busy: pending.asking || !!appendRequest || dataLoadingActive,
+            userPaged,
+            hasQuery: !!currentSql,
+            allLoaded,
+            loadedRows: allRows.length,
+            totalCount,
+            moreAvailable,
+            confirmed: pending.confirmed
+        });
+        if (step === 'select') {
+            pendingSelectAll = null;
+            selectAllCells();
+        } else if (step === 'confirm') {
+            // The extension counts the rows if needed and asks before loading many.
+            pending.asking = true;
+            if (rowCount && typeof totalCount !== 'number') rowCount.textContent = 'Counting rows…';
+            vscode.postMessage({ command: 'confirmLoadAllRows', sql: currentSql, totalCount, loadedRows: allRows.length });
+        } else if (step === 'load') {
+            loadAll();
+            if (!appendRequest) pendingSelectAll = null;
+        }
+    }
+
+    function handleLoadAllRowsAnswer(msg) {
+        const pending = pendingSelectAll;
+        if (!pending || !pending.asking || msg.sql !== currentSql) return;
+        pending.asking = false;
+        if (typeof msg.totalCount === 'number') totalCount = msg.totalCount;
+        updateRowCount();
+        if (!msg.confirmed) {
+            pendingSelectAll = null;
+            return;
+        }
+        pending.confirmed = true;
+        advanceSelectAll();
     }
 
     // Number of data columns in the grid.
@@ -5777,6 +5885,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 totalCount = msg.totalCount;
                 updateRowCount();
                 break;
+            case 'loadAllRowsAnswer':
+                handleLoadAllRowsAnswer(msg);
+                break;
             case 'loadingFinished':
                 if (isStaleLoadAnswer(msg.loadId, latestLoadId)) break;
                 endAppendWithoutRows();
@@ -6106,6 +6217,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             // The interval counts from the latest fresh result.
             scheduleAutoRefresh();
         }
+        advanceSelectAll();
     }
 
     let fkLoaded = false;
@@ -6251,6 +6363,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         appendPending = false;
         appendRequest = null;
         pendingAppendMessage = null;
+        pendingSelectAll = null;
         allLoaded = false;
         moreAvailable = false;
         const sql = userPaged ? raw : appendSql(currentSql, ' LIMIT ', PAGE_SIZE + ' OFFSET 0');
@@ -8246,6 +8359,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // A More or All that ended without rows — it failed, or the host had
     // nothing to send — leaves the result as it was, so both can be tried again.
     function endAppendWithoutRows() {
+        // Shift+Ctrl+A cannot select rows that did not come.
+        pendingSelectAll = null;
         if (!appendRequest) return;
         currentOffset = appendRequest.offset;
         allLoaded = appendRequest.allLoaded;
@@ -10645,6 +10760,8 @@ if (typeof module !== 'undefined' && module.exports) {
         fillPreviewText,
         lineSelectionCorners,
         selectAllCorners,
+        selectAllLoadStep,
+        blocksPageSelectAll,
         fullySelectedLines,
         isPrintableTypingKey,
         typingStartsCellEdit,

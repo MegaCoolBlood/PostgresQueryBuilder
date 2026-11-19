@@ -225,6 +225,16 @@ Report** writes it as Markdown and **Clear Comparison** removes it. The
 database is only read, in a transaction that is rolled back; a different column
 order counts only with `postgresQueryBuilder.comparison.columnOrder`.
 
+For a table that exists on both sides and differs, **Open ALTER TABLE Script**
+and **Copy ALTER TABLE Script** in its context menu write the statements that
+bring the database to what the repository makes of the table: constraints and
+indexes the repository does not have are dropped, columns are added, changed
+(`TYPE`, `SET DEFAULT`, `SET NOT NULL`) or dropped, and the missing
+constraints and indexes are added — types, defaults, constraints and
+`CREATE INDEX` statements exactly as the repository writes them. What
+`ALTER TABLE` cannot do, such as reordering columns or changing an identity
+column, is listed as a comment. The script is only written, never run.
+
 ### Working in SQL files
 
 In `sql`, `postgres` and `pgsql` files the names of database objects work like
@@ -301,6 +311,15 @@ this workspace.
 Each `CREATE FUNCTION` and `CREATE PROCEDURE` in PL/pgSQL of the file is
 created in a transaction on that database, checked and rolled back; trigger
 functions are checked on the table of a `CREATE TRIGGER` in the same file. The
+check works on the file's routines as if they replaced what the database has,
+as a file that drops its routines before creating them expects: every version
+the database has of a routine the file creates is renamed out of the way for
+the check, so a call cannot match an old overload (*is not unique*), and all
+routines are created before the first is checked, so a call finds the file's
+version of a routine further down. A version that cannot be renamed is replaced
+with `OR REPLACE`, or the file's routine is created under a temporary name;
+findings still name it as the file does. Nothing is dropped, and
+`postgresQueryBuilder.plpgsqlCheck.replaceExisting` turns this off. The
 findings appear as squiggles and in the *Problems* panel on the line they
 concern, errors as errors, warnings as warnings and the extra, performance,
 security and compatibility warnings as `postgresQueryBuilder.plpgsqlCheck.extraSeverity`
@@ -617,7 +636,12 @@ The view keeps the newest 500 queries;
   panel shows the newest 2000 messages of a log; **Save** writes every message
   of the session to a file and **Copy** puts all of them on the clipboard.
   With **Clear on Execute** ticked, every **Execute File** and **Execute
-  Selection** starts with an empty log of its session.
+  Selection** starts with an empty log of its session. The **Context**
+  drop-down chooses which messages show their `CONTEXT:` line — only errors
+  and warnings (the default), always, or never; **Copy** and **Save** keep it
+  either way. The
+  list follows new messages until you scroll up; **Scroll to Bottom** then
+  jumps back to the newest one and follows again.
 
   <a id="commit-behaviour"></a>**Commit behaviour.** The drop-down next to
   **Clear on Execute** sets how the session shown in the panel commits; a new
@@ -868,6 +892,8 @@ Every command lives in the Command Palette (`Ctrl+Shift+P`) under the category
 | Show Dependencies | Show what uses the object and what it uses in the *Dependencies* view |
 | Compare Repository with Database | Compare every routine, table, view, type, sequence and trigger and list the differences in the *Comparison* view |
 | Export Comparison Report | Write the result of the comparison as Markdown |
+| Open ALTER TABLE Script | For a table of the *Comparison* view that differs: open the statements that bring the database to the repository, never run |
+| Copy ALTER TABLE Script | The same script on the clipboard |
 | Clear Comparison | Empty the *Comparison* view and remove its marks |
 | Check File with plpgsql_check | Check the PL/pgSQL of the SQL file on the plpgsql_check connection |
 | Select plpgsql_check Connection | Choose the connection files are checked against |
@@ -892,6 +918,7 @@ Empty Schemas** / **Hide Empty Schemas**.
 | `Ctrl+Shift+Alt+Enter` | SQL files | Execute the whole file |
 | `Enter` | Filter inputs | Apply the column filter |
 | `Ctrl+A` | Data Viewer grid | Select every cell of the loaded rows |
+| `Ctrl+Shift+A` | Data Viewer grid | Load every row, then select every cell; asks first above `dataViewer.loadAllWarningRows` rows |
 | `Alt+←` / `Alt+→` | Single record view | Previous / next row |
 | `Esc` | Dialogs | Close |
 | `Shift+Alt+F` | SQL files, query bar | Format |
@@ -914,6 +941,8 @@ Empty Schemas** / **Hide Empty Schemas**.
 | `postgresQueryBuilder.completion.tableAlias` | `true` | Write the alias after a table completed after `FROM` or `JOIN` |
 | `postgresQueryBuilder.duplicateRowResetDefaults` | `volatile` | Which columns a duplicated row leaves to their database default |
 | `postgresQueryBuilder.messages.clearOnExecute` | `false` | Clear the log of a session in the *PostgreSQL Messages* panel each time **Execute File** or **Execute Selection** starts in it; the panel's **Clear on Execute** checkbox sets it too |
+| `postgresQueryBuilder.messages.showContext` | `errorsAndWarnings` | Which messages in the *PostgreSQL Messages* panel show their `CONTEXT:` line: `always`, `errorsAndWarnings` or `never`; the panel's **Context** drop-down sets it too |
+| `postgresQueryBuilder.dataViewer.loadAllWarningRows` | `100000` | Above this many rows, `Ctrl+Shift+A` in the Data Viewer asks before loading them all; `0` never asks |
 | `postgresQueryBuilder.selectHistory.maxEntries` | `500` | How many queries the **Select History** view keeps (10–10000); the oldest beyond that are dropped |
 | `postgresQueryBuilder.savedQueriesFile` | `postgres-query-builder.queries.json` | Where shared bookmarked queries are kept |
 | `postgresQueryBuilder.customMappingsFile` | `postgres-query-builder.mappings.json` | Where shared column mappings are kept |
@@ -936,6 +965,7 @@ Empty Schemas** / **Hide Empty Schemas**.
 | `postgresQueryBuilder.plpgsqlCheck.onType` | `false` | Also check while typing |
 | `postgresQueryBuilder.plpgsqlCheck.delayMs` | `1500` | Wait after the last change or auto save before checking |
 | `postgresQueryBuilder.plpgsqlCheck.timeoutMs` | `10000` | `statement_timeout` of a check |
+| `postgresQueryBuilder.plpgsqlCheck.replaceExisting` | `true` | Check the file's routines as if they replaced the database's: other versions of the same name are renamed out of the way for the check, instead of reporting *already exists* or *is not unique* |
 | `postgresQueryBuilder.plpgsqlCheck.extraSeverity` | `information` | How extra, performance, security and compatibility warnings are shown |
 | `postgresQueryBuilder.plpgsqlCheck.*` | as plpgsql_check | `fatalErrors` (`false`), `otherWarnings`, `extraWarnings`, `constantTracing`, `useIncommentOptions` (`true`), `performanceWarnings`, `securityWarnings`, `compatibilityWarnings`, `withoutWarnings` (`false`): the options of `plpgsql_check_function` |
 | `postgresQueryBuilder.editor.hover` | `true` | Show the hover on database objects in SQL files |

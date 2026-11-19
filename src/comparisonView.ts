@@ -19,6 +19,7 @@ import {
     type LocatedStatement
 } from './databaseComparison';
 import { scanStructure } from './ddlCompare';
+import { alterTableScript } from './alterTableScript';
 import type { DatabaseCatalog } from './databaseCatalog';
 import type { RepositoryIndex } from './repositoryIndex';
 import { readRepositorySettings } from './repositoryIndex';
@@ -69,8 +70,17 @@ export function entryNode(entry: ComparisonEntry): Record<string, unknown> {
 
 /** The context value of an entry, matching the views' menus. */
 export function entryContextValue(entry: ComparisonEntry): string {
-    if (RELATIONS.has(entry.kind)) return entry.status === 'repoOnly' ? 'table.repoOnly' : 'table';
+    if (RELATIONS.has(entry.kind)) {
+        if (entry.status === 'repoOnly') return 'table.repoOnly';
+        return entry.tables ? 'table.differs' : 'table';
+    }
     return `${entry.db ? 'dbObject' : 'repoObject'}.${entry.kind}`;
+}
+
+/** The ALTER TABLE script of a differing table entry, or null when the entry has none. */
+export function entryAlterScript(entry: ComparisonEntry | undefined, columnOrder = false, now?: Date): string | null {
+    if (!entry?.tables) return null;
+    return alterTableScript({ schema: entry.schema, table: entry.name, ...entry.tables, columnOrder, now });
 }
 
 const entryKey = (kind: RepoObjectKind, schema: string, name: string, table?: string): string =>
@@ -327,6 +337,26 @@ export function registerComparison(context: vscode.ExtensionContext, provider: C
         await vscode.window.showTextDocument(doc, { preview: false });
     };
 
+    /** The script of the entry a context menu was opened on; the node is what the tree hands to the command. */
+    const alterScriptOf = (node: ComparisonNode | undefined): string | null => {
+        const script = entryAlterScript(node?.type === 'comparisonEntry' ? node.entry : undefined,
+            vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('comparison.columnOrder', false));
+        if (!script) vscode.window.showInformationMessage('An ALTER TABLE script is offered for a table that exists in the database and the repository and differs.');
+        return script;
+    };
+    const openAlterScript = async (node?: ComparisonNode): Promise<void> => {
+        const script = alterScriptOf(node);
+        if (!script) return;
+        const doc = await vscode.workspace.openTextDocument({ language: 'sql', content: script });
+        await vscode.window.showTextDocument(doc, { preview: false });
+    };
+    const copyAlterScript = async (node?: ComparisonNode): Promise<void> => {
+        const script = alterScriptOf(node);
+        if (!script) return;
+        await vscode.env.clipboard.writeText(script);
+        vscode.window.setStatusBarMessage('$(copy) Copied the ALTER TABLE script', 3000);
+    };
+
     context.subscriptions.push(
         vscode.window.createTreeView(COMPARISON_VIEW, { treeDataProvider: provider, showCollapseAll: true }),
         vscode.commands.registerCommand('postgresQueryBuilder.compareRepositoryWithDatabase', async () => {
@@ -340,6 +370,8 @@ export function registerComparison(context: vscode.ExtensionContext, provider: C
         vscode.commands.registerCommand('postgresQueryBuilder.filterComparison', filter),
         vscode.commands.registerCommand('postgresQueryBuilder.exportComparison', exportReport),
         vscode.commands.registerCommand('postgresQueryBuilder.clearComparison', clear),
+        vscode.commands.registerCommand('postgresQueryBuilder.openAlterTableScript', openAlterScript),
+        vscode.commands.registerCommand('postgresQueryBuilder.copyAlterTableScript', copyAlterScript),
         deps.catalog.onDidReset(clear)
     );
 }

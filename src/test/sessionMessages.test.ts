@@ -632,6 +632,8 @@ class FakeElement {
     }
     addEventListener(type: string, listener: (event?: any) => void): void { this.listeners[type] = listener; }
     listeners: Record<string, (event?: any) => void> = {};
+    dataset: Record<string, string> = {};
+    value = '';
     hidden = false;
     /** Index of the entry marked as the current error, or -1. */
     current = -1;
@@ -727,6 +729,7 @@ test('the panel script stays where the reader scrolled to while messages come in
     const panel = runPanelScript();
     panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: Array.from({ length: 50 }, (_, i) => tone(`m${i}`)), total: 50, countText: '50 messages' } });
     panel.list.scrollTop = 40;
+    panel.list.listeners.scroll();
     panel.send({ type: 'append', key: FILE.key, messages: [tone('new')], total: 51, countText: '51 messages', limit: 2000 });
     assert.equal(panel.list.scrollTop, 40);
 });
@@ -1156,7 +1159,7 @@ test('the panel colours how a statement ended from tokens and says it in words',
     assert.match(source, /\.msg-timer\.status-cancelled \{ color: var\(--c-warning\); \}/);
     assert.match(source, /\.msg\.run-failed \.msg-text \{ color: var\(--c-danger\); font-weight: 600; \}/);
     assert.match(source, /\.running \{ flex-shrink: 0;[^}]*border-top: 1px solid var\(--c-border\);/);
-    assert.match(source, /<div class="list" id="list"><\/div>\s*<div class="running" id="running"[^>]*hidden><\/div>/);
+    assert.match(source, /<div class="list-wrap">\s*<div class="list" id="list"[^>]*><\/div>\s*<button [^>]*id="scrollBottomBtn"[^>]*>[^\n]*<\/button>\s*<\/div>\s*<div class="running" id="running"[^>]*hidden><\/div>/);
     assert.match(source, /\.msg-link \{ color: var\(--vscode-textLink-foreground\);/);
 });
 
@@ -1473,13 +1476,13 @@ test('the panel is told how its checkbox is set when it is ready and when the se
     const { send, posted } = resolveView();
 
     send({ type: 'ready' });
-    assert.deepEqual(posted.filter((m: any) => m.type === 'options'), [{ type: 'options', clearOnExecute: true }]);
+    assert.deepEqual(posted.filter((m: any) => m.type === 'options'), [{ type: 'options', clearOnExecute: true, showContext: 'errorsAndWarnings' }]);
 
     value = false;
     fireDidChangeConfiguration(['postgresQueryBuilder.format.enable']);
     assert.equal(posted.filter((m: any) => m.type === 'options').length, 1, 'another setting changes nothing');
     fireDidChangeConfiguration(['postgresQueryBuilder.messages.clearOnExecute']);
-    assert.deepEqual(posted.filter((m: any) => m.type === 'options').at(-1), { type: 'options', clearOnExecute: false });
+    assert.deepEqual(posted.filter((m: any) => m.type === 'options').at(-1), { type: 'options', clearOnExecute: false, showContext: 'errorsAndWarnings' });
 });
 
 test('the checkbox stores Clear on Execute as a user setting', async (t) => {
@@ -1511,7 +1514,7 @@ test('a checkbox that could not be stored says so and shows the setting as it is
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.deepEqual(errors, ['"Clear on Execute" could not be saved: read-only settings']);
-    assert.deepEqual(last(), { type: 'options', clearOnExecute: false }, 'the checkbox is unticked again');
+    assert.deepEqual(last(), { type: 'options', clearOnExecute: false, showContext: 'errorsAndWarnings' }, 'the checkbox is unticked again');
 });
 
 test('the panel offers Clear on Execute as a labelled checkbox and reports a change', () => {
@@ -1526,4 +1529,113 @@ test('the panel offers Clear on Execute as a labelled checkbox and reports a cha
     box.checked = false;
     box.listeners.change();
     assert.deepEqual(panel.sent.at(-1), { type: 'clearOnExecute', value: false });
+});
+
+// ===== the CONTEXT line =====
+
+const withContext = (severity: string, text: string) => ({
+    ...noticeMessage('payroll.sql', { severity, message: text, detail: 'a detail', where: 'PL/pgSQL function app.f() line 3 at RAISE' }, AT),
+    tone: messageTone(severity)
+});
+
+test('the panel marks the CONTEXT line of a message and the drop-down hides it for all or all but errors and warnings', () => {
+    const { html } = resolveView();
+    assert.match(html, /\[data-context="never"\] \.msg-context,/);
+    assert.match(html, /\[data-context="errorsAndWarnings"\] \.msg:not\(\.tone-danger\):not\(\.tone-warning\) \.msg-context \{ display: none; \}/);
+    assert.match(html, /<select id="showContext" class="show-context" aria-label="[^"]+" title="[^"]+">/);
+
+    const panel = runPanelScript();
+    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: [withContext('NOTICE', 'step'), withContext('ERROR', 'boom')], total: 2, countText: '2 messages' } });
+    assert.match(panel.list.entries[0], /<div class="msg-detail">DETAIL: a detail<\/div><div class="msg-detail msg-context">CONTEXT: PL\/pgSQL function app\.f\(\) line 3 at RAISE<\/div>/);
+
+    panel.send({ type: 'options', clearOnExecute: false, showContext: 'errorsAndWarnings' });
+    assert.equal(panel.elements.showContext.value, 'errorsAndWarnings');
+    assert.equal(panel.list.dataset.context, 'errorsAndWarnings');
+    assert.equal(panel.elements.running.dataset.context, 'errorsAndWarnings', 'the running line follows too');
+
+    panel.elements.showContext.value = 'never';
+    panel.elements.showContext.listeners.change();
+    assert.equal(panel.list.dataset.context, 'never', 'applied at once, without waiting for the setting');
+    assert.deepEqual(panel.sent.at(-1), { type: 'showContext', value: 'never' });
+    assert.equal(panel.list.childElementCount, 2, 'the list is not rebuilt');
+});
+
+test('the context setting reaches the panel, and the drop-down stores it as a user setting', async (t) => {
+    let value: unknown = 'never';
+    const writes: unknown[][] = [];
+    const original = vscodeStub.workspace.getConfiguration;
+    vscodeStub.workspace.getConfiguration = ((section?: string) => ({
+        get: (key: string, fallback?: unknown) => (key === 'messages.showContext' ? value : fallback),
+        update: (key: string, next: unknown, target: unknown) => { writes.push([section, key, next, target]); return Promise.resolve(); }
+    })) as any;
+    t.after(() => { vscodeStub.workspace.getConfiguration = original; });
+    const { send, posted } = resolveView();
+
+    send({ type: 'ready' });
+    assert.equal(posted.filter((m: any) => m.type === 'options').at(-1).showContext, 'never');
+    value = 'nonsense';
+    fireDidChangeConfiguration(['postgresQueryBuilder.messages.showContext']);
+    assert.equal(posted.filter((m: any) => m.type === 'options').at(-1).showContext, 'errorsAndWarnings', 'an unknown value is the default');
+
+    send({ type: 'showContext', value: 'errorsAndWarnings' });
+    send({ type: 'showContext', value: 'bogus' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(writes, [
+        ['postgresQueryBuilder', 'messages.showContext', 'errorsAndWarnings', vscodeStub.ConfigurationTarget.Global],
+        ['postgresQueryBuilder', 'messages.showContext', 'errorsAndWarnings', vscodeStub.ConfigurationTarget.Global]
+    ]);
+});
+
+test('the context setting defaults to errors and warnings, and Copy and Save keep the CONTEXT line', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+    const group = manifest.contributes.configuration.find((g: { title: string }) => g.title === 'SQL & Data Viewer');
+    const setting = group.properties['postgresQueryBuilder.messages.showContext'];
+    assert.deepEqual([setting.default, setting.enum], ['errorsAndWarnings', ['always', 'errorsAndWarnings', 'never']]);
+    assert.match(formatSessionMessage(withContext('NOTICE', 'step')), /\n {4}CONTEXT: PL\/pgSQL function app\.f\(\) line 3 at RAISE$/);
+});
+
+// ===== Scroll to Bottom =====
+
+test('scrolling up stops following new messages and offers Scroll to Bottom, which follows them again', () => {
+    const { html } = resolveView();
+    assert.match(html, /<button class="btn btn-sm scroll-bottom" id="scrollBottomBtn" hidden title="[^"]+">.*Scroll to Bottom<\/button>/);
+    assert.match(html, /\.scroll-bottom \{[^}]*z-index: var\(--z-sticky\);/);
+
+    const panel = runPanelScript();
+    const button = panel.elements.scrollBottomBtn;
+    const append = (text: string, total: number) => panel.send({ type: 'append', key: FILE.key, messages: [tone(text)], total, countText: `${total} messages`, limit: 2000 });
+    panel.send({ type: 'log', key: FILE.key, state: { label: 'payroll.sql', messages: Array.from({ length: 50 }, (_, i) => tone(`m${i}`)), total: 50, countText: '50 messages' } });
+    assert.equal(button.hidden, true);
+
+    panel.list.scrollTop = 300;
+    panel.list.listeners.scroll();
+    assert.equal(button.hidden, false, 'shown once the reader scrolls up');
+    append('n1', 51);
+    assert.equal(panel.list.scrollTop, 300, 'the list stays where the reader is');
+
+    button.listeners.click();
+    assert.equal(panel.list.scrollTop, panel.list.scrollHeight);
+    assert.equal(button.hidden, true);
+    append('n2', 52);
+    assert.equal(panel.list.scrollTop, panel.list.scrollHeight, 'it follows new messages again');
+
+    // A scroll event of its own that arrives after more messages does not stop it.
+    panel.list.insertAdjacentHTML('beforeend', '<div class="msg tone-info">late</div>');
+    panel.list.listeners.scroll();
+    assert.equal(button.hidden, true);
+
+    panel.list.scrollTop = 100;
+    panel.list.listeners.scroll();
+    panel.list.scrollTop = panel.list.scrollHeight - panel.list.clientHeight;
+    panel.list.listeners.scroll();
+    assert.equal(button.hidden, true, 'scrolling back to the end follows again too');
+});
+
+test('the panel hides the CONTEXT line of notices from the start, before it is told the setting', (t) => {
+    const original = vscodeStub.workspace.getConfiguration;
+    vscodeStub.workspace.getConfiguration = (() => ({ get: (_key: string, fallback?: unknown) => fallback })) as any;
+    t.after(() => { vscodeStub.workspace.getConfiguration = original; });
+    const { html } = resolveView();
+    assert.match(html, /<div class="list" id="list" data-context="errorsAndWarnings"><\/div>/);
+    assert.match(html, /<div class="running" id="running" data-context="errorsAndWarnings"/);
 });

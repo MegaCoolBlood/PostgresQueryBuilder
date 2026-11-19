@@ -5,13 +5,17 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
     DEFAULT_CHECK_SETTINGS,
+    HIDE_CANDIDATES_QUERY,
     SingleFlightQueue,
     bodyLine,
     buildCheckCall,
     checkTargets,
+    creationAttempts,
     creationFinding,
     findingOf,
+    hideStatement,
     offsetAt,
+    retryCreation,
     runCheck,
     severityOf,
     type CheckClient
@@ -149,6 +153,181 @@ test('a file without PL/pgSQL routines sends nothing', async () => {
     assert.deepEqual(c.sent, []);
 });
 
+// ===== routines the database already has =====
+
+const EXISTING = [
+    'SET search_path = app;',
+    'CREATE FUNCTION k(p integer) RETURNS integer LANGUAGE plpgsql AS $$ BEGIN RETURN p; END $$;'
+].join('\n');
+const sqlError = (message: string, code: string, position?: number) => Object.assign(new Error(message), { code, ...(position ? { position: String(position) } : {}) });
+const REPLACING = { ...OPTIONS, replaceExisting: true };
+
+test('a routine the database already has is created with OR REPLACE and still checked', async () => {
+    const c = client((sql) => {
+        if (sql.startsWith('CREATE FUNCTION k(')) return sqlError('function "k" already exists with same argument types', '42723');
+        if (sql.includes('prosrc = $2')) return [{ oid: 42 }];
+        if (sql.includes('plpgsql_check_function_tb')) return [{ lineno: 1, level: 'warning', message: 'unused variable' }];
+        return [];
+    });
+    const findings = await runCheck(c, EXISTING, REPLACING);
+    assert.deepEqual(findings.map(f => f.message), ['unused variable']);
+    assert.ok(c.sent.includes(EXISTING.split('\n')[1].replace(/^CREATE/, 'CREATE OR REPLACE').replace(/;$/, '')));
+    const replacing = c.sent.findIndex(s => s.startsWith('CREATE OR REPLACE'));
+    assert.match(c.sent[replacing - 1], /set_config\('search_path'/, 'the search_path is set again after the rollback to the savepoint');
+    assert.equal(c.sent[c.sent.length - 1], 'ROLLBACK');
+});
+
+test('a routine OR REPLACE cannot replace is checked under a temporary name and reported under its own', async () => {
+    let lookedUp: unknown;
+    const c = client((sql, params) => {
+        if (sql.startsWith('CREATE FUNCTION k(')) return sqlError('function "k" already exists with same argument types', '42723');
+        if (sql.startsWith('CREATE OR REPLACE')) return sqlError('cannot change return type of existing function', '42P13');
+        if (sql.includes('prosrc = $2')) {
+            lookedUp = params?.[0];
+            return [{ oid: 42 }];
+        }
+        if (sql.includes('plpgsql_check_function_tb')) return [{ lineno: 1, level: 'warning', message: 'unused parameter "p" of k_pqb_check_1' }];
+        return [];
+    });
+    const findings = await runCheck(c, EXISTING, REPLACING);
+    assert.ok(c.sent.some(s => s.startsWith('CREATE FUNCTION "k_pqb_check_1"(p integer)')));
+    assert.equal(lookedUp, 'k_pqb_check_1');
+    assert.deepEqual(findings.map(f => f.message), ['unused parameter "p" of k']);
+    assert.ok(!c.sent.includes('COMMIT') && !c.sent.some(s => /^DROP/i.test(s)), 'nothing is dropped or kept');
+});
+
+test('without replaceExisting a routine the database already has is reported as before', async () => {
+    const c = client((sql) => (sql.startsWith('CREATE FUNCTION k(') ? sqlError('function "k" already exists with same argument types', '42723') : []));
+    const findings = await runCheck(c, EXISTING, OPTIONS);
+    assert.deepEqual(findings.map(f => [f.message, f.code]), [['function "k" already exists with same argument types', '42723']]);
+    assert.ok(!c.sent.some(s => s.startsWith('CREATE OR REPLACE') || s.includes('_pqb_check_')));
+});
+
+test('an error of the replacing statement lands where it is in the file', async () => {
+    const statement = EXISTING.split('\n')[1];
+    const c = client((sql) => {
+        if (sql.startsWith('CREATE FUNCTION k(')) return sqlError('already exists', '42723');
+        if (sql.startsWith('CREATE OR REPLACE')) return sqlError('syntax error at or near "RETURN"', '42601', sql.indexOf('RETURN p') + 1);
+        return [];
+    });
+    const findings = await runCheck(c, EXISTING, REPLACING);
+    const column = statement.indexOf('RETURN p');
+    assert.deepEqual(findings.map(f => [f.message, f.start, f.end]), [['syntax error at or near "RETURN"', { line: 1, character: column }, { line: 1, character: column + 6 }]]);
+    assert.ok(!c.sent.some(s => s.includes('_pqb_check_')), 'a body error is not retried under another name');
+});
+
+test('a statement that already says OR REPLACE is not given it twice, and a temporary name fits an identifier', () => {
+    const [f] = checkTargets(FILE);
+    assert.deepEqual(creationAttempts(f, FILE, 0).map(a => a.sql.slice(0, 40)), [
+        'CREATE OR REPLACE FUNCTION app.f(p_a int',
+        'CREATE OR REPLACE FUNCTION app."f_pqb_ch'
+    ]);
+    const long = `CREATE FUNCTION ${'x'.repeat(63)}() RETURNS void LANGUAGE plpgsql AS $$ BEGIN END $$;`;
+    const [renamed] = creationAttempts(checkTargets(long)[0], long, 0).slice(-1);
+    assert.equal(Buffer.byteLength(renamed.name), 63);
+    assert.ok(renamed.name.endsWith('_pqb_check_1'));
+    assert.equal(retryCreation(sqlError('x', '42P13'), creationAttempts(f, FILE, 0)[0]), true, 'its own OR REPLACE may fail like an added one');
+});
+
+// ===== versions of the database moved out of the way =====
+
+const OVERLOADS = [
+    'CREATE FUNCTION nrs.f_getsapinstance(pi_lbe_id integer, pi_update_cache boolean DEFAULT false) RETURNS varchar LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;',
+    'CREATE FUNCTION nrs.tkn(pi_lbe_id integer) RETURNS integer LANGUAGE plpgsql AS $$ BEGIN PERFORM nrs.f_getsapinstance(pi_lbe_id); RETURN 1; END $$;',
+    'CREATE FUNCTION nrs.f_getsapinstance(pi_mit_id integer, pi_stichtag timestamp) RETURNS varchar LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;'
+].join('\n');
+
+/** A database that has an old f_getsapinstance(integer) and reports an ambiguous call while it is not renamed. */
+function overloadedDatabase(rename: (sql: string) => Error | null = () => null) {
+    let oldVisible = true;
+    let nextOid = 100;
+    const oids = new Map<string, number>();
+    const c = client((sql, params) => {
+        if (sql === HIDE_CANDIDATES_QUERY) {
+            return params?.[0] === 'f_getsapinstance' ? [{ oid: 7, schema_name: 'nrs', name: 'f_getsapinstance', args: 'pi_lbe_id integer' }] : [];
+        }
+        if (sql.startsWith('ALTER ROUTINE')) {
+            const err = rename(sql);
+            if (err) return err;
+            oldVisible = false;
+            return [];
+        }
+        if (sql.startsWith('CREATE')) {
+            if (!oids.has(sql)) oids.set(sql, nextOid++);
+            return [];
+        }
+        if (sql.includes('prosrc = $2')) return [{ oid: nextOid - 1 }];
+        if (sql.includes('plpgsql_check_function_tb')) {
+            const created = [...oids.values()];
+            return params?.[0] === created[1] && oldVisible
+                ? [{ lineno: 1, level: 'error', message: 'function nrs.f_getsapinstance(integer) is not unique' }]
+                : [];
+        }
+        return [];
+    });
+    return c;
+}
+
+test('the versions the database has of a routine the file creates are renamed first, so a call does not see an old overload', async () => {
+    const c = overloadedDatabase();
+    const findings = await runCheck(c, OVERLOADS, REPLACING);
+    assert.deepEqual(findings, []);
+    const rename = c.sent.findIndex(s => s.startsWith('ALTER ROUTINE'));
+    assert.equal(c.sent[rename], 'ALTER ROUTINE "nrs"."f_getsapinstance"(pi_lbe_id integer) RENAME TO "f_getsapinstance_pqb_hidden_1"');
+    assert.ok(rename < c.sent.findIndex(s => s.startsWith('CREATE')), 'renamed before anything is created');
+    assert.equal(c.sent.filter(s => s === HIDE_CANDIDATES_QUERY).length, 2, 'each name is looked up once');
+    assert.ok(!c.sent.some(s => /^DROP/i.test(s) || s === 'COMMIT'));
+    assert.equal(c.sent[c.sent.length - 1], 'ROLLBACK');
+});
+
+test('every routine of the file is created before the first is checked', async () => {
+    const c = overloadedDatabase();
+    await runCheck(c, OVERLOADS, REPLACING);
+    const lastCreate = c.sent.map((s, i) => (s.startsWith('CREATE') ? i : -1)).reduce((a, b) => Math.max(a, b));
+    const firstCheck = c.sent.findIndex(s => s.includes('plpgsql_check_function_tb'));
+    assert.ok(lastCreate < firstCheck, 'tkn finds the f_getsapinstance defined below it');
+    assert.equal(c.sent.filter(s => s.includes('plpgsql_check_function_tb')).length, 3);
+});
+
+test('a version the database refuses to rename keeps its name, and the file\'s routine is still created around it', async () => {
+    const c = overloadedDatabase(() => sqlError('must be owner of function f_getsapinstance', '42501'));
+    const findings = await runCheck(c, OVERLOADS, REPLACING);
+    assert.ok(c.sent.includes('ROLLBACK TO SAVEPOINT pqb_hide'));
+    assert.deepEqual(findings.map(f => f.message), ['function nrs.f_getsapinstance(integer) is not unique'], 'the ambiguity is real then, and reported');
+});
+
+test('without replaceExisting nothing is renamed', async () => {
+    const c = overloadedDatabase();
+    await runCheck(c, OVERLOADS, OPTIONS);
+    assert.ok(!c.sent.some(s => s === HIDE_CANDIDATES_QUERY || s.startsWith('ALTER ROUTINE')));
+});
+
+test('only plain functions and procedures outside extensions are moved aside, under a name that fits an identifier', () => {
+    assert.match(HIDE_CANDIDATES_QUERY, /p\.prokind IN \('f', 'p'\)/);
+    assert.match(HIDE_CANDIDATES_QUERY, /d\.deptype = 'e'/);
+    assert.match(HIDE_CANDIDATES_QUERY, /COALESCE\(\$2::text, pg_catalog\.current_schema\(\)\)/, 'an unqualified name is looked for where CREATE puts it');
+    const long = hideStatement({ schema_name: 'a"b', name: 'y'.repeat(63), args: '' }, 0);
+    assert.equal(Buffer.byteLength(long.name), 63);
+    assert.match(long.sql, /^ALTER ROUTINE "a""b"\."y{63}"\(\) RENAME TO "y+_pqb_hidden_1"$/);
+});
+
+test('a trigger function is checked on the table of the trigger that uses the version moved aside', async () => {
+    const only = "CREATE FUNCTION app.h() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END';";
+    let triggerOids: unknown;
+    const c = client((sql, params) => {
+        if (sql === HIDE_CANDIDATES_QUERY) return [{ oid: 9, schema_name: 'app', name: 'h', args: '' }];
+        if (sql.includes('prosrc = $2')) return [{ oid: 42 }];
+        if (sql.includes('pg_trigger')) {
+            triggerOids = params?.[0];
+            return [{ relid: 5 }];
+        }
+        return [];
+    });
+    await runCheck(c, only, REPLACING);
+    assert.deepEqual(triggerOids, [42, 9]);
+    assert.ok(c.sent.some(s => s.includes('relid => $2')));
+});
+
 // ===== one check at a time =====
 
 test('the queue runs one check at a time, coalesces waiting requests and repeats a check requested while it runs', async () => {
@@ -196,4 +375,15 @@ test('the settings of the plpgsql_check group default to what a check uses witho
     for (const [key, value] of Object.entries(DEFAULT_CHECK_SETTINGS)) {
         assert.equal(group.properties[`postgresQueryBuilder.plpgsqlCheck.${key}`]?.default, value, key);
     }
+    assert.equal(group.properties['postgresQueryBuilder.plpgsqlCheck.replaceExisting']?.default, true);
+});
+
+test('the plpgsql_check settings are listed in the order of the file: when, how, what is reported, then the rest', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..', 'package.json'), 'utf8'));
+    const group = (manifest.contributes.configuration as Array<{ title: string; properties: Record<string, { order?: number }> }>).find(g => g.title === 'plpgsql_check')!;
+    const keys = Object.keys(group.properties).map(k => k.replace('postgresQueryBuilder.plpgsqlCheck.', ''));
+    assert.deepEqual(Object.values(group.properties).map(p => p.order), keys.map((_, i) => i + 1), 'every setting has the order of its place');
+    assert.deepEqual(keys.slice(0, 5), ['onSave', 'onType', 'delayMs', 'timeoutMs', 'replaceExisting']);
+    assert.ok(keys.indexOf('withoutWarnings') < keys.indexOf('otherWarnings'), 'errors only comes before the kinds of warnings');
+    assert.ok(keys.indexOf('extraSeverity') > keys.indexOf('compatibilityWarnings'), 'the severity follows the warnings it applies to');
 });

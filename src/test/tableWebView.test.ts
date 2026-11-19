@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { EventEmitter } from 'node:events';
 import { DbSessionManager } from '../dbSession';
-import { buildCustomResultColumns, buildColumnProbeSql, buildCellEditorFileName, cellEditorFileExtension, TableWebViewManager, queryEditorAssets, formatQueryBarText, buildDataViewerCsp, applyDataViewerCsp, normalizeQueryBarHeight, QUERY_BAR_HEIGHT_KEY } from '../tableWebView';
+import { buildCustomResultColumns, buildColumnProbeSql, buildCellEditorFileName, cellEditorFileExtension, TableWebViewManager, queryEditorAssets, formatQueryBarText, buildDataViewerCsp, applyDataViewerCsp, normalizeQueryBarHeight, QUERY_BAR_HEIGHT_KEY, LOAD_ALL_WARNING_SETTING, LOAD_AND_SELECT_ALL, loadAllWarningRows, loadAllWarningText, needsLoadAllWarning } from '../tableWebView';
 import { QueryRunner } from '../queryRunner';
 import { QualifierStore } from '../tableStatementDrop';
 import { ManageBookmarksPanel } from '../manageBookmarksPanel';
@@ -2359,3 +2359,75 @@ for (const how of ['the Cancel button of the toolbar', 'the Cancel of the notifi
         }
     });
 }
+
+// ===== 4.0.2: Shift+Ctrl+A asks before loading many rows =====
+
+test('the row limit of the Shift+Ctrl+A question comes from the setting, and only a larger result is asked about', () => {
+    assert.equal(loadAllWarningRows(undefined), 100000);
+    assert.equal(loadAllWarningRows('many'), 100000);
+    assert.equal(loadAllWarningRows(0), 0);
+    assert.equal(loadAllWarningRows(2500.7), 2500);
+    assert.equal(needsLoadAllWarning(100001, 100000), true);
+    assert.equal(needsLoadAllWarning(100000, 100000), false);
+    assert.equal(needsLoadAllWarning(5000000, 0), false, '0 never asks');
+    assert.equal(needsLoadAllWarning(null, 100000), false);
+    assert.deepEqual(loadAllWarningText(250000, 200).message, 'Load and select all 250,000 rows?');
+    assert.match(loadAllWarningText(250000, 200).detail, /^249,800 of them are not loaded yet\./);
+});
+
+/** A query panel whose count of rows answers `count`, recording the counts it runs. */
+async function openCountingPanel(count: number) {
+    const counted: string[] = [];
+    const opened = await openCustomQueryPanel(undefined, {
+        connection: {
+            query: async (sql: string) => {
+                if (sql.startsWith('SELECT COUNT(*)')) {
+                    counted.push(sql);
+                    return { rows: [{ count: String(count) }], fields: [] };
+                }
+                return { rows: [], fields: [] };
+            }
+        }
+    });
+    const answer = () => opened.panel.posted.filter((m: any) => m.command === 'loadAllRowsAnswer').at(-1);
+    return { ...opened, counted, answer };
+}
+
+test('Shift+Ctrl+A counts the rows and asks before loading more than the setting allows', async (t) => {
+    const { send, counted, answer } = await openCountingPanel(250000);
+    let reply: string | undefined = LOAD_AND_SELECT_ALL;
+    const asked = stubWarningMessage(t, () => reply);
+
+    await send({ command: 'confirmLoadAllRows', sql: 'SELECT * FROM big', totalCount: null, loadedRows: 200 });
+    assert.equal(counted.length, 1, 'the unknown total is counted');
+    assert.equal(asked.length, 1);
+    assert.equal(asked[0][0], 'Load and select all 250,000 rows?');
+    assert.equal((asked[0][1] as any).modal, true);
+    assert.deepEqual(answer(), { command: 'loadAllRowsAnswer', sql: 'SELECT * FROM big', confirmed: true, totalCount: 250000 });
+
+    reply = undefined;
+    await send({ command: 'confirmLoadAllRows', sql: 'SELECT * FROM big', totalCount: 250000, loadedRows: 200 });
+    assert.equal(counted.length, 1, 'a known total is not counted again');
+    assert.equal(answer().confirmed, false, 'cancelling the question loads nothing');
+});
+
+test('Shift+Ctrl+A loads a small result without asking, and with the setting 0 neither counts nor asks', async (t) => {
+    const { send, counted, answer } = await openCountingPanel(5000);
+    const asked = stubWarningMessage(t, () => LOAD_AND_SELECT_ALL);
+    await send({ command: 'confirmLoadAllRows', sql: 'SELECT * FROM small', totalCount: null, loadedRows: 200 });
+    assert.deepEqual([asked.length, answer().confirmed, answer().totalCount], [0, true, 5000]);
+
+    const original = vscodeStub.workspace.getConfiguration;
+    vscodeStub.workspace.getConfiguration = (() => ({ get: (key: string, fallback?: unknown) => (key === LOAD_ALL_WARNING_SETTING ? 0 : fallback) })) as any;
+    t.after(() => { vscodeStub.workspace.getConfiguration = original; });
+    await send({ command: 'confirmLoadAllRows', sql: 'SELECT * FROM small', totalCount: null, loadedRows: 200 });
+    assert.equal(counted.length, 1);
+    assert.deepEqual([asked.length, answer().confirmed, answer().totalCount], [0, true, null]);
+});
+
+test('the Shift+Ctrl+A row limit is a setting of the Data Viewer', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(EXTENSION_PATH, 'package.json'), 'utf8'));
+    const group = manifest.contributes.configuration.find((g: { title: string }) => g.title === 'SQL & Data Viewer');
+    const setting = group.properties[`postgresQueryBuilder.${LOAD_ALL_WARNING_SETTING}`];
+    assert.deepEqual([setting.type, setting.default, setting.minimum], ['integer', 100000, 0]);
+});

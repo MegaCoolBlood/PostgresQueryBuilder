@@ -612,6 +612,21 @@ const SETTINGS_SECTION = 'postgresQueryBuilder';
 /** Whether Execute File and Execute Selection clear the log of their session first; the panel's "Clear on Execute". */
 export const CLEAR_ON_EXECUTE_SETTING = 'messages.clearOnExecute';
 
+/** Which messages show their `CONTEXT:` line in the panel; Copy and Save always keep it. */
+export const SHOW_CONTEXT_SETTING = 'messages.showContext';
+export const SHOW_CONTEXT_MODES = ['always', 'errorsAndWarnings', 'never'] as const;
+export type ShowContextMode = typeof SHOW_CONTEXT_MODES[number];
+const SHOW_CONTEXT_LABELS: Record<ShowContextMode, string> = {
+    always: 'Context: Always',
+    errorsAndWarnings: 'Context: Errors and Warnings',
+    never: 'Context: Never'
+};
+
+/** The mode a stored value stands for; anything unknown is the default, errors and warnings only. */
+export function showContextMode(value: unknown): ShowContextMode {
+    return SHOW_CONTEXT_MODES.includes(value as ShowContextMode) ? value as ShowContextMode : 'errorsAndWarnings';
+}
+
 /** What the panel is told to show. */
 export interface MessagesViewState {
     /** The session shown, or null while no SQL file or Data Viewer has been active. */
@@ -780,9 +795,10 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
             if (key !== this.shown?.key) return;
             this.scheduleRender();
         });
-        // The checkbox follows the setting, also when it is changed in the settings.
+        // The checkbox and the drop-down follow the settings, also when they are changed in the settings.
         this.configSubscription = vscode.workspace.onDidChangeConfiguration((event) => {
-            if (event.affectsConfiguration(`${SETTINGS_SECTION}.${CLEAR_ON_EXECUTE_SETTING}`)) this.postOptions();
+            if (event.affectsConfiguration(`${SETTINGS_SECTION}.${CLEAR_ON_EXECUTE_SETTING}`)
+                || event.affectsConfiguration(`${SETTINGS_SECTION}.${SHOW_CONTEXT_SETTING}`)) this.postOptions();
         });
     }
 
@@ -823,6 +839,11 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
     /** Whether Execute File and Execute Selection clear the log of their session first. */
     get clearOnExecute(): boolean {
         return vscode.workspace.getConfiguration(SETTINGS_SECTION).get<boolean>(CLEAR_ON_EXECUTE_SETTING, false) === true;
+    }
+
+    /** Which messages the panel shows with their `CONTEXT:` line. */
+    get showContext(): ShowContextMode {
+        return showContextMode(vscode.workspace.getConfiguration(SETTINGS_SECTION).get<string>(SHOW_CONTEXT_SETTING, 'errorsAndWarnings'));
     }
 
     append(ref: DbSessionRef, message: SessionMessage): void {
@@ -891,6 +912,8 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
                 void this.openLink(Number(message.id));
             } else if (message.type === 'clearOnExecute') {
                 void this.setClearOnExecute(message.value === true);
+            } else if (message.type === 'showContext') {
+                void this.setShowContext(showContextMode(message.value));
             } else if (message.type === 'commitMode') {
                 if (this.shown && this.sessions && COMMIT_MODES.includes(message.value as CommitMode)) {
                     this.sessions.setCommitMode(this.shown.key, parseCommitMode(message.value));
@@ -961,11 +984,22 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
         }
     }
 
-    /** Tell the panel how its checkbox is set. */
+    /** Store the drop-down "Context" as the user's setting, for every window. */
+    private async setShowContext(value: ShowContextMode): Promise<void> {
+        try {
+            await vscode.workspace.getConfiguration(SETTINGS_SECTION).update(SHOW_CONTEXT_SETTING, value, vscode.ConfigurationTarget.Global);
+        } catch (err: unknown) {
+            Logger.error('SessionMessagesView.setShowContext', err);
+            vscode.window.showErrorMessage(`Which context lines to show could not be saved: ${getErrorMessage(err)}`);
+            this.postOptions();
+        }
+    }
+
+    /** Tell the panel how its checkbox and drop-down are set. */
     private postOptions(): void {
         const view = this.view;
         if (!view) return;
-        Promise.resolve(view.webview.postMessage({ type: 'options', clearOnExecute: this.clearOnExecute })).catch(() => undefined);
+        Promise.resolve(view.webview.postMessage({ type: 'options', clearOnExecute: this.clearOnExecute, showContext: this.showContext })).catch(() => undefined);
     }
 
     /**
@@ -1071,6 +1105,8 @@ export class SessionMessagesView implements vscode.WebviewViewProvider, SessionM
     }
 
     private getHtml(webview: vscode.Webview): string {
+        // The CONTEXT lines are hidden from the start, before the panel is told the setting.
+        const showContext = this.showContext;
         const styles = `
 html, body { height: 100%; }
 body { padding: 0; display: flex; flex-direction: column; }
@@ -1079,6 +1115,14 @@ body { padding: 0; display: flex; flex-direction: column; }
 .session-label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .count { font-size: var(--fs-xs); color: var(--c-muted); white-space: nowrap; }
 .list { flex: 1; position: relative; overflow-y: auto; padding: var(--sp-1) 0; font-family: var(--font-mono); font-size: var(--fs-sm); }
+.list-wrap { flex: 1; position: relative; min-height: 0; display: flex; flex-direction: column; }
+/* Brings the reader back to the newest message and lets the list follow new ones again. */
+.scroll-bottom { position: absolute; right: var(--sp-4); bottom: var(--sp-2); z-index: var(--z-sticky); }
+.scroll-bottom[hidden] { display: none; }
+/* The CONTEXT line the drop-down hides; Copy and Save keep it. */
+[data-context="never"] .msg-context,
+[data-context="errorsAndWarnings"] .msg:not(.tone-danger):not(.tone-warning) .msg-context { display: none; }
+.show-context { width: auto; }
 .empty { padding: var(--sp-3); font-family: inherit; color: var(--c-muted); }
 .msg { position: relative; padding: 1px var(--sp-2) 1px calc(var(--num-width, 1ch) + var(--sp-2) * 2); white-space: pre-wrap; word-break: break-word; user-select: text; }
 /* The number of a message in its log, to point someone at "line 567"; never part of a copied selection. */
@@ -1132,13 +1176,19 @@ body { padding: 0; display: flex; flex-direction: column; }
         </select>
         <button class="btn btn-sm" id="resetSessionBtn" disabled title="Reset the database session: settings made with SET or set_config, temporary tables and an open transaction are discarded, and the next statement opens a new session">${icon('refresh')}Reset Session</button>
         <label class="clear-on-execute" title="Clear the messages of a session each time Execute File or Execute Selection starts in it"><input type="checkbox" id="clearOnExecute">Clear on Execute</label>
+        <select id="showContext" class="show-context" aria-label="Which messages show their CONTEXT line" title="Which messages show their CONTEXT line — where in which function a RAISE or an error happened. Copy and Save always keep it.">
+            ${SHOW_CONTEXT_MODES.map((mode) => `<option value="${mode}">${SHOW_CONTEXT_LABELS[mode]}</option>`).join('')}
+        </select>
         <button class="btn btn-sm" id="copyBtn" title="Copy every message of this session to the clipboard, including those the panel no longer shows">${icon('copy')}Copy</button>
         <button class="btn btn-sm" id="saveBtn" title="Save every message of this session to a file, including those the panel no longer shows">${icon('save')}Save</button>
         <button class="btn btn-sm" id="clearBtn" title="Clear the messages of this session">${icon('trash')}Clear</button>
     </div>
 </div>
-<div class="list" id="list"></div>
-<div class="running" id="running" role="status" aria-live="off" hidden></div>`;
+<div class="list-wrap">
+    <div class="list" id="list" data-context="${showContext}"></div>
+    <button class="btn btn-sm scroll-bottom" id="scrollBottomBtn" hidden title="Scroll to the newest message and follow new messages again">${icon('arrow-down-line')}Scroll to Bottom</button>
+</div>
+<div class="running" id="running" data-context="${showContext}" role="status" aria-live="off" hidden></div>`;
         const script = `
 const vscode = acquireVsCodeApi();
 const listEl = document.getElementById('list');
@@ -1156,6 +1206,8 @@ const txStateEl = document.getElementById('txState');
 const commitBtn = document.getElementById('commitBtn');
 const rollbackBtn = document.getElementById('rollbackBtn');
 const resetSessionBtn = document.getElementById('resetSessionBtn');
+const showContextSelect = document.getElementById('showContext');
+const scrollBottomBtn = document.getElementById('scrollBottomBtn');
 const TONE_ICONS = { danger: ${JSON.stringify(icon('error'))}, warning: ${JSON.stringify(icon('warning'))} };
 copyBtn.addEventListener('click', () => vscode.postMessage({ type: 'copy' }));
 saveBtn.addEventListener('click', () => vscode.postMessage({ type: 'save' }));
@@ -1166,6 +1218,39 @@ commitModeSelect.addEventListener('change', () => vscode.postMessage({ type: 'co
 commitBtn.addEventListener('click', () => vscode.postMessage({ type: 'commit' }));
 rollbackBtn.addEventListener('click', () => vscode.postMessage({ type: 'rollback' }));
 resetSessionBtn.addEventListener('click', () => vscode.postMessage({ type: 'resetSession' }));
+showContextSelect.addEventListener('change', () => {
+    applyShowContext(showContextSelect.value);
+    vscode.postMessage({ type: 'showContext', value: showContextSelect.value });
+});
+scrollBottomBtn.addEventListener('click', () => scrollToBottom());
+
+// Which messages show their CONTEXT line; the lines stay in the list, so a
+// change applies to the messages already shown.
+function applyShowContext(mode) {
+    showContextSelect.value = mode;
+    listEl.dataset.context = mode;
+    runningEl.dataset.context = mode;
+}
+
+// The list follows new messages until the reader scrolls up, and again once
+// they scroll back to the end or press Scroll to Bottom. Only scrolling up
+// stops it: a late scroll event of our own, seen after more messages came in,
+// must not.
+let following = true;
+let lastScrollTop = 0;
+listEl.addEventListener('scroll', () => {
+    const top = listEl.scrollTop;
+    if (isAtBottom()) following = true;
+    else if (top < lastScrollTop) following = false;
+    lastScrollTop = top;
+    scrollBottomBtn.hidden = following;
+}, { passive: true });
+function scrollToBottom() {
+    listEl.scrollTop = listEl.scrollHeight;
+    lastScrollTop = listEl.scrollTop;
+    following = true;
+    scrollBottomBtn.hidden = true;
+}
 
 // The commit mode of the shown session and whether it has work not committed yet.
 function showSession(s) {
@@ -1220,7 +1305,7 @@ function messageHtml(m) {
         + '<span class="msg-sev">' + (TONE_ICONS[m.tone] || '') + escapeHtml(m.severity) + ':</span> '
         + '<span class="msg-text">' + textHtml(m) + '</span>' + timerHtml(m);
     for (const d of m.details || []) {
-        html += '<div class="msg-detail">' + escapeHtml(d) + '</div>';
+        html += '<div class="msg-detail' + (d.indexOf('CONTEXT:') === 0 ? ' msg-context' : '') + '">' + escapeHtml(d) + '</div>';
     }
     return html + '</div>';
 }
@@ -1297,13 +1382,16 @@ function goToNextError() {
     if (at >= 0) errors[at].classList.remove('current');
     next.classList.add('current');
     listEl.scrollTop = next.offsetTop;
+    // The marked error stays in view while messages come in.
+    lastScrollTop = listEl.scrollTop;
+    following = isAtBottom();
+    scrollBottomBtn.hidden = following;
 }
 
 function render(key, state) {
     const switched = key !== shownKey;
     shownKey = key;
     shownLabel = state.label;
-    const atBottom = isAtBottom();
     const messages = state.messages || [];
     labelEl.textContent = state.label ? 'Session of ' + state.label : 'No session';
     labelEl.title = state.label ? 'The database session of ' + state.label + ' and every tab sharing it' : '';
@@ -1318,8 +1406,8 @@ function render(key, state) {
         return;
     }
     listEl.innerHTML = messages.map(messageHtml).join('');
-    if (switched || atBottom) {
-        listEl.scrollTop = listEl.scrollHeight;
+    if (switched || following) {
+        scrollToBottom();
     }
 }
 
@@ -1327,7 +1415,6 @@ function render(key, state) {
 // the list is never rebuilt while a session keeps sending.
 function append(update) {
     if (update.key !== shownKey) return;
-    const atBottom = isAtBottom();
     const empty = listEl.querySelector('.empty');
     if (empty) empty.remove();
     listEl.insertAdjacentHTML('beforeend', update.messages.map(messageHtml).join(''));
@@ -1337,8 +1424,8 @@ function append(update) {
     }
     updateHeader(update.countText, update.total, update.errorsText);
     showRunning(update.running);
-    if (atBottom) {
-        listEl.scrollTop = listEl.scrollHeight;
+    if (following) {
+        scrollToBottom();
     }
 }
 
@@ -1350,6 +1437,7 @@ window.addEventListener('message', (ev) => {
         append(msg);
     } else if (msg && msg.type === 'options') {
         clearOnExecuteBox.checked = msg.clearOnExecute === true;
+        if (msg.showContext) applyShowContext(msg.showContext);
     } else if (msg && msg.type === 'session') {
         showSession(msg);
     }

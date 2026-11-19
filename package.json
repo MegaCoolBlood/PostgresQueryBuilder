@@ -2,7 +2,7 @@
   "name": "postgres-query-booster",
   "displayName": "PostgreSQL Query Booster",
   "description": "A VS Code extension for browsing, editing, and managing PostgreSQL databases",
-  "version": "4.0.1",
+  "version": "4.0.2",
   "publisher": "sirlychee",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -463,6 +463,18 @@
         "icon": "$(clear-all)"
       },
       {
+        "command": "postgresQueryBuilder.openAlterTableScript",
+        "title": "Open ALTER TABLE Script",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "postgresQueryBuilder.copyAlterTableScript",
+        "title": "Copy ALTER TABLE Script",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(copy)"
+      },
+      {
         "command": "postgresQueryBuilder.checkFilePlpgsql",
         "title": "Check File with plpgsql_check",
         "category": "PostgreSQL Query Booster",
@@ -713,27 +725,27 @@
         },
         {
           "command": "postgresQueryBuilder.goToRepositoryDefinition",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table)(\\.repoOnly)?$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table|table\\.differs|schema\\.repoOnly|table\\.repoOnly)$/",
           "group": "0_repository@1"
         },
         {
           "command": "postgresQueryBuilder.openCreateScript",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table)$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table|table\\.differs)$/",
           "group": "1_ddl@1"
         },
         {
           "command": "postgresQueryBuilder.copyCreateScript",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table)$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table|table\\.differs)$/",
           "group": "1_ddl@2"
         },
         {
           "command": "postgresQueryBuilder.openDropScript",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table)$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table|table\\.differs)$/",
           "group": "2_drop@1"
         },
         {
           "command": "postgresQueryBuilder.copyDropScript",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table)$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table|table\\.differs)$/",
           "group": "2_drop@2"
         },
         {
@@ -743,8 +755,18 @@
         },
         {
           "command": "postgresQueryBuilder.compareWithDatabase",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem == table",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^table(\\.differs)?$/",
           "group": "0_repository@2"
+        },
+        {
+          "command": "postgresQueryBuilder.openAlterTableScript",
+          "when": "view == postgresComparison && viewItem == table.differs",
+          "group": "0_repository@4"
+        },
+        {
+          "command": "postgresQueryBuilder.copyAlterTableScript",
+          "when": "view == postgresComparison && viewItem == table.differs",
+          "group": "0_repository@5"
         },
         {
           "command": "postgresQueryBuilder.findUsages",
@@ -753,7 +775,7 @@
         },
         {
           "command": "postgresQueryBuilder.findUsages",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^table(\\.repoOnly)?$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^table(\\.repoOnly|\\.differs)?$/",
           "group": "0_repository@3"
         },
         {
@@ -763,7 +785,7 @@
         },
         {
           "command": "postgresQueryBuilder.showDependencies",
-          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table)$/",
+          "when": "(view == postgresTableExplorer || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^(schema|table|table\\.differs)$/",
           "group": "3_dependencies@1"
         },
         {
@@ -775,6 +797,14 @@
       "commandPalette": [
         {
           "command": "postgresQueryBuilder.openCreateScript",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.openAlterTableScript",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.copyAlterTableScript",
           "when": "false"
         },
         {
@@ -1130,6 +1160,27 @@
           "type": "boolean",
           "default": false,
           "description": "Clear the log of a database session in the PostgreSQL Messages panel each time Execute File or Execute Selection starts in it. The checkbox \"Clear on Execute\" of the panel sets the same value."
+        },
+        "postgresQueryBuilder.messages.showContext": {
+          "type": "string",
+          "enum": [
+            "always",
+            "errorsAndWarnings",
+            "never"
+          ],
+          "enumDescriptions": [
+            "Every message shows its CONTEXT line",
+            "Only errors and warnings show their CONTEXT line; RAISE NOTICE and INFO do not",
+            "No message shows its CONTEXT line"
+          ],
+          "default": "errorsAndWarnings",
+          "description": "Which messages in the PostgreSQL Messages panel show their CONTEXT line — where in which function a RAISE or an error happened. Copy and Save always keep it. The drop-down \"Context\" of the panel sets the same value."
+        },
+        "postgresQueryBuilder.dataViewer.loadAllWarningRows": {
+          "type": "integer",
+          "default": 100000,
+          "minimum": 0,
+          "markdownDescription": "`Shift+Ctrl+A` in the Data Viewer loads every row of the result and then selects every cell. Above this many rows it asks first, as loading them can take a while and needs memory. `0` never asks."
         },
         "postgresQueryBuilder.selectHistory.maxEntries": {
           "type": "integer",
@@ -1669,75 +1720,95 @@
         "postgresQueryBuilder.plpgsqlCheck.onSave": {
           "type": "boolean",
           "default": true,
+          "order": 1,
           "markdownDescription": "Check a SQL file with plpgsql_check when it is saved. With `#files.autoSave#` on, the check waits `#postgresQueryBuilder.plpgsqlCheck.delayMs#` after the last save."
         },
         "postgresQueryBuilder.plpgsqlCheck.onType": {
           "type": "boolean",
           "default": false,
+          "order": 2,
           "markdownDescription": "Also check a SQL file while typing, `#postgresQueryBuilder.plpgsqlCheck.delayMs#` after the last change."
         },
         "postgresQueryBuilder.plpgsqlCheck.delayMs": {
           "type": "integer",
           "default": 1500,
           "minimum": 200,
+          "order": 3,
           "markdownDescription": "How many milliseconds after the last change or auto save a check starts."
         },
         "postgresQueryBuilder.plpgsqlCheck.timeoutMs": {
           "type": "integer",
           "default": 10000,
           "minimum": 1000,
+          "order": 4,
           "markdownDescription": "The `statement_timeout` of a check, in milliseconds."
         },
-        "postgresQueryBuilder.plpgsqlCheck.extraSeverity": {
-          "type": "string",
-          "enum": ["information", "warning", "error"],
-          "default": "information",
-          "markdownDescription": "How extra, performance, security and compatibility warnings of plpgsql_check are shown; plain warnings are warnings and errors are errors."
+        "postgresQueryBuilder.plpgsqlCheck.replaceExisting": {
+          "type": "boolean",
+          "default": true,
+          "order": 5,
+          "markdownDescription": "Check the file's functions and procedures as if they replaced what the database has, instead of reporting `already exists` or `is not unique`: every version the database has of a routine the file creates is renamed out of the way for the check — as a file that drops its routines before creating them expects —, and one that cannot be renamed is created with `OR REPLACE` or under a temporary name. Nothing is dropped, and the check is always rolled back."
         },
-        "postgresQueryBuilder.plpgsqlCheck.fatalErrors": {
+        "postgresQueryBuilder.plpgsqlCheck.withoutWarnings": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "`fatal_errors` of plpgsql_check: stop at the first error of a function instead of listing all of them."
+          "order": 6,
+          "markdownDescription": "`without_warnings`: report errors only."
         },
         "postgresQueryBuilder.plpgsqlCheck.otherWarnings": {
           "type": "boolean",
           "default": true,
+          "order": 7,
           "markdownDescription": "`other_warnings`: report unused variables, overlapping variable names and similar."
         },
         "postgresQueryBuilder.plpgsqlCheck.extraWarnings": {
           "type": "boolean",
           "default": true,
+          "order": 8,
           "markdownDescription": "`extra_warnings`: report unused parameters, missing RETURN and similar."
         },
         "postgresQueryBuilder.plpgsqlCheck.performanceWarnings": {
           "type": "boolean",
           "default": false,
+          "order": 9,
           "markdownDescription": "`performance_warnings`: report casts that keep an index from being used and similar."
         },
         "postgresQueryBuilder.plpgsqlCheck.securityWarnings": {
           "type": "boolean",
           "default": false,
+          "order": 10,
           "markdownDescription": "`security_warnings`: report SQL injection risks in dynamic SQL."
         },
         "postgresQueryBuilder.plpgsqlCheck.compatibilityWarnings": {
           "type": "boolean",
           "default": false,
+          "order": 11,
           "markdownDescription": "`compatibility_warnings`: report what older or newer PostgreSQL versions treat differently."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.extraSeverity": {
+          "type": "string",
+          "enum": ["information", "warning", "error"],
+          "default": "information",
+          "order": 12,
+          "markdownDescription": "How extra, performance, security and compatibility warnings of plpgsql_check are shown; plain warnings are warnings and errors are errors."
+        },
+        "postgresQueryBuilder.plpgsqlCheck.fatalErrors": {
+          "type": "boolean",
+          "default": false,
+          "order": 13,
+          "markdownDescription": "`fatal_errors` of plpgsql_check: stop at the first error of a function instead of listing all of them."
         },
         "postgresQueryBuilder.plpgsqlCheck.constantTracing": {
           "type": "boolean",
           "default": true,
+          "order": 14,
           "markdownDescription": "`constant_tracing`: follow constant values through the code to check dynamic SQL."
         },
         "postgresQueryBuilder.plpgsqlCheck.useIncommentOptions": {
           "type": "boolean",
           "default": true,
+          "order": 15,
           "markdownDescription": "`use_incomment_options`: honour `@plpgsql_check_options:` comments in the function body."
-        },
-        "postgresQueryBuilder.plpgsqlCheck.withoutWarnings": {
-          "type": "boolean",
-          "default": false,
-          "markdownDescription": "`without_warnings`: report errors only."
         }
       }
     }

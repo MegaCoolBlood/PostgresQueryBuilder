@@ -5,7 +5,10 @@
  * The file's `CREATE FUNCTION` and `CREATE PROCEDURE … LANGUAGE plpgsql`
  * statements are created in one transaction on that database, each checked
  * with `plpgsql_check_function_tb`, and the transaction is rolled back: the
- * unsaved code is checked, and nothing of it stays in the database. At most
+ * unsaved code is checked, and nothing of it stays in the database. The
+ * versions the database has of the file's routines are renamed out of the way
+ * first; a routine that still exists is created with OR REPLACE, or under a
+ * temporary name when that cannot replace it. At most
  * one check runs at a time; a file changed while it is checked is checked
  * once more afterwards, and a result for an older version is dropped.
  */
@@ -227,17 +230,83 @@ export function findingOf(row: Record<string, unknown>, target: CheckTarget, tex
 }
 
 /** A statement the server refused, at the position the error names. */
-export function creationFinding(err: unknown, target: CheckTarget, text: string): CheckFinding {
-    const position = Number((err as { position?: unknown }).position);
+export function creationFinding(err: unknown, target: CheckTarget, text: string, attempt?: CreationAttempt): CheckFinding {
+    const sent = Number((err as { position?: unknown }).position);
     const code = (err as { code?: unknown }).code;
     let range = { start: target.def.start, end: target.def.end };
-    if (Number.isFinite(position) && position > 0) {
+    if (Number.isFinite(sent) && sent > 0) {
+        const position = attempt ? attempt.toStatement(sent) : sent;
         const toPosition = positionMapper(text);
         const from = target.statementOffset + position - 1;
         const word = /^[A-Za-z0-9_$."]+/.exec(text.slice(from))?.[0] ?? text.charAt(from);
         range = { start: toPosition(from), end: toPosition(from + Math.max(word.length, 1)) };
     }
-    return { severity: 'error', message: getErrorMessage(err), ...range, ...(typeof code === 'string' ? { code } : {}) };
+    const message = attempt ? withRealName(getErrorMessage(err), attempt, target) : getErrorMessage(err);
+    return { severity: 'error', message, ...range, ...(typeof code === 'string' ? { code } : {}) };
+}
+
+// ===== Routines the database already has =====
+
+/** One way of creating a routine of the file: as written, with OR REPLACE, or under a name of its own. */
+export interface CreationAttempt {
+    sql: string;
+    /** The name the routine gets in the database. */
+    name: string;
+    /** The 1-based position in the file's statement of a 1-based position in `sql`. */
+    toStatement(position: number): number;
+}
+
+const DUPLICATE_FUNCTION = '42723';
+/** Why OR REPLACE cannot replace the routine the database has: another result type or parameter names, another kind, another owner. */
+const CANNOT_REPLACE = new Set(['42P13', '42809', '42501']);
+const MAX_IDENTIFIER_BYTES = 63;
+
+function editedStatement(statement: string, from: number, to: number, insert: string, name: string): CreationAttempt {
+    const shift = insert.length - (to - from);
+    return {
+        sql: statement.slice(0, from) + insert + statement.slice(to),
+        name,
+        toStatement: position => (position - 1 < from ? position : position - 1 < from + insert.length ? from + 1 : position - shift)
+    };
+}
+
+/** `name` with `suffix`, shortened so that the server does not truncate it. */
+function temporaryName(name: string, suffix: string): string {
+    let base = name;
+    while (base.length > 0 && Buffer.byteLength(base + suffix, 'utf8') > MAX_IDENTIFIER_BYTES) base = base.slice(0, -1);
+    return base + suffix;
+}
+
+/**
+ * The statement as written and, for a routine the database already has, the
+ * ways around it: `CREATE OR REPLACE`, then a name of its own that no other
+ * routine has. Nothing in the database is dropped or kept.
+ */
+export function creationAttempts(target: CheckTarget, text: string, index: number): CreationAttempt[] {
+    const { statement } = target;
+    const attempts = [editedStatement(statement, 0, 0, '', target.def.name)];
+    const toks = tokenize(statement);
+    if (!isWord(toks[0], 'create')) return attempts;
+    if (!isWord(toks[1], 'or')) attempts.push(editedStatement(statement, toks[0].end, toks[0].end, ' OR REPLACE', target.def.name));
+    const nameEnd = offsetAt(text, target.def.end) - target.statementOffset;
+    const nameTok = toks.find(t => t.end === nameEnd && (t.type === 'word' || t.type === 'qident'));
+    if (nameTok) {
+        const name = temporaryName(target.def.name, `_pqb_check_${index + 1}`);
+        attempts.push(editedStatement(statement, nameTok.start, nameTok.end, `"${name.replace(/"/g, '""')}"`, name));
+    }
+    return attempts;
+}
+
+/** Whether the next attempt can get past what the database refused. */
+export function retryCreation(err: unknown, attempt: CreationAttempt): boolean {
+    const code = (err as { code?: unknown } | null)?.code;
+    if (code === DUPLICATE_FUNCTION) return true;
+    return typeof code === 'string' && CANNOT_REPLACE.has(code) && /^\s*create\s+or\s+replace\b/i.test(attempt.sql);
+}
+
+/** A message about the routine under its temporary name, with the name of the file. */
+function withRealName(message: string, attempt: CreationAttempt, target: CheckTarget): string {
+    return attempt.name === target.def.name ? message : message.split(attempt.name).join(target.def.name);
 }
 
 // ===== The run =====
@@ -254,6 +323,8 @@ export interface CheckRunOptions {
     knownParameters: ReadonlySet<string>;
     /** The schema plpgsql_check is installed in. */
     functionSchema?: string;
+    /** Check a routine the database already has: with OR REPLACE, or else under a temporary name. */
+    replaceExisting?: boolean;
     isCancelled?(): boolean;
 }
 
@@ -262,48 +333,136 @@ JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
 WHERE p.proname = $1 AND p.prosrc = $2 AND (n.nspname = $3::text OR ($3::text IS NULL AND n.nspname = ANY(pg_catalog.current_schemas(false))))
 ORDER BY p.oid DESC LIMIT 1`;
 
-const TRIGGER_TABLE_QUERY = `SELECT tg.tgrelid::bigint AS relid FROM pg_catalog.pg_trigger tg WHERE tg.tgfoid = $1 AND NOT tg.tgisinternal LIMIT 1`;
+const TRIGGER_TABLE_QUERY = `SELECT tg.tgrelid::bigint AS relid FROM pg_catalog.pg_trigger tg WHERE tg.tgfoid::bigint = ANY($1::bigint[]) AND NOT tg.tgisinternal LIMIT 1`;
+
+/**
+ * The versions the database has of a routine the file creates: plain
+ * functions and procedures of that name in its schema — or, unqualified, in
+ * the schema a CREATE would put it in — that no extension brings along.
+ */
+export const HIDE_CANDIDATES_QUERY = `SELECT p.oid::bigint AS oid, n.nspname::text AS schema_name, p.proname::text AS name,
+       pg_catalog.pg_get_function_identity_arguments(p.oid) AS args
+FROM pg_catalog.pg_proc p
+JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+WHERE p.proname = $1 AND n.nspname = COALESCE($2::text, pg_catalog.current_schema()) AND p.prokind IN ('f', 'p')
+  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d
+                  WHERE d.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND d.objid = p.oid AND d.deptype = 'e')
+ORDER BY p.oid`;
+
+/** The statement that moves a version the database has out of the way of the file's routines. */
+export function hideStatement(row: Record<string, unknown>, index: number): { sql: string; name: string } {
+    const quote = (s: string): string => `"${s.replace(/"/g, '""')}"`;
+    const name = temporaryName(String(row.name), `_pqb_hidden_${index + 1}`);
+    return { sql: `ALTER ROUTINE ${quote(String(row.schema_name))}.${quote(String(row.name))}(${String(row.args ?? '')}) RENAME TO ${quote(name)}`, name };
+}
+
+/** A routine of the file as it was created for the check. */
+interface CreatedRoutine {
+    target: CheckTarget;
+    created: CreationAttempt;
+    oid: unknown;
+}
 
 /**
  * Create, check and roll back the routines of a file. The transaction is
  * always rolled back, also when a statement or the check fails.
+ *
+ * With `replaceExisting`, the versions the database has of the routines the
+ * file creates are first renamed out of the way — as a file that drops its
+ * schema's routines before creating them expects —, so a call cannot match an
+ * old overload. Then every routine is created before the first is checked, so
+ * a call of a routine further down the file finds the file's version.
  */
 export async function runCheck(client: CheckClient, text: string, options: CheckRunOptions): Promise<CheckFinding[]> {
     const targets = checkTargets(text);
     if (targets.length === 0) return [];
     const findings: CheckFinding[] = [];
     const quote = (s: string): string => `"${s.replace(/"/g, '""')}"`;
+    const setSearchPath = async (target: CheckTarget): Promise<void> => {
+        if (target.searchPath && target.searchPath.length > 0) {
+            await client.query(`SELECT pg_catalog.set_config('search_path', $1, true)`, [target.searchPath.map(quote).join(', ')]);
+        }
+    };
+    /** The oids the database's versions of a name had, by `schema.name` of the file. */
+    const hidden = new Map<string, unknown[]>();
+    const hiddenKey = (target: CheckTarget): string => `${target.def.schema ?? ''}.${target.def.name}`;
     await client.query('BEGIN');
     try {
         await client.query(`SELECT pg_catalog.set_config('statement_timeout', $1, true), pg_catalog.set_config('lock_timeout', $2, true)`,
             [`${options.timeoutMs}ms`, `${Math.min(options.timeoutMs, 5000)}ms`]);
-        for (const target of targets) {
+
+        // --- Move the database's versions out of the way ---
+        if (options.replaceExisting) {
+            let renamed = 0;
+            for (const target of targets) {
+                if (options.isCancelled?.()) break;
+                const k = hiddenKey(target);
+                if (hidden.has(k)) continue;
+                const oids: unknown[] = [];
+                hidden.set(k, oids);
+                await setSearchPath(target);
+                for (const row of (await client.query(HIDE_CANDIDATES_QUERY, [target.def.name, target.def.schema])).rows) {
+                    const hide = hideStatement(row, renamed++);
+                    await client.query('SAVEPOINT pqb_hide');
+                    try {
+                        await client.query(hide.sql);
+                        await client.query('RELEASE SAVEPOINT pqb_hide');
+                        oids.push(row.oid);
+                    } catch (err: unknown) {
+                        // Not its owner, for example: it keeps its name, and OR REPLACE or a temporary name take over.
+                        Logger.log('plpgsqlCheck.hide', `${hide.sql}: ${getErrorMessage(err)}`);
+                        await client.query('ROLLBACK TO SAVEPOINT pqb_hide');
+                    }
+                }
+            }
+        }
+
+        // --- Create every routine of the file ---
+        const routines: CreatedRoutine[] = [];
+        for (const [index, target] of targets.entries()) {
             if (options.isCancelled?.()) break;
             await client.query('SAVEPOINT pqb_check');
-            try {
-                if (target.searchPath && target.searchPath.length > 0) {
-                    await client.query(`SELECT pg_catalog.set_config('search_path', $1, true)`, [target.searchPath.map(quote).join(', ')]);
+            const attempts = creationAttempts(target, text, index);
+            let created: CreationAttempt | undefined;
+            let refused: CheckFinding | undefined;
+            for (const attempt of options.replaceExisting ? attempts : attempts.slice(0, 1)) {
+                try {
+                    // Set again for every attempt: a rollback to the savepoint undoes it.
+                    await setSearchPath(target);
+                    await client.query(attempt.sql);
+                    created = attempt;
+                    break;
+                } catch (err: unknown) {
+                    refused = creationFinding(err, target, text, attempt);
+                    await client.query('ROLLBACK TO SAVEPOINT pqb_check');
+                    if (!retryCreation(err, attempt)) break;
                 }
-                await client.query(target.statement);
-            } catch (err: unknown) {
-                findings.push(creationFinding(err, target, text));
-                await client.query('ROLLBACK TO SAVEPOINT pqb_check');
+            }
+            if (!created) {
+                if (refused) findings.push(refused);
+                await client.query('RELEASE SAVEPOINT pqb_check');
                 continue;
             }
+            await client.query('RELEASE SAVEPOINT pqb_check');
+            const oid = (await client.query(FIND_OID_QUERY, [created.name, target.body, target.def.schema])).rows[0]?.oid;
+            if (oid !== undefined) routines.push({ target, created, oid });
+        }
+
+        // --- Check them ---
+        for (const { target, created, oid } of routines) {
+            if (options.isCancelled?.()) break;
+            const named = (finding: CheckFinding): CheckFinding => ({ ...finding, message: withRealName(finding.message, created, target) });
+            await client.query('SAVEPOINT pqb_check_run');
             try {
-                const oidRows = (await client.query(FIND_OID_QUERY, [target.def.name, target.body, target.def.schema])).rows;
-                const oid = oidRows[0]?.oid;
-                if (oid === undefined) {
-                    await client.query('RELEASE SAVEPOINT pqb_check');
-                    continue;
-                }
+                await setSearchPath(target);
                 let relid: unknown = null;
                 if (target.trigger) {
                     if (target.triggerTable) {
                         const name = target.triggerTable.schema ? `${quote(target.triggerTable.schema)}.${quote(target.triggerTable.name)}` : quote(target.triggerTable.name);
                         relid = (await client.query(`SELECT to_regclass($1)::oid::bigint AS relid`, [name])).rows[0]?.relid ?? null;
                     }
-                    relid ??= (await client.query(TRIGGER_TABLE_QUERY, [oid])).rows[0]?.relid ?? null;
+                    // The triggers of the database still use the version that was moved aside.
+                    relid ??= (await client.query(TRIGGER_TABLE_QUERY, [[oid, ...(hidden.get(hiddenKey(target)) ?? [])]])).rows[0]?.relid ?? null;
                     if (relid === null) {
                         findings.push({
                             severity: 'information',
@@ -311,7 +470,7 @@ export async function runCheck(client: CheckClient, text: string, options: Check
                             start: target.def.start,
                             end: target.def.end
                         });
-                        await client.query('RELEASE SAVEPOINT pqb_check');
+                        await client.query('RELEASE SAVEPOINT pqb_check_run');
                         continue;
                     }
                 }
@@ -319,12 +478,12 @@ export async function runCheck(client: CheckClient, text: string, options: Check
                 call.params[0] = oid;
                 if (relid !== null) call.params[1] = relid;
                 const rows = (await client.query(call.sql, call.params)).rows;
-                for (const row of rows) findings.push(findingOf(row, target, text, options.extraSeverity));
-                await client.query('RELEASE SAVEPOINT pqb_check');
+                for (const row of rows) findings.push(named(findingOf(row, target, text, options.extraSeverity)));
+                await client.query('RELEASE SAVEPOINT pqb_check_run');
             } catch (err: unknown) {
                 // fatal_errors = true raises the first error instead of returning it.
-                findings.push({ severity: 'error', message: getErrorMessage(err), start: target.def.start, end: target.def.end });
-                await client.query('ROLLBACK TO SAVEPOINT pqb_check');
+                findings.push(named({ severity: 'error', message: getErrorMessage(err), start: target.def.start, end: target.def.end }));
+                await client.query('ROLLBACK TO SAVEPOINT pqb_check_run');
             }
         }
     } finally {
@@ -405,7 +564,7 @@ export interface CheckConnections {
     }>;
 }
 
-function readSettings(): { settings: CheckSettings; extraSeverity: CheckSeverity; timeoutMs: number; onSave: boolean; onType: boolean; delayMs: number } {
+function readSettings(): { settings: CheckSettings; extraSeverity: CheckSeverity; timeoutMs: number; onSave: boolean; onType: boolean; delayMs: number; replaceExisting: boolean } {
     const cfg = vscode.workspace.getConfiguration('postgresQueryBuilder');
     const settings = { ...DEFAULT_CHECK_SETTINGS };
     for (const key of Object.keys(settings) as Array<keyof CheckSettings>) {
@@ -418,7 +577,8 @@ function readSettings(): { settings: CheckSettings; extraSeverity: CheckSeverity
         timeoutMs: cfg.get<number>('plpgsqlCheck.timeoutMs', 10000),
         onSave: cfg.get<boolean>('plpgsqlCheck.onSave', true),
         onType: cfg.get<boolean>('plpgsqlCheck.onType', false),
-        delayMs: cfg.get<number>('plpgsqlCheck.delayMs', 1500)
+        delayMs: cfg.get<number>('plpgsqlCheck.delayMs', 1500),
+        replaceExisting: cfg.get<boolean>('plpgsqlCheck.replaceExisting', true)
     };
 }
 
@@ -600,6 +760,7 @@ export class PlpgsqlChecker implements vscode.Disposable {
                 timeoutMs: s.timeoutMs,
                 knownParameters: this.knownParameters.get(config.name)!.names,
                 functionSchema: this.knownParameters.get(config.name)!.schema,
+                replaceExisting: s.replaceExisting,
                 isCancelled: () => doc.isClosed
             });
         } catch (err: unknown) {

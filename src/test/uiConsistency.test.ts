@@ -614,3 +614,24 @@ test('the editor context menu of every SQL language offers the plpgsql_check run
     assert.ok(entry, 'the plpgsql_check run is not in the editor context menu');
     for (const language of SQL_LANGUAGES) assert.ok(entry.when.includes(`resourceLangId == ${language}`), `missing for ${language}`);
 });
+
+test('a differing table of the Comparison view offers the ALTER TABLE script and keeps every action a table has there', () => {
+    const items: Array<{ command: string; when?: string }> = manifest.contributes.menus['view/item/context'];
+    const palette: Array<{ command: string; when?: string }> = manifest.contributes.menus.commandPalette;
+    for (const command of ['postgresQueryBuilder.openAlterTableScript', 'postgresQueryBuilder.copyAlterTableScript']) {
+        assert.deepEqual(items.filter(m => m.command === command).map(m => m.when), ['view == postgresComparison && viewItem == table.differs'], command);
+        assert.equal(palette.find(p => p.command === command)?.when, 'false', `${command} appears in the Command Palette`);
+    }
+    // A when clause of the form `… && viewItem =~ /…/` or `viewItem == x`, tried on a context value.
+    const matches = (when: string, value: string): boolean => {
+        const regex = /viewItem =~ \/(.+)\/$/.exec(when);
+        if (regex) return new RegExp(regex[1]).test(value);
+        const equal = /viewItem == (\S+)$/.exec(when);
+        return equal ? equal[1] === value : false;
+    };
+    const comparisonTable = items.filter(m => m.when?.includes('view == postgresComparison') && m.when.includes('postgresTableExplorer'));
+    assert.ok(comparisonTable.length > 0);
+    for (const entry of comparisonTable) {
+        assert.equal(matches(entry.when!, 'table.differs'), matches(entry.when!, 'table'), `${entry.command} treats a differing table like any other`);
+    }
+});

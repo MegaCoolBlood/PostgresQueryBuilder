@@ -58,6 +58,8 @@ export interface ComparisonEntry {
     definitions: LocatedDefinition[];
     db?: DbObject;
     relation?: DbRelation;
+    /** For a table that differs: what the repository makes of it and what the database has, for the ALTER TABLE script. */
+    tables?: { repo: TableModel; db: TableModel; searchPath: string[] | null };
 }
 
 export interface ComparisonResult {
@@ -302,12 +304,17 @@ function typeModels(statements: readonly LocatedStatement[]): TypeModel[] {
 
 /** The smallest list of differences, empty as soon as one candidate matches. */
 function best(candidates: Difference[][]): Difference[] {
-    let found: Difference[] | null = null;
-    for (const c of candidates) {
-        if (c.length === 0) return c;
-        if (!found || c.length < found.length) found = c;
+    return candidates[bestIndex(candidates)] ?? [];
+}
+
+/** Which candidate {@link best} picks; -1 without any. */
+function bestIndex(candidates: Difference[][]): number {
+    let found = -1;
+    for (const [i, c] of candidates.entries()) {
+        if (c.length === 0) return i;
+        if (found < 0 || c.length < candidates[found].length) found = i;
     }
-    return found ?? [];
+    return found;
 }
 
 // ===== The run =====
@@ -436,6 +443,7 @@ export async function runComparison(input: ComparisonInput): Promise<ComparisonR
         const schema = item.db?.schema ?? item.relation!.schema;
         const name = item.db?.name ?? item.relation!.name;
         let differences: Difference[] = [];
+        let tables: ComparisonEntry['tables'];
         try {
             switch (kind) {
                 case 'function':
@@ -451,7 +459,13 @@ export async function runComparison(input: ComparisonInput): Promise<ComparisonR
                         opaque: false
                     };
                     const models = tableModels(statements.tableStatements(schema, name), name);
-                    if (models.length > 0) differences = best(models.map(m => compareTables(m, db, { columnOrder: input.columnOrder })));
+                    if (models.length > 0) {
+                        const candidates = models.map(m => compareTables(m, db, { columnOrder: input.columnOrder }));
+                        const chosen = bestIndex(candidates);
+                        differences = candidates[chosen];
+                        const created = statements.get(`table:${key(schema, name)}`).find(s => s.type === 'createTable');
+                        tables = { repo: models[chosen], db, searchPath: created?.searchPath ?? null };
+                    }
                     break;
                 }
                 case 'type':
@@ -498,7 +512,8 @@ export async function runComparison(input: ComparisonInput): Promise<ComparisonR
         if (differences.length > 0) {
             entries.push({
                 kind, schema, name, table: item.db?.relName ?? undefined, args: item.db?.args,
-                status: 'differs', differences, definitions: item.definitions, db: item.db, relation: item.relation
+                status: 'differs', differences, definitions: item.definitions, db: item.db, relation: item.relation,
+                ...(tables ? { tables } : {})
             });
         } else if (!['view', 'matview'].includes(kind)) {
             equal++;

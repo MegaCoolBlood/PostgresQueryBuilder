@@ -250,6 +250,31 @@ export function normalizeQueryBarHeight(value: unknown): number | null {
     return Math.round(Math.min(Math.max(value, QUERY_BAR_HEIGHT_MIN), QUERY_BAR_HEIGHT_MAX));
 }
 
+/** Setting: above how many rows Shift+Ctrl+A asks before loading them all; 0 never asks. */
+export const LOAD_ALL_WARNING_SETTING = 'dataViewer.loadAllWarningRows';
+const LOAD_ALL_WARNING_DEFAULT = 100000;
+export const LOAD_AND_SELECT_ALL = 'Load and Select All';
+
+/** The row limit of {@link LOAD_ALL_WARNING_SETTING}; anything that is not a number of rows means the default. */
+export function loadAllWarningRows(value: unknown): number {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : LOAD_ALL_WARNING_DEFAULT;
+}
+
+/** Whether loading every row of a result of `total` rows needs the user's yes first. */
+export function needsLoadAllWarning(total: number | null, warnRows: number): boolean {
+    return warnRows > 0 && typeof total === 'number' && total > warnRows;
+}
+
+/** The question Shift+Ctrl+A asks before loading `total` rows, of which `loaded` are there. */
+export function loadAllWarningText(total: number, loaded: number): { message: string; detail: string } {
+    const n = (value: number): string => value.toLocaleString('en-US');
+    return {
+        message: `Load and select all ${n(total)} rows?`,
+        detail: `${n(Math.max(0, total - loaded))} of them are not loaded yet. Loading them can take a while and needs memory in VS Code. `
+            + 'The setting "Data Viewer: Load All Warning Rows" says from how many rows on this is asked.'
+    };
+}
+
 /**
  * Format the query bar's statement with the PL/pgSQL formatter and the user's
  * settings — the same result as Shift+Alt+F in a .sql file. A rejected or
@@ -738,6 +763,7 @@ export class TableWebViewManager {
     private readonly messageHandlers: Record<string, (ctx: MessageContext) => Promise<void> | void> = {
         loadRows: this.handleLoadRows,
         getTotalCount: this.handleGetTotalCount,
+        confirmLoadAllRows: this.handleConfirmLoadAllRows,
         previewSQL: this.handlePreviewSQL,
         commitChanges: this.handleCommitChanges,
         showError: this.handleShowError,
@@ -1171,6 +1197,29 @@ export class TableWebViewManager {
         }
         const totalCount = await queryRunner.getQueryRowCount(sql);
         this.post(session, { command: 'totalCountLoaded', totalCount });
+    }
+
+    /**
+     * Shift+Ctrl+A is about to load every row of the current query: count
+     * them, when the panel does not know how many there are yet, and ask
+     * before loading more than the setting allows. The answer carries the
+     * count; a count that fails is reported like any other error.
+     */
+    private async handleConfirmLoadAllRows(ctx: MessageContext): Promise<void> {
+        const { session, message, queryRunner } = ctx;
+        const sql = typeof message.sql === 'string' ? message.sql : '';
+        const loaded = typeof message.loadedRows === 'number' ? message.loadedRows : 0;
+        const warnRows = loadAllWarningRows(vscode.workspace.getConfiguration('postgresQueryBuilder').get<number>(LOAD_ALL_WARNING_SETTING));
+        let totalCount: number | null = typeof message.totalCount === 'number' ? message.totalCount : null;
+        if (warnRows > 0 && totalCount === null && sql.trim()) {
+            totalCount = await queryRunner.getQueryRowCount(sql);
+        }
+        let confirmed = true;
+        if (totalCount !== null && needsLoadAllWarning(totalCount, warnRows)) {
+            const { message: question, detail } = loadAllWarningText(totalCount, loaded);
+            confirmed = await vscode.window.showWarningMessage(question, { modal: true, detail }, LOAD_AND_SELECT_ALL) === LOAD_AND_SELECT_ALL;
+        }
+        this.post(session, { command: 'loadAllRowsAnswer', sql, confirmed, totalCount });
     }
 
     /**

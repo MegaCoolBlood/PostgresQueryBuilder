@@ -10,6 +10,7 @@
  * `pg_get_triggerdef`), that text goes through the same parser as the
  * repository statement, so both sides are compared in the same shape.
  */
+import { quoteIdentifier } from './ddlGenerator';
 import {
     dollarContent,
     isPunct,
@@ -200,7 +201,25 @@ export interface ConstraintModel {
     onDelete?: ForeignKeyAction;
     onUpdate?: ForeignKeyAction;
     expression?: string;
+    /** The constraint as written, in the form `ALTER TABLE … ADD CONSTRAINT name` takes, without its name. */
+    sql?: string;
 }
+
+/**
+ * The source text of a run of tokens: as written, with every gap of white
+ * space or comments between two tokens as one space.
+ */
+export function sourceText(toks: readonly Tok[]): string {
+    let out = '';
+    for (let i = 0; i < toks.length; i++) {
+        if (i > 0 && toks[i].start > toks[i - 1].end) out += ' ';
+        out += toks[i].text;
+    }
+    return out;
+}
+
+/** An identifier as it has to be written in SQL. */
+const sqlName = quoteIdentifier;
 
 function readAction(toks: Tok[], k: number): { action: ForeignKeyAction; next: number } {
     const w = toks[k]?.value;
@@ -228,21 +247,24 @@ export function parseConstraint(toks: Tok[], column?: string): ConstraintModel |
         const close = matchingParen(toks, at);
         return { list: names(toks.slice(at + 1, close < 0 ? toks.length : close)), next: close < 0 ? toks.length : close + 1 };
     };
+    const column1 = column ? ` (${sqlName(column)})` : '';
     if (word === 'primary' && isWord(toks[k + 1], 'key')) {
-        return { kind: 'primary', name, columns: parenList(k + 2).list };
+        const own = isPunct(toks[k + 2], '(');
+        return { kind: 'primary', name, columns: parenList(k + 2).list, sql: own ? sourceText(toks.slice(k)) : `${sourceText(toks.slice(k, k + 2))}${column1}${toks.length > k + 2 ? ` ${sourceText(toks.slice(k + 2))}` : ''}` };
     }
     if (word === 'unique') {
         let at = k + 1;
         while (toks[at]?.type === 'word' && ['nulls', 'not', 'distinct'].includes(toks[at].value)) at++;
-        return { kind: 'unique', name, columns: parenList(at).list };
+        const own = isPunct(toks[at], '(');
+        return { kind: 'unique', name, columns: parenList(at).list, sql: own ? sourceText(toks.slice(k)) : `${sourceText(toks.slice(k, at))}${column1}${toks.length > at ? ` ${sourceText(toks.slice(at))}` : ''}` };
     }
     if (word === 'check') {
         const open = k + 1;
         const close = isPunct(toks[open], '(') ? matchingParen(toks, open) : -1;
-        return { kind: 'check', name, columns: column ? [column] : [], expression: normalizeExpressionTokens(toks.slice(open + 1, close < 0 ? toks.length : close)) };
+        return { kind: 'check', name, columns: column ? [column] : [], expression: normalizeExpressionTokens(toks.slice(open + 1, close < 0 ? toks.length : close)), sql: sourceText(toks.slice(k)) };
     }
     if (word === 'exclude') {
-        return { kind: 'exclude', name, columns: [], expression: normalizeExpressionTokens(toks.slice(k + 1)) };
+        return { kind: 'exclude', name, columns: [], expression: normalizeExpressionTokens(toks.slice(k + 1)), sql: sourceText(toks.slice(k)) };
     }
     let at = k;
     let columns = column ? [column] : [];
@@ -255,7 +277,10 @@ export function parseConstraint(toks: Tok[], column?: string): ConstraintModel |
     const ref = qualified(toks, at + 1);
     if (!ref) return null;
     const refList = isPunct(toks[ref.next], '(') ? parenList(ref.next) : { list: [], next: ref.next };
-    const fk: ConstraintModel = { kind: 'foreign', name, columns, refTable: ref.name, refColumns: refList.list, onDelete: 'no action', onUpdate: 'no action' };
+    const fk: ConstraintModel = {
+        kind: 'foreign', name, columns, refTable: ref.name, refColumns: refList.list, onDelete: 'no action', onUpdate: 'no action',
+        sql: word === 'foreign' ? sourceText(toks.slice(k)) : `FOREIGN KEY (${columns.map(sqlName).join(', ')}) ${sourceText(toks.slice(at))}`
+    };
     for (let m = refList.next; m < toks.length; m++) {
         if (isWord(toks[m], 'on') && (isWord(toks[m + 1], 'delete') || isWord(toks[m + 1], 'update'))) {
             const { action, next } = readAction(toks, m + 2);
@@ -320,6 +345,8 @@ export interface IndexModel {
     /** Each key: column or expression, with DESC and a non-default NULLS order. */
     keys: string[];
     predicate?: string;
+    /** The `CREATE INDEX` statement as written, around its table, which the script writes with its schema. */
+    sql?: { head: string; tail: string };
 }
 
 /** A `CREATE INDEX` statement, also the output of `pg_get_indexdef`. */
@@ -342,6 +369,7 @@ export function parseCreateIndex(toks: Tok[]): (IndexModel & { table: { schema: 
     if (!isWord(toks[k], 'on')) return null;
     k++;
     if (isWord(toks[k], 'only')) k++;
+    const tableStart = k;
     const table = qualified(toks, k);
     if (!table) return null;
     k = table.next;
@@ -362,6 +390,9 @@ export function parseCreateIndex(toks: Tok[]): (IndexModel & { table: { schema: 
         unique, method, keys, table: tableName
     };
     if (predicate) model.predicate = predicate;
+    let end = toks.length;
+    while (end > table.next && isPunct(toks[end - 1], ';')) end--;
+    model.sql = { head: sourceText(toks.slice(0, tableStart)), tail: sourceText(toks.slice(table.next, end)) };
     return model;
 }
 
@@ -388,6 +419,14 @@ export interface ColumnModel {
     default: string | null;
     /** The repository wrote `serial`: any `nextval(…)` default matches. */
     serial?: boolean;
+    /** The type as written. */
+    typeSql?: string;
+    /** The expression after DEFAULT as written. */
+    defaultSql?: string;
+    /** `GENERATED … AS IDENTITY` or `GENERATED ALWAYS AS (…) STORED` as written. */
+    generatedSql?: string;
+    /** `COLLATE …` as written. */
+    collateSql?: string;
 }
 
 export interface TableModel {
@@ -417,7 +456,7 @@ function parseColumn(toks: Tok[], constraints: ConstraintModel[]): ColumnModel |
         }
     }
     const typeText = toks.slice(typeStart, k).map(t => t.text).join(' ');
-    const column: ColumnModel = { name, type: columnType(typeText), notNull: false, default: null };
+    const column: ColumnModel = { name, type: columnType(typeText), notNull: false, default: null, typeSql: sourceText(toks.slice(typeStart, k)) };
     if (isSerialType(typeText)) {
         column.serial = true;
         column.notNull = true;
@@ -453,7 +492,9 @@ function parseColumn(toks: Tok[], constraints: ConstraintModel[]): ColumnModel |
         if (w === 'default') {
             const value = normalizeExpressionTokens(toks.slice(k + 1, end));
             column.default = value === '' || value === 'null' ? null : value;
+            if (column.default !== null) column.defaultSql = sourceText(toks.slice(k + 1, end));
         } else if (w === 'generated') {
+            column.generatedSql = sourceText(toks.slice(k, end));
             const as = toks.findIndex((t, i) => i > k && i < end && isWord(t, 'as'));
             if (as > 0 && isPunct(toks[as + 1], '(')) {
                 column.default = `generated ${normalizeExpressionTokens(toks.slice(as + 2, matchingParen(toks, as + 1)))}`;
@@ -462,7 +503,9 @@ function parseColumn(toks: Tok[], constraints: ConstraintModel[]): ColumnModel |
                 column.notNull = true;
                 column.default = 'identity';
             }
-        } else if (w !== 'collate') {
+        } else if (w === 'collate') {
+            column.collateSql = sourceText(toks.slice(k, end));
+        } else {
             const c = parseConstraint(toks.slice(k, end), name);
             if (c) {
                 if (isWord(toks[k - 2], 'constraint')) c.name = toks[k - 1].value;
@@ -581,11 +624,14 @@ export function applyAlterTable(model: TableModel, toks: Tok[], table: string): 
                 const start = isWord(op[0], 'type') ? 1 : 3;
                 const using = op.findIndex(t => isWord(t, 'using') || isWord(t, 'collate'));
                 column.type = columnType(op.slice(start, using < 0 ? op.length : using).map(t => t.text).join(' '));
+                column.typeSql = sourceText(op.slice(start, using < 0 ? op.length : using));
             } else if (isWord(op[0], 'set') && isWord(op[1], 'default')) {
                 column.default = normalizeExpressionTokens(op.slice(2));
+                column.defaultSql = sourceText(op.slice(2));
                 column.serial = false;
             } else if (isWord(op[0], 'drop') && isWord(op[1], 'default')) {
                 column.default = null;
+                delete column.defaultSql;
                 column.serial = false;
             } else if (isWord(op[0], 'set') && isWord(op[1], 'not') && isWord(op[2], 'null')) {
                 column.notNull = true;
@@ -648,12 +694,17 @@ export function tableModels(statements: readonly TableStatement[], table: string
     return models.map(cloneTable);
 }
 
-function defaultsEqual(repo: ColumnModel, db: ColumnModel): boolean {
+export function defaultsEqual(repo: ColumnModel, db: ColumnModel): boolean {
     if (repo.serial && (db.default ?? '').startsWith('nextval')) return true;
     if (repo.default === db.default) return true;
     if (repo.default === null && db.default === 'null') return true;
     if (repo.default === 'identity' && db.default === 'identity') return true;
     return false;
+}
+
+/** Two foreign keys of the same columns and table point at the same columns; a side that leaves them out means the primary key. */
+export function foreignKeysMatch(a: ConstraintModel, b: ConstraintModel): boolean {
+    return !a.refColumns?.length || !b.refColumns?.length || a.refColumns.join(',') === b.refColumns.join(',');
 }
 
 /** What differs between the repository's model of a table and the database. */
@@ -683,8 +734,7 @@ export function compareTables(repo: TableModel, db: TableModel, options: { colum
             if (repoOrder.join(',') !== dbOrder.join(',')) out.push({ path: 'columns', message: 'the columns are in another order' });
         }
     }
-    const fkMatches = (a: ConstraintModel, b: ConstraintModel): boolean =>
-        (!a.refColumns?.length || !b.refColumns?.length || a.refColumns.join(',') === b.refColumns.join(','));
+    const fkMatches = foreignKeysMatch;
     for (const c of repo.constraints) {
         const other = db.constraints.find(x => constraintKey(x) === constraintKey(c) && (c.kind !== 'foreign' || fkMatches(c, x)));
         const path = describeConstraint(c);

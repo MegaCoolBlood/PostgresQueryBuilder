@@ -139,3 +139,57 @@ test('Ctrl+A is wired to select every cell and keeps its own meaning otherwise',
     assert.match(fn, /\.sql-dialog-overlay, \.dlg-overlay/);
     assert.match(fn, /selectAllCorners\(renderPlan\.length, columns\.length/);
 });
+
+// ===== 4.0.2: Ctrl+A stays in the grid, Shift+Ctrl+A loads every row first =====
+
+const { selectAllLoadStep, blocksPageSelectAll } = require(path.join(WEBVIEW, 'tableView.js'));
+const STATE = { busy: false, userPaged: false, hasQuery: true, allLoaded: false, loadedRows: 200, totalCount: null, moreAvailable: true, confirmed: false };
+
+test('blocksPageSelectAll refuses a page-wide selection right after the grid selected its cells, not in a field', () => {
+    assert.equal(blocksPageSelectAll(1000, 1800, false), true, 'VS Code\'s Select All right after Ctrl+A');
+    assert.equal(blocksPageSelectAll(1000, 1800, true), false, 'Ctrl+A in the query bar or a filter selects its text');
+    assert.equal(blocksPageSelectAll(1800, 1800, false), false, 'later, text can be selected again');
+    assert.equal(blocksPageSelectAll(1000, 0, false), false, 'never without a Ctrl+A on the grid');
+});
+
+test('Ctrl+A guards the page from VS Code\'s Select All, by selectstart and by clearing a selection that slips through', () => {
+    const js = fs.readFileSync(path.join(WEBVIEW, 'tableView.js'), 'utf8');
+    const fn = js.slice(js.indexOf('function selectAllCells('), js.indexOf('function selectAllOverlayOpen('));
+    assert.match(fn, /selectAllGuardUntil = Date\.now\(\) \+ SELECT_ALL_GUARD_MS;/);
+    assert.match(js, /document\.addEventListener\('selectstart', \(e\) => \{\s*if \(blocksPageSelectAll\([^\n]*\)\) \{\s*e\.preventDefault\(\);/);
+    assert.match(js, /document\.addEventListener\('selectionchange', \(\) => \{\s*if \(blocksPageSelectAll\([^\n]*\)\) \{\s*clearNativeTextSelection\(\);/);
+});
+
+test('selectAllLoadStep selects at once when nothing is missing', () => {
+    assert.equal(selectAllLoadStep({ ...STATE, moreAvailable: false }), 'select', 'the last page was not full');
+    assert.equal(selectAllLoadStep({ ...STATE, totalCount: 200 }), 'select', 'every counted row is loaded');
+    assert.equal(selectAllLoadStep({ ...STATE, allLoaded: true, totalCount: 250 }), 'select', 'All ran, even if the count is out of date');
+    assert.equal(selectAllLoadStep({ ...STATE, userPaged: true }), 'select', 'a LIMIT of the query leaves nothing to page');
+    assert.equal(selectAllLoadStep({ ...STATE, hasQuery: false }), 'select');
+});
+
+test('selectAllLoadStep asks before loading missing rows, loads once that is answered and waits while anything is on its way', () => {
+    assert.equal(selectAllLoadStep(STATE), 'confirm', 'the extension counts the rows and asks when there are many');
+    assert.equal(selectAllLoadStep({ ...STATE, totalCount: 5000 }), 'confirm');
+    assert.equal(selectAllLoadStep({ ...STATE, totalCount: 5000, confirmed: true }), 'load');
+    assert.equal(selectAllLoadStep({ ...STATE, confirmed: true }), 'load', 'the total may stay unknown when the warning is off');
+    assert.equal(selectAllLoadStep({ ...STATE, busy: true }), 'wait');
+    assert.equal(selectAllLoadStep({ ...STATE, busy: true, moreAvailable: false }), 'wait', 'rows still on their way may change the answer');
+});
+
+test('Shift+Ctrl+A is wired to load every row and then select, and gives up when the load fails, a new query runs or Escape is pressed', () => {
+    const js = fs.readFileSync(path.join(WEBVIEW, 'tableView.js'), 'utf8');
+    assert.match(js, /\(e\.ctrlKey \|\| e\.metaKey\) && !e\.altKey && e\.shiftKey && \(e\.key === 'a' \|\| e\.key === 'A'\)\) \{\s*if \(startSelectAllWithRows\(\)\) \{\s*e\.preventDefault\(\);/);
+    const start = js.slice(js.indexOf('function startSelectAllWithRows('), js.indexOf('function advanceSelectAll('));
+    assert.match(start, /isTextEntryElement\(document\.activeElement\) \|\| selectAllOverlayOpen\(\)/, 'a field or a dialog keeps the key');
+    const advance = js.slice(js.indexOf('function advanceSelectAll('), js.indexOf('function handleLoadAllRowsAnswer('));
+    assert.match(advance, /command: 'confirmLoadAllRows', sql: currentSql, totalCount, loadedRows: allRows\.length/);
+    assert.match(advance, /loadAll\(\);/);
+    assert.match(advance, /selectAllCells\(\);/);
+    const rowsLoaded = js.slice(js.indexOf('function handleRowsLoaded('), js.indexOf('let fkLoaded = false;'));
+    assert.match(rowsLoaded, /advanceSelectAll\(\);\s*\}\s*$/, 'every page that arrives takes the next step');
+    assert.match(js.slice(js.indexOf('function endAppendWithoutRows('), js.indexOf('function endAppendWithoutRows(') + 200), /pendingSelectAll = null;/);
+    assert.match(js.slice(js.indexOf('function runQuery('), js.indexOf('function runQuery(') + 900), /pendingSelectAll = null;/);
+    assert.match(js, /if \(e\.key === 'Escape'\) \{\s*pendingSelectAll = null;/);
+    assert.match(js, /case 'loadAllRowsAnswer':\s*handleLoadAllRowsAnswer\(msg\);/);
+});

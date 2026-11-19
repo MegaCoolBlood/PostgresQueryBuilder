@@ -22,7 +22,7 @@ import {
     type ComparisonInput,
     type LocatedStatement
 } from '../databaseComparison';
-import { comparisonReport, entryContextValue, entryNode, marksOf, ComparisonProvider } from '../comparisonView';
+import { comparisonReport, entryAlterScript, entryContextValue, entryNode, marksOf, ComparisonProvider } from '../comparisonView';
 
 let oid = 1;
 function routine(name: string, body: string, extra: Record<string, unknown> = {}): DbObject {
@@ -125,6 +125,19 @@ test('the comparison reports what differs, what exists only on one side, and cou
     ]);
     assert.equal(result.equal, 3, 'same(), mood and the view');
     assert.deepEqual(result.problems, []);
+});
+
+test('a table that differs keeps both sides, and its ALTER TABLE script brings the database to the repository', async () => {
+    const { value } = input({ '"app"."v_orders"': 'SELECT orders.id FROM orders;', repo: 'SELECT orders.id FROM orders;' });
+    const result = await runComparison(value);
+    const orders = result.entries.find(e => e.kind === 'table' && e.name === 'orders')!;
+    assert.deepEqual(orders.tables?.repo.columns.map(c => c.name), ['id', 'state', 'note'], 'the CREATE TABLE folded with the later ALTER TABLE');
+    assert.deepEqual(orders.tables?.searchPath, ['app']);
+    assert.equal(entryContextValue(orders), 'table.differs');
+    const script = entryAlterScript(orders, false, new Date(0))!;
+    assert.deepEqual(script.split('\n').filter(l => l && !l.startsWith('--')), ['SET search_path TO app;', 'ALTER TABLE app.orders ALTER COLUMN note TYPE text;']);
+    assert.equal(entryAlterScript(result.entries.find(e => e.name === 'planned')), null, 'a table only the repository has gets none');
+    assert.equal(entryAlterScript(result.entries.find(e => e.name === 'changed')), null);
 });
 
 test('a view whose query the database prints differently differs; the temporary views go with savepoints', async () => {
