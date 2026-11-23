@@ -981,7 +981,7 @@ all of them can be moved into a `.pgformat.json`.
 
 ## Requirements
 
-- VS Code 1.85 or newer
+- VS Code 1.101 or newer
 - Network access to a PostgreSQL server
 - For the psql console only: the PostgreSQL client tools (`psql`)
 - For checking PL/pgSQL only: the `plpgsql_check` extension in the database

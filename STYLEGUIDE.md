@@ -127,7 +127,7 @@ fits:
 
 State tints are mixed from these, never hardcoded:
 `background: color-mix(in srgb, var(--c-warning) 12%, transparent);`
-(`color-mix` needs Chromium ≥ 111; the engine requirement is VS Code ≥ 1.85, so
+(`color-mix` needs Chromium ≥ 111; the engine requirement is VS Code ≥ 1.101, so
 it is safe.)
 
 ---

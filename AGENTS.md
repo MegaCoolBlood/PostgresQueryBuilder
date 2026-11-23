@@ -1,6 +1,6 @@
 # PostgreSQL Query Booster — agent guide
 
-VS Code extension (TypeScript, CommonJS, `strict`, VS Code ≥ 1.85, Node ≥ 18)
+VS Code extension (TypeScript, CommonJS, `strict`, VS Code ≥ 1.101, Node ≥ 18)
 for browsing, editing and querying PostgreSQL: tree views, an Excel-like Data
 Viewer webview, an export service and a PL/pgSQL formatter that is also shipped
 as a CLI and a language server.

@@ -1,5 +1,7 @@
 # Changelog
 
+## 4.1.0
+
 ## 4.0.2
 
 - **Ctrl+A in the Data Viewer selects the cells, not the page:** Since 3.5.3, *Ctrl+A* selected every cell of the grid, but a moment later VS Code ran its own *Select All* on the same key and selected the text of the whole tab as well — toolbar buttons, the query bar, the row count and the status — so the page lit up blue and a *Ctrl+C* could copy that text instead of the cells. VS Code's *Select All* is now refused right after the grid has selected its cells, so only the cells are selected. In the query bar, a filter box, a cell being edited or an open dialog, *Ctrl+A* still selects the text there.
