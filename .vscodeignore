@@ -25,6 +25,8 @@ src/**
 out/**
 
 # node_modules is bundled into dist/extension.js, so none of it needs shipping.
+# The one binary asset, the PostgreSQL parser of the Query Builder
+# (libpg-query.wasm), is copied to dist/ by esbuild.js and ships from there.
 node_modules/**
 
 # Sourcemaps and packaged artifacts.

@@ -135,8 +135,8 @@ export interface JoinClause {
     rawConditions?: string[];
 }
 
-/** Format a custom-mapping condition value as a SQL literal. */
-function formatLiteralValue(value: string): string {
+/** Format a custom-mapping condition value as a SQL literal (numbers stay bare). */
+export function formatLiteralValue(value: string): string {
     if (/^-?\d+(\.\d+)?$/.test(value)) {
         return value;
     }
