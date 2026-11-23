@@ -5,7 +5,25 @@ import * as path from 'path';
 import * as esbuild from 'esbuild';
 
 const ROOT = path.join(__dirname, '..', '..', '..');
-const { dompurifyFromPackage, DOMPURIFY_ESM, MONACO_ESM } = require(path.join(ROOT, 'esbuild.js'));
+const { dompurifyFromPackage, DOMPURIFY_ESM, MONACO_ESM, ENTRIES, commonOptions } = require(path.join(ROOT, 'esbuild.js'));
+
+test('the MCP bridge is bundled to dist/mcp-bridge.js without anything of VS Code', async () => {
+    const entry = ENTRIES.find((e: { outfile: string }) => e.outfile === 'dist/mcp-bridge.js');
+    assert.deepEqual(entry?.entryPoints, ['src/mcpBridge.ts']);
+    // Copilot CLI runs the bridge outside VS Code, so it must bundle with no external module at all.
+    const result = await esbuild.build({
+        ...commonOptions,
+        entryPoints: [path.join(ROOT, 'src', 'mcpBridge.ts')],
+        external: [],
+        write: false,
+        outfile: path.join(ROOT, 'dist', 'mcp-bridge.js'),
+        sourcemap: false,
+        logLevel: 'silent',
+        metafile: true
+    });
+    const inputs = Object.keys(result.metafile!.inputs).map((input) => input.replace(/\\/g, '/'));
+    assert.deepEqual(inputs.filter((i) => i.includes('node_modules')), [], 'the bridge pulls in no package');
+});
 
 /** The files esbuild reads to bundle Monaco's sanitizer, with or without the plugin. */
 async function sanitizerInputs(plugins: esbuild.Plugin[]): Promise<string[]> {

@@ -30,6 +30,11 @@ export class Logger {
         const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
         Logger.log(scope, `ERROR: ${detail}`);
     }
+
+    /** Reveal the output channel without taking the focus. */
+    static show(): void {
+        Logger.channel?.show(true);
+    }
 }
 
 /**

@@ -171,15 +171,19 @@ const commonOptions = {
     logLevel: 'info'
 };
 
+const ENTRIES = [
+    { entryPoints: ['src/extension.ts'], outfile: 'dist/extension.js' },
+    { entryPoints: ['server/language-server.ts'], outfile: 'dist/server.js' },
+    { entryPoints: ['cli/format-cli.ts'], outfile: 'dist/cli.js' },
+    // The stdio bridge Copilot CLI starts to reach the MCP server (see src/mcpDiscovery.ts).
+    { entryPoints: ['src/mcpBridge.ts'], outfile: 'dist/mcp-bridge.js' },
+];
+
 async function main() {
     await buildMonaco();
     await buildPgsqlWords();
 
-    const entries = [
-        { entryPoints: ['src/extension.ts'], outfile: 'dist/extension.js' },
-        { entryPoints: ['server/language-server.ts'], outfile: 'dist/server.js' },
-        { entryPoints: ['cli/format-cli.ts'], outfile: 'dist/cli.js' },
-    ];
+    const entries = ENTRIES;
 
     if (watch) {
         // In watch mode, create one context with all entry points
@@ -230,4 +234,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { dompurifyFromPackage, DOMPURIFY_ESM, MONACO_ESM };
+module.exports = { dompurifyFromPackage, DOMPURIFY_ESM, MONACO_ESM, commonOptions, ENTRIES };

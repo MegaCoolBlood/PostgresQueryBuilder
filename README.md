@@ -878,6 +878,18 @@ to set up: VS Code lists **PostgreSQL Query Booster** among its MCP servers. The
 server runs inside VS Code, listens on `127.0.0.1` only and accepts only
 requests carrying a token that changes with every VS Code session.
 
+Agents outside VS Code's chat — GitHub Copilot CLI and agents built on the
+Copilot SDK — read their MCP servers from `~/.copilot/mcp-config.json`
+(`$COPILOT_HOME` when set). The extension enters a small bridge there as
+`postgres-query-booster` (`postgres-query-booster-insiders` from VS Code
+Insiders). It runs with VS Code's own executable, so no Node.js
+is needed, and passes every request on to the running VS Code window whose
+workspace contains the agent's folder, or else to the one started last; VS Code
+has to be running. The file holds no token, and other servers in it are left
+alone. `postgresQueryBuilder.mcp.copilotCli` turns this off and removes the
+entry again. **Show MCP Server Status** shows whether the server runs, on which
+port, and what an agent would find.
+
 An assistant can list schemas and objects, describe tables, read `CREATE`
 scripts and dependencies, explain and run queries, execute changes, open a
 query in the Data Viewer, format SQL, run plpgsql_check, compare the repository
@@ -927,6 +939,7 @@ Every command lives in the Command Palette (`Ctrl+Shift+P`) under the category
 | Open SQL Editor | Open the panel for ad-hoc SQL |
 | Open psql Console | Start `psql` for the active connection in a terminal |
 | View Data | Run the `SELECT` under the cursor in the Data Viewer |
+| Show MCP Server Status | Show whether the [MCP server](#ai-assistants-mcp) runs, its port, and its entry for Copilot CLI |
 | Execute Selection | Run exactly the selected text in the session of the SQL file; a selected `SELECT` opens in the Data Viewer |
 | Execute File | Run every statement of the SQL file from top to bottom in its session; queries open in the Data Viewer |
 | Add Export Instruction | Write an `-- @export` line above the query at the cursor from the export dialog, so *Execute File* exports it |
@@ -1032,6 +1045,7 @@ Empty Schemas** / **Hide Empty Schemas**.
 | `postgresQueryBuilder.mcp.enabled` | `true` | Offer the MCP server to Copilot and other AI assistants in VS Code |
 | `postgresQueryBuilder.mcp.maxRows` | `500` | Most rows a query returns to an AI assistant |
 | `postgresQueryBuilder.mcp.statementTimeout` | `30` | `statement_timeout` in seconds of what an AI assistant runs |
+| `postgresQueryBuilder.mcp.copilotCli` | `true` | Enter the MCP server in `~/.copilot/mcp-config.json` for Copilot CLI and Copilot SDK agents |
 
 The formatter brings around twenty further settings under
 `postgresQueryBuilder.format.*`; the settings UI describes each of them, and

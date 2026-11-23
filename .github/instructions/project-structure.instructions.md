@@ -26,6 +26,9 @@ edit only the `.ts` file.
 
 - `npm run compile` → esbuild bundles `src/extension.ts`, `server/language-server.ts`
   and `cli/format-cli.ts` into `dist/`. This is what the installed extension runs.
+  `src/mcpBridge.ts` becomes `dist/mcp-bridge.js`, the stdio bridge Copilot CLI
+  starts to reach the MCP server; it runs outside VS Code, so it must not import
+  `vscode` or any package.
   It also builds the Monaco editor of the Data Viewer's query bar into
   `dist/monaco/` (script, stylesheet, codicon font, editor worker) from the
   `monaco-editor` dev dependency — only when Monaco or `esbuild.js` changed, so

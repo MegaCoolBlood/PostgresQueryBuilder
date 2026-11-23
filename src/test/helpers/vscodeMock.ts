@@ -383,6 +383,8 @@ const vscodeStub = {
         executeCommand: (..._args: any[]): Promise<any> => Promise.resolve(undefined)
     },
     env: {
+        appName: 'Visual Studio Code',
+        uriScheme: 'vscode',
         openExternal: (_uri: any): Promise<boolean> => Promise.resolve(true),
         clipboard: {
             readText: (): Promise<string> => Promise.resolve(''),
