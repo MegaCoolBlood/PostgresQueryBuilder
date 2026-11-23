@@ -607,6 +607,34 @@ test('the connection form offers the commit behaviour of new sessions, prefilled
     assert.match(html, /const commitMode = document\.getElementById\('commitMode'\)\.value;/);
 });
 
+test('connectionConfigFromForm stores only the AI access that differs from the defaults', () => {
+    const none = { metadata: false, readData: false, writeData: false, ddl: false, confirmWrites: true };
+    assert.equal('ai' in connectionConfigFromForm({ ...formMessage, ai: none }), false, 'nothing allowed and asking before writes is the default');
+    assert.equal('ai' in connectionConfigFromForm(formMessage), false);
+    assert.deepEqual(
+        connectionConfigFromForm({ ...formMessage, ai: { ...none, metadata: true, readData: true, confirmWrites: false } }).ai,
+        { metadata: true, readData: true, confirmWrites: false }
+    );
+    assert.deepEqual(connectionConfigFromForm({ ...formMessage, ai: { ddl: 'true', bogus: true } }).ai, undefined, 'only real checkbox values count');
+});
+
+test('the connection form has AI access checkboxes, none ticked but asking before writes, prefilled and posted', () => {
+    const cm = createManager(fakePoolFactory().factory);
+    const html: string = (cm as any).getConnectionFormHtml({ cspSource: 'vscode-webview:' });
+    assert.match(html, /<h3>AI access \(Copilot \/ MCP\)<\/h3>/);
+    assert.match(html, /Nothing is allowed until you tick it\./);
+    for (const capability of ['metadata', 'readData', 'writeData', 'ddl']) {
+        assert.match(html, new RegExp(`<input type="checkbox" id="ai_${capability}" data-ai="${capability}" />`), capability);
+    }
+    for (const shared of ['mappings', 'bookmarks']) {
+        assert.ok(!html.includes(`id="ai_${shared}"`), `${shared} are shared by all connections and need no checkbox`);
+    }
+    assert.match(html, /<input type="checkbox" id="ai_confirmWrites" checked \/> Ask before AI writes/);
+    assert.match(html, /box\.checked = ai\[box\.dataset\.ai\] === true;/);
+    assert.match(html, /document\.getElementById\('ai_confirmWrites'\)\.checked = ai\.confirmWrites !== false;/);
+    assert.match(html, /type: 'connect', ai,/);
+});
+
 // ===== a client for another connection =====
 
 test('openClientFor connects to a saved connection that is not the active one, with its stored password', async () => {

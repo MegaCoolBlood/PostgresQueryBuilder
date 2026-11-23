@@ -43,13 +43,14 @@ import { ExportService } from './exportService';
 import { ADD_EXPORT_INSTRUCTION_COMMAND, ExportInstructionAssist } from './exportInstructionAssist';
 import { CompletionCatalogCache, SqlFileCompletionProvider, loadCompletionColumns, loadSqlCompletionApi, loadSqlWords } from './sqlCompletion';
 import { ObjectNavigatorProvider, readNavigatorSettings } from './objectNavigator';
-import { RepositoryIndex } from './repositoryIndex';
+import { RepositoryIndex, readRepositorySettings } from './repositoryIndex';
 import { ObjectStatusDecorationProvider } from './objectDecorations';
 import { dependencyRowNode, registerDatabaseObjectCommands } from './databaseObjectCommands';
 import { DatabaseCatalog } from './databaseCatalog';
 import { SqlIntel, registerSqlLanguageFeatures } from './sqlLanguageFeatures';
 import { DependenciesProvider } from './objectDependencies';
-import { ComparisonProvider, registerComparison } from './comparisonView';
+import { ComparisonProvider, comparisonReport, computeComparison, marksOf, registerComparison } from './comparisonView';
+import { createMcpServices, registerMcpServer } from './mcpServer';
 import { registerPlpgsqlCheck } from './plpgsqlCheck';
 import { registerDebugger } from './plpgsqlDebugger';
 import { resolveCommandTarget } from './databaseObjectCommands';
@@ -653,12 +654,32 @@ export function activate(context: vscode.ExtensionContext) {
             intel,
             dependencies
         });
-        registerComparison(context, new ComparisonProvider(), {
+        const comparisonProvider = new ComparisonProvider();
+        registerComparison(context, comparisonProvider, {
             connectionManager,
             catalog,
             repositoryIndex,
             trees: [objectNavigator, tableExplorer]
         });
+        const extensionVersion = String(context.extension?.packageJSON?.version ?? '0.0.0');
+        registerMcpServer(context, createMcpServices({
+            connectionManager,
+            tableWebViewManager,
+            savedQueryStore,
+            columnMappingManager,
+            compareRepository: async () => {
+                if (!readRepositorySettings().compare) {
+                    return 'The comparison with the repository is turned off (postgresQueryBuilder.repository.compare).';
+                }
+                const columnOrder = vscode.workspace.getConfiguration('postgresQueryBuilder').get<boolean>('comparison.columnOrder', false);
+                const outcome = await computeComparison({ connectionManager, catalog, repositoryIndex }, { isCancelled: () => false, report: () => undefined }, columnOrder);
+                if (outcome === null || typeof outcome === 'string') return outcome ?? 'The comparison was cancelled.';
+                // The user sees the same result in the Comparison view and the marks of the trees.
+                comparisonProvider.setResult(outcome);
+                [objectNavigator, tableExplorer].forEach(t => t.setComparisonMarks(marksOf(outcome)));
+                return comparisonReport(outcome, null);
+            }
+        }), extensionVersion);
         registerPlpgsqlCheck(context, connectionManager, FORMATTER_LANGUAGES);
         registerDebugger(context, {
             env: {

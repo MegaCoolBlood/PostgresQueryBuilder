@@ -245,6 +245,64 @@ export interface ComparisonDeps {
 
 const TIMEOUT = '300s';
 
+/** How a comparison run reports its progress and learns that it was cancelled. */
+export interface ComparisonRun {
+    isCancelled(): boolean;
+    report(message: string): void;
+}
+
+/**
+ * Compare the repository with the database of the active connection. Resolves
+ * to the result, to a message telling why nothing was compared, or to null when
+ * the run was cancelled. Nothing of the run is kept in the database.
+ */
+export async function computeComparison(
+    deps: Pick<ComparisonDeps, 'connectionManager' | 'catalog' | 'repositoryIndex'>,
+    run: ComparisonRun,
+    columnOrder: boolean
+): Promise<ComparisonResult | string | null> {
+    run.report('Scanning the repository');
+    await deps.repositoryIndex.whenScanned();
+    const snapshot = deps.repositoryIndex.snapshot();
+    if (!snapshot || snapshot.definitions.length === 0) {
+        return 'No CREATE statements were found in the SQL files of the workspace.';
+    }
+    const statements: LocatedStatement[] = [];
+    await deps.repositoryIndex.readAll((uri, text) => {
+        for (const s of scanStructure(text)) statements.push({ ...s, uri });
+    }, () => run.isCancelled());
+    if (run.isCancelled()) return null;
+    run.report('Reading the database catalog');
+    const [data, relations, unmarked] = await Promise.all([deps.catalog.load(), deps.catalog.relations(), deps.catalog.unmarked()]);
+    const client = await deps.connectionManager.openSessionClient();
+    const onError = (err: Error): void => Logger.error('Comparison.client', err);
+    client.on('error', onError);
+    try {
+        // Nothing of the run is kept: the temporary views go with the rollback.
+        await client.query('BEGIN');
+        await client.query(`SET LOCAL statement_timeout = '${TIMEOUT}'`);
+        await client.query(`SET LOCAL lock_timeout = '5s'`);
+        return await runComparison({
+            client,
+            catalog: data,
+            relations,
+            unmarked,
+            allowedSchema: (s) => deps.catalog.allowedSchema(s),
+            matcher: new DefinitionMatcher(snapshot.definitions, data.defaultSchema),
+            statements,
+            bodies: deps.catalog.bodies,
+            kinds: COMPARISON_KINDS,
+            columnOrder,
+            isCancelled: () => run.isCancelled(),
+            report: (message) => run.report(message)
+        });
+    } finally {
+        await client.query('ROLLBACK').catch(() => undefined);
+        await client.end().catch(() => undefined);
+        client.removeListener('error', onError);
+    }
+}
+
 export function registerComparison(context: vscode.ExtensionContext, provider: ComparisonProvider, deps: ComparisonDeps): void {
     const clear = (): void => {
         provider.setResult(null);
@@ -261,47 +319,15 @@ export function registerComparison(context: vscode.ExtensionContext, provider: C
         const result = await vscode.window.withProgress(
             { location: vscode.ProgressLocation.Notification, title: 'Comparing repository and database', cancellable: true },
             async (progress, token) => {
-                progress.report({ message: 'Scanning the repository' });
-                await deps.repositoryIndex.whenScanned();
-                const snapshot = deps.repositoryIndex.snapshot();
-                if (!snapshot || snapshot.definitions.length === 0) {
-                    vscode.window.showInformationMessage('No CREATE statements were found in the SQL files of the workspace.');
+                const outcome = await computeComparison(deps, {
+                    isCancelled: () => token.isCancellationRequested,
+                    report: (message) => progress.report({ message })
+                }, columnOrder);
+                if (typeof outcome === 'string') {
+                    vscode.window.showInformationMessage(outcome);
                     return null;
                 }
-                const statements: LocatedStatement[] = [];
-                await deps.repositoryIndex.readAll((uri, text) => {
-                    for (const s of scanStructure(text)) statements.push({ ...s, uri });
-                }, () => token.isCancellationRequested);
-                if (token.isCancellationRequested) return null;
-                progress.report({ message: 'Reading the database catalog' });
-                const [data, relations, unmarked] = await Promise.all([deps.catalog.load(), deps.catalog.relations(), deps.catalog.unmarked()]);
-                const client = await deps.connectionManager.openSessionClient();
-                const onError = (err: Error): void => Logger.error('Comparison.client', err);
-                client.on('error', onError);
-                try {
-                    // Nothing of the run is kept: the temporary views go with the rollback.
-                    await client.query('BEGIN');
-                    await client.query(`SET LOCAL statement_timeout = '${TIMEOUT}'`);
-                    await client.query(`SET LOCAL lock_timeout = '5s'`);
-                    return await runComparison({
-                        client,
-                        catalog: data,
-                        relations,
-                        unmarked,
-                        allowedSchema: (s) => deps.catalog.allowedSchema(s),
-                        matcher: new DefinitionMatcher(snapshot.definitions, data.defaultSchema),
-                        statements,
-                        bodies: deps.catalog.bodies,
-                        kinds: COMPARISON_KINDS,
-                        columnOrder,
-                        isCancelled: () => token.isCancellationRequested,
-                        report: (message) => progress.report({ message })
-                    });
-                } finally {
-                    await client.query('ROLLBACK').catch(() => undefined);
-                    await client.end().catch(() => undefined);
-                    client.removeListener('error', onError);
-                }
+                return outcome;
             }
         );
         if (!result) return;

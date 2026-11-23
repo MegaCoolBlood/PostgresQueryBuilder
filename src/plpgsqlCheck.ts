@@ -564,7 +564,7 @@ export interface CheckConnections {
     }>;
 }
 
-function readSettings(): { settings: CheckSettings; extraSeverity: CheckSeverity; timeoutMs: number; onSave: boolean; onType: boolean; delayMs: number; replaceExisting: boolean } {
+export function readSettings(): { settings: CheckSettings; extraSeverity: CheckSeverity; timeoutMs: number; onSave: boolean; onType: boolean; delayMs: number; replaceExisting: boolean } {
     const cfg = vscode.workspace.getConfiguration('postgresQueryBuilder');
     const settings = { ...DEFAULT_CHECK_SETTINGS };
     for (const key of Object.keys(settings) as Array<keyof CheckSettings>) {

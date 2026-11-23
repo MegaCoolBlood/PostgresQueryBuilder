@@ -20,6 +20,9 @@ SQL before it is written.
 - **Build joins without writing them.** Pick the tables, have the join
   conditions suggested from the foreign keys, and open the result as a normal
   grid.
+- **Let Copilot use your databases — as far as you allow.** A built-in MCP
+  server gives AI assistants the catalog, DDL, queries and more; what they may
+  do is ticked per connection, and nothing is allowed until you do.
 - **Bookmark queries.** Keep a query for yourself or share it with your team
   through a file in `.vscode/`; placeholders are filled in every time it runs.
 - **Sessions that keep their state.** Every Data Viewer, and every SQL file,
@@ -82,6 +85,7 @@ under the category **PostgreSQL Query Booster**.
 | Application name | no | The `application_name` the server shows for this connection in `pg_stat_activity` and its logs; `PostgreSQL Query Booster` when empty |
 | Commit behaviour of new sessions | yes | *Auto-commit* (default), *Manual commit* or *Commit per run* — how the database sessions of this connection commit until you choose otherwise in the *PostgreSQL Messages* panel; see [Commit behaviour](#commit-behaviour) |
 | Check SQL files with plpgsql_check in this database | no | Offer this connection for [plpgsql_check](#plpgsql_check); only kept when the database has the extension |
+| AI access (Copilot / MCP) | no | What AI assistants may do on this database, and whether they ask before writing; nothing is allowed by default, see [AI assistants (MCP)](#ai-assistants-mcp) |
 
 Connections saved before the SSL option existed keep their old behaviour,
 *Prefer SSL*: SSL is attempted first and falls back to an unencrypted
@@ -866,6 +870,47 @@ use it too.
 
 ---
 
+## AI assistants (MCP)
+
+The extension brings an MCP server, so GitHub Copilot in agent mode and other
+MCP clients in VS Code can work with your saved connections. There is nothing
+to set up: VS Code lists **PostgreSQL Query Booster** among its MCP servers. The
+server runs inside VS Code, listens on `127.0.0.1` only and accepts only
+requests carrying a token that changes with every VS Code session.
+
+An assistant can list schemas and objects, describe tables, read `CREATE`
+scripts and dependencies, explain and run queries, execute changes, open a
+query in the Data Viewer, format SQL, run plpgsql_check, compare the repository
+with the database, and work with bookmarked queries and custom column mappings.
+
+**Nothing is allowed until you allow it, per connection.** Run **Select
+Connection**, choose *Edit Connection* and tick under *AI access (Copilot /
+MCP)* what an assistant may do on that database:
+
+- *Read the database structure* — schemas, tables, `CREATE` scripts,
+  dependencies, `EXPLAIN`, plpgsql_check, comparison with the repository
+- *Read data* — `SELECT` queries in a read-only transaction, `EXPLAIN ANALYZE`,
+  the Data Viewer, running bookmarked queries
+- *Change data* — `INSERT`, `UPDATE`, `DELETE`, `MERGE` and function calls
+- *Change the database structure* — `CREATE`, `ALTER`, `DROP`, `TRUNCATE`,
+  `GRANT` and `REVOKE`
+
+Bookmarked queries and custom column mappings belong to no connection — they
+are shared by all of them — so an assistant may list, add and change them
+without a permission of its own; Copilot asks before each such change as it
+does for any tool. Running a bookmarked query needs *Read data* on the
+connection it runs on.
+
+**Ask before AI writes**, on by default, shows every change to the database in a dialog and
+runs it only after you press *Run* — also when Copilot itself is set to run
+tools without asking. Changes run in one transaction that is committed only
+when every statement succeeds. Queries return at most
+`postgresQueryBuilder.mcp.maxRows` rows and stop after
+`postgresQueryBuilder.mcp.statementTimeout` seconds;
+`postgresQueryBuilder.mcp.enabled` turns the server off.
+
+---
+
 ## Commands
 
 Every command lives in the Command Palette (`Ctrl+Shift+P`) under the category
@@ -984,6 +1029,9 @@ Empty Schemas** / **Hide Empty Schemas**.
 | `postgresQueryBuilder.editor.signatureHelp` | `true` | Show the parameters while typing the arguments of a call |
 | `postgresQueryBuilder.diagnostics.unknownRoutines` | `false` | Warn about calls of unknown routines and wrong argument counts |
 | `postgresQueryBuilder.diagnostics.docComments` | `false` | Check the doc comments of functions and procedures |
+| `postgresQueryBuilder.mcp.enabled` | `true` | Offer the MCP server to Copilot and other AI assistants in VS Code |
+| `postgresQueryBuilder.mcp.maxRows` | `500` | Most rows a query returns to an AI assistant |
+| `postgresQueryBuilder.mcp.statementTimeout` | `30` | `statement_timeout` in seconds of what an AI assistant runs |
 
 The formatter brings around twenty further settings under
 `postgresQueryBuilder.format.*`; the settings UI describes each of them, and

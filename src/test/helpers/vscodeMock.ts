@@ -391,6 +391,16 @@ const vscodeStub = {
     },
     ViewColumn: { One: 1, Two: 2, Three: 3, Beside: -2, Active: -1 },
     ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
+    McpHttpServerDefinition: class {
+        constructor(public label: string, public uri: any, public headers: Record<string, string> = {}, public version?: string) {}
+    },
+    lm: {
+        mcpServerDefinitionProviders: [] as Array<{ id: string; provider: any }>,
+        registerMcpServerDefinitionProvider(id: string, provider: any) {
+            this.mcpServerDefinitionProviders.push({ id, provider });
+            return { dispose() {} };
+        }
+    },
     Uri: {
         file: (p: string) => ({ fsPath: p, path: p }),
         parse: (value: string, _strict?: boolean) => ({ toString: () => value, scheme: value.split(':')[0] }),

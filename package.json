@@ -1059,6 +1059,12 @@
         "contents": "No queries yet.\nEvery query run in a Data Viewer that shows no one table — opened by View Data, Execute, a bookmarked query or a related table — is kept here. A table opened from the Tables view keeps its queries in its own history.\nDouble-click a query to run it again, or drag it into an editor."
       }
     ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "postgresQueryBuilder.mcp",
+        "label": "PostgreSQL Query Booster"
+      }
+    ],
     "configuration": [
     {
       "title": "Connections",
@@ -1083,7 +1089,7 @@
           "type": "array",
           "default": [],
           "scope": "application",
-          "description": "Saved connection configurations (passwords stored in SecretStorage). Optional per connection: sslMode (disable, prefer, require, verify-full; prefer when missing), caFile (PEM file used by verify-full) and applicationName (sent to the server as application_name; PostgreSQL Query Booster when missing)."
+          "description": "Saved connection configurations (passwords stored in SecretStorage). Optional per connection: sslMode (disable, prefer, require, verify-full; prefer when missing), caFile (PEM file used by verify-full), applicationName (sent to the server as application_name; PostgreSQL Query Booster when missing) and ai (what AI assistants may do through the MCP server: metadata, readData, writeData and ddl are off unless true; confirmWrites is on unless false)."
         },
         "postgresQueryBuilder.psqlPath": {
           "type": "string",
@@ -1809,6 +1815,33 @@
           "default": true,
           "order": 15,
           "markdownDescription": "`use_incomment_options`: honour `@plpgsql_check_options:` comments in the function body."
+        }
+      }
+    },
+    {
+      "title": "AI (MCP)",
+      "order": 7,
+      "properties": {
+        "postgresQueryBuilder.mcp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "order": 1,
+          "markdownDescription": "Offer the extension's MCP server to GitHub Copilot and other AI assistants in VS Code. It runs inside VS Code on `127.0.0.1` and only answers requests with the token VS Code receives. What an assistant may do is granted per connection under **AI access (Copilot / MCP)** when you edit the connection; nothing is allowed until you tick it."
+        },
+        "postgresQueryBuilder.mcp.maxRows": {
+          "type": "integer",
+          "default": 500,
+          "minimum": 1,
+          "order": 2,
+          "markdownDescription": "The most rows a query run by an AI assistant returns. The assistant is told when a result has more."
+        },
+        "postgresQueryBuilder.mcp.statementTimeout": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "order": 3,
+          "markdownDescription": "The `statement_timeout`, in seconds, of every statement an AI assistant runs."
         }
       }
     }

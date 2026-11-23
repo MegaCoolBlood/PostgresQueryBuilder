@@ -11,6 +11,7 @@ import type { CommitMode, SessionClient } from './dbSession';
 import { COMMIT_MODE_LABELS, COMMIT_MODES, parseCommitMode } from './dbSession';
 import { buildHtmlDocument } from './webviewUtils';
 import { icon } from './webviewAssets';
+import { AI_ACCESS_HEADING, AI_CAPABILITIES, AI_CAPABILITY_HINTS, AI_CAPABILITY_LABELS, CONFIRM_WRITES_LABEL } from './mcpPermissions';
 
 const dnsLookup = promisify(dns.lookup);
 
@@ -85,6 +86,32 @@ export interface ConnectionConfig {
     commitMode?: CommitMode;
     /** Open SQL files are checked with the plpgsql_check extension of this database. */
     plpgsqlCheck?: boolean;
+    /** What AI assistants may do through the MCP server; missing means nothing (see `mcpPermissions`). */
+    ai?: AiAccess;
+}
+
+/**
+ * The AI access of a connection. Every capability is off unless set to true;
+ * `confirmWrites` is on unless set to false.
+ */
+export interface AiAccess {
+    metadata?: boolean;
+    readData?: boolean;
+    writeData?: boolean;
+    ddl?: boolean;
+    confirmWrites?: boolean;
+}
+
+/** The AI access the connection form posted, keeping only what differs from the defaults; undefined when nothing does. */
+export function aiAccessFromForm(raw: unknown): AiAccess | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const form = raw as Record<string, unknown>;
+    const access: AiAccess = {};
+    for (const capability of AI_CAPABILITIES) {
+        if (form[capability] === true) access[capability] = true;
+    }
+    if (form.confirmWrites === false) access.confirmWrites = false;
+    return Object.keys(access).length > 0 ? access : undefined;
 }
 
 /** The `application_name` of a connection that has none of its own. */
@@ -126,6 +153,8 @@ export interface ConnectionFormMessage {
     applicationName?: string;
     commitMode?: string;
     plpgsqlCheck?: boolean;
+    /** The AI access checkboxes, keyed like {@link AiAccess}. */
+    ai?: Record<string, unknown>;
 }
 
 /** The connection the connection form describes; optional fields left empty are not stored. */
@@ -157,6 +186,10 @@ export function connectionConfigFromForm(msg: ConnectionFormMessage): Connection
     }
     if (msg.plpgsqlCheck === true) {
         config.plpgsqlCheck = true;
+    }
+    const ai = aiAccessFromForm(msg.ai);
+    if (ai) {
+        config.ai = ai;
     }
     return config;
 }
@@ -698,6 +731,14 @@ export class ConnectionManager {
         <div class="form-group">
             <label class="checkbox"><input type="checkbox" id="plpgsqlCheck" /> Check SQL files with plpgsql_check in this database</label>
         </div>
+        <h3>${AI_ACCESS_HEADING}</h3>
+        <p class="hint">What AI assistants such as GitHub Copilot may do with this connection through the extension's MCP server. Nothing is allowed until you tick it.</p>
+        ${AI_CAPABILITIES.map((capability) => `<div class="form-group">
+            <label class="checkbox" title="${AI_CAPABILITY_HINTS[capability]}"><input type="checkbox" id="ai_${capability}" data-ai="${capability}" /> ${AI_CAPABILITY_LABELS[capability]} <span class="hint">(${AI_CAPABILITY_HINTS[capability]})</span></label>
+        </div>`).join('\n        ')}
+        <div class="form-group">
+            <label class="checkbox" title="Show the SQL in a dialog and run it only after you confirm"><input type="checkbox" id="ai_confirmWrites" checked /> ${CONFIRM_WRITES_LABEL} <span class="hint">(shows every change an AI assistant wants to make and waits for Run)</span></label>
+        </div>
         <div class="error" id="error"></div>
         <div class="button-row">
             <button type="submit" class="btn btn-primary">${icon('plug')}Connect</button>
@@ -721,6 +762,9 @@ export class ConnectionManager {
                 if (msg.applicationName) document.getElementById('applicationName').value = msg.applicationName;
                 if (msg.commitMode) document.getElementById('commitMode').value = msg.commitMode;
                 document.getElementById('plpgsqlCheck').checked = msg.plpgsqlCheck === true;
+                const ai = msg.ai || {};
+                document.querySelectorAll('input[data-ai]').forEach(box => { box.checked = ai[box.dataset.ai] === true; });
+                document.getElementById('ai_confirmWrites').checked = ai.confirmWrites !== false;
                 if (msg.title) document.getElementById('title').textContent = msg.title;
             } else if (msg.type === 'error') {
                 const el = document.getElementById('error');
@@ -743,6 +787,8 @@ export class ConnectionManager {
             const applicationName = document.getElementById('applicationName').value.trim();
             const commitMode = document.getElementById('commitMode').value;
             const plpgsqlCheck = document.getElementById('plpgsqlCheck').checked;
+            const ai = { confirmWrites: document.getElementById('ai_confirmWrites').checked };
+            document.querySelectorAll('input[data-ai]').forEach(box => { ai[box.dataset.ai] = box.checked; });
 
             if (!name || !host || !port || !database || !user) {
                 const el = document.getElementById('error');
@@ -753,7 +799,7 @@ export class ConnectionManager {
 
             document.getElementById('error').style.display = 'none';
             vscode.postMessage({
-                type: 'connect',
+                type: 'connect', ai,
                 name, host, port: parseInt(port, 10), database, user, password, schemas, sslMode, caFile, applicationName,
                 commitMode, plpgsqlCheck
             });
@@ -1050,7 +1096,8 @@ export class ConnectionManager {
         this._onConnectionChanged.fire();
     }
 
-    private getSavedConnections(): ConnectionConfig[] {
+    /** The saved connections, as the user settings hold them. */
+    getSavedConnections(): ConnectionConfig[] {
         const config = vscode.workspace.getConfiguration('postgresQueryBuilder');
         return config.get<ConnectionConfig[]>('savedConnections', []);
     }
