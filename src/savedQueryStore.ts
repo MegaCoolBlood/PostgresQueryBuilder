@@ -50,8 +50,9 @@ export interface PlaceholderOccurrence {
 /**
  * Find every `:name` placeholder in `sql`. Scanning happens on a masked copy so
  * placeholders inside string literals, dollar-quoted bodies and comments are
- * ignored; `::cast` and `:=` are not placeholders either. Offsets refer to the
- * original string.
+ * ignored; `::cast`, `:=` and the colon of an array slice (`a[lo:hi]`,
+ * `a[:n]`) are not placeholders either, while `ARRAY[:a, :b]` holds two.
+ * Offsets refer to the original string.
  */
 export function parseQueryPlaceholders(sql: string): PlaceholderOccurrence[] {
     if (typeof sql !== 'string' || !sql) {
@@ -60,15 +61,51 @@ export function parseQueryPlaceholders(sql: string): PlaceholderOccurrence[] {
     const masked = maskSql(sql);
     const result: PlaceholderOccurrence[] = [];
     const re = /:([A-Za-z_][A-Za-z0-9_]*)/g;
+    // Open brackets up to `scanned`: true for an array subscript, false for `ARRAY[…]`.
+    const brackets: boolean[] = [];
+    let scanned = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(masked)) !== null) {
+        for (; scanned < m.index; scanned++) {
+            const ch = masked[scanned];
+            if (ch === '"') {
+                scanned = skipQuotedIdentifier(masked, scanned) - 1;
+            } else if (ch === '[') {
+                brackets.push(!followsArrayKeyword(masked, scanned));
+            } else if (ch === ']') {
+                brackets.pop();
+            }
+        }
         // The character before a placeholder must not be another colon (`::cast`).
         if (m.index > 0 && masked[m.index - 1] === ':') {
+            continue;
+        }
+        if (brackets[brackets.length - 1]) {
             continue;
         }
         result.push({ name: m[1], start: m.index, end: m.index + m[0].length });
     }
     return result;
+}
+
+/** Index after the quoted identifier that opens at `start`. */
+function skipQuotedIdentifier(text: string, start: number): number {
+    let j = start + 1;
+    while (j < text.length) {
+        if (text[j] === '"') {
+            if (text[j + 1] === '"') { j += 2; continue; }
+            return j + 1;
+        }
+        j++;
+    }
+    return text.length;
+}
+
+/** True when the `[` at `index` opens an `ARRAY[…]` constructor rather than a subscript. */
+function followsArrayKeyword(text: string, index: number): boolean {
+    let k = index - 1;
+    while (k >= 0 && /\s/.test(text[k])) k--;
+    return k >= 4 && text.slice(k - 4, k + 1).toLowerCase() === 'array' && !/[A-Za-z0-9_$]/.test(text[k - 5] || '');
 }
 
 /** Distinct placeholder names in the order of their first occurrence. */

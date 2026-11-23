@@ -615,7 +615,12 @@ The view keeps the newest 500 queries;
 - In a `.sql` file, **View Data** takes the `SELECT` your cursor sits in and
   opens it in the Data Viewer. PL/pgSQL variables inside the statement are
   recognised and asked for — column names that merely look like variables are
-  not.
+  not. Each variable has a *Type*: *Plain SQL* inserts the text exactly as
+  typed; *String*, *Number*, *Date*, *Timestamp*, *Boolean* and *NULL* are
+  checked and written as the right literal; *List* builds the values of an
+  `IN (…)` or `= ANY(…)` from one value per line or values separated by commas.
+  The type is suggested from the column the variable is compared with, a live
+  *Preview* shows the final statement, and values and types are remembered.
 - **Execute Selection** (`Ctrl+Alt+Enter`) runs exactly the selected text in a
   database session that belongs to the file — nothing is guessed from the
   cursor, and without a selection nothing runs. It is meant for what returns no

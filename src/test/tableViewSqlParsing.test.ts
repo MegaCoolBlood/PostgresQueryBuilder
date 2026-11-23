@@ -362,7 +362,8 @@ test('appendSql glues with a space normally and with a line break after a commen
 test('keepsQueryPlaceholders accepts a layout only when it asks for the same :name placeholders', () => {
     assert.equal(keepsQueryPlaceholders('select * from t where b=:other', 'SELECT *\nFROM t\nWHERE b = :other'), true);
     assert.equal(keepsQueryPlaceholders('select * from t where b=:other', 'SELECT *\nFROM t\nWHERE b =: other'), false);
-    assert.equal(keepsQueryPlaceholders('select a[1:n] from t', 'SELECT a[1 : n]\nFROM t'), false);
+    assert.equal(keepsQueryPlaceholders('select ARRAY[:n] from t', 'SELECT ARRAY[: n]\nFROM t'), false);
+    assert.equal(keepsQueryPlaceholders('select a[1:n] from t', 'SELECT a[1 : n]\nFROM t'), true, 'a slice bound is no placeholder');
 });
 
 test('replaceHistoryQuery puts the formatted text into the steps that showed the generated one', () => {

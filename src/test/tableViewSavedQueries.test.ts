@@ -142,7 +142,9 @@ const PARITY_SQL = [
     'SELECT :a, :a, :b FROM t',
     'SELECT * FROM t WHERE d BETWEEN :from AND :to',
     'SELECT 1',
-    'SELECT arr[1:3] FROM t'
+    'SELECT arr[1:3] FROM t',
+    'SELECT a[1:n] FROM t WHERE a[lo:hi] = ARRAY[:x]',
+    'SELECT a[:n], "c[d"[1:e], myarray[:k] FROM t WHERE b = array /* c */ [ :y, :z ][1:m]'
 ];
 
 test('webview parseQueryPlaceholders matches the extension implementation', () => {
@@ -172,7 +174,7 @@ test('webview applyQueryParameters matches the extension implementation', () => 
         { name: 'a', kind: 'text' as const },
         { name: 'b', kind: 'number' as const }
     ];
-    const values = { from: '2024-01-01', to: '2024-12-31', a: ":b", b: '5', id: '9', yes: 'y', real: 'r' };
+    const values = { from: '2024-01-01', to: '2024-12-31', a: ":b", b: '5', id: '9', yes: 'y', real: 'r', x: '1', y: '2', z: '3' };
     for (const sql of PARITY_SQL) {
         const all = tsMergeParameters(sql, params);
         assert.equal(

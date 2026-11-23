@@ -96,12 +96,40 @@ function parseQueryPlaceholders(sql) {
     const masked = maskSqlForPlaceholders(sql);
     const result = [];
     const re = /:([A-Za-z_][A-Za-z0-9_]*)/g;
+    // Open brackets up to `scanned`: true for an array subscript, false for `ARRAY[…]`.
+    const brackets = [];
+    let scanned = 0;
     let m;
     while ((m = re.exec(masked)) !== null) {
+        for (; scanned < m.index; scanned++) {
+            const ch = masked[scanned];
+            if (ch === '"') scanned = skipQuotedIdentifierForPlaceholders(masked, scanned) - 1;
+            else if (ch === '[') brackets.push(!followsArrayKeywordForPlaceholders(masked, scanned));
+            else if (ch === ']') brackets.pop();
+        }
         if (m.index > 0 && masked[m.index - 1] === ':') continue;
+        if (brackets[brackets.length - 1]) continue;
         result.push({ name: m[1], start: m.index, end: m.index + m[0].length });
     }
     return result;
+}
+
+function skipQuotedIdentifierForPlaceholders(text, start) {
+    let j = start + 1;
+    while (j < text.length) {
+        if (text[j] === '"') {
+            if (text[j + 1] === '"') { j += 2; continue; }
+            return j + 1;
+        }
+        j++;
+    }
+    return text.length;
+}
+
+function followsArrayKeywordForPlaceholders(text, index) {
+    let k = index - 1;
+    while (k >= 0 && /\s/.test(text[k])) k--;
+    return k >= 4 && text.slice(k - 4, k + 1).toLowerCase() === 'array' && !/[A-Za-z0-9_$]/.test(text[k - 5] || '');
 }
 
 // NOTE: Keep in sync with placeholderNames in src/savedQueryStore.ts.

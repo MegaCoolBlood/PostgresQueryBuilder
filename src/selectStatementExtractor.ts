@@ -54,7 +54,7 @@ const INTO_TERMINATORS = new Set([
     'offset', 'fetch', 'for', 'union', 'intersect', 'except', 'returning'
 ]);
 
-interface Token {
+export interface SqlToken {
     /** Token text (read from the masked string; identical to the original for words). */
     text: string;
     type: 'word' | 'param' | 'punct' | 'op';
@@ -220,15 +220,37 @@ export function findEnclosingDollarBody(text: string, offset: number): { start: 
     return null;
 }
 
+type Token = SqlToken;
+
+/**
+ * Tokenize `sql` (comments and literals masked away) into words, `$n` / `:name`
+ * parameters, punctuation and operator runs, each with its offsets and
+ * parenthesis depth. The offsets line up with `sql`. A colon inside an array
+ * subscript (`a[lo:hi]`, `a[:n]`) is a slice, not a placeholder; inside an
+ * `ARRAY[…]` constructor `:name` still is one.
+ */
+export function tokenizeSql(sql: string): SqlToken[] {
+    return tokenize(maskSql(sql));
+}
+
 function tokenize(masked: string): Token[] {
     const tokens: Token[] = [];
     const n = masked.length;
     let i = 0;
     let depth = 0;
+    /** Open brackets: true for an array subscript, false for `ARRAY[…]`. */
+    const brackets: boolean[] = [];
     const opChars = new Set(['=', '<', '>', '!', '+', '-', '*', '/', '%', '|', '~', '@', '#', '&', '^', ':']);
     while (i < n) {
         const c = masked[i];
         if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
+        if (c === '[') {
+            const prev = tokens[tokens.length - 1];
+            brackets.push(!(prev && prev.type === 'word' && prev.text.toLowerCase() === 'array'));
+            i++;
+            continue;
+        }
+        if (c === ']') { brackets.pop(); i++; continue; }
         // $n positional parameter
         if (c === '$' && /\d/.test(masked[i + 1] || '')) {
             let j = i + 1;
@@ -239,7 +261,7 @@ function tokenize(masked: string): Token[] {
         }
         // :name placeholder. A `::` cast starts with a second colon and a `:=`
         // assignment with a non-word character, so neither is caught here.
-        if (c === ':' && /[A-Za-z_]/.test(masked[i + 1] || '')) {
+        if (c === ':' && !brackets[brackets.length - 1] && /[A-Za-z_]/.test(masked[i + 1] || '')) {
             let j = i + 1;
             while (j < n && /[A-Za-z0-9_]/.test(masked[j])) j++;
             tokens.push({ text: masked.slice(i, j), type: 'param', start: i, end: j, depth });
@@ -497,8 +519,17 @@ function convertUpdateToSelect(sql: string): string | null {
  * reported as a single substitutable variable.
  */
 export function findVariableTokens(sql: string, tableQualifiers?: Set<string>, definedNames?: Set<string>): VariableOccurrence[] {
+    // psql-style `:'name'` / `:"name"` placeholders become one parameter token:
+    // the masked copy hides the quoted part, so it is filled in with `_`.
     const masked = maskSql(sql);
-    const tokens = tokenize(masked);
+    const quoted = /:(?:'[A-Za-z_][A-Za-z0-9_]*'(?!')|"[A-Za-z_][A-Za-z0-9_]*")/g;
+    const chars = masked.split('');
+    let q: RegExpExecArray | null;
+    while ((q = quoted.exec(sql)) !== null) {
+        if (masked[q.index] !== ':' || (q.index > 0 && sql[q.index - 1] === ':')) continue;
+        for (let k = q.index + 1; k < q.index + q[0].length; k++) chars[k] = '_';
+    }
+    const tokens = tokenize(chars.join(''));
     const result: VariableOccurrence[] = [];
 
     const VALUE_OPS = new Set(['=', '<', '>', '<=', '>=', '<>', '!=', '+', '-', '*', '/', '%', '||', ':=']);
@@ -516,7 +547,8 @@ export function findVariableTokens(sql: string, tableQualifiers?: Set<string>, d
 
         // ----- Decide whether this token is a substitutable variable -----
         if (t.type === 'param') {
-            result.push({ name: t.text, key: t.text.toLowerCase(), start: t.start, end: t.end });
+            const name = sql.slice(t.start, t.end);
+            result.push({ name, key: name.toLowerCase(), start: t.start, end: t.end });
         } else if (t.type === 'word') {
             const lower = t.text.toLowerCase();
             const isDefined = definedNames ? definedNames.has(lower) : false;
@@ -781,15 +813,29 @@ export function extractTableNames(sql: string): string[] {
  * (`pi_employeeObj.emplId`), the latter being a substitutable variable.
  */
 export function extractTableQualifiers(sql: string): Set<string> {
+    return new Set(extractTableAliasMap(sql).keys());
+}
+
+/**
+ * Map every lower-cased table name and alias introduced in a `FROM` / `JOIN`
+ * clause (at any nesting depth) to the lower-cased table it stands for, so a
+ * qualified column `alias.column` can be resolved to its table. Schema
+ * qualifiers are dropped. When an alias is reused, the first table wins.
+ */
+export function extractTableAliasMap(sql: string): Map<string, string> {
     const masked = maskSql(sql);
     const tokens = tokenize(masked);
-    const qualifiers = new Set<string>();
+    const qualifiers = new Map<string, string>();
+    const record = (name: string, table: string) => {
+        if (!qualifiers.has(name)) qualifiers.set(name, table);
+    };
 
     // Consume one table reference; record its table name and optional alias.
     const consumeRef = (start: number): number => {
         let k = start;
         if (k >= tokens.length) return k;
         const tk = tokens[k];
+        let table = '';
         if (tk.type === 'punct' && tk.text === '(') {
             const depth = tk.depth;
             k++;
@@ -809,7 +855,8 @@ export function extractTableQualifiers(sql: string): Set<string> {
             }
             // A function call in table position (`FROM fn(...)`) is not a table.
             if (!(k < tokens.length && tokens[k].type === 'punct' && tokens[k].text === '(')) {
-                qualifiers.add(lastName.toLowerCase());
+                table = lastName.toLowerCase();
+                record(table, table);
             }
         } else {
             return k;
@@ -817,10 +864,10 @@ export function extractTableQualifiers(sql: string): Set<string> {
         // Optional alias: `AS name` or a bare non-keyword identifier.
         if (k < tokens.length && tokens[k].type === 'word' && tokens[k].text.toLowerCase() === 'as') {
             k++;
-            if (k < tokens.length && tokens[k].type === 'word') { qualifiers.add(tokens[k].text.toLowerCase()); k++; }
+            if (k < tokens.length && tokens[k].type === 'word') { record(tokens[k].text.toLowerCase(), table); k++; }
         } else if (k < tokens.length && tokens[k].type === 'word' &&
             !TABLE_REF_STOP.has(tokens[k].text.toLowerCase())) {
-            qualifiers.add(tokens[k].text.toLowerCase());
+            record(tokens[k].text.toLowerCase(), table);
             k++;
         }
         return k;

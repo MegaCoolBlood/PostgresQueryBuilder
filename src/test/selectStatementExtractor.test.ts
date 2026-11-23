@@ -118,6 +118,13 @@ test('findVariableTokens does not mistake a cast or an assignment for a placehol
     assert.deepEqual(findVariableTokens('SELECT * FROM t WHERE ts = now()::date').map((o) => o.name), []);
 });
 
+test('findVariableTokens reports psql-style quoted placeholders but not a string after a cast', () => {
+    const sql = `SELECT :"col" FROM t WHERE d >= :'from'::date AND e = 'x:''y' AND f = ':''z'''`;
+    assert.deepEqual(findVariableTokens(sql).map((o) => o.name), [':"col"', `:'from'`]);
+    assert.equal(substituteVariables(sql, { ":'from'": "'2024-01-01'" }).includes(`'2024-01-01'::date`), true);
+    assert.deepEqual(queryVariableNames('SELECT * FROM t WHERE a = :x OR b = :X OR c = $1'), [':x', '$1']);
+});
+
 test('substituteVariables replaces a :name placeholder including its colon', () => {
     const sql = 'SELECT :v_von AS from_day FROM t WHERE d <= :v_bis';
     const out = substituteVariables(sql, { ':v_von': "'2026-01-01'", ':v_bis': "'2026-12-31'" });

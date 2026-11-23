@@ -86,6 +86,13 @@ test('parseQueryPlaceholders ignores an array slice', () => {
     assert.deepEqual(parseQueryPlaceholders('SELECT a[1:3] FROM t'), []);
 });
 
+test('parseQueryPlaceholders ignores a named slice bound but keeps placeholders in an ARRAY constructor', () => {
+    assert.deepEqual(placeholderNames('SELECT a[1:n] FROM t WHERE a[lo:hi] = ARRAY[:x]'), ['x']);
+    assert.deepEqual(placeholderNames('SELECT a[:n], b[ 2 : m ][:k], "c[d"[1:e] FROM t'), []);
+    assert.deepEqual(placeholderNames('SELECT * FROM t WHERE a && ARRAY[:x, :y] AND b = array /* c */ [ :z ]'), ['x', 'y', 'z']);
+    assert.deepEqual(placeholderNames('SELECT ARRAY[:x][1:n], myarray[:k] FROM t WHERE c = :after'), ['x', 'after']);
+});
+
 test('placeholderNames reports a repeated placeholder only once', () => {
     assert.deepEqual(placeholderNames('SELECT * FROM t WHERE a = :id OR b = :id'), ['id']);
 });
