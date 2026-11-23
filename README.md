@@ -259,8 +259,14 @@ the catalog of the database; nothing is loaded before a feature asks for it.
 - **Find All References** (`Shift+F12`) lists every place in the repository
   that uses the object, including calls inside PL/pgSQL. **Find Usages** in the
   context menu of the *Objects* and *Tables* views does the same for an entry.
-- The **Outline** and the breadcrumbs list the `CREATE` statements of a file;
-  **Go to Symbol in Workspace** (`Ctrl+T`) finds any of the repository.
+- The **Outline** and the breadcrumbs list the `CREATE` statements of a file.
+  When a file creates objects in several schemas, each schema is a node of its
+  own — opening on its `CREATE SCHEMA`, if the file has one — with its
+  functions, procedures, tables and other objects named without the schema; a
+  trigger goes with its table. With a single schema the list stays flat and
+  the schema is left out of the names, and objects created without a schema
+  stay at the top. **Go to Symbol in Workspace** (`Ctrl+T`) finds any of the
+  repository.
 - **Hover** shows the signature, the doc comment, the `COMMENT ON` text of the
   database when it says something else, the first columns of a table, where the
   object exists, and links to its CREATE script, the comparison, the *Objects*
@@ -1099,6 +1105,7 @@ Empty Schemas** / **Hide Empty Schemas**.
 | `postgresQueryBuilder.plpgsqlCheck.*` | as plpgsql_check | `fatalErrors` (`false`), `otherWarnings`, `extraWarnings`, `constantTracing`, `useIncommentOptions` (`true`), `performanceWarnings`, `securityWarnings`, `compatibilityWarnings`, `withoutWarnings` (`false`): the options of `plpgsql_check_function` |
 | `postgresQueryBuilder.editor.hover` | `true` | Show the hover on database objects in SQL files |
 | `postgresQueryBuilder.editor.signatureHelp` | `true` | Show the parameters while typing the arguments of a call |
+| `postgresQueryBuilder.editor.outlineGroupBySchema` | `true` | Group the outline of a SQL file by schema; off lists every object flat as `schema.name` |
 | `postgresQueryBuilder.diagnostics.unknownRoutines` | `false` | Warn about calls of unknown routines and wrong argument counts |
 | `postgresQueryBuilder.diagnostics.docComments` | `false` | Check the doc comments of functions and procedures |
 | `postgresQueryBuilder.mcp.enabled` | `true` | Offer the MCP server to Copilot and other AI assistants in VS Code |

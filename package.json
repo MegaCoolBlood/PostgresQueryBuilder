@@ -1754,6 +1754,11 @@
           "default": true,
           "markdownDescription": "Show the parameters of the function or procedure being called while typing its arguments in a SQL file, with the documentation of the current parameter."
         },
+        "postgresQueryBuilder.editor.outlineGroupBySchema": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Group the outline of a SQL file by schema: when the file creates objects in several schemas, each schema is a node of its own with its functions, procedures, tables and other objects, named without the schema; with a single schema the list stays flat and the schema is left out of the names. Objects created without a schema stay at the top. Turn it off for the flat list of `schema.name` entries."
+        },
         "postgresQueryBuilder.diagnostics.unknownRoutines": {
           "type": "boolean",
           "default": false,

@@ -156,6 +156,83 @@ test('the outline lists every CREATE statement with its signature, statement ran
     assert.deepEqual([symbols[0].start.line, symbols[0].selectionStart], [7, { line: 7, character: 16 }]);
 });
 
+// ===== outline grouped by schema =====
+
+const SCHEMAS_SQL = [
+    'CREATE SCHEMA leda;',
+    'CREATE FUNCTION leda.f_get_x(p_id integer) RETURNS integer LANGUAGE sql AS $$ SELECT p_id $$;',
+    'CREATE TABLE hr.orders (id integer);',
+    'CREATE FUNCTION helper() RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;',
+    'CREATE PROCEDURE Leda.p_close(p_month date) LANGUAGE plpgsql AS $$ BEGIN END $$;',
+    'CREATE TRIGGER trg_orders BEFORE INSERT ON hr.orders FOR EACH ROW EXECUTE FUNCTION leda.f_trg();',
+    'CREATE VIEW "Leda".v AS SELECT 1;',
+    ''
+].join('\n');
+
+type Outline = Array<{ name: string; kind: string; children?: Outline }>;
+const outline = (symbols: ReturnType<typeof documentSymbols>): Outline =>
+    symbols.map(s => (s.children ? { name: s.name, kind: s.kind, children: outline(s.children) } : { name: s.name, kind: s.kind }));
+
+test('the outline puts the objects of each schema into a node of that schema, without the schema in their names', () => {
+    assert.deepEqual(outline(documentSymbols(SCHEMAS_SQL, { groupBySchema: true })), [
+        { name: 'leda', kind: 'schema', children: [
+            { name: 'f_get_x(p_id integer)', kind: 'function' },
+            { name: 'p_close(p_month date)', kind: 'procedure' }
+        ] },
+        { name: 'hr', kind: 'schema', children: [
+            { name: 'orders', kind: 'table' },
+            { name: 'trg_orders on orders', kind: 'trigger' }
+        ] },
+        { name: 'helper()', kind: 'function' },
+        { name: 'Leda', kind: 'schema', children: [{ name: 'v', kind: 'view' }] }
+    ]);
+});
+
+test('a schema node is the CREATE SCHEMA of the file and spans its objects', () => {
+    const [leda, hr] = documentSymbols(SCHEMAS_SQL, { groupBySchema: true });
+    assert.deepEqual([leda.start.line, leda.end.line], [0, 4], 'from CREATE SCHEMA to the last object');
+    assert.deepEqual(leda.selectionStart, { line: 0, character: 14 }, 'clicking the node goes to CREATE SCHEMA leda');
+    assert.equal(leda.detail, '2 objects');
+    assert.deepEqual(hr.selectionStart, hr.children![0].selectionStart, 'without CREATE SCHEMA, the first object');
+    for (const node of [leda, hr]) {
+        for (const child of node.children!) {
+            assert.ok(child.start.line >= node.start.line && child.end.line <= node.end.line, child.name);
+        }
+        assert.ok(node.selectionStart.line >= node.start.line && node.selectionEnd.line <= node.end.line);
+    }
+});
+
+test('with a single schema the outline stays flat and leaves the schema out of the names', () => {
+    const sql = [
+        'CREATE SCHEMA leda;',
+        'CREATE FUNCTION leda.a() RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;',
+        'CREATE FUNCTION leda.a(x integer) RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;',
+        'CREATE FUNCTION b() RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;'
+    ].join('\n');
+    assert.deepEqual(outline(documentSymbols(sql, { groupBySchema: true })), [
+        { name: 'leda', kind: 'schema' },
+        { name: 'a()', kind: 'function' },
+        { name: 'a(x integer)', kind: 'function' },
+        { name: 'b()', kind: 'function' }
+    ]);
+});
+
+test('a file without schema-qualified objects, or the setting off, keeps the flat outline', () => {
+    assert.deepEqual(outline(documentSymbols(TAX_SQL, { groupBySchema: true })), outline(documentSymbols(TAX_SQL)));
+    assert.deepEqual(documentSymbols(SCHEMAS_SQL).map(s => s.name), [
+        'leda', 'leda.f_get_x(p_id integer)', 'hr.orders', 'helper()', 'leda.p_close(p_month date)', 'trg_orders on hr.orders', 'Leda.v'
+    ]);
+});
+
+test('a CREATE SCHEMA without objects of that schema in the file stays an entry of its own', () => {
+    const sql = 'CREATE SCHEMA empty;\nCREATE TABLE a.t (x int);\nCREATE TABLE b.t (x int);';
+    assert.deepEqual(outline(documentSymbols(sql, { groupBySchema: true })), [
+        { name: 'empty', kind: 'schema' },
+        { name: 'a', kind: 'schema', children: [{ name: 't', kind: 'table' }] },
+        { name: 'b', kind: 'schema', children: [{ name: 't', kind: 'table' }] }
+    ]);
+});
+
 test('workspace symbols match fuzzily, closest names first', () => {
     const found = workspaceSymbols(definitions(), 'tax');
     assert.deepEqual(found.map(f => f.def.name), ['add_tax', 'add_tax', 'old_tax']);

@@ -37,6 +37,7 @@ import {
     signatureHelpAt,
     workspaceSymbols,
     commandNode,
+    type SymbolInfo,
     type CodeFinding,
     type FileRange,
     type IntelSources,
@@ -187,8 +188,13 @@ export const SYMBOL_KINDS: Record<RepoObjectKind, vscode.SymbolKind> = {
 
 export class SqlDocumentSymbolProvider implements vscode.DocumentSymbolProvider {
     provideDocumentSymbols(document: vscode.TextDocument): vscode.DocumentSymbol[] {
-        return documentSymbols(document.getText()).map(s =>
-            new vscode.DocumentSymbol(s.name, s.detail, SYMBOL_KINDS[s.kind], toRange(s.start, s.end), toRange(s.selectionStart, s.selectionEnd)));
+        const groupBySchema = config().get<boolean>('editor.outlineGroupBySchema', true);
+        const toSymbol = (s: SymbolInfo): vscode.DocumentSymbol => {
+            const symbol = new vscode.DocumentSymbol(s.name, s.detail, SYMBOL_KINDS[s.kind], toRange(s.start, s.end), toRange(s.selectionStart, s.selectionEnd));
+            if (s.children) symbol.children = s.children.map(toSymbol);
+            return symbol;
+        };
+        return documentSymbols(document.getText(), { groupBySchema }).map(toSymbol);
     }
 }
 

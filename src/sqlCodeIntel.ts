@@ -297,28 +297,100 @@ export interface SymbolInfo {
     /** The name. */
     selectionStart: SourcePosition;
     selectionEnd: SourcePosition;
+    /** The objects of a schema node, when the outline is grouped by schema. */
+    children?: SymbolInfo[];
 }
 
-function definitionLabel(def: RepoDefinition): string {
+/** The schema an outline entry belongs to: a trigger goes with its table; schemas and extensions belong to none. */
+function outlineSchema(def: RepoDefinition): string | null {
+    if (def.kind === 'schema' || def.kind === 'extension') return null;
+    return def.kind === 'trigger' ? def.table?.schema ?? null : def.schema;
+}
+
+function definitionLabel(def: RepoDefinition, omitSchema = false): string {
+    const qualify = (schema: string | null | undefined) => (schema && !omitSchema ? `${schema}.` : '');
     const name = def.kind === 'trigger'
-        ? `${def.name} on ${def.table?.schema ? `${def.table.schema}.` : ''}${def.table?.name ?? ''}`
-        : def.schema ? `${def.schema}.${def.name}` : def.name;
+        ? `${def.name} on ${qualify(def.table?.schema)}${def.table?.name ?? ''}`
+        : `${qualify(def.schema)}${def.name}`;
     if (!ROUTINE_KINDS.has(def.kind)) return name;
     const params = def.params ? callableParams(def.kind, def.params).map(paramText) : def.argTypes ?? [];
     return `${name}(${params.join(', ')})`;
 }
 
-/** The CREATE statements of a file as outline entries, with the doc summary as detail. */
-export function documentSymbols(text: string): SymbolInfo[] {
-    return scanSqlText(text).map(def => ({
-        name: definitionLabel(def),
+function symbolOf(def: RepoDefinition, omitSchema = false): SymbolInfo {
+    return {
+        name: definitionLabel(def, omitSchema),
         detail: parsedDoc(def.doc)?.summary || KIND_LABELS[def.kind],
         kind: def.kind,
         start: def.statementStart ?? def.start,
         end: def.statementEnd ?? def.end,
         selectionStart: def.start,
         selectionEnd: def.end
-    }));
+    };
+}
+
+function comparePositions(a: SourcePosition, b: SourcePosition): number {
+    return a.line - b.line || a.character - b.character;
+}
+
+export interface DocumentSymbolOptions {
+    /**
+     * Put the objects of each schema into a node of that schema. With a single
+     * schema in the file the list stays flat and the schema is left out of the
+     * names instead; unqualified objects stay at the top level.
+     */
+    groupBySchema?: boolean;
+}
+
+/** The CREATE statements of a file as outline entries, with the doc summary as detail. */
+export function documentSymbols(text: string, options: DocumentSymbolOptions = {}): SymbolInfo[] {
+    const defs = scanSqlText(text);
+    if (!options.groupBySchema) return defs.map(def => symbolOf(def));
+    // Schemas are folded to lower case unless quoted, so `Leda` and `leda` meet here.
+    const schemas = new Set(defs.map(outlineSchema).filter((s): s is string => s !== null));
+    if (schemas.size === 0) return defs.map(def => symbolOf(def));
+    if (schemas.size === 1) return defs.map(def => symbolOf(def, outlineSchema(def) !== null));
+
+    const out: SymbolInfo[] = [];
+    const nodes = new Map<string, SymbolInfo>();
+    const createSchema = new Map<string, RepoDefinition>();
+    for (const def of defs) {
+        if (def.kind === 'schema' && schemas.has(def.name) && !createSchema.has(def.name)) createSchema.set(def.name, def);
+    }
+    for (const def of defs) {
+        const schema = def.kind === 'schema' && createSchema.get(def.name) === def ? def.name : outlineSchema(def);
+        if (schema === null) {
+            out.push(symbolOf(def));
+            continue;
+        }
+        let node = nodes.get(schema);
+        if (!node) {
+            node = { ...symbolOf(def), name: schema, detail: '', kind: 'schema', children: [] };
+            nodes.set(schema, node);
+            out.push(node);
+        }
+        const symbol = symbolOf(def, true);
+        if (def.kind === 'schema') {
+            // The CREATE SCHEMA is the node itself: clicking the node goes there.
+            node.selectionStart = symbol.selectionStart;
+            node.selectionEnd = symbol.selectionEnd;
+            node.detail = parsedDoc(def.doc)?.summary ?? '';
+        } else {
+            node.children!.push(symbol);
+        }
+        if (comparePositions(symbol.start, node.start) < 0) node.start = symbol.start;
+        if (comparePositions(symbol.end, node.end) > 0) node.end = symbol.end;
+    }
+    for (const node of nodes.values()) {
+        const count = node.children!.length;
+        const objects = `${count} ${count === 1 ? 'object' : 'objects'}`;
+        node.detail = node.detail ? `${node.detail} · ${objects}` : objects;
+        if (!createSchema.has(node.name)) {
+            node.selectionStart = node.children![0].selectionStart;
+            node.selectionEnd = node.children![0].selectionEnd;
+        }
+    }
+    return out;
 }
 
 /** True when every character of `query` appears in `text` in order. */

@@ -9,6 +9,7 @@ import {
     SqlDefinitionProvider,
     SqlDiagnostics,
     SqlDocCodeActionProvider,
+    SqlDocumentSymbolProvider,
     SqlHoverProvider,
     SqlIntel,
     registerSqlLanguageFeatures,
@@ -140,6 +141,21 @@ test('the hover trusts only its own commands and can be turned off', async (t) =
     assert.equal(hover.contents.isTrusted.enabledCommands.length, 4);
     settings(t, { 'editor.hover': false });
     assert.equal(await provider.provideHover(doc(text), doc(text).positionAt(text.indexOf('f('))), undefined);
+});
+
+// ===== outline =====
+
+test('the outline nests the objects of each schema and is flat with the setting off', (t) => {
+    const text = 'CREATE FUNCTION app.f() RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;\nCREATE TABLE hr.t (x int);';
+    const provider = new SqlDocumentSymbolProvider();
+    const grouped = provider.provideDocumentSymbols(doc(text));
+    assert.deepEqual(grouped.map(s => [s.name, s.kind, s.children.map(c => c.name)]), [
+        ['app', vscodeStub.SymbolKind.Namespace, ['f()']],
+        ['hr', vscodeStub.SymbolKind.Namespace, ['t']]
+    ]);
+    settings(t, { 'editor.outlineGroupBySchema': false });
+    const flat = provider.provideDocumentSymbols(doc(text));
+    assert.deepEqual(flat.map(s => [s.name, s.children.length]), [['app.f()', 0], ['hr.t', 0]]);
 });
 
 // ===== diagnostics =====
