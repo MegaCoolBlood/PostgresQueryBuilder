@@ -2951,6 +2951,74 @@ function appendedSelection(anchor, focus, positionOf) {
     return { anchor: { r: a, c: anchor.c }, focus: { r: f, c: focus.c } };
 }
 
+// The columns a row is recognised by across an auto refresh: the identity
+// columns of the result's tables (`tables` of the capabilities) or else the
+// primary key, as long as `row` holds every one of them; [] means the row is
+// recognised by all of its values.
+function refreshIdentityColumns(primaryKeys, tables, row) {
+    const has = (name) => !!row && typeof row === 'object' && Object.prototype.hasOwnProperty.call(row, name);
+    const list = Array.isArray(tables) ? tables : [];
+    if (list.length > 0 && list.every(t => t && Array.isArray(t.identityColumns) && t.identityColumns.length > 0)) {
+        const names = [];
+        list.forEach(t => t.identityColumns.forEach(c => { if (c && c.name && names.indexOf(c.name) === -1) names.push(c.name); }));
+        if (names.every(has)) return names;
+    }
+    const pk = (primaryKeys || []).filter(Boolean);
+    if (pk.length > 0 && pk.every(has)) return pk.slice();
+    return [];
+}
+
+// The text a row is recognised by: the values of `keyColumns`, or of all its
+// columns when there are none (see refreshIdentityColumns).
+function rowIdentityKey(row, keyColumns) {
+    if (!keyColumns || keyColumns.length === 0) return rowFingerprint(row);
+    const id = buildRowIdentity(keyColumns, [], row);
+    return JSON.stringify(keyColumns.map(k => (id[k] === undefined ? null : id[k])));
+}
+
+// Where the row known by `key` is among the rows whose keys are `newKeys`:
+// of several such rows the one nearest to `oldIndex`, -1 when there is none.
+function remapRowIndex(key, newKeys, oldIndex) {
+    let best = -1;
+    const list = newKeys || [];
+    for (let i = 0; i < list.length; i++) {
+        if (list[i] !== key) continue;
+        if (best === -1 || Math.abs(i - oldIndex) < Math.abs(best - oldIndex)) best = i;
+    }
+    return best;
+}
+
+// The selection after an auto refresh, from the one taken before it:
+// `snapshot` holds the selected row and the two corners of the cell selection
+// as { key, index } (corners with their column `c` as well), indexes into the
+// loaded rows. Each follows its row to where it is now; a row that is gone
+// unselects it, and a corner that is gone drops the whole cell selection.
+// Returns { selectedRowIdx, anchor, focus } with anchor/focus as { index, c } or null.
+function remapSelection(snapshot, newKeys) {
+    const s = snapshot || {};
+    const find = (entry) => (entry ? remapRowIndex(entry.key, newKeys, entry.index) : -1);
+    const selected = find(s.selected);
+    let anchor = null;
+    let focus = null;
+    if (s.anchor && s.focus) {
+        const a = find(s.anchor);
+        const f = find(s.focus);
+        if (a !== -1 && f !== -1) {
+            anchor = { index: a, c: s.anchor.c };
+            focus = { index: f, c: s.focus.c };
+        }
+    }
+    return { selectedRowIdx: selected === -1 ? null : selected, anchor, focus };
+}
+
+// The scroll position that puts a row whose top is now at `rowTop` at the
+// same distance `screenOffset` from the top of the view as before, within
+// [0, maxScrollTop].
+function scrollTopKeepingOffset(rowTop, screenOffset, maxScrollTop) {
+    const top = (Number(rowTop) || 0) - (Number(screenOffset) || 0);
+    return Math.max(0, Math.min(Math.max(0, Number(maxScrollTop) || 0), top));
+}
+
 // The `readonly` attribute for a Single Record View field. A field is
 // non-editable when its row is marked for deletion or when the whole view is
 // read-only (e.g. an ad-hoc custom-query result that cannot be written back).
@@ -6450,8 +6518,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // A full last batch means there may be more rows to page through.
         moreAvailable = !userPaged && !allLoaded && incoming.length >= (autoLimit || PAGE_SIZE);
         lastQueryDurationMs = (typeof msg.durationMs === 'number') ? msg.durationMs : null;
-        if (viewState && viewState.selectedRowIdx !== null && viewState.selectedRowIdx < allRows.length) {
-            selectedRowIdx = viewState.selectedRowIdx;
+        // An auto refresh keeps the selection on the rows it was on, wherever
+        // the refresh put them; a row that is gone is no longer selected.
+        const remapped = viewState ? remapGridSelection(viewState) : null;
+        if (remapped) {
+            selectedRowIdx = remapped.selectedRowIdx;
         }
         setDataLoading(false);
         updateRowCount();
@@ -6472,7 +6543,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (auto) {
             // "More" continues after the rows the refresh brought back.
             if (autoLimit) currentOffset = Math.max(0, autoLimit - PAGE_SIZE);
-            restoreGridViewState(viewState);
+            restoreGridViewState(viewState, remapped);
             autoRefreshSucceeded();
         } else if (!isAppend) {
             // The interval counts from the latest fresh result.
@@ -8836,30 +8907,87 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         scheduleAutoRefresh();
     }
 
-    // Keep the place the user was looking at across an auto refresh.
+    // Keep the place the user was looking at across an auto refresh: the
+    // selected row and the cell selection are taken by the rows they are on
+    // (their identity), so they follow a row that moved; `pin` is the row whose
+    // distance from the top of the view is kept.
     function captureGridViewState() {
+        const keyColumns = refreshIdentityColumns(primaryKeys, caps.tables, allRows[0]);
+        const loadedRow = (index) => (index !== null && index !== undefined && allRows[index]
+            ? { key: rowIdentityKey(allRows[index], keyColumns), index }
+            : null);
+        const corner = (p) => {
+            const entry = p ? renderPlan[p.r] : null;
+            if (!entry || entry.kind !== 'row') return null;
+            const row = loadedRow(entry.idx);
+            return row ? Object.assign(row, { c: p.c }) : null;
+        };
+        const anchor = corner(rangeAnchor);
+        const focus = corner(rangeFocus);
+        const selection = {
+            selected: loadedRow(selectedRowIdx),
+            anchor: anchor && focus ? anchor : null,
+            focus: anchor && focus ? focus : null
+        };
+        const scrollTop = gridScroller ? gridScroller.scrollTop : 0;
+        let pin = null;
+        const pinPlan = selection.anchor ? rangeAnchor.r
+            : (selection.selected ? planIndexByRow.get(selection.selected.index) : undefined);
+        if (pinPlan !== undefined && pinPlan !== null) {
+            pin = {
+                which: selection.anchor ? 'anchor' : 'selected',
+                offset: virtualRowOffset(pinPlan, virtualRowHeight, rowExtrasList()) - scrollTop
+            };
+        }
         return {
-            scrollTop: gridScroller ? gridScroller.scrollTop : 0,
+            scrollTop,
             scrollLeft: gridScroller ? gridScroller.scrollLeft : 0,
-            selectedRowIdx,
-            anchor: rangeAnchor ? { r: rangeAnchor.r, c: rangeAnchor.c } : null,
-            focus: rangeFocus ? { r: rangeFocus.r, c: rangeFocus.c } : null
+            keyColumns,
+            selection,
+            pin
         };
     }
 
-    function restoreGridViewState(state) {
+    // Where the rows of the selection are in the refreshed rows (indexes into
+    // allRows); see remapSelection.
+    function remapGridSelection(state) {
+        if (!state || !state.selection) return { selectedRowIdx: null, anchor: null, focus: null };
+        const s = state.selection;
+        if (!s.selected && !s.anchor) return { selectedRowIdx: null, anchor: null, focus: null };
+        const keys = allRows.map(row => rowIdentityKey(row, state.keyColumns));
+        return remapSelection(s, keys);
+    }
+
+    function restoreGridViewState(state, remapped) {
         if (!state) return;
+        const moved = remapped || { selectedRowIdx: null, anchor: null, focus: null };
+        // Plan positions of the corners; a row the filters now hide drops them.
+        const anchorR = moved.anchor ? planIndexByRow.get(moved.anchor.index) : undefined;
+        const focusR = moved.focus ? planIndexByRow.get(moved.focus.index) : undefined;
+        const hasRange = anchorR !== undefined && focusR !== undefined;
+        let scrollTop = state.scrollTop;
+        if (state.pin && gridScroller) {
+            const pinR = state.pin.which === 'anchor'
+                ? (hasRange ? anchorR : undefined)
+                : (moved.selectedRowIdx !== null ? planIndexByRow.get(moved.selectedRowIdx) : undefined);
+            if (pinR !== undefined) {
+                scrollTop = scrollTopKeepingOffset(
+                    virtualRowOffset(pinR, virtualRowHeight, rowExtrasList()),
+                    state.pin.offset,
+                    gridScroller.scrollHeight - gridScroller.clientHeight
+                );
+            }
+        }
         if (gridScroller) {
-            gridScroller.scrollTop = state.scrollTop;
+            gridScroller.scrollTop = scrollTop;
             gridScroller.scrollLeft = state.scrollLeft;
         }
         // The rows at the restored position have to be in the DOM before the
         // selection is marked on them.
         renderWindow(false);
-        const rowCount = renderPlan.length;
-        if (state.anchor && state.focus && Math.max(state.anchor.r, state.focus.r) < rowCount) {
-            rangeAnchor = state.anchor;
-            rangeFocus = state.focus;
+        if (hasRange) {
+            rangeAnchor = { r: anchorR, c: moved.anchor.c };
+            rangeFocus = { r: focusR, c: moved.focus.c };
             applyCellRangeHighlight();
         }
     }
@@ -11224,5 +11352,10 @@ if (typeof module !== 'undefined' && module.exports) {
         columnFilterTarget,
         mergeColumnConditions,
         splitGroupTail,
+        refreshIdentityColumns,
+        rowIdentityKey,
+        remapRowIndex,
+        remapSelection,
+        scrollTopKeepingOffset
     };
 }

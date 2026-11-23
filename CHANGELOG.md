@@ -6,6 +6,8 @@
 
 - **A filtered column that is removed from the query no longer hides every row:** Filtering a column and then deleting that column from the `SELECT` in the query bar left a grid without a single row, because the filter kept testing a column the result no longer had. Filters and sorting of columns the query no longer returns are now dropped when the query runs again; the query text is left as you wrote it.
 
+- **Auto refresh keeps the selection on the same row:** After each *Auto refresh* the selection stayed on the same line, so when a row was added above it or the order changed, a different row was suddenly selected — and a *Ctrl+C* copied the wrong values. The selection now follows the row it was on, recognised by its key or, without one, by its values, wherever it moves, and the view scrolls with it so that the row stays at the same place on screen. When the row is gone, nothing is selected any more.
+
 ## 4.0.2
 
 - **Ctrl+A in the Data Viewer selects the cells, not the page:** Since 3.5.3, *Ctrl+A* selected every cell of the grid, but a moment later VS Code ran its own *Select All* on the same key and selected the text of the whole tab as well — toolbar buttons, the query bar, the row count and the status — so the page lit up blue and a *Ctrl+C* could copy that text instead of the cells. VS Code's *Select All* is now refused right after the grid has selected its cells, so only the cells are selected. In the query bar, a filter box, a cell being edited or an open dialog, *Ctrl+A* still selects the text there.
