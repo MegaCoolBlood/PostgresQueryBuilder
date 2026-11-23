@@ -398,7 +398,9 @@ warning says that its settings are gone.
 - **Filter** in the row underneath the headers. Text columns match
   case-insensitively, numeric and date columns offer `=`, `<>`, `<`, `<=`, `>`,
   `>=` and *between*. Several filters are combined with `AND`. Filter values
-  are sent as query parameters and never pasted into the SQL.
+  are sent as query parameters and never pasted into the SQL. When a filtered
+  column is removed from the query, its filter and sort are dropped the next
+  time the query runs.
 - **Constraints** stores a `WHERE` condition and an `ORDER BY` per table that
   are applied every time you open it — for the client, tenant or valid-from
   column you filter by anyway.

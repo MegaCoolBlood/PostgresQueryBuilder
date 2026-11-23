@@ -467,3 +467,48 @@ test('duplicateCellValue leaves edited json text and other columns alone', () =>
     assert.equal(duplicateCellValue('abc', 'text', false), 'abc');
     assert.equal(duplicateCellValue(7, 'int4', false), 7);
 });
+
+// ===== pruneColumnState: filters of columns the query no longer selects =====
+
+const {
+    pruneColumnState,
+} = require(path.join(__dirname, '../../../src/webview/tableView.js'));
+
+test('pruneColumnState drops the filter, mode and exact flag of a removed column', () => {
+    const pruned = pruneColumnState({
+        filters: { region: 'nord', id: '5' },
+        exactFilters: { region: true },
+        filterModes: { region: 'gt', id: 'lt' },
+        sortState: { column: null, direction: 'asc', previous: null }
+    }, ['id']);
+    assert.deepEqual(pruned.filters, { id: '5' });
+    assert.deepEqual(pruned.exactFilters, {});
+    assert.deepEqual(pruned.filterModes, { id: 'lt' });
+});
+
+test('pruneColumnState drops the sort of a removed column and a sort it would go back to', () => {
+    const gone = pruneColumnState({ sortState: { column: 'region', direction: 'desc', previous: null } }, ['id']);
+    assert.deepEqual(gone.sortState, { column: null, direction: 'asc', previous: null });
+    const kept = pruneColumnState({
+        sortState: { column: 'id', direction: 'asc', previous: { column: 'region', direction: 'desc' } }
+    }, ['id']);
+    assert.deepEqual(kept.sortState, { column: 'id', direction: 'asc', previous: null });
+});
+
+test('pruneColumnState keeps everything when the new result has no columns', () => {
+    const state = {
+        filters: { region: 'nord' }, exactFilters: {}, filterModes: {},
+        sortState: { column: 'region', direction: 'asc', previous: null }
+    };
+    const pruned = pruneColumnState(state, []);
+    assert.deepEqual(pruned.filters, { region: 'nord' });
+    assert.equal(pruned.sortState.column, 'region');
+});
+
+test('the grid prunes the column state whenever a new column list arrives', () => {
+    const fs = require('node:fs');
+    const js = fs.readFileSync(path.join(__dirname, '../../../src/webview/tableView.js'), 'utf8');
+    assert.match(js, /columns = msg\.columns \|\| \[\];\s*pruneStateOfRemovedColumns\(\);/);
+    assert.match(js, /columns = msg\.columns \|\| columns;\s*if \(msg\.columns\) pruneStateOfRemovedColumns\(\);/);
+});
+

@@ -1981,6 +1981,37 @@ function nextSortState(current, column) {
     return { column: restored.column || null, direction: restored.direction || 'asc', previous: null };
 }
 
+// The per-column filter and sort state that is left once a new result has the
+// columns `columnNames`: filter values, exact flags, operator modes and the sort
+// of columns the result no longer has are dropped, since filtering the loaded
+// rows on a missing column would let none of them through. An empty column list
+// (a failed query) keeps everything.
+function pruneColumnState(state, columnNames) {
+    const s = state || {};
+    const names = new Set(columnNames || []);
+    const keep = (map) => {
+        const out = {};
+        Object.keys(map || {}).forEach(col => {
+            if (names.size === 0 || names.has(col)) out[col] = map[col];
+        });
+        return out;
+    };
+    let sort = s.sortState || { column: null, direction: 'asc', previous: null };
+    if (names.size > 0) {
+        if (sort.column && !names.has(sort.column)) {
+            sort = { column: null, direction: 'asc', previous: null };
+        } else if (sort.previous && sort.previous.column && !names.has(sort.previous.column)) {
+            sort = { column: sort.column, direction: sort.direction, previous: null };
+        }
+    }
+    return {
+        filters: keep(s.filters),
+        exactFilters: keep(s.exactFilters),
+        filterModes: keep(s.filterModes),
+        sortState: sort
+    };
+}
+
 // Compute the new per-row content height while dragging the row-resize handle.
 // `startHeight` is the height (px) when the drag began, `deltaY` the vertical
 // mouse movement (px, positive = downward = taller). The result is clamped to
@@ -6103,6 +6134,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // editor become usable while data is still loading.
         const wasDefaultQuery = isDefaultQueryText(queryInput.value);
         columns = msg.columns || [];
+        pruneStateOfRemovedColumns();
         applyCapabilities(msg.capabilities);
         adoptSourceTable(msg);
         renderHeader();
@@ -6111,6 +6143,19 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (wasDefaultQuery) {
             setQueryText(getDefaultQuery());
         }
+    }
+
+    // A new column list arrived: forget the filters and the sort of columns the
+    // query no longer selects, so they cannot hide every row.
+    function pruneStateOfRemovedColumns() {
+        const pruned = pruneColumnState(
+            { filters, exactFilters, filterModes, sortState },
+            columns.map(c => c.name)
+        );
+        filters = pruned.filters;
+        exactFilters = pruned.exactFilters;
+        filterModes = pruned.filterModes;
+        sortState = pruned.sortState;
     }
 
     // Take over the table a result originates from, so table-bound features
@@ -6163,6 +6208,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             allRows = allRows.concat(incoming);
         }
         columns = msg.columns || columns;
+        if (msg.columns) pruneStateOfRemovedColumns();
         if (!isAppend) {
             applyCapabilities(msg.capabilities);
             adoptSourceTable(msg);
@@ -7219,6 +7265,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         for (const [col, filterVal] of Object.entries(filters)) {
             if (!filterVal) continue;
             const colMeta = columns.find(c => c.name === col);
+            // A filter restored for a column the result does not have (undo
+            // after the query changed) would let no row through.
+            if (!colMeta && columns.length > 0) continue;
             const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
             const mode = filterModes[col];
             order = order.filter(idx =>
@@ -10901,6 +10950,7 @@ if (typeof module !== 'undefined' && module.exports) {
         executableMark,
         maskSqlStructure,
         findSelectListRange,
-        renameSelectColumn
+        renameSelectColumn,
+        pruneColumnState,
     };
 }
