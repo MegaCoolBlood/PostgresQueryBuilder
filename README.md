@@ -20,6 +20,10 @@ SQL before it is written.
 - **Build joins without writing them.** Pick the tables, have the join
   conditions suggested from the foreign keys, and open the result as a normal
   grid.
+- **A graphical Query Builder.** Drop tables onto a diagram, draw the joins
+  from column to column and fill in a grid for output, aliases, aggregates,
+  sorting, criteria and grouping — or paste a `SELECT` and edit it the same
+  way. The SQL follows every click, and the diagram every edit of the SQL.
 - **Let Copilot use your databases — as far as you allow.** A built-in MCP
   server gives AI assistants the catalog, DDL, queries and more; what they may
   do is ticked per connection, and nothing is allowed until you do.
@@ -543,6 +547,58 @@ server; a cancelled export writes no file.
 
 ---
 
+## Query Builder
+
+Build or rework a `SELECT` graphically. Open it with **New Query Builder**,
+with **Open in Query Builder** on one or more tables of the *Tables* view, with
+**Edit SELECT in Query Builder** in a SQL file, or with **Edit in Query
+Builder** in the query bar of the Data Viewer.
+
+- **Diagram** — tables come from the *Tables* view, with its search:
+  right-click one or more tables there and choose **Add to Query Builder** to
+  add them to the builder you used last (or a new one), or drag them onto the
+  canvas — should VS Code not deliver the drop, **Add Dragged Tables** in the
+  toolbar adds what you dragged. Tick the columns to select, and drag a column
+  onto a column of another table to join them. A table added next to one it
+  has a foreign key or a custom column mapping to is joined at once; both are
+  combined in one join, with the conditions of the mapping, and of several
+  mappings between two tables the default one is used. Click a join line to
+  choose *Inner*, *Left outer*, *Right outer*, *Full outer* or *Cross* join —
+  worded as *Include all rows from orders o* — and to edit its column pairs or
+  add a condition. Outer joins are drawn dashed, with a dot at the table whose
+  rows are all kept. *Auto layout* tidies the boxes.
+- **Grid** — one row per column: *Output*, *Expression*, *Alias*, *Table*,
+  *Aggregate*, *Sort type*, *Sort order*, *Nulls*, *Group by*, *Criteria*, as
+  many *Or…* columns as you need, and *Having*. Criteria in one column are
+  combined with `AND`, the *Or…* columns with `OR`. As soon as a column is
+  aggregated, the others are grouped by. *Add expression* adds a computed
+  column.
+- **SQL** — the statement, in the same editor as the query bar. Edit it and the
+  diagram follows; a syntax error is shown with its line and column and leaves
+  the diagram as it was.
+- **Results** — the first 100 rows, read in a read-only transaction that is
+  rolled back; **Open in Data Viewer** shows them all.
+
+**Apply** writes the query back to where it came from: into the query bar of
+the Data Viewer, which runs it, or in place of the statement in the SQL file —
+only if that statement is still where it was. A `SELECT … INTO` opens without
+*Apply*, so its `INTO` is never lost. *DISTINCT*, undo and redo (`Ctrl+Z` /
+`Ctrl+Y`), *Copy SQL* and *Run* (`Ctrl+Enter`) are in the toolbar.
+
+Placeholders — `:name`, `:'name'`, `:"name"`, `$1` — and PL/pgSQL variables
+and record fields such as `pi_obj.emplid` are read like values and shown as
+criteria. *Run*, the *Results* tab and **Open in Data Viewer** ask for their
+values with the same form as **View Data**; *Apply* and *Copy SQL* keep them as
+written.
+
+What a diagram cannot show — `WITH` queries, subqueries and functions in
+`FROM`, `UNION` and the like, window functions or a condition across several
+columns — is kept as SQL rather than dropped: subqueries and functions become
+boxes whose SQL you edit, the rest is edited in a dialog, and a bar lists what
+was kept that way.
+
+---
+
 ## Bookmarked queries
 
 A query you will need again goes into the **Bookmarked Queries** view, either
@@ -939,7 +995,9 @@ Every command lives in the Command Palette (`Ctrl+Shift+P`) under the category
 | Open SQL Editor | Open the panel for ad-hoc SQL |
 | Open psql Console | Start `psql` for the active connection in a terminal |
 | View Data | Run the `SELECT` under the cursor in the Data Viewer |
+| New Query Builder | Open an empty [Query Builder](#query-builder) |
 | Show MCP Server Status | Show whether the [MCP server](#ai-assistants-mcp) runs, its port, and its entry for Copilot CLI |
+| Edit SELECT in Query Builder | Open the `SELECT` under the cursor in the Query Builder; *Apply* writes it back into the file |
 | Execute Selection | Run exactly the selected text in the session of the SQL file; a selected `SELECT` opens in the Data Viewer |
 | Execute File | Run every statement of the SQL file from top to bottom in its session; queries open in the Data Viewer |
 | Add Export Instruction | Write an `-- @export` line above the query at the cursor from the export dialog, so *Execute File* exports it |
@@ -974,7 +1032,8 @@ Bookmarked queries and mappings carry further commands for renaming,
 duplicating, deleting and moving between the personal and the workspace scope.
 The entries of the *Objects* and *Tables* views carry **Open CREATE Script**,
 **Copy CREATE Script**, **Open DROP Script**, **Copy DROP Script** and **Go to
-Definition in Repository** in their context menu; their title bars carry **Show
+Definition in Repository** in their context menu; tables and views of the
+*Tables* view also carry **Open in Query Builder** and **Add to Query Builder**. Their title bars carry **Show
 Empty Schemas** / **Hide Empty Schemas**.
 
 ---

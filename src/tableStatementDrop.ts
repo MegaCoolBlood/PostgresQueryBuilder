@@ -35,6 +35,14 @@ function consumeLastDraggedTables(): DraggedTable[] {
 }
 
 /**
+ * The tables last dragged from the Tables view, for a webview that cannot read
+ * VS Code's drag payload (the Query Builder canvas). Forgotten once taken.
+ */
+export function takeLastDraggedTables(): Array<{ schema: string; name: string }> {
+    return consumeLastDraggedTables().map(t => ({ schema: t.schema, name: t.table }));
+}
+
+/**
  * Order and labels of the statement choices presented to the user.
  * `select` is the default selection.
  */

@@ -21,6 +21,11 @@ const STYLE_OWNERS = [
     'connectionManager.ts'
 ];
 
+/** Surfaces built from files in src/webview: their stylesheet, script and the TypeScript that writes their markup. */
+const FILE_SURFACES = [
+    { css: 'queryBuilder.css', js: 'queryBuilder.js', host: 'queryBuilder.ts' }
+];
+
 /** Literal colours. Everything must come from a --vscode- or --c- variable instead. */
 const LITERAL_COLOUR = /#[0-9a-fA-F]{3,8}\b|\brgba?\s*\(|\bhsla?\s*\(/g;
 
@@ -42,6 +47,19 @@ test('shared.css defines no literal colour', () => {
 test('tableView.css defines no literal colour', () => {
     const css = fs.readFileSync(path.join(WEBVIEW, 'tableView.css'), 'utf8');
     assert.deepEqual(css.match(LITERAL_COLOUR), null);
+});
+
+test('the file-based surfaces carry no inline event handler and no inline colour, padding or font-size', () => {
+    for (const surface of FILE_SURFACES) {
+        for (const file of [path.join(WEBVIEW, surface.js), path.join(SRC, surface.host)]) {
+            const src = fs.readFileSync(file, 'utf8');
+            assert.deepEqual(src.match(/\son[a-z]+=\\?["']/g) || [], [], `${path.basename(file)} uses inline handlers`);
+            for (const decl of src.match(/style="[^"]*"/g) || []) {
+                assert.deepEqual(decl.match(LITERAL_COLOUR), null, `inline colour in ${decl}`);
+                assert.equal(/\bpadding\s*:|\bfont-size\s*:/.test(decl), false, `inline spacing or type in ${decl}`);
+            }
+        }
+    }
 });
 
 test('every webview stylesheet in TypeScript defines no literal colour', () => {
@@ -77,6 +95,15 @@ test('black and white appear only inside a --cursor-* image declaration', () => 
     for (const [name, css] of sheets) {
         assert.deepEqual(withoutCommentsAndCursorImages(css).match(BLACK_OR_WHITE), null,
             `${name} uses black/white outside a --cursor-* image`);
+    }
+});
+
+test('the stylesheets of the file-based surfaces define no literal colour, black, white or raw z-index', () => {
+    for (const surface of FILE_SURFACES) {
+        const css = fs.readFileSync(path.join(WEBVIEW, surface.css), 'utf8');
+        assert.deepEqual(css.match(LITERAL_COLOUR), null, `${surface.css} contains a literal colour`);
+        assert.deepEqual(withoutCommentsAndCursorImages(css).match(BLACK_OR_WHITE), null, `${surface.css} uses black/white`);
+        assert.deepEqual(css.match(/z-index:\s*-?\d/g), null, `${surface.css} uses a raw z-index`);
     }
 });
 
@@ -132,8 +159,11 @@ test('every referenced icon exists in the sprite', () => {
         fs.readFileSync(path.join(WEBVIEW, 'tableView.html'), 'utf8'),
         fs.readFileSync(path.join(WEBVIEW, 'tableView.js'), 'utf8')
     ];
-    for (const file of [...STYLE_OWNERS, 'tableWebView.ts']) {
+    for (const file of [...STYLE_OWNERS, 'tableWebView.ts', ...FILE_SURFACES.map(s => s.host)]) {
         sources.push(fs.readFileSync(path.join(SRC, file), 'utf8'));
+    }
+    for (const surface of FILE_SURFACES) {
+        sources.push(fs.readFileSync(path.join(WEBVIEW, surface.js), 'utf8'));
     }
 
     let referenced = 0;
@@ -157,10 +187,10 @@ test('the sprite contains no unused symbol', () => {
         .map(m => m.replace(/^id="icon-/, '').replace(/"$/, ''));
 
     let all = '';
-    for (const file of ['tableView.html', 'tableView.js']) {
+    for (const file of ['tableView.html', 'tableView.js', ...FILE_SURFACES.map(s => s.js)]) {
         all += fs.readFileSync(path.join(WEBVIEW, file), 'utf8');
     }
-    for (const file of [...STYLE_OWNERS, 'tableWebView.ts']) {
+    for (const file of [...STYLE_OWNERS, 'tableWebView.ts', ...FILE_SURFACES.map(s => s.host)]) {
         all += fs.readFileSync(path.join(SRC, file), 'utf8');
     }
 

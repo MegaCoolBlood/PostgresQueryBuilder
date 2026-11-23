@@ -2431,3 +2431,43 @@ test('the Shift+Ctrl+A row limit is a setting of the Data Viewer', () => {
     const setting = group.properties[`postgresQueryBuilder.${LOAD_ALL_WARNING_SETTING}`];
     assert.deepEqual([setting.type, setting.default, setting.minimum], ['integer', 100000, 0]);
 });
+
+// ===== Edit in Query Builder =====
+
+test('Edit in Query Builder opens the builder on the query; its Apply runs the query in this panel, or in a new one once it is closed', async () => {
+    const { manager } = createManager();
+    const opened: Array<{ sql: string; target: any }> = [];
+    manager.setQueryBuilderOpener(async (sql, target) => { opened.push({ sql, target }); });
+    const panels = [createFakePanel(), createFakePanel()];
+    (panels[0] as any).title = 'orders';
+    let next = 0;
+    const originalCreate = vscodeStub.window.createWebviewPanel;
+    vscodeStub.window.createWebviewPanel = () => panels[next++];
+    try {
+        await manager.openQueryView('SELECT 1', 'orders');
+        await panels[0].state.onMessage({ command: 'editInQueryBuilder', sql: 'SELECT * FROM orders' });
+        assert.equal(opened.length, 1);
+        assert.equal(opened[0].sql, 'SELECT * FROM orders');
+        assert.match(opened[0].target.description, /Data Viewer "orders"/);
+
+        const applied = await opened[0].target.apply('SELECT id FROM orders');
+        assert.equal(applied.ok, true);
+        assert.deepEqual(panels[0].posted.filter((m: any) => m.command === 'setQueryAndRun'), [{ command: 'setQueryAndRun', sql: 'SELECT id FROM orders' }]);
+
+        panels[0].dispose();
+        const reopened = await opened[0].target.apply('SELECT 2');
+        assert.match(reopened.message, /was closed, so the query was opened in a new Data Viewer/);
+        assert.equal(next, 2, 'a new Data Viewer was opened');
+        assert.equal(panels[1].posted.find((m: any) => m.command === 'init').sql, 'SELECT 2');
+    } finally {
+        vscodeStub.window.createWebviewPanel = originalCreate;
+    }
+});
+
+test('the Data Viewer posts Edit in Query Builder and runs what the builder applies', () => {
+    const html = fs.readFileSync(path.join(EXTENSION_PATH, 'src', 'webview', 'tableView.html'), 'utf8');
+    const js = fs.readFileSync(path.join(EXTENSION_PATH, 'src', 'webview', 'tableView.js'), 'utf8');
+    assert.match(html, /<button class="btn btn-icon" id="queryBuilderBtn" title="Edit in Query Builder[^"]*"><svg class="ico" aria-hidden="true"><use href="#icon-diagram"\/><\/svg><\/button>/);
+    assert.ok(js.includes("vscode.postMessage({ command: 'editInQueryBuilder', sql: queryInput.value })"));
+    assert.match(js, /case 'setQueryAndRun':\s*\/\/[^\n]*\n\s*setQueryTextAndRun\(msg\.sql\);/);
+});

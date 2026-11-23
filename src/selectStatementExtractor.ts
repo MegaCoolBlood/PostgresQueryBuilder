@@ -330,13 +330,13 @@ function firstSelectOrWithIndex(tokens: Token[]): number {
 
 /**
  * If `stmt` begins with a PL/pgSQL `FOR <target> IN (query) LOOP` (or
- * `FOR <target> IN query LOOP`) construct, return just the inner query
- * (`SELECT ...` / `WITH ...`). Otherwise return null.
+ * `FOR <target> IN query LOOP`) construct, return the `[start, end)` offsets
+ * of just the inner query (`SELECT ...` / `WITH ...`). Otherwise return null.
  *
  * This keeps the surrounding loop scaffolding (`FOR r IN (`, `) LOOP ...`)
  * out of the extracted statement when the cursor sits on the loop's query.
  */
-function extractForLoopQuery(stmt: string, tokens: Token[]): string | null {
+function forLoopQueryRange(stmt: string, tokens: Token[]): { start: number; end: number } | null {
     // Locate the loop's `FOR` keyword at the top level.
     const firstIdx = tokens.findIndex(
         (t) => t.type === 'word' && t.depth === 0 && t.text.toLowerCase() === 'for'
@@ -379,7 +379,7 @@ function extractForLoopQuery(stmt: string, tokens: Token[]): string | null {
             if (t.type === 'punct' && t.text === ')' && t.depth === openDepth) {
                 const queryStart = findQueryStart(inIdx + 2, j, openDepth + 1);
                 if (queryStart === -1) return null;
-                return stmt.slice(queryStart, t.start).trim();
+                return { start: queryStart, end: t.start };
             }
         }
         return null;
@@ -398,7 +398,7 @@ function extractForLoopQuery(stmt: string, tokens: Token[]): string | null {
     }
     const queryStart = findQueryStart(inIdx + 1, loopIdx, after.depth);
     if (queryStart === -1) return null;
-    return stmt.slice(queryStart, loopStart).trim();
+    return { start: queryStart, end: loopStart };
 }
 
 /** Remove a top-level `INTO [STRICT] target, ...` clause from a SELECT. */
@@ -663,40 +663,9 @@ export function extractSelect(
     cursorOffset: number,
     selection?: { start: number; end: number }
 ): SelectExtraction | null {
-    let stmt: string;
-
-    if (selection && selection.end > selection.start) {
-        stmt = fullText.slice(selection.start, selection.end);
-    } else {
-        // When the cursor sits inside a dollar-quoted body (e.g. a PL/pgSQL
-        // function body), restrict the search to that body's contents.
-        // Otherwise the whole `CREATE FUNCTION ... $body$;` would be treated as
-        // a single statement (its inner semicolons are masked away).
-        const body = findEnclosingDollarBody(fullText, cursorOffset);
-        const searchText = body ? fullText.slice(body.start, body.end) : fullText;
-        const localOffset = body ? cursorOffset - body.start : cursorOffset;
-
-        const masked = maskSql(searchText);
-        const bounds = enclosingStatementBounds(masked, localOffset);
-        stmt = searchText.slice(bounds.start, bounds.end);
-        // Trim down to the SELECT / WITH start if the statement has a prefix
-        // (e.g. `IF ... THEN SELECT ...` or `RETURN QUERY SELECT ...`).
-        const stmtMasked = maskSql(stmt);
-        const stmtTokens = tokenize(stmtMasked);
-        // A PL/pgSQL `FOR r IN (SELECT ...) LOOP` wraps the query in parens, so
-        // peel off the loop scaffolding and keep only the inner SELECT/WITH.
-        const forQuery = extractForLoopQuery(stmt, stmtTokens);
-        if (forQuery !== null) {
-            stmt = forQuery;
-        } else {
-            const selIdx = firstSelectOrWithIndex(stmtTokens);
-            if (selIdx > 0) stmt = stmt.slice(selIdx);
-        }
-    }
-
-    // Drop a trailing semicolon and surrounding whitespace.
-    stmt = stmt.trim().replace(/;\s*$/, '').trim();
-    if (!stmt) return null;
+    const range = selectStatementRange(fullText, cursorOffset, selection);
+    if (!range) return null;
+    let stmt = fullText.slice(range.start, range.end);
 
     // Turn an UPDATE into an equivalent SELECT so its rows can be previewed.
     const asSelect = convertUpdateToSelect(stmt);
@@ -705,7 +674,16 @@ export function extractSelect(
     stmt = stripIntoClause(stmt).trim();
     if (!stmt) return null;
 
-    const occurrences = findVariableTokens(stmt, extractTableQualifiers(stmt), extractDefinedNames(stmt));
+    return { sql: stmt, variables: queryVariableNames(stmt) };
+}
+
+/**
+ * The distinct variables of a query (in order of first appearance) that View
+ * Data asks values for: `$1`, `:name` placeholders, PL/pgSQL variables and
+ * record fields (see {@link findVariableTokens}).
+ */
+export function queryVariableNames(sql: string): string[] {
+    const occurrences = findVariableTokens(sql, extractTableQualifiers(sql), extractDefinedNames(sql));
     const seen = new Set<string>();
     const variables: string[] = [];
     for (const occ of occurrences) {
@@ -713,8 +691,90 @@ export function extractSelect(
         seen.add(occ.key);
         variables.push(occ.name);
     }
+    return variables;
+}
 
-    return { sql: stmt, variables };
+/**
+ * The statement at the cursor (or the selection) as it stands in the text, for
+ * a tool that rewrites it in place: its `[start, end)` offsets, its text and
+ * whether it is an UPDATE or carries a PL/pgSQL `INTO` clause — both of which
+ * {@link extractSelect} would drop, so writing a SELECT back over them would
+ * lose code.
+ */
+export function selectStatementForEditing(
+    fullText: string,
+    cursorOffset: number,
+    selection?: { start: number; end: number }
+): { start: number; end: number; sql: string; isUpdate: boolean; hasInto: boolean } | null {
+    const range = selectStatementRange(fullText, cursorOffset, selection);
+    if (!range) return null;
+    const sql = fullText.slice(range.start, range.end);
+    return {
+        ...range,
+        sql,
+        isUpdate: convertUpdateToSelect(sql) !== null,
+        hasInto: stripIntoClause(sql) !== sql.trim()
+    };
+}
+
+/**
+ * The `[start, end)` offsets in `fullText` of the statement {@link extractSelect}
+ * reads — before an UPDATE is turned into a SELECT and an INTO clause is
+ * removed — without surrounding whitespace and trailing semicolon. Null when
+ * there is no statement.
+ */
+export function selectStatementRange(
+    fullText: string,
+    cursorOffset: number,
+    selection?: { start: number; end: number }
+): { start: number; end: number } | null {
+    let start: number;
+    let end: number;
+
+    if (selection && selection.end > selection.start) {
+        start = selection.start;
+        end = selection.end;
+    } else {
+        // When the cursor sits inside a dollar-quoted body (e.g. a PL/pgSQL
+        // function body), restrict the search to that body's contents.
+        // Otherwise the whole `CREATE FUNCTION ... $body$;` would be treated as
+        // a single statement (its inner semicolons are masked away).
+        const body = findEnclosingDollarBody(fullText, cursorOffset);
+        const base = body ? body.start : 0;
+        const searchText = body ? fullText.slice(body.start, body.end) : fullText;
+        const localOffset = cursorOffset - base;
+
+        const masked = maskSql(searchText);
+        const bounds = enclosingStatementBounds(masked, localOffset);
+        start = base + bounds.start;
+        end = base + bounds.end;
+        const stmt = fullText.slice(start, end);
+        // Trim down to the SELECT / WITH start if the statement has a prefix
+        // (e.g. `IF ... THEN SELECT ...` or `RETURN QUERY SELECT ...`).
+        const stmtTokens = tokenize(maskSql(stmt));
+        // A PL/pgSQL `FOR r IN (SELECT ...) LOOP` wraps the query in parens, so
+        // peel off the loop scaffolding and keep only the inner SELECT/WITH.
+        const forQuery = forLoopQueryRange(stmt, stmtTokens);
+        if (forQuery !== null) {
+            end = start + forQuery.end;
+            start += forQuery.start;
+        } else {
+            const selIdx = firstSelectOrWithIndex(stmtTokens);
+            if (selIdx > 0) start += selIdx;
+        }
+    }
+
+    // Drop a trailing semicolon and surrounding whitespace.
+    const trim = (): void => {
+        while (start < end && /\s/.test(fullText[start])) start++;
+        while (end > start && /\s/.test(fullText[end - 1])) end--;
+    };
+    trim();
+    if (end > start && fullText[end - 1] === ';') {
+        end--;
+        trim();
+    }
+    return end > start ? { start, end } : null;
 }
 
 /** Keywords that end a `FROM`/`JOIN` table reference (alias or list). */

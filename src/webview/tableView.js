@@ -4858,6 +4858,12 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
     }
     queryRunBtn.addEventListener('click', runQuery);
+    const queryBuilderBtn = document.getElementById('queryBuilderBtn');
+    if (queryBuilderBtn) {
+        queryBuilderBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'editInQueryBuilder', sql: queryInput.value });
+        });
+    }
     if (queryFormatBtn) {
         queryFormatBtn.addEventListener('click', () => {
             if (queryEditor) {
@@ -6208,6 +6214,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 break;
             case 'queryBarHeightChanged':
                 applyQueryBoxHeight(normalizeQueryBoxHeight(msg.height, queryBoxMaxHeight()));
+                break;
+            case 'setQueryAndRun':
+                // Apply of the Query Builder opened from this panel.
+                setQueryTextAndRun(msg.sql);
                 break;
             case 'rowsLoaded':
                 if (isStaleLoadAnswer(msg.loadId, latestLoadId)) break;

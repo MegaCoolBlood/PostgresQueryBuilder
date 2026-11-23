@@ -24,8 +24,12 @@ import { resetSessionWithConfirmation, type QueryViewLoad, type ViewerPlacement 
 import { executableColumnType, executableTypePickItems, type ExecutableValueRunner } from './executableColumns';
 import { EXPORT_FILE_EXTENSIONS, exportDialogChoiceFrom, type ExportDialogChoice, type ExportDialogRequest, type ExportFileAssist, type ExportFormat } from './exportInstructions';
 import { ExportCancelledError, ExportTracker, notificationProgress } from './exportProgress';
+import type { QueryBuilderTarget } from './queryBuilder';
 import * as path from 'path';
 import * as fs from 'fs';
+
+/** Opens the Query Builder on a query, with where its Apply writes back. */
+export type QueryBuilderOpener = (sql: string, target: QueryBuilderTarget) => Promise<unknown>;
 
 /** Said after a save that joined a transaction the user opened in the session. */
 const PENDING_HINT = 'they become permanent once that transaction is committed with COMMIT or Commit in the PostgreSQL Messages panel.';
@@ -359,6 +363,7 @@ export class TableWebViewManager {
     /** Runs the values of executable columns; set once the extension has wired it. */
     private executableValueRunner?: ExecutableValueRunner;
     private selectHistory?: SelectHistorySink;
+    private queryBuilderOpener?: QueryBuilderOpener;
     /** Cell values currently open in an editor tab, keyed by scratch file path. */
     private cellEditors: Map<string, CellEditorLink> = new Map();
     private cellEditorCounter = 0;
@@ -423,6 +428,46 @@ export class TableWebViewManager {
     /** Where the queries of a Data Viewer that shows no one table are remembered (the "Select History"). */
     setSelectHistory(history: SelectHistorySink): void {
         this.selectHistory = history;
+    }
+
+    /** Opens the Query Builder for "Edit in Query Builder"; set once the extension has created it. */
+    setQueryBuilderOpener(opener: QueryBuilderOpener): void {
+        this.queryBuilderOpener = opener;
+    }
+
+    /**
+     * Write a query into the query bar of a panel and run it — the Apply of a
+     * Query Builder opened from that panel. False when the panel is closed.
+     */
+    private applyQueryToPanel(session: PanelSession, sql: string): boolean {
+        if (session.disposed) return false;
+        this.post(session, { command: 'setQueryAndRun', sql });
+        session.panel.reveal();
+        return true;
+    }
+
+    /**
+     * "Edit in Query Builder" of the query bar: open the builder on the query
+     * shown; its Apply writes the query back into this panel and runs it, or
+     * opens a new Data Viewer when this one was closed meanwhile.
+     */
+    private async handleEditInQueryBuilder(ctx: MessageContext): Promise<void> {
+        const { session, message } = ctx;
+        ctx.nothingRan = true;
+        if (!this.queryBuilderOpener) {
+            throw new Error('The Query Builder is not available.');
+        }
+        const title = session.panel.title;
+        await this.queryBuilderOpener(typeof message.sql === 'string' ? message.sql : '', {
+            description: `Write the query into the Data Viewer "${title}" and run it`,
+            apply: async (sql: string) => {
+                if (this.applyQueryToPanel(session, sql)) {
+                    return { ok: true, message: `The query was applied to the Data Viewer "${title}".` };
+                }
+                await this.openQueryView(sql, title);
+                return { ok: true, message: `The Data Viewer "${title}" was closed, so the query was opened in a new Data Viewer.` };
+            }
+        });
     }
 
     private broadcastMappings(): void {
@@ -797,7 +842,8 @@ export class TableWebViewManager {
         chooseExecutableType: this.handleChooseExecutableType,
         exportDialogResult: this.handleExportDialogResult,
         exportPlaceholderSuggest: this.handleExportPlaceholderSuggest,
-        exportTargetPreview: this.handleExportTargetPreview
+        exportTargetPreview: this.handleExportTargetPreview,
+        editInQueryBuilder: this.handleEditInQueryBuilder
     };
 
     /**

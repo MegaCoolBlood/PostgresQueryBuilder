@@ -195,6 +195,30 @@
         "category": "PostgreSQL Query Booster"
       },
       {
+        "command": "postgresQueryBuilder.openQueryBuilder",
+        "title": "New Query Builder",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "postgresQueryBuilder.openTablesInQueryBuilder",
+        "title": "Open in Query Builder",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "postgresQueryBuilder.addTablesToQueryBuilder",
+        "title": "Add to Query Builder",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(add)"
+      },
+      {
+        "command": "postgresQueryBuilder.editSelectInQueryBuilder",
+        "title": "Edit SELECT in Query Builder",
+        "category": "PostgreSQL Query Booster",
+        "icon": "$(type-hierarchy)"
+      },
+      {
         "command": "postgresQueryBuilder.executeStatement",
         "title": "Execute Selection",
         "category": "PostgreSQL Query Booster",
@@ -543,6 +567,11 @@
           "group": "navigation@6"
         },
         {
+          "command": "postgresQueryBuilder.openQueryBuilder",
+          "when": "view == postgresTableExplorer",
+          "group": "1_queryBuilder@1"
+        },
+        {
           "command": "postgresQueryBuilder.saveQueryFromEditor",
           "when": "view == postgresSavedQueries",
           "group": "navigation"
@@ -798,6 +827,16 @@
           "command": "postgresQueryBuilder.debugFunction",
           "when": "postgresQueryBuilder.debugAvailable && (view == postgresObjectNavigator || view == postgresObjectDependencies || view == postgresComparison) && viewItem =~ /^dbObject\\.(function|procedure)$/",
           "group": "4_debug@1"
+        },
+        {
+          "command": "postgresQueryBuilder.openTablesInQueryBuilder",
+          "when": "view == postgresTableExplorer && viewItem =~ /^table(\\.differs)?$/",
+          "group": "0_queryBuilder@1"
+        },
+        {
+          "command": "postgresQueryBuilder.addTablesToQueryBuilder",
+          "when": "view == postgresTableExplorer && viewItem =~ /^table(\\.differs)?$/",
+          "group": "0_queryBuilder@2"
         }
       ],
       "commandPalette": [
@@ -892,6 +931,18 @@
         {
           "command": "postgresQueryBuilder.debugStatement",
           "when": "postgresQueryBuilder.debugAvailable && editorLangId =~ /^(sql|postgres|pgsql)$/"
+        },
+        {
+          "command": "postgresQueryBuilder.openTablesInQueryBuilder",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.addTablesToQueryBuilder",
+          "when": "false"
+        },
+        {
+          "command": "postgresQueryBuilder.editSelectInQueryBuilder",
+          "when": "editorLangId =~ /^(sql|postgres|pgsql)$/"
         }
       ],
       "editor/title": [
@@ -915,6 +966,11 @@
         {
           "command": "postgresQueryBuilder.viewDataFromSelect",
           "when": "editorTextFocus && resourceLangId == sql",
+          "group": "navigation@9"
+        },
+        {
+          "command": "postgresQueryBuilder.editSelectInQueryBuilder",
+          "when": "editorTextFocus && (resourceLangId == sql || resourceLangId == postgres || resourceLangId == pgsql)",
           "group": "navigation@9"
         },
         {

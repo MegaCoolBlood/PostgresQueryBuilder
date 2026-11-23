@@ -45,6 +45,12 @@ export interface WebviewHtmlOptions {
     webview?: vscode.Webview;
     /** Nonce for the CSP/script. Generated automatically when omitted. */
     nonce?: string;
+    /**
+     * Builds the Content-Security-Policy instead of {@link buildCsp}, for a
+     * surface that also loads the extension's own resources (e.g. the Monaco
+     * bundle). Only used together with `webview`.
+     */
+    csp?: (cspSource: string, nonce: string) => string;
     /** Raw CSS placed inside a `<style>` element (without the `<style>` tags). */
     styles?: string;
     /** Body markup placed inside `<body>` (without the `<body>` tags). */
@@ -79,7 +85,7 @@ export function buildHtmlDocument(options: WebviewHtmlOptions): string {
     const lang = options.lang ?? 'en';
     const shared = options.includeSharedAssets !== false;
     const cspMeta = options.webview
-        ? `\n<meta http-equiv="Content-Security-Policy" content="${buildCsp(options.webview, nonce)}">`
+        ? `\n<meta http-equiv="Content-Security-Policy" content="${options.csp ? options.csp(options.webview.cspSource, nonce) : buildCsp(options.webview, nonce)}">`
         : '';
     const titleTag = options.title ? `\n<title>${options.title}</title>` : '';
     const css = [shared ? getSharedStyles() : '', options.styles ?? ''].filter(Boolean).join('\n');

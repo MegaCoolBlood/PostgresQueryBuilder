@@ -8,7 +8,10 @@ import {
     findEnclosingDollarBody,
     extractTableNames,
     extractTableQualifiers,
-    extractDefinedNames
+    extractDefinedNames,
+    selectStatementForEditing,
+    selectStatementRange,
+    queryVariableNames
 } from '../selectStatementExtractor';
 
 // ===== maskSql =====
@@ -129,6 +132,15 @@ test('substituteVariables replaces a :name placeholder including its colon', () 
     const sql = 'SELECT :v_von AS from_day FROM t WHERE d <= :v_bis';
     const out = substituteVariables(sql, { ':v_von': "'2026-01-01'", ':v_bis': "'2026-12-31'" });
     assert.equal(out, "SELECT '2026-01-01' AS from_day FROM t WHERE d <= '2026-12-31'");
+});
+
+test('queryVariableNames treats the colon of an array slice as a slice, not a placeholder', () => {
+    const sql = 'SELECT a[1:n] FROM t WHERE a[lo:hi] = ARRAY[:x]';
+    assert.deepEqual(queryVariableNames(sql), [':x']);
+    assert.equal(substituteVariables(sql, { ':x': '5', ':n': '7' }), 'SELECT a[1:n] FROM t WHERE a[lo:hi] = ARRAY[5]');
+    assert.deepEqual(queryVariableNames('SELECT a[:n], b[ 2 : m ][:k] FROM t'), []);
+    assert.deepEqual(queryVariableNames('SELECT * FROM t WHERE a && ARRAY[:x, :y] AND b = array [ :z ]'), [':x', ':y', ':z']);
+    assert.deepEqual(queryVariableNames('SELECT ARRAY[:x][1:n] FROM t WHERE c = :after'), [':x', ':after']);
 });
 
 test('extractDefinedNames covers a CTE declared as MATERIALIZED', () => {
@@ -325,6 +337,23 @@ test('findEnclosingDollarBody returns inner bounds for the enclosing body', () =
 });
 
 // ===== extractSelect: PL/pgSQL FOR ... IN (query) LOOP =====
+
+test('selectStatementRange points at the inner query of a FOR loop in the original text', () => {
+    const body = 'BEGIN\n    FOR r IN (\n        SELECT id\n        FROM t\n    ) LOOP\n        NULL;\n    END LOOP;\nEND;';
+    const range = selectStatementRange(body, body.indexOf('id'));
+    assert.ok(range);
+    assert.equal(body.slice(range.start, range.end), 'SELECT id\n        FROM t');
+    assert.equal(extractSelect(body, body.indexOf('id'))?.sql, 'SELECT id\n        FROM t');
+});
+
+test('selectStatementForEditing tells an INTO clause and an UPDATE apart from a plain SELECT', () => {
+    const into = 'SELECT a INTO v FROM t;';
+    assert.deepEqual(selectStatementForEditing(into, 3), { start: 0, end: into.length - 1, sql: 'SELECT a INTO v FROM t', isUpdate: false, hasInto: true });
+    assert.equal(selectStatementForEditing('UPDATE t SET a = 1', 2)?.isUpdate, true);
+    assert.equal(selectStatementForEditing('  SELECT 1 ;  ', 4)?.sql, 'SELECT 1');
+    assert.equal(selectStatementForEditing('SELECT 1', 4)?.hasInto, false);
+    assert.equal(selectStatementForEditing(' ; ', 1), null);
+});
 
 test('extractSelect peels a parenthesized FOR ... IN (SELECT ...) LOOP', () => {
     const body = [
