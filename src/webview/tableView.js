@@ -1136,9 +1136,14 @@ function joinSqlParts(parts, glue) {
 }
 
 // Reassembles a query split by parseSqlForWhere with the given WHERE conditions.
+// The GROUP BY, HAVING and WINDOW clauses of an aggregating query follow the
+// WHERE, as SQL wants them.
 function assembleWhereQuery(parsed, clauses) {
     let sql = parsed.base;
     if (clauses && clauses.length > 0) sql = appendSql(sql, ' WHERE ', joinSqlParts(clauses, ' AND '));
+    if (parsed.groupBy) sql = appendSql(sql, ' ', parsed.groupBy);
+    if (parsed.having) sql = appendSql(sql, ' HAVING ', parsed.having);
+    if (parsed.window) sql = appendSql(sql, ' ', parsed.window);
     if (parsed.orderBy) sql = appendSql(sql, ' ORDER BY ', parsed.orderBy);
     return sql;
 }
@@ -1150,17 +1155,33 @@ function assembleOrderQuery(base, orderParts) {
         : base;
 }
 
-// Splits off the first `ORDER BY` of the query as the query bar always has,
-// but ignores one inside a comment or string literal and keeps a comment that
-// stands in front of it in the base. Returns null when there is none.
+// Splits off the `ORDER BY` of the query itself — the first one outside
+// parentheses, so one of `string_agg(… ORDER BY …)` or `OVER (ORDER BY …)` is
+// left alone — but ignores one inside a comment or string literal and keeps a
+// comment that stands in front of it in the base. Returns null when there is none.
 function splitTrailingOrderBy(s) {
-    const m = /\s+ORDER\s+BY\s+([\s\S]+)$/i.exec(maskSqlStructure(s));
-    if (!m) return null;
-    const keywordAt = m.index + m[0].length - m[0].replace(/^\s+/, '').length;
-    return {
-        base: s.substring(0, keywordAt).replace(/\s+$/, ''),
-        orderBy: s.substring(m.index + m[0].length - m[1].length).trim()
-    };
+    const masked = maskSqlStructure(s);
+    const re = /\s+ORDER\s+BY\s+(?=\S)/gi;
+    let m;
+    while ((m = re.exec(masked)) !== null) {
+        if (parenDepthAt(masked, m.index) !== 0) continue;
+        const keywordAt = m.index + m[0].length - m[0].replace(/^\s+/, '').length;
+        return {
+            base: s.substring(0, keywordAt).replace(/\s+$/, ''),
+            orderBy: s.substring(m.index + m[0].length).trim()
+        };
+    }
+    return null;
+}
+
+// How many parentheses are open at `index` of masked SQL.
+function parenDepthAt(masked, index) {
+    let depth = 0;
+    for (let i = 0; i < index; i++) {
+        if (masked[i] === '(') depth++;
+        else if (masked[i] === ')') depth = Math.max(0, depth - 1);
+    }
+    return depth;
 }
 
 function findTopLevelKeywordIndex(sql, keyword) {
@@ -1208,6 +1229,9 @@ function parseSqlForWhere(sql) {
         orderBy = ordSplit.orderBy;
         s = ordSplit.base;
     }
+    // An aggregating query keeps GROUP BY / HAVING / WINDOW after its WHERE.
+    const tail = splitGroupTail(s);
+    if (tail) s = tail.head;
     // Find top-level WHERE (best-effort: first WHERE at paren depth 0, outside strings)
     const whereIdx = findTopLevelKeywordIndex(s, 'WHERE');
     let base = s;
@@ -1218,7 +1242,45 @@ function parseSqlForWhere(sql) {
         base = s.substring(0, whereIdx).replace(/\s+$/, '');
         where = after.substring(m[0].length).trim();
     }
-    return { base, where, orderBy };
+    if (!tail) return { base, where, orderBy };
+    return { base, where, orderBy, groupBy: tail.groupBy, having: tail.having, window: tail.window };
+}
+
+// The GROUP BY, HAVING and WINDOW clauses at the end of a query without its
+// ORDER BY: { head, groupBy, having, window }, where `groupBy` and `window`
+// keep their keywords and `having` is the bare condition. Null when the query
+// has none of them.
+function splitGroupTail(s) {
+    let start = -1;
+    for (const kw of ['GROUP', 'HAVING', 'WINDOW']) {
+        let from = 0;
+        let idx = -1;
+        // GROUP counts only as GROUP BY.
+        while (from < s.length) {
+            const found = findTopLevelKeywordIndex(s.substring(from), kw);
+            if (found === -1) break;
+            const at = from + found;
+            if (kw !== 'GROUP' || /^GROUP\s+BY\b/i.test(s.substring(at))) { idx = at; break; }
+            from = at + kw.length;
+        }
+        if (idx !== -1 && (start === -1 || idx < start)) start = idx;
+    }
+    if (start === -1) return null;
+    const head = s.substring(0, start).replace(/\s+$/, '');
+    const tail = s.substring(start);
+    const havingAt = findTopLevelKeywordIndex(tail, 'HAVING');
+    const windowAt = findTopLevelKeywordIndex(tail, 'WINDOW');
+    const groupEnd = Math.min(
+        havingAt === -1 ? tail.length : havingAt,
+        windowAt === -1 ? tail.length : windowAt
+    );
+    const havingEnd = windowAt > havingAt ? windowAt : tail.length;
+    return {
+        head,
+        groupBy: tail.substring(0, groupEnd).trim(),
+        having: havingAt === -1 ? '' : tail.substring(havingAt + 'HAVING'.length, havingEnd).trim(),
+        window: windowAt === -1 ? '' : tail.substring(windowAt).trim()
+    };
 }
 
 function splitWhereByAnd(whereClause) {
@@ -1261,28 +1323,60 @@ function splitWhereByAnd(whereClause) {
     return parts;
 }
 
-function whereClauseTargetsColumn(clause, colName) {
+// True when `clause` is the condition on result column `colName`: it starts
+// with the column's name (bare, quoted or qualified, but not as the name of a
+// function it calls), or with `reference`, the SQL the filter wrote for the
+// column — such as `(upper(name))` for a computed column.
+function whereClauseTargetsColumn(clause, colName, reference) {
     const code = String(clause).replace(/^(?:\s*(?:--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/))*/, '');
+    if (reference && clauseStartsWithReference(code, reference)) return true;
     // Match an optional schema/table prefix then the column identifier (quoted or bare)
-    const m = code.match(/^\s*(?:(?:"[^"]+"|[A-Za-z_][\w$]*)\s*\.\s*)*("[^"]+"|[A-Za-z_][\w$]*)/);
+    const m = code.match(/^\s*(?:(?:"[^"]+"|[A-Za-z_][\w$]*)\s*\.\s*)*("[^"]+"|[A-Za-z_][\w$]*)(?![\w$])(?!\s*[.(])/);
     if (!m) return false;
     let tok = m[1];
     if (tok.startsWith('"') && tok.endsWith('"')) tok = tok.substring(1, tok.length - 1);
     return tok.toLowerCase() === colName.toLowerCase();
 }
 
+// True when `code` begins with the SQL text `reference`, ignoring differences
+// in white space and letter case, and the reference is not just the start of a
+// longer name there.
+function clauseStartsWithReference(code, reference) {
+    const norm = (text) => String(text).replace(/\s+/g, ' ').trim().toLowerCase();
+    const ref = norm(reference);
+    const text = norm(code);
+    if (!ref || !text.startsWith(ref)) return false;
+    return !/[\w$"]/.test(text.charAt(ref.length)) || !/[\w$"]$/.test(ref);
+}
+
 // Replace the WHERE clauses of the listed columns, keeping every other clause
 // (including hand-written ones) untouched. An empty clause drops the column's
 // condition, which is how clearing a column filter removes it from the query.
-function mergeWhereClauses(existing, clausesByCol) {
+// `referencesByCol` holds the SQL a column is written as when that is not its
+// name (a computed column), so its earlier condition is found as well.
+function mergeWhereClauses(existing, clausesByCol, referencesByCol) {
     const clauses = existing || [];
     const targetCols = Object.keys(clausesByCol || {});
     if (targetCols.length === 0) return clauses.slice();
-    const merged = clauses.filter(c => !targetCols.some(col => whereClauseTargetsColumn(c, col)));
+    const refs = referencesByCol || {};
+    const merged = clauses.filter(c => !targetCols.some(col => whereClauseTargetsColumn(c, col, refs[col])));
     for (const col of targetCols) {
         if (clausesByCol[col]) merged.push(clausesByCol[col]);
     }
     return merged;
+}
+
+// Merge column conditions into a query split by parseSqlForWhere: those in
+// `whereByCol` into its WHERE (returned as the list of conditions for
+// assembleWhereQuery), those in `havingByCol` — conditions on aggregates —
+// into its HAVING, which is updated on `parsed`. Same rules as mergeWhereClauses.
+function mergeColumnConditions(parsed, whereByCol, havingByCol, referencesByCol) {
+    const where = mergeWhereClauses(parsed.where ? splitWhereByAnd(parsed.where) : [], whereByCol || {}, referencesByCol);
+    if (havingByCol && Object.keys(havingByCol).length > 0) {
+        const having = mergeWhereClauses(parsed.having ? splitWhereByAnd(parsed.having) : [], havingByCol, referencesByCol);
+        parsed.having = joinSqlParts(having, ' AND ');
+    }
+    return where;
 }
 
 function parseSqlForOrder(sql) {
@@ -2493,6 +2587,126 @@ function analyzeSelectItem(sql, masked, item, isReservedWord) {
     return plain;
 }
 
+// Aggregate functions: a condition on a column they compute goes into HAVING.
+const SQL_AGGREGATE_FUNCTIONS = new Set([
+    'count', 'sum', 'avg', 'min', 'max', 'string_agg', 'array_agg', 'bool_and', 'bool_or', 'every',
+    'json_agg', 'jsonb_agg', 'json_agg_strict', 'jsonb_agg_strict', 'json_object_agg', 'jsonb_object_agg',
+    'json_object_agg_strict', 'jsonb_object_agg_strict', 'json_object_agg_unique', 'jsonb_object_agg_unique',
+    'json_arrayagg', 'json_objectagg', 'xmlagg', 'bit_and', 'bit_or', 'bit_xor', 'any_value',
+    'range_agg', 'range_intersect_agg', 'stddev', 'stddev_pop', 'stddev_samp', 'variance', 'var_pop',
+    'var_samp', 'corr', 'covar_pop', 'covar_samp', 'regr_avgx', 'regr_avgy', 'regr_count',
+    'regr_intercept', 'regr_r2', 'regr_slope', 'regr_sxx', 'regr_sxy', 'regr_syy', 'mode'
+]);
+
+// Set-returning functions: a column they produce cannot be filtered in WHERE.
+const SQL_SET_RETURNING_FUNCTIONS = new Set([
+    'unnest', 'generate_series', 'generate_subscripts', 'regexp_matches', 'regexp_split_to_table',
+    'string_to_table', 'json_array_elements', 'json_array_elements_text', 'jsonb_array_elements',
+    'jsonb_array_elements_text', 'json_each', 'json_each_text', 'jsonb_each', 'jsonb_each_text',
+    'json_object_keys', 'jsonb_object_keys', 'json_to_recordset', 'jsonb_to_recordset',
+    'json_populate_recordset', 'jsonb_populate_recordset', 'jsonb_path_query'
+]);
+
+// What a select-list expression (masked SQL) computes outside its subqueries:
+// { aggregate, window, setReturning } — an aggregate call, a window function
+// (OVER) or a set-returning call.
+function classifySelectExpression(masked) {
+    const tokens = sqlStructureTokens(masked);
+    const opened = [];
+    let inSubquery = 0;
+    const kind = { aggregate: false, window: false, setReturning: false };
+    for (let k = 0; k < tokens.length; k++) {
+        const t = tokens[k];
+        const next = tokens[k + 1];
+        if (t.text === '(') {
+            const sub = !!next && ['select', 'with', 'values'].indexOf(next.lower) !== -1;
+            opened.push(sub);
+            if (sub) inSubquery++;
+            continue;
+        }
+        if (t.text === ')') {
+            if (opened.pop()) inSubquery--;
+            continue;
+        }
+        if (inSubquery > 0 || !t.lower || !next) continue;
+        if (t.lower === 'over' && (next.text === '(' || next.lower)) kind.window = true;
+        if (next.text !== '(') continue;
+        if (SQL_AGGREGATE_FUNCTIONS.has(t.lower) || t.lower.startsWith('percentile_')) kind.aggregate = true;
+        if (SQL_SET_RETURNING_FUNCTIONS.has(t.lower)) kind.setReturning = true;
+    }
+    return kind;
+}
+
+// Words that never are a column alias, for callers without the reserved list.
+const SELECT_ITEM_NON_ALIAS_WORDS = new Set([
+    'end', 'and', 'or', 'not', 'null', 'true', 'false', 'then', 'else', 'when', 'case', 'as',
+    'is', 'in', 'distinct', 'all', 'from', 'select'
+]);
+
+// The result columns of a query's outermost SELECT that are not plain column
+// references, by the name PostgreSQL gives them (an alias as written when
+// quoted, folded to lower case otherwise; a function call without an alias is
+// named after the function): { expression, aggregate, window, setReturning,
+// simple }. A column only renamed (`t.a AS b`) is `simple`. A name the select
+// list yields twice is left out, as it cannot be told apart.
+function selectListExpressions(sql, isReservedWord) {
+    const result = {};
+    const source = String(sql == null ? '' : sql);
+    const masked = maskSqlStructure(source);
+    const range = findSelectListRange(masked);
+    if (!range) return result;
+    const items = splitSelectItems(masked, range);
+    if (!items) return result;
+    const reserved = typeof isReservedWord === 'function'
+        ? isReservedWord
+        : (word => SELECT_ITEM_NON_ALIAS_WORDS.has(String(word).toLowerCase()));
+    const columnRef = new RegExp(`^${SQL_IDENT_MASKED}(?:\\s*\\.\\s*${SQL_IDENT_MASKED})*$`);
+    const seen = new Set();
+    const twice = new Set();
+    for (const item of items) {
+        const info = analyzeSelectItem(source, masked, item, reserved);
+        if (info.wildcard || !info.name) continue;
+        if (seen.has(info.name)) { twice.add(info.name); continue; }
+        seen.add(info.name);
+        const exprMasked = masked.slice(item.start, info.exprEnd).trim();
+        const simple = columnRef.test(exprMasked);
+        if (simple && (!info.alias || implicitSelectItemName(source, masked, item.start, info.exprEnd) === info.name)) continue;
+        const kind = classifySelectExpression(exprMasked);
+        result[info.name] = {
+            expression: source.slice(item.start, info.exprEnd).trim(),
+            aggregate: kind.aggregate && !kind.window,
+            window: kind.window,
+            setReturning: kind.setReturning,
+            simple
+        };
+    }
+    twice.forEach(name => { delete result[name]; });
+    return result;
+}
+
+// Tooltip of the filter box of a column that columnFilterTarget cannot write
+// into the query.
+const LOADED_ROWS_ONLY_FILTER_HINT = 'Filters the loaded rows only: a column computed by a window function or a set-returning function cannot be filtered in the query.';
+
+// How a filter on the result column `colName` reaches SQL: `reference` is what
+// the condition names the value by and `clause` where it goes — 'where',
+// 'having' for an aggregate, or 'none' for a window function or set-returning
+// call, which only the loaded rows can be filtered on. `source` is the column's
+// entry in the capabilities' columnSources, `expressions` the result of
+// selectListExpressions and `formatIdent` quotes an identifier as needed.
+function columnFilterTarget(colName, source, expressions, formatIdent) {
+    if (source && source.qualifier && source.sourceColumn) {
+        return { reference: formatIdent(source.qualifier) + '.' + formatIdent(source.sourceColumn), clause: 'where' };
+    }
+    const expr = expressions && Object.prototype.hasOwnProperty.call(expressions, colName) ? expressions[colName] : null;
+    if (!expr) return { reference: formatIdent(colName), clause: 'where' };
+    if (expr.window || expr.setReturning) return { reference: '', clause: 'none' };
+    return {
+        reference: expr.simple ? expr.expression : `(${expr.expression})`,
+        clause: expr.aggregate ? 'having' : 'where'
+    };
+}
+
 // Apply text edits ({ start, end, text }) that do not overlap.
 function applyTextEdits(text, edits) {
     return edits.slice().sort((a, b) => b.start - a.start)
@@ -3671,6 +3885,7 @@ function isLiftableSelect(sql) {
     const s = String(sql || '').trim();
     if (!s || !/^SELECT\s/i.test(s)) return false;
     const parsed = parseSqlForWhere(s);
+    if (parsed.groupBy || parsed.having || parsed.window) return false;
     const fromIdx = findTopLevelKeywordIndex(parsed.base, 'FROM');
     if (fromIdx === -1) return false;
     if (/\bDISTINCT\b/i.test(parsed.base.substring(0, fromIdx))) return false;
@@ -6452,40 +6667,59 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function applyExactMatchToQuery(colName, value, extraConditions) {
         if (!canApplyQueryFilters(queryInput.value)) return;
         if (value === null || value === undefined) return;
-        const colMeta = columns.find(c => c.name === colName);
-        const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
-        const fmtCol = formatIdentifier(colName);
+        const filterType = columnFilterType(colName);
         const formatted = formatExactMatchValue(String(value), filterType, thousandSeparator);
-        const clausesByCol = { [colName]: `${fmtCol} = ${formatted}` };
+        const buildByCol = { [colName]: ref => `${ref} = ${formatted}` };
         // Append any custom-mapping conditions (e.g. from a reverse mapping) so
         // the navigation target is filtered by the full mapping definition.
         (extraConditions || []).forEach(cond => {
             if (!cond || !cond.column || cond.column === colName) return;
-            const clause = buildMappingConditionClause(cond);
-            if (clause) clausesByCol[cond.column] = clause;
+            const condType = columnFilterType(cond.column);
+            if (!mappingConditionToClause(cond, formatIdentifier(cond.column), condType, thousandSeparator)) return;
+            buildByCol[cond.column] = ref => mappingConditionToClause(cond, ref, condType, thousandSeparator);
         });
-        mergeWhereClausesIntoQuery(clausesByCol);
+        applyColumnConditions(buildByCol);
     }
 
-    function buildMappingConditionClause(cond) {
-        if (!cond || !cond.column) return '';
-        const fmtCol = formatIdentifier(cond.column);
-        const colMeta = columns.find(c => c.name === cond.column);
-        const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
-        return mappingConditionToClause(cond, fmtCol, filterType, thousandSeparator);
+    function columnFilterType(colName) {
+        const colMeta = columns.find(c => c.name === colName);
+        return colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
     }
 
     function applyNullConstraint(colName, isNull) {
-        const fmtCol = formatIdentifier(colName);
-        const clause = buildNullConstraintClause(fmtCol, isNull);
-        mergeWhereClausesIntoQuery({ [colName]: clause });
+        applyColumnConditions({ [colName]: ref => buildNullConstraintClause(ref, isNull) });
     }
 
-    // Write the column conditions into the query's WHERE and run it.
-    function mergeWhereClausesIntoQuery(clausesByCol) {
+    // Write conditions on result columns into the query and run it.
+    // `buildByCol` maps a column to a function that gets the SQL naming the
+    // column and returns its condition ('' or null drops the condition). A
+    // condition on an aggregate goes into HAVING; a column SQL cannot filter
+    // (window function, set-returning call) is left to the filter of the loaded
+    // rows, and when nothing else is left the query does not run again.
+    function applyColumnConditions(buildByCol) {
+        const expressions = currentSelectExpressions();
+        const where = {};
+        const having = {};
+        const references = {};
+        let skipped = 0;
+        Object.keys(buildByCol).forEach(col => {
+            const target = columnFilterTargetOf(col, expressions);
+            if (target.clause === 'none') { skipped++; return; }
+            references[col] = target.reference;
+            (target.clause === 'having' ? having : where)[col] = buildByCol[col](target.reference) || '';
+        });
+        if (skipped > 0 && Object.keys(references).length === 0) return;
+        mergeWhereClausesIntoQuery(where, { having, references });
+    }
+
+    // Write the column conditions into the query's WHERE (and, given in
+    // `options.having`, its HAVING) and run it. `options.references` holds the
+    // SQL each column was written as.
+    function mergeWhereClausesIntoQuery(clausesByCol, options) {
+        const opts = options || {};
         const baseSql = (queryInput.value || '').trim() || `SELECT * FROM ${getDefaultTableReference()}`;
         const parsed = parseSqlForWhere(baseSql);
-        const existing = mergeWhereClauses(parsed.where ? splitWhereByAnd(parsed.where) : [], clausesByCol);
+        const existing = mergeColumnConditions(parsed, clausesByCol, opts.having, opts.references);
         setQueryTextAndRun(assembleWhereQuery(parsed, existing), { highlight: true });
     }
 
@@ -6631,11 +6865,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         html += '<tr class="filter-row">';
         html += '<th class="row-num-cell"></th>';
         html += '<th class="actions-cell"></th>';
+        const filterExpressions = currentSelectExpressions();
         columns.forEach(col => {
             const filterType = getColumnFilterType(col.dataType);
             const inputType = getInputTypeForColumn(col);
             const mode = filterModes[col.name] || (filterType === 'text' ? 'contains' : 'equals');
             const val = filters[col.name] || '';
+            // A window or set-returning column cannot be filtered in SQL.
+            const hint = columnFilterTargetOf(col.name, filterExpressions).clause === 'none'
+                ? ` title="${escapeAttr(LOADED_ROWS_ONLY_FILTER_HINT)}"`
+                : '';
 
             html += `<th data-col="${escapeAttr(col.name)}"><div class="filter-cell">`;
 
@@ -6657,18 +6896,18 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                     const langAttr = (filterType === 'date') ? ' lang="en-GB"' : '';
                     const fromDisplay = (filterType === 'numeric' && rangeVal.from) ? escapeAttr(formatNumberDisplay(rangeVal.from, thousandSeparator) || rangeVal.from) : escapeAttr(rangeVal.from || '');
                     const toDisplay = (filterType === 'numeric' && rangeVal.to) ? escapeAttr(formatNumberDisplay(rangeVal.to, thousandSeparator) || rangeVal.to) : escapeAttr(rangeVal.to || '');
-                    html += `<input class="filter-input filter-input-range" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" data-range="from" placeholder="From" value="${fromDisplay}"${numWidthStyle}${inputType === 'number' ? ' step="any"' : ''}>`;
-                    html += `<input class="filter-input filter-input-range" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" data-range="to" placeholder="To" value="${toDisplay}"${numWidthStyle}${inputType === 'number' ? ' step="any"' : ''}>`;
+                    html += `<input class="filter-input filter-input-range" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" data-range="from" placeholder="From" value="${fromDisplay}"${numWidthStyle}${hint}${inputType === 'number' ? ' step="any"' : ''}>`;
+                    html += `<input class="filter-input filter-input-range" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" data-range="to" placeholder="To" value="${toDisplay}"${numWidthStyle}${hint}${inputType === 'number' ? ' step="any"' : ''}>`;
                 } else {
                     const singleVal = (typeof val === 'string') ? val : '';
                     const langAttr = (filterType === 'date') ? ' lang="en-GB"' : '';
                     const displayVal = (filterType === 'numeric' && singleVal) ? escapeAttr(formatNumberDisplay(singleVal, thousandSeparator) || singleVal) : escapeAttr(singleVal);
-                    html += `<input class="filter-input" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" placeholder="Filter..." value="${displayVal}"${numWidthStyle}${inputType === 'number' ? ' step="any"' : ''}>`;
+                    html += `<input class="filter-input" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" placeholder="Filter..." value="${displayVal}"${numWidthStyle}${hint}${inputType === 'number' ? ' step="any"' : ''}>`;
                 }
             } else {
                 // Text filter (ILIKE)
                 const singleVal = (typeof val === 'string') ? val : '';
-                html += `<input class="filter-input" type="text" data-col="${escapeAttr(col.name)}" placeholder="Filter..." value="${escapeAttr(singleVal)}">`;
+                html += `<input class="filter-input" type="text" data-col="${escapeAttr(col.name)}" placeholder="Filter..." value="${escapeAttr(singleVal)}"${hint}>`;
             }
 
             html += '</div></th>';
@@ -6807,23 +7046,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     function applyFiltersToQuery() {
         if (!canApplyQueryFilters(queryInput.value)) return;
 
-        const newClausesByCol = {};
+        const buildByCol = {};
         for (const col of columns) {
             const val = filters[col.name];
             if (val === undefined) continue; // never filtered -> leave the query as it is
             const filterType = getColumnFilterType(col.dataType);
             // An emptied filter box yields no clause, which removes the column
             // from the WHERE clause on merge.
-            newClausesByCol[col.name] = val
+            buildByCol[col.name] = ref => (val
                 ? buildFilterClause(
-                    formatColumnReference(col.name), val, filterType,
+                    ref, val, filterType,
                     !!exactFilters[col.name], getFilterOperator(col.name), thousandSeparator
                 )
-                : '';
+                : '');
         }
 
         // Merge into the existing SQL, preserving user-written clauses.
-        mergeWhereClausesIntoQuery(newClausesByCol);
+        applyColumnConditions(buildByCol);
     }
 
     function showCellContextMenu(e, td) {
@@ -6926,8 +7165,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             items.push({ separator: true });
         }
 
-        // 1. Add as exact match
-        if (cellValue !== null && cellValue !== undefined) {
+        // 1. Add as exact match. A window or set-returning column cannot be
+        // filtered in the query, so neither entry is offered for it.
+        const sqlFilterable = columnFilterTargetOf(colName).clause !== 'none';
+        if (cellValue !== null && cellValue !== undefined && sqlFilterable) {
             items.push({
                 label: 'Add as Exact Match to Query',
                 action: () => {
@@ -6937,13 +7178,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         }
 
         // 2. Exclude from query
-        if (cellValue !== null && cellValue !== undefined) {
+        if (cellValue !== null && cellValue !== undefined && sqlFilterable) {
             items.push({
                 label: 'Exclude this Value from Query',
                 action: () => {
                     if (!canApplyQueryFilters(queryInput.value)) return;
                     const escaped = escapeSqlString(cellValue);
-                    const fmtCol = formatIdentifier(colName);
+                    const target = columnFilterTargetOf(colName);
+                    const fmtCol = target.reference;
                     const colMeta = columns.find(c => c.name === colName);
                     const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
                     let excludeClause;
@@ -6956,7 +7198,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                         queryInput.value.trim() || `SELECT * FROM ${getDefaultTableReference()}`
                     );
                     const clauses = parsed.where ? splitWhereByAnd(parsed.where) : [];
-                    clauses.push(excludeClause);
+                    if (target.clause === 'having') {
+                        parsed.having = joinSqlParts((parsed.having ? splitWhereByAnd(parsed.having) : []).concat([excludeClause]), ' AND ');
+                    } else {
+                        clauses.push(excludeClause);
+                    }
                     setQueryTextAndRun(assembleWhereQuery(parsed, clauses), { highlight: true });
                 }
             });
@@ -7072,9 +7318,13 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             items.push({ label: 'Remove ORDER BY', action: clearOrderBy });
         }
 
-        items.push({ separator: true });
-        items.push({ label: `Add ${colName} IS NULL to WHERE`, action: () => applyNullConstraint(colName, true) });
-        items.push({ label: `Add ${colName} IS NOT NULL to WHERE`, action: () => applyNullConstraint(colName, false) });
+        const nullTarget = columnFilterTargetOf(colName).clause;
+        if (nullTarget !== 'none') {
+            const clauseName = nullTarget === 'having' ? 'HAVING' : 'WHERE';
+            items.push({ separator: true });
+            items.push({ label: `Add ${colName} IS NULL to ${clauseName}`, action: () => applyNullConstraint(colName, true) });
+            items.push({ label: `Add ${colName} IS NOT NULL to ${clauseName}`, action: () => applyNullConstraint(colName, false) });
+        }
 
         items.push({ separator: true });
         items.push({ label: 'Make Column Executable...', action: () => chooseExecutableType(colName) });
@@ -9814,6 +10064,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return formatIdentifier(colName);
     }
 
+    // Where and as what a condition on a result column goes into the query in
+    // the query bar: a computed column is filtered on its expression, since
+    // WHERE cannot see the alias it has in the select list. `expressions` is
+    // currentSelectExpressions(), passed in when several columns are looked up.
+    function columnFilterTargetOf(colName, expressions) {
+        return columnFilterTarget(
+            colName,
+            (caps.columnSources || {})[colName],
+            expressions || currentSelectExpressions(),
+            formatIdentifier
+        );
+    }
+
+    function currentSelectExpressions() {
+        return selectListExpressions(queryInput ? queryInput.value : '', word => POSTGRES_RESERVED_KEYWORDS.has(word));
+    }
+
     // Text for an HTML element's content. A plain replace, not a DOM round trip:
     // the grid escapes every cell it renders.
     function escapeHtml(text) {
@@ -10952,5 +11219,10 @@ if (typeof module !== 'undefined' && module.exports) {
         findSelectListRange,
         renameSelectColumn,
         pruneColumnState,
+        selectListExpressions,
+        classifySelectExpression,
+        columnFilterTarget,
+        mergeColumnConditions,
+        splitGroupTail,
     };
 }

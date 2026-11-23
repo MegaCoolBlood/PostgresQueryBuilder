@@ -472,7 +472,16 @@ test('duplicateCellValue leaves edited json text and other columns alone', () =>
 
 const {
     pruneColumnState,
+    selectListExpressions,
+    columnFilterTarget,
+    mergeColumnConditions,
+    parseSqlForWhere: parseWhere,
+    assembleWhereQuery: assembleWhere,
+    whereClauseTargetsColumn: targetsColumn,
+    buildNullConstraintClause: nullClause
 } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
+const { POSTGRES_RESERVED_KEYWORDS } = require('../reservedKeywords');
+const isReserved = (word: string) => POSTGRES_RESERVED_KEYWORDS.has(word);
 
 test('pruneColumnState drops the filter, mode and exact flag of a removed column', () => {
     const pruned = pruneColumnState({
@@ -512,3 +521,135 @@ test('the grid prunes the column state whenever a new column list arrives', () =
     assert.match(js, /columns = msg\.columns \|\| columns;\s*if \(msg\.columns\) pruneStateOfRemovedColumns\(\);/);
 });
 
+// ===== selectListExpressions / columnFilterTarget: filtering computed columns =====
+
+const quote = (name: string) => (/^[a-z_][a-z0-9_$]*$/.test(name) ? name : `"${name.replace(/"/g, '""')}"`);
+
+// What the grid does on Enter in a filter box, through the pure helpers.
+function filterQuery(sql: string, col: string, value: string, sources: Record<string, unknown> = {}): string {
+    const target = columnFilterTarget(col, sources[col], selectListExpressions(sql, isReserved), quote);
+    const clause = value ? buildFilterClause(target.reference, value, 'text', false, '=', SEP) : '';
+    const parsed = parseWhere(sql);
+    const where = target.clause === 'where' ? { [col]: clause } : {};
+    const having = target.clause === 'having' ? { [col]: clause } : {};
+    return assembleWhere(parsed, mergeColumnConditions(parsed, where, having, { [col]: target.reference }));
+}
+
+test('a filter on a function column is written on its expression, not its alias', () => {
+    const sql = 'SELECT mitarbeiter.region(mit_id) as region, mit_id FROM mitarbeiter;';
+    assert.equal(
+        filterQuery(sql, 'region', 'nord'),
+        "SELECT mitarbeiter.region(mit_id) as region, mit_id FROM mitarbeiter WHERE (mitarbeiter.region(mit_id))::text ILIKE '%nord%'"
+    );
+});
+
+test('filtering a computed column again replaces its condition, clearing it removes it', () => {
+    const sql = 'SELECT mitarbeiter.region(mit_id) as region, mit_id FROM mitarbeiter WHERE mit_id > 3';
+    const once = filterQuery(sql, 'region', 'nord');
+    const twice = filterQuery(once, 'region', 'süd');
+    assert.equal(
+        twice,
+        "SELECT mitarbeiter.region(mit_id) as region, mit_id FROM mitarbeiter WHERE mit_id > 3 AND (mitarbeiter.region(mit_id))::text ILIKE '%süd%'"
+    );
+    assert.equal(filterQuery(twice, 'region', ''), 'SELECT mitarbeiter.region(mit_id) as region, mit_id FROM mitarbeiter WHERE mit_id > 3');
+});
+
+test('a plain column keeps being filtered by its name', () => {
+    assert.equal(
+        filterQuery('SELECT mitarbeiter.region(mit_id) as region, mit_id FROM mitarbeiter', 'mit_id', '7'),
+        "SELECT mitarbeiter.region(mit_id) as region, mit_id FROM mitarbeiter WHERE mit_id::text ILIKE '%7%'"
+    );
+    assert.deepEqual(selectListExpressions('SELECT a, t.b, t.c AS c FROM t', isReserved), {});
+});
+
+test('selectListExpressions names columns the way PostgreSQL does', () => {
+    const map = selectListExpressions(
+        'SELECT upper(a) u, lower(b) AS "Low", count(*), s.fn(x), x::int, t.c AS d FROM t',
+        isReserved
+    );
+    assert.deepEqual(Object.keys(map).sort(), ['Low', 'count', 'd', 'fn', 'u', 'x']);
+    assert.equal(map.u.expression, 'upper(a)');
+    assert.equal(map.Low.expression, 'lower(b)');
+    assert.equal(map.fn.expression, 's.fn(x)');
+    assert.equal(map.d.simple, true);
+    assert.equal(columnFilterTarget('d', undefined, map, quote).reference, 't.c');
+});
+
+test('selectListExpressions keeps commas, parentheses and strings inside an expression together', () => {
+    const map = selectListExpressions(
+        "SELECT coalesce(nullif(a, ','), concat(b, ')(')) AS v, b FROM t",
+        isReserved
+    );
+    assert.equal(map.v.expression, "coalesce(nullif(a, ','), concat(b, ')('))");
+});
+
+test('selectListExpressions skips DISTINCT ON, comments and leading CTEs', () => {
+    const map = selectListExpressions(
+        'WITH x AS (SELECT 1 AS one) SELECT DISTINCT ON (a) a, /* note */ upper(b) /* tail */ AS ub -- alias\n, c FROM t',
+        isReserved
+    );
+    assert.deepEqual(Object.keys(map), ['ub']);
+    assert.equal(map.ub.expression, 'upper(b)');
+});
+
+test('selectListExpressions leaves out a name the select list yields twice', () => {
+    assert.deepEqual(selectListExpressions('SELECT upper(a) v, lower(a) v FROM t', isReserved), {});
+});
+
+test('a filter on an aggregate column goes into HAVING, after GROUP BY', () => {
+    const sql = 'SELECT dept, count(*) AS n FROM emp WHERE active GROUP BY dept ORDER BY dept';
+    assert.equal(
+        filterQuery(sql, 'n', '3'),
+        "SELECT dept, count(*) AS n FROM emp WHERE active GROUP BY dept HAVING (count(*))::text ILIKE '%3%' ORDER BY dept"
+    );
+    const kept = 'SELECT dept, count(*) AS n FROM emp GROUP BY dept HAVING count(*) > 1';
+    const filtered = filterQuery(kept, 'n', '3');
+    assert.equal(filtered, "SELECT dept, count(*) AS n FROM emp GROUP BY dept HAVING count(*) > 1 AND (count(*))::text ILIKE '%3%'");
+    assert.equal(filterQuery(filtered, 'n', ''), kept);
+});
+
+test('an aggregate inside a subquery or a window does not count as an aggregate', () => {
+    const map = selectListExpressions(
+        'SELECT (SELECT max(b) FROM u) AS m, sum(a) OVER (PARTITION BY c) AS s, unnest(arr) AS e FROM t',
+        isReserved
+    );
+    assert.equal(map.m.aggregate, false);
+    assert.equal(columnFilterTarget('m', undefined, map, quote).clause, 'where');
+    assert.equal(map.s.window, true);
+    assert.equal(map.s.aggregate, false);
+    assert.equal(columnFilterTarget('s', undefined, map, quote).clause, 'none');
+    assert.equal(columnFilterTarget('e', undefined, map, quote).clause, 'none');
+});
+
+test('a column traced to an aliased source column keeps its qualified reference', () => {
+    const map = selectListExpressions('SELECT a.x, b.x FROM a JOIN b ON true', isReserved);
+    assert.deepEqual(
+        columnFilterTarget('x', { qualifier: 'b', sourceColumn: 'x' }, map, quote),
+        { reference: 'b.x', clause: 'where' }
+    );
+});
+
+test('a WHERE filter on a grouped query goes before GROUP BY', () => {
+    assert.equal(
+        filterQuery('SELECT dept, count(*) AS n FROM emp GROUP BY dept', 'dept', 'it'),
+        "SELECT dept, count(*) AS n FROM emp WHERE dept::text ILIKE '%it%' GROUP BY dept"
+    );
+    assert.equal(
+        assembleWhere(parseWhere('SELECT a, count(*) FROM t GROUP BY a HAVING count(*) > 1'), [nullClause('a', false)]),
+        'SELECT a, count(*) FROM t WHERE a IS NOT NULL GROUP BY a HAVING count(*) > 1'
+    );
+});
+
+test('parseSqlForWhere leaves an ORDER BY inside an aggregate or a window alone', () => {
+    const parsed = parseWhere("SELECT d, string_agg(n, ',' ORDER BY n) AS l, row_number() OVER (ORDER BY d) r FROM t GROUP BY d ORDER BY d");
+    assert.equal(parsed.orderBy, 'd');
+    assert.equal(parsed.groupBy, 'GROUP BY d');
+    assert.equal(parsed.base, "SELECT d, string_agg(n, ',' ORDER BY n) AS l, row_number() OVER (ORDER BY d) r FROM t");
+});
+
+test('whereClauseTargetsColumn does not take a function call for the column of the same name', () => {
+    assert.equal(targetsColumn('count(*) > 1', 'count'), false);
+    assert.equal(targetsColumn('upper (name) = 1', 'upper'), false);
+    assert.equal(targetsColumn('(count(*))::text ILIKE \'%1%\'', 'count', '(count(*))'), true);
+    assert.equal(targetsColumn('t.ab = 1', 'b', 't.a'), false);
+});

@@ -2,6 +2,8 @@
 
 ## 4.1.0
 
+- **Filtering a computed column works:** For a query such as `SELECT mitarbeiter.region(mit_id) AS region, mit_id FROM mitarbeiter`, a filter on *region* failed with `column "region" does not exist`, because the filter was written as a condition on the column's name, and the `WHERE` of a query cannot see the names its `SELECT` gives. The filter is now written on the column's expression, `(mitarbeiter.region(mit_id))`; a column that is only renamed, such as `m.name AS employee`, is filtered on `m.name`. A filter on an aggregate such as `count(*) AS orders` goes into `HAVING`, and a filter on a window function, which no condition of the query can test, filters the rows already loaded and says so in its tooltip. *Add as Exact Match*, *Exclude this Value* and *IS NULL* / *IS NOT NULL* follow the same rules. Along the way, a filter on a query with `GROUP BY` is now written in front of the `GROUP BY` instead of after it, and an `ORDER BY` inside `string_agg(…)` or `OVER (…)` is no longer taken for the query's own.
+
 - **A filtered column that is removed from the query no longer hides every row:** Filtering a column and then deleting that column from the `SELECT` in the query bar left a grid without a single row, because the filter kept testing a column the result no longer had. Filters and sorting of columns the query no longer returns are now dropped when the query runs again; the query text is left as you wrote it.
 
 ## 4.0.2
