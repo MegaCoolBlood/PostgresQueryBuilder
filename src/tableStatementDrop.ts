@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { QueryRunner } from './queryRunner';
 import { TreeNode } from './tableExplorer';
-import { StatementKind, buildStatement, deriveQualifier, toPreview, autoJoinClauses, JoinFkEdge } from './statementBuilder';
+import { StatementKind, buildStatement, deriveQualifier, toPreview, autoJoinClauses, JoinClause, JoinFkEdge } from './statementBuilder';
 import { showJoinDialog, JoinDialogTable, JoinDialogIdentityEdge, JoinDialogAddPayload } from './joinDialog';
 import { ColumnMappingManager } from './columnMappingManager';
 import { getErrorMessage } from './logger';
@@ -35,11 +35,59 @@ function consumeLastDraggedTables(): DraggedTable[] {
 }
 
 /**
- * The tables last dragged from the Tables view, for a webview that cannot read
- * VS Code's drag payload (the Query Builder canvas). Forgotten once taken.
+ * Show a multi-select quick pick of all tables, used when the user clicks a
+ * join builder's "Add tables" button. Tables already in the join are included
+ * too, so the same table can be added again as another instance with its own
+ * alias and join clause (e.g. a self-join). Empty when cancelled.
  */
-export function takeLastDraggedTables(): Array<{ schema: string; name: string }> {
-    return consumeLastDraggedTables().map(t => ({ schema: t.schema, name: t.table }));
+async function promptForTables(
+    queryRunner: Pick<QueryRunner, 'listAllTables'>,
+    current: ReadonlyArray<DraggedTable>
+): Promise<DraggedTable[]> {
+    let all: Array<{ schema: string; table: string }>;
+    try {
+        all = await queryRunner.listAllTables();
+    } catch (err: unknown) {
+        vscode.window.showErrorMessage(`Failed to list tables: ${getErrorMessage(err)}`);
+        return [];
+    }
+    if (all.length === 0) {
+        vscode.window.showInformationMessage('No tables available to add.');
+        return [];
+    }
+    const inJoin = (t: { schema: string; table: string }) =>
+        current.some(c => c.schema === t.schema && c.table === t.table);
+    const picks = await vscode.window.showQuickPick(
+        all.map(t => ({
+            label: `${t.schema}.${t.table}`,
+            description: inJoin(t) ? 'already in join — adds another instance' : undefined,
+            schema: t.schema,
+            table: t.table
+        })),
+        {
+            canPickMany: true,
+            title: 'Add tables to JOIN',
+            placeHolder: 'Select one or more tables to add to the join'
+        }
+    );
+    if (!picks || picks.length === 0) {
+        return [];
+    }
+    return picks.map(p => ({ schema: p.schema, table: p.table }));
+}
+
+/**
+ * The tables a join builder's "Add tables" adds: those just dragged from the
+ * Tables view (a webview cannot read VS Code's drag payload), otherwise the
+ * ones the user picks from all tables. Empty when cancelled. `current` are the
+ * tables already in the join, marked in the pick list.
+ */
+export async function chooseTablesToAdd(
+    queryRunner: Pick<QueryRunner, 'listAllTables'>,
+    current: ReadonlyArray<{ schema: string; table: string }>
+): Promise<Array<{ schema: string; table: string }>> {
+    const dragged = consumeLastDraggedTables();
+    return dragged.length > 0 ? dragged : promptForTables(queryRunner, current);
 }
 
 /**
@@ -84,6 +132,201 @@ export class QualifierStore {
         await this.memento.update(QualifierStore.KEY, map);
         tableAliasesChanged.fire({ schema, table });
     }
+}
+
+/** What {@link loadJoinMetadata} found out about a set of tables. */
+export interface JoinMetadata {
+    /** One entry per requested table, in request order (duplicates included). */
+    tables: JoinDialogTable[];
+    /** Foreign keys and custom column mappings among the tables, by schema/table name. */
+    identityEdges: JoinDialogIdentityEdge[];
+}
+
+type JoinTableData = Awaited<ReturnType<QueryRunner['getMultiTableJoinData']>>['tables'][number];
+
+/**
+ * Join edges derived from the user's custom column mappings between the given
+ * tables. A mapping `A.col -> B.col` becomes an edge when both A and B take
+ * part; columns are resolved to their quoted form so they match the FK edges.
+ */
+function customMappingEdges(
+    columnMappingManager: Pick<ColumnMappingManager, 'getAllMappings'> | undefined,
+    joinTables: ReadonlyArray<Pick<JoinTableData, 'schema' | 'table' | 'columns' | 'rawColumns'>>
+): JoinDialogIdentityEdge[] {
+    if (!columnMappingManager) {
+        return [];
+    }
+    const find = (schema: string, table: string) =>
+        joinTables.find(t => t.schema === schema && t.table === table);
+    const quoteCol = (t: { columns: string[]; rawColumns: string[] }, rawCol: string): string | undefined => {
+        const i = t.rawColumns.indexOf(rawCol);
+        return i >= 0 ? t.columns[i] : undefined;
+    };
+
+    const edges: JoinDialogIdentityEdge[] = [];
+    const seen = new Set<string>();
+    for (const m of columnMappingManager.getAllMappings()) {
+        const src = find(m.sourceSchema, m.sourceTable);
+        const tgt = find(m.targetSchema, m.targetTable);
+        if (!src || !tgt) {
+            continue;
+        }
+        // A mapping condition references a column on the mapping's source
+        // table. Resolve it to its quoted form so it matches the join columns.
+        const extraConditions = (m.conditions ?? [])
+            .map(cond => {
+                const col = quoteCol(src, cond.column);
+                return col
+                    ? { schema: m.sourceSchema, table: m.sourceTable, column: col, operator: cond.operator, value: cond.value }
+                    : undefined;
+            })
+            .filter((c): c is NonNullable<typeof c> => !!c);
+
+        // The primary pair plus any additional pairs form a composite-key
+        // match. Each pair becomes its own identity edge so the join dialog
+        // ANDs them together (e.g. a.c1 = b.c1 AND a.c2 = b.c2). The literal
+        // conditions are attached only to the first edge to avoid repetition.
+        const pairs = [
+            { sourceColumn: m.sourceColumn, targetColumn: m.targetColumn },
+            ...(m.additionalColumnPairs ?? [])
+        ];
+        let attachedConditions = false;
+        for (const pair of pairs) {
+            const fromCol = quoteCol(src, pair.sourceColumn);
+            const toCol = quoteCol(tgt, pair.targetColumn);
+            if (!fromCol || !toCol) {
+                continue;
+            }
+            const sig = `${m.sourceSchema}.${m.sourceTable}.${fromCol}->${m.targetSchema}.${m.targetTable}.${toCol}`;
+            if (seen.has(sig)) {
+                continue;
+            }
+            seen.add(sig);
+            edges.push({
+                fromSchema: m.sourceSchema,
+                fromTable: m.sourceTable,
+                fromColumn: fromCol,
+                toSchema: m.targetSchema,
+                toTable: m.targetTable,
+                toColumn: toCol,
+                extraConditions: !attachedConditions && extraConditions.length ? extraConditions : undefined
+            });
+            attachedConditions = true;
+        }
+    }
+    return edges;
+}
+
+/**
+ * Load what the join builder needs to know about `tables`: their quoted
+ * columns and alias (the saved one, else derived from the first column), and
+ * the foreign keys and custom column mappings among them. A table may be
+ * listed more than once (a self-join); its metadata is fetched once. Aliases
+ * are made unique over the list unless `uniqueAliases` is false. Throws when
+ * the database cannot be read.
+ */
+export async function loadJoinMetadata(
+    queryRunner: Pick<QueryRunner, 'getMultiTableJoinData'>,
+    columnMappingManager: Pick<ColumnMappingManager, 'getAllMappings'> | undefined,
+    tables: ReadonlyArray<{ schema: string; table: string }>,
+    qualifierStore?: Pick<QualifierStore, 'get'>,
+    options: { uniqueAliases?: boolean } = {}
+): Promise<JoinMetadata> {
+    const unique: Array<{ schema: string; table: string }> = [];
+    for (const t of tables) {
+        if (!unique.some(u => u.schema === t.schema && u.table === t.table)) {
+            unique.push({ schema: t.schema, table: t.table });
+        }
+    }
+    if (unique.length === 0) {
+        return { tables: [], identityEdges: [] };
+    }
+    const data = await queryRunner.getMultiTableJoinData(unique);
+
+    const result: JoinDialogTable[] = [];
+    for (const t of tables) {
+        const td = data.tables.find(d => d.schema === t.schema && d.table === t.table);
+        if (!td) {
+            continue;
+        }
+        const savedAlias = qualifierStore?.get(td.schema, td.table);
+        result.push({
+            schema: td.schema,
+            table: td.table,
+            tableReference: td.tableReference,
+            alias: savedAlias ?? deriveQualifier(td.firstColumnRaw, td.table),
+            savedAlias,
+            columns: [...td.columns]
+        });
+    }
+
+    if (options.uniqueAliases !== false) {
+        // Unique aliases keep qualified columns unambiguous.
+        const used = new Set<string>();
+        for (const t of result) {
+            let alias = t.alias;
+            for (let n = 2; used.has(alias); n++) {
+                alias = `${t.alias}${n}`;
+            }
+            t.alias = alias;
+            used.add(alias);
+        }
+    }
+
+    const identityEdges: JoinDialogIdentityEdge[] = data.foreignKeys.map(fk => ({
+        fromSchema: fk.fromSchema,
+        fromTable: fk.fromTable,
+        fromColumn: fk.fromColumn,
+        toSchema: fk.toSchema,
+        toTable: fk.toTable,
+        toColumn: fk.toColumn
+    }));
+    const sameEdge = (a: JoinDialogIdentityEdge, b: JoinDialogIdentityEdge) =>
+        a.fromSchema === b.fromSchema && a.fromTable === b.fromTable && a.fromColumn === b.fromColumn
+        && a.toSchema === b.toSchema && a.toTable === b.toTable && a.toColumn === b.toColumn;
+    for (const ce of customMappingEdges(columnMappingManager, data.tables)) {
+        if (!identityEdges.some(e => sameEdge(e, ce))) {
+            identityEdges.push(ce);
+        }
+    }
+    return { tables: result, identityEdges };
+}
+
+/**
+ * The join clauses `tables[1..]` start with: each joins the earliest preceding
+ * table it shares foreign keys or custom mappings with, otherwise a CROSS JOIN.
+ * Edges are matched by schema/table name to the first instance of a table.
+ */
+export function initialJoinsFor(
+    tables: ReadonlyArray<{ schema: string; table: string; alias: string }>,
+    identityEdges: ReadonlyArray<JoinDialogIdentityEdge>
+): JoinClause[] {
+    const indexOf = (schema: string, table: string) =>
+        tables.findIndex(t => t.schema === schema && t.table === table);
+    const edges: JoinFkEdge[] = [];
+    for (const e of identityEdges) {
+        const fromIndex = indexOf(e.fromSchema, e.fromTable);
+        const toIndex = indexOf(e.toSchema, e.toTable);
+        if (fromIndex < 0 || toIndex < 0) {
+            continue;
+        }
+        const extraConditions = (e.extraConditions ?? [])
+            .map(ec => {
+                const tableIndex = indexOf(ec.schema, ec.table);
+                return tableIndex >= 0
+                    ? { tableIndex, column: ec.column, operator: ec.operator, value: ec.value }
+                    : undefined;
+            })
+            .filter((c): c is NonNullable<typeof c> => !!c);
+        edges.push({
+            fromIndex,
+            fromColumn: e.fromColumn,
+            toIndex,
+            toColumn: e.toColumn,
+            extraConditions: extraConditions.length ? extraConditions : undefined
+        });
+    }
+    return autoJoinClauses(tables.map(t => t.alias), edges);
 }
 
 /**
@@ -205,232 +448,49 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
         await vscode.workspace.applyEdit(edit);
     }
 
-    /**
-     * Build join edges derived from user-defined custom column mappings, for the
-     * given set of join tables. A mapping `A.col -> B.col` becomes an edge when
-     * both A and B are part of the join. Columns are returned in their quoted
-     * form (resolved from the table's column list) so they match the FK edges.
-     */
-    private customMappingEdges(
-        joinTables: ReadonlyArray<{ schema: string; table: string; columns: string[]; rawColumns: string[] }>
-    ): JoinDialogIdentityEdge[] {
-        if (!this.columnMappingManager) {
-            return [];
-        }
-        const find = (schema: string, table: string) =>
-            joinTables.find(t => t.schema === schema && t.table === table);
-        const quoteCol = (
-            t: { columns: string[]; rawColumns: string[] },
-            rawCol: string
-        ): string | undefined => {
-            const i = t.rawColumns.indexOf(rawCol);
-            return i >= 0 ? t.columns[i] : undefined;
-        };
-
-        const edges: JoinDialogIdentityEdge[] = [];
-        const seen = new Set<string>();
-        for (const m of this.columnMappingManager.getAllMappings()) {
-            const src = find(m.sourceSchema, m.sourceTable);
-            const tgt = find(m.targetSchema, m.targetTable);
-            if (!src || !tgt) {
-                continue;
-            }
-            // A mapping condition references a column on the mapping's source
-            // table. Resolve it to its quoted form so it matches the join columns.
-            const extraConditions = (m.conditions ?? [])
-                .map(cond => {
-                    const col = quoteCol(src, cond.column);
-                    return col
-                        ? { schema: m.sourceSchema, table: m.sourceTable, column: col, operator: cond.operator, value: cond.value }
-                        : undefined;
-                })
-                .filter((c): c is NonNullable<typeof c> => !!c);
-
-            // The primary pair plus any additional pairs form a composite-key
-            // match. Each pair becomes its own identity edge so the join dialog
-            // ANDs them together (e.g. a.c1 = b.c1 AND a.c2 = b.c2). The literal
-            // conditions are attached only to the first edge to avoid repetition.
-            const pairs = [
-                { sourceColumn: m.sourceColumn, targetColumn: m.targetColumn },
-                ...(m.additionalColumnPairs ?? [])
-            ];
-            let attachedConditions = false;
-            for (const pair of pairs) {
-                const fromCol = quoteCol(src, pair.sourceColumn);
-                const toCol = quoteCol(tgt, pair.targetColumn);
-                if (!fromCol || !toCol) {
-                    continue;
-                }
-                const sig = `${m.sourceSchema}.${m.sourceTable}.${fromCol}->${m.targetSchema}.${m.targetTable}.${toCol}`;
-                if (seen.has(sig)) {
-                    continue;
-                }
-                seen.add(sig);
-                edges.push({
-                    fromSchema: m.sourceSchema,
-                    fromTable: m.sourceTable,
-                    fromColumn: fromCol,
-                    toSchema: m.targetSchema,
-                    toTable: m.targetTable,
-                    toColumn: toCol,
-                    extraConditions: !attachedConditions && extraConditions.length ? extraConditions : undefined
-                });
-                attachedConditions = true;
-            }
-        }
-        return edges;
-    }
-
     private async pickJoinStatement(tables: DraggedTable[]): Promise<string | undefined> {
         // The tables that opened this dialog are already part of the join, so
         // clear any leftover drag state to keep the first "Add tables…" click
         // from re-consuming them (which would otherwise be a no-op).
         consumeLastDraggedTables();
-        let data: Awaited<ReturnType<QueryRunner['getMultiTableJoinData']>>;
+        let meta: JoinMetadata;
         try {
-            data = await this.queryRunner.getMultiTableJoinData(tables);
+            meta = await loadJoinMetadata(this.queryRunner, this.columnMappingManager, tables, this.qualifierStore);
         } catch (err: unknown) {
             vscode.window.showErrorMessage(`Failed to load tables for JOIN: ${getErrorMessage(err)}`);
             return undefined;
         }
-        const dialogTables: JoinDialogTable[] = data.tables.map(t => ({
-            schema: t.schema,
-            table: t.table,
-            tableReference: t.tableReference,
-            alias: this.qualifierStore.get(t.schema, t.table)
-                ?? deriveQualifier(t.firstColumnRaw, t.table),
-            savedAlias: this.qualifierStore.get(t.schema, t.table),
-            columns: t.columns
-        }));
-
-        // Ensure aliases are unique so qualified columns are unambiguous.
-        const seen = new Map<string, number>();
-        for (const dt of dialogTables) {
-            const base = dt.alias;
-            const n = seen.get(base) ?? 0;
-            if (n > 0) {
-                dt.alias = `${base}${n + 1}`;
-            }
-            seen.set(base, n + 1);
-        }
-
-        const indexOf = (schema: string, table: string) =>
-            data.tables.findIndex(t => t.schema === schema && t.table === table);
-
-        const fkEdges: JoinFkEdge[] = data.foreignKeys
-            .map(fk => ({
-                fromIndex: indexOf(fk.fromSchema, fk.fromTable),
-                fromColumn: fk.fromColumn,
-                toIndex: indexOf(fk.toSchema, fk.toTable),
-                toColumn: fk.toColumn
-            }))
-            .filter(e => e.fromIndex >= 0 && e.toIndex >= 0);
-
-        // Also derive edges from user-defined custom column mappings.
-        for (const ce of this.customMappingEdges(data.tables)) {
-            const fromIndex = indexOf(ce.fromSchema, ce.fromTable);
-            const toIndex = indexOf(ce.toSchema, ce.toTable);
-            if (fromIndex < 0 || toIndex < 0) {
-                continue;
-            }
-            const dup = fkEdges.some(e =>
-                e.fromIndex === fromIndex && e.toIndex === toIndex
-                && e.fromColumn === ce.fromColumn && e.toColumn === ce.toColumn);
-            if (!dup) {
-                const extraConditions = (ce.extraConditions ?? [])
-                    .map(ec => {
-                        const ti = indexOf(ec.schema, ec.table);
-                        return ti >= 0
-                            ? { tableIndex: ti, column: ec.column, operator: ec.operator, value: ec.value }
-                            : undefined;
-                    })
-                    .filter((c): c is NonNullable<typeof c> => !!c);
-                fkEdges.push({
-                    fromIndex,
-                    fromColumn: ce.fromColumn,
-                    toIndex,
-                    toColumn: ce.toColumn,
-                    extraConditions: extraConditions.length ? extraConditions : undefined
-                });
-            }
-        }
-
-        const initialJoins = autoJoinClauses(
-            dialogTables.map(t => t.alias),
-            fkEdges
-        );
+        const dialogTables = meta.tables;
+        const initialJoins = initialJoinsFor(dialogTables, meta.identityEdges);
 
         // Track the set of tables currently in the dialog so dropping more
         // tables can skip duplicates and recompute FK edges over the full set.
-        const currentSet: DraggedTable[] = data.tables.map(t => ({ schema: t.schema, table: t.table }));
+        const currentSet: DraggedTable[] = dialogTables.map(t => ({ schema: t.schema, table: t.table }));
 
         const onAddTables = async (): Promise<JoinDialogAddPayload | undefined> => {
             // Prefer tables from a just-completed drag gesture; otherwise let the
             // user pick from all available tables. (Dropping a tree item onto a
             // webview does not reliably deliver a DOM drop event, so the dialog
             // also exposes a clickable "Add tables…" affordance that routes here.)
-            let candidates = consumeLastDraggedTables();
-            if (candidates.length === 0) {
-                candidates = await this.promptForTables(currentSet);
-            }
+            const candidates = await chooseTablesToAdd(this.queryRunner, currentSet);
             if (candidates.length === 0) {
                 return undefined;
             }
             // The same table may be added again as another instance (with its
-            // own alias and join clause), so duplicates are not filtered out.
-            // Only genuinely new tables need their metadata fetched; build a
-            // de-duplicated set for the join-data query.
-            const trulyNew = candidates.filter(
-                d => !currentSet.some(c => c.schema === d.schema && c.table === d.table)
-            );
-            const uniqueCombined: DraggedTable[] = [];
-            for (const t of [...currentSet, ...trulyNew]) {
-                if (!uniqueCombined.some(u => u.schema === t.schema && u.table === t.table)) {
-                    uniqueCombined.push(t);
-                }
-            }
-            let combinedData: Awaited<ReturnType<QueryRunner['getMultiTableJoinData']>>;
+            // own alias and join clause), so duplicates are not filtered out;
+            // the dialog makes their aliases unique against the visible tables.
+            let combined: JoinMetadata;
             try {
-                combinedData = await this.queryRunner.getMultiTableJoinData(uniqueCombined);
+                combined = await loadJoinMetadata(
+                    this.queryRunner, this.columnMappingManager, [...currentSet, ...candidates], this.qualifierStore,
+                    { uniqueAliases: false }
+                );
             } catch (err: unknown) {
                 vscode.window.showErrorMessage(`Failed to add tables to JOIN: ${getErrorMessage(err)}`);
                 return undefined;
             }
-
-            const newDialogTables: JoinDialogTable[] = candidates.map(n => {
-                const td = combinedData.tables.find(t => t.schema === n.schema && t.table === n.table)!;
-                return {
-                    schema: td.schema,
-                    table: td.table,
-                    tableReference: td.tableReference,
-                    alias: this.qualifierStore.get(td.schema, td.table)
-                        ?? deriveQualifier(td.firstColumnRaw, td.table),
-                    savedAlias: this.qualifierStore.get(td.schema, td.table),
-                    columns: td.columns
-                };
-            });
-
-            const edges: JoinDialogIdentityEdge[] = combinedData.foreignKeys.map(fk => ({
-                fromSchema: fk.fromSchema,
-                fromTable: fk.fromTable,
-                fromColumn: fk.fromColumn,
-                toSchema: fk.toSchema,
-                toTable: fk.toTable,
-                toColumn: fk.toColumn
-            }));
-
-            // Include edges derived from custom column mappings over the full set.
-            for (const ce of this.customMappingEdges(combinedData.tables)) {
-                const dup = edges.some(e =>
-                    e.fromSchema === ce.fromSchema && e.fromTable === ce.fromTable && e.fromColumn === ce.fromColumn
-                    && e.toSchema === ce.toSchema && e.toTable === ce.toTable && e.toColumn === ce.toColumn);
-                if (!dup) {
-                    edges.push(ce);
-                }
-            }
-
             currentSet.push(...candidates);
-            return { tables: newDialogTables, fkEdges: edges };
+            return { tables: combined.tables.slice(combined.tables.length - candidates.length), fkEdges: combined.identityEdges };
         };
 
         const onRemoveTable = (schema: string, table: string): void => {
@@ -445,52 +505,11 @@ export class TableStatementDropProvider implements vscode.DocumentDropEditProvid
         const onSaveAlias = (schema: string, table: string, alias: string): Promise<void> =>
             this.qualifierStore.set(schema, table, alias);
 
-        const result = await showJoinDialog(dialogTables, fkEdges, initialJoins, onAddTables, onRemoveTable, onSaveAlias);
+        const result = await showJoinDialog(dialogTables, meta.identityEdges, initialJoins, onAddTables, onRemoveTable, onSaveAlias);
         if (!result) {
             return undefined;
         }
         return result.sql;
-    }
-
-    /**
-     * Show a multi-select quick pick of all tables, used when the user clicks
-     * the dialog's "Add tables…" affordance. Tables already in the join are
-     * included too, so the same table can be added again as another instance
-     * with its own alias and join clause (e.g. a self-join).
-     */
-    private async promptForTables(
-        current: ReadonlyArray<DraggedTable>
-    ): Promise<DraggedTable[]> {
-        let all: Array<{ schema: string; table: string }>;
-        try {
-            all = await this.queryRunner.listAllTables();
-        } catch (err: unknown) {
-            vscode.window.showErrorMessage(`Failed to list tables: ${getErrorMessage(err)}`);
-            return [];
-        }
-        if (all.length === 0) {
-            vscode.window.showInformationMessage('No tables available to add.');
-            return [];
-        }
-        const inJoin = (t: { schema: string; table: string }) =>
-            current.some(c => c.schema === t.schema && c.table === t.table);
-        const picks = await vscode.window.showQuickPick(
-            all.map(t => ({
-                label: `${t.schema}.${t.table}`,
-                description: inJoin(t) ? 'already in join — adds another instance' : undefined,
-                schema: t.schema,
-                table: t.table
-            })),
-            {
-                canPickMany: true,
-                title: 'Add tables to JOIN',
-                placeHolder: 'Select one or more tables to add to the join'
-            }
-        );
-        if (!picks || picks.length === 0) {
-            return [];
-        }
-        return picks.map(p => ({ schema: p.schema, table: p.table }));
     }
 
     private async pickStatement(schema: string, table: string): Promise<string | undefined> {

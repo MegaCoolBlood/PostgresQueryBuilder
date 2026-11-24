@@ -23,7 +23,7 @@ const STYLE_OWNERS = [
 
 /** Surfaces built from files in src/webview: their stylesheet, script and the TypeScript that writes their markup. */
 const FILE_SURFACES = [
-    { css: 'queryBuilder.css', js: 'queryBuilder.js', host: 'queryBuilder.ts' }
+    { css: 'joinBuilder.css', js: 'joinBuilder.js', host: 'joinDialog.ts' }
 ];
 
 /** Literal colours. Everything must come from a --vscode- or --c- variable instead. */

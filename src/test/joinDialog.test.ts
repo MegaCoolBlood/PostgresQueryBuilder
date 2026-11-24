@@ -2,14 +2,10 @@ import './helpers/vscodeMock';
 import { vscodeStub } from './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import * as path from 'node:path';
-import { showJoinDialog, type JoinDialogTable } from '../joinDialog';
+import { showJoinDialog, initialJoinBuilderState, type JoinDialogTable } from '../joinDialog';
 import { QualifierStore, onDidChangeTableAliases } from '../tableStatementDrop';
-
-// The real module object; the compiled `import * as fs` only wraps it in getters.
-const fs = require('fs');
-
-const LOGIC_FILE = path.join(__dirname, '../../../src/webview/joinDialogLogic.js');
+import { buildBuilderSql } from '../statementBuilder';
+import { formatSqlChecked } from '../plpgsqlFormatter';
 
 const TABLES: JoinDialogTable[] = [
     { schema: 'public', table: 'mitarbeiter_tag', tableReference: 'mitarbeiter_tag', alias: 'mtd', savedAlias: 'mtd', columns: ['mtd_id'] },
@@ -31,19 +27,38 @@ function openDialog(onSaveAlias?: (schema: string, table: string, alias: string)
         dispose() {}
     };
     const originalCreate = vscodeStub.window.createWebviewPanel;
-    const originalRead = fs.readFileSync;
     vscodeStub.window.createWebviewPanel = () => panel;
-    // The compiled module looks for the script next to out/; hand it the source file.
-    fs.readFileSync = (file: any, ...rest: any[]) =>
-        String(file).endsWith('joinDialogLogic.js') ? originalRead(LOGIC_FILE, ...rest) : originalRead(file, ...rest);
     let result: Promise<any>;
     try {
-        result = showJoinDialog(TABLES, [], [], undefined, undefined, onSaveAlias);
+        result = showJoinDialog(TABLES, [], [{ type: 'CROSS JOIN', conditions: [] }], undefined, undefined, onSaveAlias);
     } finally {
         vscodeStub.window.createWebviewPanel = originalCreate;
-        fs.readFileSync = originalRead;
     }
     return { panel, posted, result: result!, send: (m: any) => onMessage(m) };
+}
+
+/** A two-table state as the builder would send it. */
+function confirmState(): any {
+    const state = initialJoinBuilderState(
+        [{ ...TABLES[0], alias: 'x' }, { ...TABLES[1], alias: 'y' }],
+        [{ type: 'INNER JOIN', conditions: [{ leftAlias: 'x', leftColumn: 'mtd_id', rightColumn: 'ord_mtd_id' }] }]
+    );
+    state.where.push({ kind: 'compare', left: { kind: 'column', tableIndex: 1, column: 'ord_id' }, operator: '>', right: { kind: 'raw', text: '$1' } });
+    state.where.push({ kind: 'raw', text: 'x.mtd_id = 1 OR x.mtd_id = 2' });
+    return state;
+}
+
+/** Run `fn` with the formatter's master switch set to `enabled`. */
+async function withFormatter<T>(enabled: boolean, fn: () => Promise<T>): Promise<T> {
+    const original = vscodeStub.workspace.getConfiguration;
+    vscodeStub.workspace.getConfiguration = () => ({
+        get: (key: string, def?: any) => (key === 'format.enable' ? enabled : def)
+    });
+    try {
+        return await fn();
+    } finally {
+        vscodeStub.workspace.getConfiguration = original;
+    }
 }
 
 // ===== JOIN dialog: saving an alias =====
@@ -80,28 +95,61 @@ test('JOIN dialog: a failed save is reported and not confirmed to the dialog', a
 
 test('JOIN dialog: inserting the statement returns only the SQL, no aliases to store', async () => {
     const { send, result } = openDialog(async () => {});
-    await send({
-        command: 'confirm',
-        payload: {
-            tables: [
-                { alias: 'x', tableReference: 'mitarbeiter_tag', columns: ['mtd_id'] },
-                { alias: 'y', tableReference: 'orders', columns: ['ord_id'] }
-            ],
-            joins: [{ type: 'CROSS JOIN', conditions: [] }]
-        }
-    });
+    await send({ command: 'confirm', state: confirmState() });
     const value = await result;
     assert.deepEqual(Object.keys(value), ['sql']);
     assert.match(value.sql, /FROM mitarbeiter_tag x/);
-    assert.match(value.sql, /CROSS JOIN orders y/);
+    assert.match(value.sql, /JOIN orders y/);
 });
 
-test('JOIN dialog: each table row has a save button and knows the saved alias', () => {
+// ===== JOIN dialog: formatted SQL =====
+
+test('JOIN dialog: the inserted statement is laid out by the formatter', async () => {
+    const value = await withFormatter(true, async () => {
+        const { send, result } = openDialog();
+        await send({ command: 'confirm', state: confirmState() });
+        return result;
+    });
+    const raw = buildBuilderSql(confirmState());
+    const formatted = formatSqlChecked(raw, {});
+    assert.equal(formatted.ok, true);
+    assert.notEqual(formatted.text.trimEnd(), raw, 'the sample must give the formatter something to do');
+    assert.equal(value.sql, formatted.text.trimEnd());
+    assert.match(value.sql, /\$1/, 'placeholders stay as written');
+});
+
+test('JOIN dialog: with the formatter turned off the statement is inserted as built', async () => {
+    const value = await withFormatter(false, async () => {
+        const { send, result } = openDialog();
+        await send({ command: 'confirm', state: confirmState() });
+        return result;
+    });
+    assert.equal(value.sql, buildBuilderSql(confirmState()));
+});
+
+test('JOIN dialog: the preview answers with the formatted SQL of the request', async () => {
+    const { posted, send } = await withFormatter(true, async () => {
+        const opened = openDialog();
+        await opened.send({ command: 'preview', requestId: 7, state: confirmState() });
+        return opened;
+    });
+    assert.deepEqual(posted.at(-1), {
+        command: 'previewSql',
+        requestId: 7,
+        sql: formatSqlChecked(buildBuilderSql(confirmState()), {}).text.trimEnd()
+    });
+    await send({ command: 'preview', requestId: 8, state: { tables: [] } });
+    assert.deepEqual(posted.at(-1), { command: 'previewSql', requestId: 8, sql: '' });
+});
+
+test('JOIN dialog: hosts the shared join builder with every column selected', () => {
     const { panel } = openDialog();
     const html: string = panel.webview.html;
-    assert.ok(html.includes('data-savealias'), 'save button missing');
-    assert.ok(html.includes('#icon-save'), 'save icon missing');
+    assert.ok(html.includes('window.JoinBuilder.createJoinBuilder'), 'the shared component is not used');
+    assert.ok(html.includes('.jb-table'), 'the component stylesheet is missing');
     assert.ok(html.includes('"savedAlias":"mtd"'), 'saved alias not handed to the dialog');
+    assert.ok(html.includes('"selectItems":[{"kind":"column","tableIndex":0,"column":"mtd_id"}'), 'columns not selected');
+    assert.ok(html.includes('"preview":"SELECT'), 'no initial preview');
     assert.ok(!html.includes('aliasMap'), 'confirming must not hand aliases back for storing');
     assert.match(html, /applies to this statement only/);
 });

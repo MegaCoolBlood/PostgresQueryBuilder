@@ -102,7 +102,7 @@ function computeAutoJoinClause(newOrig, order, tables, identityEdges) {
 }
 
 /** Operators offered for fixed/custom join conditions. */
-const CUSTOM_OPERATORS = ['=', '<>', '<', '<=', '>', '>=', 'LIKE', 'ILIKE', 'BETWEEN', 'IS NULL', 'IS NOT NULL'];
+const CUSTOM_OPERATORS = ['=', '<>', '<', '<=', '>', '>=', 'LIKE', 'NOT LIKE', 'ILIKE', 'NOT ILIKE', 'BETWEEN', 'IS NULL', 'IS NOT NULL'];
 /** Operators that take no right-hand operand. */
 function isUnaryOperator(operator) {
     const op = (operator || '').toUpperCase();
@@ -135,7 +135,7 @@ function formatOperand(op) {
  * incomplete rows can be skipped.
  *
  * Supported shapes:
- *  - `<left> <op> <right>`              (=, <>, <, <=, >, >=, LIKE, ILIKE)
+ *  - `<left> <op> <right>`              (=, <>, <, <=, >, >=, [NOT] LIKE, [NOT] ILIKE, or any other binary operator)
  *  - `<left> BETWEEN <right> AND <r2>`  (BETWEEN)
  *  - `<left> IS NULL` / `IS NOT NULL`   (unary)
  *
@@ -220,17 +220,23 @@ function aliasSaveState(alias, savedAlias, tableName) {
     };
 }
 
+const JOIN_DIALOG_LOGIC = {
+    uniqueAlias,
+    computeAutoJoinClause,
+    CUSTOM_OPERATORS,
+    isUnaryOperator,
+    isBetweenOperator,
+    formatOperand,
+    formatCustomCondition,
+    formatSqlLiteral,
+    literalToCustomCondition,
+    aliasSaveState
+};
+
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = {
-        uniqueAlias,
-        computeAutoJoinClause,
-        CUSTOM_OPERATORS,
-        isUnaryOperator,
-        isBetweenOperator,
-        formatOperand,
-        formatCustomCondition,
-        formatSqlLiteral,
-        literalToCustomCondition,
-        aliasSaveState
-    };
+    module.exports = JOIN_DIALOG_LOGIC;
+}
+// The shared join builder (joinBuilder.js) finds the helpers here in a webview.
+if (typeof window !== 'undefined') {
+    window.JoinDialogLogic = JOIN_DIALOG_LOGIC;
 }

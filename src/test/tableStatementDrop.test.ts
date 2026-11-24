@@ -1,6 +1,9 @@
+import './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildStatement, deriveQualifier, buildJoinSelect, buildRelatedTableJoin, qualifyColumnReferences, autoJoinClauses } from '../statementBuilder';
+import * as path from 'node:path';
+import { buildStatement, deriveQualifier, buildJoinSelect, buildRelatedTableJoin, qualifyColumnReferences, autoJoinClauses, buildBuilderSql, type JoinBuilderState } from '../statementBuilder';
+import { loadJoinMetadata, initialJoinsFor } from '../tableStatementDrop';
 
 const opts = (qualifier = 'lei') => ({
     tableReference: 'leistungen',
@@ -578,4 +581,291 @@ test('buildJoinSelect combines literal and raw conditions on the ON clause', () 
         "SELECT\n  a.id,\n  b.a_id\nFROM a a\n"
         + "INNER JOIN b b ON b.a_id = a.id AND a.status = 'active' AND a.priority > 5;"
     );
+});
+
+test('buildJoinSelect parenthesises a raw condition holding a top-level OR', () => {
+    const tables = [
+        { alias: 'a', tableReference: 'a', columns: ['id'] },
+        { alias: 'b', tableReference: 'b', columns: ['a_id'] }
+    ];
+    const joins = [{
+        type: 'INNER JOIN' as const,
+        conditions: [{ leftAlias: 'a', leftColumn: 'id', rightColumn: 'a_id' }],
+        rawConditions: ["b.kind = 'or' OR (b.x = 1 OR b.y = 2)", 'b.z IN (1, 2)']
+    }];
+    assert.match(
+        buildJoinSelect(tables, joins),
+        /ON b\.a_id = a\.id AND \(b\.kind = 'or' OR \(b\.x = 1 OR b\.y = 2\)\) AND b\.z IN \(1, 2\);$/
+    );
+});
+
+// ===== buildBuilderSql =====
+
+function builderState(): JoinBuilderState {
+    return {
+        distinct: false,
+        selectItems: [
+            { kind: 'column', tableIndex: 0, column: 'id' },
+            { kind: 'column', tableIndex: 1, column: 'total', alias: 'amount' },
+            { kind: 'expr', text: 'count(*)', alias: 'n' }
+        ],
+        tables: [
+            { schema: 'public', table: 'customers', tableReference: 'customers', alias: 'c', columns: ['id', 'name'] },
+            { schema: 'public', table: 'orders', tableReference: 'public.orders', alias: 'o', columns: ['customer_id', 'total'] }
+        ],
+        joins: [{ type: 'LEFT JOIN', conditions: [{ leftAlias: 'c', leftColumn: 'id', rightColumn: 'customer_id' }] }],
+        where: [],
+        orderBy: [],
+        carried: {}
+    };
+}
+
+test('buildBuilderSql builds the SELECT list, FROM and JOINs of the state', () => {
+    assert.equal(
+        buildBuilderSql(builderState()),
+        'SELECT\n  c.id,\n  o.total AS amount,\n  count(*) AS n\nFROM customers c\nLEFT JOIN public.orders o ON o.customer_id = c.id;'
+    );
+});
+
+test('buildBuilderSql selects everything without select items and honours DISTINCT', () => {
+    const state = { ...builderState(), selectItems: [], distinct: true };
+    assert.match(buildBuilderSql(state), /^SELECT DISTINCT\n  \*\nFROM customers c/);
+    state.distinctOn = 'c.id';
+    assert.match(buildBuilderSql(state), /^SELECT DISTINCT ON \(c\.id\)\n/);
+});
+
+test('buildBuilderSql refers to a table without alias by its name, and to a lone one not at all', () => {
+    const state = builderState();
+    state.tables[1].alias = '';
+    state.joins[0].conditions[0].leftAlias = 'c';
+    assert.match(buildBuilderSql(state), /\n  orders\.total AS amount,[\s\S]*LEFT JOIN public\.orders ON orders\.customer_id = c\.id;$/);
+    const lone: JoinBuilderState = { ...builderState(), tables: [{ ...builderState().tables[0], alias: '' }], joins: [], selectItems: [{ kind: 'column', tableIndex: 0, column: 'id' }] };
+    assert.equal(buildBuilderSql(lone), 'SELECT\n  id\nFROM customers;');
+});
+
+test('buildBuilderSql ANDs the WHERE rows and keeps placeholders as written', () => {
+    const state = builderState();
+    state.where = [
+        { kind: 'compare', left: 'o.total', operator: '>', right: '$1' },
+        { kind: 'compare', left: { kind: 'column', tableIndex: 0, column: 'name' }, operator: 'BETWEEN', right: { kind: 'raw', text: ':low' }, right2: { kind: 'raw', text: ":'high'" } },
+        { kind: 'compare', left: 'c.name', operator: 'IS NOT NULL', right: '' },
+        { kind: 'compare', left: { kind: 'column', tableIndex: 0, column: 'id' }, operator: '=', right: { kind: 'column', tableIndex: 1, column: 'customer_id' } },
+        { kind: 'compare', left: 'c.id', operator: '=', right: '  ' },
+        { kind: 'raw', text: 'c.id = v_id OR c.name IS NULL' },
+        { kind: 'raw', text: '' }
+    ];
+    assert.match(buildBuilderSql(state), new RegExp(
+        '\\nWHERE o\\.total > \\$1\\n  AND c\\.name BETWEEN :low AND :\'high\'\\n  AND c\\.name IS NOT NULL'
+        + '\\n  AND c\\.id = o\\.customer_id\\n  AND \\(c\\.id = v_id OR c\\.name IS NULL\\);$'
+    ));
+});
+
+test('buildBuilderSql places ORDER BY and the carried clauses where they were', () => {
+    const state = builderState();
+    state.orderBy = [
+        { expr: 'ignored', column: { tableIndex: 1, column: 'total' }, direction: 'DESC', nulls: 'LAST' },
+        { expr: 'random()' },
+        { expr: '  ' }
+    ];
+    state.where = [{ kind: 'raw', text: 'o.total > 0' }];
+    state.carried = {
+        with: 'WITH recent AS (SELECT 1)',
+        groupBy: 'c.id, o.total',
+        having: 'count(*) > 1',
+        window: 'w AS (PARTITION BY c.id)',
+        limit: '10',
+        offset: '5',
+        fetch: 'FIRST 3 ROWS ONLY',
+        locking: 'FOR UPDATE OF c'
+    };
+    const sql = buildBuilderSql(state);
+    assert.ok(sql.startsWith('WITH recent AS (SELECT 1)\nSELECT\n'));
+    assert.ok(sql.endsWith(
+        '\nWHERE o.total > 0\nGROUP BY c.id, o.total\nHAVING count(*) > 1\nWINDOW w AS (PARTITION BY c.id)'
+        + '\nORDER BY o.total DESC NULLS LAST, random()\nLIMIT 10\nOFFSET 5\nFETCH FIRST 3 ROWS ONLY'
+        + '\nFOR UPDATE OF c;'
+    ));
+});
+
+test('buildBuilderSql writes no ORDER BY, LIMIT, OFFSET or FETCH in front of a UNION', () => {
+    const state = builderState();
+    state.orderBy = [{ expr: 'c.id', direction: 'DESC' }];
+    state.carried = { limit: '10', offset: '5', fetch: 'FIRST 3 ROWS ONLY', setOps: 'UNION ALL SELECT 1, 2, 3 ORDER BY 1 LIMIT 5' };
+    const sql = buildBuilderSql(state, { semicolon: false });
+    assert.match(sql, /\nLEFT JOIN public\.orders o ON o\.customer_id = c\.id\nUNION ALL SELECT 1, 2, 3 ORDER BY 1 LIMIT 5$/);
+    assert.equal((sql.match(/ORDER BY|LIMIT/g) ?? []).length, 2, 'only those of the UNION');
+});
+
+test('buildBuilderSql writes USING as ON pairs next to further conditions', () => {
+    const state = builderState();
+    state.tables[0].columns = ['id', 'kind', 'name'];
+    state.tables.push({ schema: 'public', table: 'items', tableReference: 'items', alias: 'i', columns: [] });
+    state.joins.push({ type: 'LEFT JOIN', conditions: [], rawConditions: ['USING (kind, "Id")', "i.state = 'open' OR i.state IS NULL"] });
+    assert.ok(buildBuilderSql(state, { semicolon: false }).endsWith(
+        `\nLEFT JOIN items i ON i.kind = c.kind AND i."Id" = o."Id" AND (i.state = 'open' OR i.state IS NULL)`
+    ), 'a column the table before lacks pairs with the one that has it, an unknown one with the table just before');
+    state.joins[1].rawConditions = ['USING (kind) AS j', 'i.x = 1'];
+    assert.ok(buildBuilderSql(state, { semicolon: false }).endsWith('\nLEFT JOIN items i ON i.x = 1'), 'a USING it cannot read is left out');
+});
+
+test('buildBuilderSql emits raw FROM items verbatim and joins them through text conditions', () => {
+    const state = builderState();
+    state.tables.push({ schema: '', table: '', tableReference: '', alias: 's', columns: [], raw: '(SELECT customer_id, sum(total) AS t FROM orders GROUP BY 1) s' });
+    state.joins.push({ type: 'INNER JOIN', conditions: [], rawConditions: ['s.customer_id = c.id'] });
+    state.selectItems = [{ kind: 'column', tableIndex: 2, column: '*' }];
+    assert.equal(
+        buildBuilderSql(state, { semicolon: false }),
+        'SELECT\n  s.*\nFROM customers c\nLEFT JOIN public.orders o ON o.customer_id = c.id'
+        + '\nINNER JOIN (SELECT customer_id, sum(total) AS t FROM orders GROUP BY 1) s ON s.customer_id = c.id'
+    );
+});
+
+test('buildBuilderSql writes USING, NATURAL, ON TRUE and CROSS JOIN', () => {
+    const state = builderState();
+    const t = (name: string) => ({ schema: 'public', table: name, tableReference: name, alias: name[0], columns: [] });
+    state.tables.push(t('b'), t('d'), t('e'), t('f'));
+    state.joins.push(
+        { type: 'INNER JOIN', conditions: [], rawConditions: ['USING (id, kind)'] },
+        { type: 'LEFT JOIN', conditions: [], rawConditions: ['NATURAL'] },
+        { type: 'INNER JOIN', conditions: [] },
+        { type: 'CROSS JOIN', conditions: [] }
+    );
+    assert.ok(buildBuilderSql(state).endsWith(
+        '\nINNER JOIN b b USING (id, kind)\nNATURAL LEFT JOIN d d\nINNER JOIN e e ON TRUE\nCROSS JOIN f f;'
+    ));
+});
+
+test('buildBuilderSql keeps the semicolon and the next clause out of a trailing line comment', () => {
+    const state = builderState();
+    state.where = [{ kind: 'raw', text: 'c.id = 1 -- the test customer' }];
+    assert.ok(buildBuilderSql(state).endsWith('-- the test customer\n;'));
+    state.orderBy = [{ expr: 'c.id' }];
+    assert.ok(buildBuilderSql(state).endsWith('-- the test customer\nORDER BY c.id;'));
+});
+
+test('buildBuilderSql returns nothing for an empty state', () => {
+    assert.equal(buildBuilderSql({ ...builderState(), tables: [], selectItems: [], joins: [] }), '');
+});
+
+// The Data Viewer writes a builder state with builderStateToSql (browser),
+// the extension host with buildBuilderSql: both must mean the same statement.
+const { readBuilderState, builderStateToSql } = require(path.join(__dirname, '../../../src/webview/tableView.js'));
+
+const PARITY_QUERIES = [
+    "SELECT c.id, o.total AS amount FROM customers c LEFT JOIN orders o ON o.customer_id = c.id AND o.state = 'open' "
+        + 'WHERE o.total > $1 AND (c.name = :name OR c.id = 1) ORDER BY c.name DESC NULLS LAST LIMIT 10',
+    'WITH r AS (SELECT 1 AS x) SELECT DISTINCT ON (c.id) c.id, count(*) FROM customers c JOIN r ON TRUE '
+        + 'GROUP BY c.id HAVING count(*) > 1 OFFSET 5 FETCH FIRST 3 ROWS ONLY',
+    'SELECT * FROM a JOIN b USING (id) NATURAL LEFT JOIN c, d WHERE a.x = d.y FOR UPDATE',
+    'SELECT s.t FROM (SELECT customer_id, sum(total) AS t FROM orders GROUP BY 1) s CROSS JOIN generate_series(1, 3) g UNION ALL SELECT 1',
+    "SELECT name FROM customers WHERE name LIKE 'A%' -- only A\nORDER BY 1",
+    'SELECT orders.id, customers.name FROM public.orders JOIN customers ON customers.id = orders.customer_id OR customers.id IS NULL WHERE v_flag'
+];
+
+test('buildBuilderSql writes the same statement as the Data Viewer for the states it reads', () => {
+    const normalize = (sql: string) => sql.replace(/\s+/g, ' ').trim();
+    for (const query of PARITY_QUERIES) {
+        const state = readBuilderState(query);
+        assert.ok(state, `readBuilderState cannot read: ${query}`);
+        assert.equal(normalize(buildBuilderSql(state, { semicolon: false })), normalize(builderStateToSql(state)), query);
+    }
+    const built = builderState();
+    built.selectItems = built.selectItems.map(item => (item.kind === 'column' ? { kind: 'column', tableIndex: item.tableIndex, column: item.column } : item));
+    built.joins[0].type = 'CROSS JOIN';
+    built.where = [{ kind: 'compare', left: 'c.id', operator: '=', right: '$1' }, { kind: 'raw', text: 'a OR b' }];
+    assert.equal(normalize(buildBuilderSql(built, { semicolon: false })), normalize(builderStateToSql(built)));
+    // USING next to another condition, and an ORDER BY / LIMIT next to a UNION.
+    const using = readBuilderState('SELECT * FROM a JOIN b USING (id, kind) UNION SELECT * FROM z ORDER BY 1');
+    using.tables[0].columns = ['id'];
+    using.joins[0].rawConditions.push('b.x > 1');
+    using.orderBy = [{ expr: 'a.id' }];
+    using.carried.limit = '5';
+    const usingSql = normalize(buildBuilderSql(using, { semicolon: false }));
+    assert.equal(usingSql, 'SELECT * FROM a INNER JOIN b ON b.id = a.id AND b.kind = a.kind AND b.x > 1 UNION SELECT * FROM z ORDER BY 1');
+    assert.equal(usingSql, normalize(builderStateToSql(using)));
+});
+
+// ===== loadJoinMetadata / initialJoinsFor =====
+
+function fakeJoinData() {
+    const requested: Array<Array<{ schema: string; table: string }>> = [];
+    const runner = {
+        getMultiTableJoinData: async (tables: Array<{ schema: string; table: string }>) => {
+            requested.push(tables);
+            const known: Record<string, { columns: string[]; first: string }> = {
+                customers: { columns: ['cus_id', '"Name"'], first: 'cus_id' },
+                orders: { columns: ['ord_id', 'ord_cus_id', 'ord_state'], first: 'ord_id' }
+            };
+            return {
+                tables: tables.map(t => ({
+                    schema: t.schema,
+                    table: t.table,
+                    tableReference: t.table,
+                    columns: known[t.table].columns,
+                    rawColumns: known[t.table].columns.map(c => c.replace(/"/g, '')),
+                    firstColumnRaw: known[t.table].first
+                })),
+                foreignKeys: [{ fromSchema: 'public', fromTable: 'orders', fromColumn: 'ord_cus_id', toSchema: 'public', toTable: 'customers', toColumn: 'cus_id' }]
+            };
+        }
+    };
+    return { runner, requested };
+}
+
+test('loadJoinMetadata reads each table once and gives every instance a unique alias', async () => {
+    const { runner, requested } = fakeJoinData();
+    const store = { get: (_s: string, t: string) => (t === 'orders' ? 'o' : undefined) };
+    const meta = await loadJoinMetadata(runner, undefined, [
+        { schema: 'public', table: 'customers' },
+        { schema: 'public', table: 'orders' },
+        { schema: 'public', table: 'orders' }
+    ], store);
+    assert.equal(requested.length, 1);
+    assert.equal(requested[0].length, 2);
+    assert.deepEqual(meta.tables.map(t => [t.alias, t.savedAlias]), [['cus', undefined], ['o', 'o'], ['o2', 'o']]);
+    assert.deepEqual(meta.tables[0].columns, ['cus_id', '"Name"']);
+    assert.deepEqual(meta.identityEdges, [
+        { fromSchema: 'public', fromTable: 'orders', fromColumn: 'ord_cus_id', toSchema: 'public', toTable: 'customers', toColumn: 'cus_id' }
+    ]);
+    const plain = await loadJoinMetadata(runner, undefined, [{ schema: 'public', table: 'orders' }, { schema: 'public', table: 'orders' }], store, { uniqueAliases: false });
+    assert.deepEqual(plain.tables.map(t => t.alias), ['o', 'o']);
+});
+
+test('loadJoinMetadata adds custom mappings with their quoted columns and conditions', async () => {
+    const { runner } = fakeJoinData();
+    const mappings = {
+        getAllMappings: () => [{
+            id: 'm1', sourceSchema: 'public', sourceTable: 'orders', sourceColumn: 'ord_id',
+            targetSchema: 'public', targetTable: 'customers', targetColumn: 'Name',
+            conditions: [{ column: 'ord_state', operator: '=', value: 'open' }]
+        }, {
+            id: 'm2', sourceSchema: 'public', sourceTable: 'orders', sourceColumn: 'ord_cus_id',
+            targetSchema: 'public', targetTable: 'customers', targetColumn: 'cus_id'
+        }] as any[]
+    };
+    const meta = await loadJoinMetadata(runner, mappings, [{ schema: 'public', table: 'customers' }, { schema: 'public', table: 'orders' }]);
+    assert.equal(meta.identityEdges.length, 2, 'a mapping repeating a foreign key is not added twice');
+    assert.deepEqual(meta.identityEdges[1], {
+        fromSchema: 'public', fromTable: 'orders', fromColumn: 'ord_id',
+        toSchema: 'public', toTable: 'customers', toColumn: '"Name"',
+        extraConditions: [{ schema: 'public', table: 'orders', column: 'ord_state', operator: '=', value: 'open' }]
+    });
+
+    const joins = initialJoinsFor(meta.tables, meta.identityEdges);
+    assert.deepEqual(joins, [{
+        type: 'INNER JOIN',
+        conditions: [
+            { leftAlias: 'cus', leftColumn: 'cus_id', rightColumn: 'ord_cus_id' },
+            { leftAlias: 'cus', leftColumn: '"Name"', rightColumn: 'ord_id' }
+        ],
+        literalConditions: [{ literalAlias: 'ord', literalColumn: 'ord_state', operator: '=', value: 'open' }]
+    }]);
+});
+
+test('initialJoinsFor cross joins a table without a relation', () => {
+    const joins = initialJoinsFor(
+        [{ schema: 'public', table: 'a', alias: 'a' }, { schema: 'public', table: 'b', alias: 'b' }],
+        []
+    );
+    assert.deepEqual(joins, [{ type: 'CROSS JOIN', conditions: [] }]);
 });

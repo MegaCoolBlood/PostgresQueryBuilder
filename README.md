@@ -531,12 +531,14 @@ again.
 
 The join builder assembles a query across several tables: add the tables,
 reorder them by dragging, name their aliases, choose `INNER`, `LEFT`, `RIGHT`,
-`FULL` or `CROSS`, and take the join condition from the foreign keys that
-already exist between them. Further conditions and self-joins are possible, the
-SQL is shown while you build it, and the result opens as an ordinary grid. A
-renamed alias applies to that statement only; the save button next to it keeps
-it as the table's alias, used from then on when the table is dragged into an
-editor, joined or completed after `FROM` / `JOIN`.
+`FULL` or `CROSS`, and take the join condition from the foreign keys and custom
+column mappings that already exist between them. Further conditions and
+self-joins are possible, and you tick the columns to select. A renamed alias
+applies to that statement only; the save button next to it keeps it as the
+table's alias, used from then on when the table is dragged into an editor,
+joined or completed after `FROM` / `JOIN`. It is the *Query Builder* tab of the
+Data Viewer, and the dialog that opens when several tables are dragged into a
+SQL file; both write the statement through the formatter, with your settings.
 
 ### Export
 

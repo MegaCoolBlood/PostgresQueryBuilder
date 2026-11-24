@@ -1,0 +1,84 @@
+/* Join builder (joinBuilder.js): shared by the JOIN dialog and the Data Viewer's
+   Query Builder tab. Surface-specific rules only — base styling is shared.css. */
+
+.jb-section-title { font-weight: 600; margin: var(--sp-4) 0 var(--sp-2); }
+.jb > .jb-section-title:first-child { margin-top: 0; }
+
+.jb-table, .jb-join {
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius-lg);
+    padding: var(--sp-2);
+    margin-bottom: var(--sp-2);
+    background: var(--c-surface);
+}
+.jb-table.dragging { opacity: 0.4; }
+.jb-table.drag-over { border-color: var(--c-accent); border-style: dashed; }
+
+.jb-table-head, .jb-join-head, .jb-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
+}
+.jb-row { margin-top: var(--sp-2); }
+.jb-join-head { margin-bottom: var(--sp-1); }
+.jb-list > .jb-row:first-child { margin-top: 0; }
+
+.jb-grip { cursor: grab; user-select: none; display: inline-flex; color: var(--c-muted); }
+.jb-grip:active { cursor: grabbing; }
+.jb-name { font-weight: 600; }
+.jb-as { color: var(--c-muted); }
+.jb-spacer { flex: 1; }
+.jb-raw {
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    background: var(--c-code-bg);
+    border-radius: var(--radius);
+    padding: 0 var(--sp-1);
+    max-width: 40ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.jb input.jb-alias { width: 90px; }
+.jb input.jb-value { width: 160px; font-family: var(--font-mono); }
+.jb input.jb-text { flex: 1; min-width: 200px; font-family: var(--font-mono); }
+.jb-ref { min-width: 160px; }
+.jb-literal .mono { opacity: 0.85; }
+
+.jb-columns { margin-top: var(--sp-2); }
+.jb-columns > summary { cursor: pointer; color: var(--c-muted); font-size: var(--fs-sm); }
+.jb-columns[open] > summary { margin-bottom: var(--sp-1); }
+.jb-col-actions { display: flex; gap: var(--sp-1); margin-bottom: var(--sp-1); }
+.jb-col-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: var(--sp-1) var(--sp-3);
+}
+.jb-col, .jb-check {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+}
+.jb-check { margin-bottom: var(--sp-2); }
+
+.jb-add-tables {
+    width: 100%;
+    border-style: dashed;
+    border-color: var(--c-border);
+    margin-bottom: var(--sp-2);
+}
+.jb-add-tables:hover:not(:disabled) { border-color: var(--c-accent); }
+
+.jb-carried { display: flex; flex-direction: column; gap: var(--sp-1); }
+.jb-carried-part {
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    background: var(--c-code-bg);
+    border-radius: var(--radius);
+    padding: var(--sp-1) var(--sp-2);
+    color: var(--c-muted);
+    white-space: pre-wrap;
+}
