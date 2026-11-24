@@ -34,9 +34,6 @@ edit only the `.ts` file.
   `monaco-editor` dev dependency — only when Monaco or `esbuild.js` changed, so
   delete `dist/monaco/` to force a rebuild. Without it the query bar falls back
   to a plain text box.
-  It also copies the Query Builder's PostgreSQL parser, `libpg-query.wasm`
-  (from the `libpg-query` dependency), to `dist/`: the bundled parser loads it
-  from the directory of `dist/extension.js` (~1.7 MB, ~0.3 MB compressed in the VSIX).
 - `npm run compile:test` → `tsc -p ./` emits `out/`. This is what the tests run.
 
 A change is only visible in an installed VSIX after `npm run package` /

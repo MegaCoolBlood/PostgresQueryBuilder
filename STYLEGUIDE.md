@@ -58,10 +58,9 @@ return buildHtmlDocument({ webview, title: 'My Panel', styles, body, script });
 
 Passing `webview` is what emits the CSP `<meta>` and the script nonce — **always
 pass it.** `includeSharedAssets: false` exists only for a document that must
-stand entirely on its own; no current surface uses it. A surface that loads the
-Monaco bundle of `dist/monaco/` (the Query Builder) passes
-`csp: buildDataViewerCsp`, the Data Viewer's policy, and keeps its stylesheet
-and script as files in `src/webview/` (`queryBuilder.css`, `queryBuilder.js`),
+stand entirely on its own; no current surface uses it. The join builder, shared
+by the join dialog and the Data Viewer's Query Builder tab, keeps its stylesheet
+and script as files in `src/webview/` (`joinBuilder.css`, `joinBuilder.js`),
 which the design tests scan like the Data Viewer's.
 
 **The Data Viewer** is assembled from files instead

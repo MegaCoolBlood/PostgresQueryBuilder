@@ -59,19 +59,6 @@ test('buildHtmlDocument generates a nonce for the script when none is given', ()
     assert.ok(match![1].length >= 16);
 });
 
-test('buildHtmlDocument takes a custom policy for a surface that loads extension resources', () => {
-    const fakeWebview = { cspSource: 'vscode-resource://abc' } as any;
-    const html = buildHtmlDocument({
-        webview: fakeWebview,
-        nonce: 'N1',
-        csp: (source, nonce) => `default-src 'none'; script-src 'nonce-${nonce}' ${source};`,
-        body: '',
-        script: 'x();'
-    });
-    assert.ok(html.includes(`content="default-src 'none'; script-src 'nonce-N1' vscode-resource://abc;"`));
-    assert.ok(html.includes('<script nonce="N1">'));
-});
-
 test('buildHtmlDocument omits the script tag when no script is provided', () => {
     const html = buildHtmlDocument({ body: '<p>x</p>' });
     assert.ok(!html.includes('<script'));

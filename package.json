@@ -1954,7 +1954,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
     "exceljs": "^4.4.0",
-    "libpg-query": "^18.2.5",
     "pg": "^8.11.3",
     "zod": "^4.6.7"
   },

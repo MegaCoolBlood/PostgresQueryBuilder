@@ -157,27 +157,6 @@ async function buildPgsqlWords() {
     console.log('[monaco] wrote dist/monaco/pgsql-words.json');
 }
 
-// The Query Builder parses SQL with libpg-query, the PostgreSQL parser built
-// to WebAssembly. Its JavaScript is bundled into dist/extension.js; the
-// Emscripten loader then reads `libpg-query.wasm` from the directory of the
-// bundle (__dirname), so the binary is copied next to it.
-const PG_QUERY_WASM = path.join(__dirname, 'node_modules', 'libpg-query', 'wasm', 'libpg-query.wasm');
-const PG_QUERY_WASM_OUT = path.join(__dirname, 'dist', 'libpg-query.wasm');
-
-/** Copy libpg-query.wasm to dist/ unless the copy there is identical. */
-function copyPgQueryWasm() {
-    if (!fs.existsSync(PG_QUERY_WASM)) {
-        throw new Error(`[libpg-query] ${PG_QUERY_WASM} is missing; run npm install.`);
-    }
-    const source = fs.readFileSync(PG_QUERY_WASM);
-    if (fs.existsSync(PG_QUERY_WASM_OUT) && source.equals(fs.readFileSync(PG_QUERY_WASM_OUT))) {
-        return;
-    }
-    fs.mkdirSync(path.dirname(PG_QUERY_WASM_OUT), { recursive: true });
-    fs.writeFileSync(PG_QUERY_WASM_OUT, source);
-    console.log('[libpg-query] copied libpg-query.wasm to dist/');
-}
-
 const commonOptions = {
     bundle: true,
     format: 'cjs',
@@ -203,7 +182,6 @@ const ENTRIES = [
 async function main() {
     await buildMonaco();
     await buildPgsqlWords();
-    copyPgQueryWasm();
 
     const entries = ENTRIES;
 
@@ -256,4 +234,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { dompurifyFromPackage, DOMPURIFY_ESM, MONACO_ESM, commonOptions, copyPgQueryWasm, PG_QUERY_WASM_OUT, ENTRIES };
+module.exports = { dompurifyFromPackage, DOMPURIFY_ESM, MONACO_ESM, commonOptions, ENTRIES };

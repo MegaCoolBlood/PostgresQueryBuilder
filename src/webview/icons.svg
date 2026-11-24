@@ -11,7 +11,6 @@
     <symbol id="icon-add" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
     <symbol id="icon-check" viewBox="0 0 16 16"><path d="M3 8.5l3.5 3.5L13 4.5"/></symbol>
     <symbol id="icon-undo" viewBox="0 0 16 16"><path d="M3.5 7.5h6.5a3 3 0 010 6H7.5"/><path d="M6 5L3.5 7.5 6 10"/></symbol>
-    <symbol id="icon-redo" viewBox="0 0 16 16"><path d="M12.5 7.5H6a3 3 0 000 6h2.5"/><path d="M10 5l2.5 2.5L10 10"/></symbol>
     <symbol id="icon-filter" viewBox="0 0 16 16"><path d="M2.5 3.5h11l-4.2 5v4.3l-2.6 1.2V8.5z"/></symbol>
     <symbol id="icon-export" viewBox="0 0 16 16"><path d="M8 2.5v7.5"/><path d="M5 7.5L8 10.5l3-3"/><path d="M3 12v1.5h10V12"/></symbol>
     <symbol id="icon-run" viewBox="0 0 16 16"><path class="f" d="M5 3.2l7.5 4.8L5 12.8z"/></symbol>
@@ -36,7 +35,6 @@
     <symbol id="icon-save" viewBox="0 0 16 16"><path d="M2.5 2.5h8.5l2.5 2.5v8.5h-11z"/><path d="M5 2.5v3h5v-3"/><path d="M5 13.5v-4h6v4"/></symbol>
     <symbol id="icon-table" viewBox="0 0 16 16"><path d="M2.5 3.5h11v9h-11z"/><path d="M2.5 6.5h11M6.5 6.5v6"/></symbol>
     <symbol id="icon-diagram" viewBox="0 0 16 16"><path d="M2.5 2.5h5v4h-5zM8.5 9.5h5v4h-5z"/><path d="M7.5 4.5h1.5a1 1 0 011 1v4"/></symbol>
-    <symbol id="icon-layout" viewBox="0 0 16 16"><path d="M2.5 2.5h4.5v4.5H2.5zM9 2.5h4.5v4.5H9zM2.5 9h4.5v4.5H2.5zM9 9h4.5v4.5H9z"/></symbol>
     <symbol id="icon-file" viewBox="0 0 16 16"><path d="M4 2.5h5l3 3v8H4z"/><path d="M9 2.5v3h3"/></symbol>
     <symbol id="icon-error" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M6 6l4 4M10 6l-4 4"/></symbol>
     <symbol id="icon-warning" viewBox="0 0 16 16"><path d="M8 2.5l5.5 10h-11z"/><path d="M8 6.5v3"/><path d="M8 11.2v.1"/></symbol>
