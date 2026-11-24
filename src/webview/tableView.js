@@ -2308,6 +2308,836 @@ function spellOutWildcard(cols, at, listLength, qualifier, formatIdent) {
     return { items };
 }
 
+// `sql` with the one `*` (or `t.*`) of its select list spelled out into the
+// result columns `columns` (names, or { name, qualifier, sourceColumn }), the
+// rest untouched; null when there is no single `*`, it cannot be spelled out,
+// or the query is a UNION / INTERSECT / EXCEPT, whose parts must stay alike.
+// `options` as for groupingRewrite.
+function expandSelectWildcard(sql, columns, options) {
+    const opts = options || {};
+    const formatIdent = typeof opts.formatIdent === 'function' ? opts.formatIdent : defaultGroupingIdent;
+    const reserved = typeof opts.isReservedWord === 'function'
+        ? opts.isReservedWord
+        : (word => SELECT_ITEM_NON_ALIAS_WORDS.has(String(word).toLowerCase()));
+    const src = String(sql == null ? '' : sql);
+    const masked = maskSqlStructure(src);
+    const range = findSelectListRange(masked);
+    if (!range) return null;
+    if (range.tokens.some(t => t.depth === 0 && ['union', 'intersect', 'except'].indexOf(t.lower) !== -1)) return null;
+    const items = splitSelectItems(masked, range);
+    if (!items) return null;
+    const analyzed = items.map(item => analyzeSelectItem(src, masked, item, reserved));
+    const wildcards = analyzed.filter(a => a.wildcard);
+    if (wildcards.length !== 1) return null;
+    const at = analyzed.indexOf(wildcards[0]);
+    const cols = (Array.isArray(columns) ? columns : []).map(c => (c && typeof c === 'object' ? c : { name: String(c) }));
+    const spelled = spellOutWildcard(cols, at, analyzed.length, wildcards[0].qualifier, formatIdent);
+    if (spelled.error) return null;
+    return applyTextEdits(src, [{ start: wildcards[0].start, end: wildcards[0].end, text: spelled.items.map(it => it.text).join(', ') }]);
+}
+
+// The query bar text after the grid column at `fromIndex` moved to `toIndex`:
+// the select list reordered, a `*` spelled out into `columns` (the result
+// columns before the move) first; null when the select list cannot follow,
+// and the query is then left as it is.
+function columnMoveQuery(sql, fromIndex, toIndex, columns, options) {
+    const text = String(sql == null ? '' : sql).trim();
+    const reordered = reorderSelectColumns(text, fromIndex, toIndex);
+    if (reordered) return reordered;
+    const expanded = expandSelectWildcard(text, columns, options);
+    return expanded ? reorderSelectColumns(expanded, fromIndex, toIndex) : null;
+}
+
+// What the rows on screen count as coming from after the query bar was
+// rewritten with the same query in another form: the new text when they came
+// from the old one and the bar still holds what the rewrite put there
+// (`written`, shown or formatted) — not text typed meanwhile.
+function runSqlAfterRewrite(lastRunSql, wasCurrent, latest, current, written) {
+    return latest && wasCurrent && current === written ? current : lastRunSql;
+}
+
+// --- Query Builder state -----------------------------------------------------
+// readBuilderState reads a SELECT into the parts the Query Builder edits and
+// builderStateToSql writes them back (unformatted, in clause order):
+//   { distinct, distinctOn?, selectItems, tables, joins, where, orderBy, carried }
+// joins[i - 1] joins tables[i]. What the builder cannot edit stays text: a
+// select item, FROM item (`raw`, the whole item with its alias) or condition
+// it cannot read, and the clauses it does not edit (`carried`: with, groupBy,
+// having, window, limit, offset, fetch, locking, setOps — groupBy, having,
+// window, limit, offset and fetch without their keyword). Identifiers keep the
+// spelling they have in the SQL, quotes included; only `schema` and `table` of
+// a FROM item are the names they denote, for the catalog lookup.
+// A join's rawConditions may hold one marker instead of conditions: `NATURAL`
+// (a NATURAL join) or `USING (…)` (written as the join's USING clause).
+// A comma join reads as a CROSS JOIN; a WHERE equality `a.x = b.y` between it
+// and an earlier table moves into it as an INNER JOIN condition.
+// Comments inside an expression, condition, FROM item or carried clause are
+// kept; comments before, between or after them are dropped.
+
+const BUILDER_NAME = '(?:"(?:[^"]|"")+"|[A-Za-z_\\u0080-\\uffff][A-Za-z0-9_$\\u0080-\\uffff]*)';
+const BUILDER_NAME_MASKED = '(?:"_+"|[A-Za-z_\\u0080-\\uffff][A-Za-z0-9_$\\u0080-\\uffff]*)';
+const BUILDER_JOIN_TYPES = { inner: 'INNER JOIN', cross: 'CROSS JOIN', left: 'LEFT JOIN', right: 'RIGHT JOIN', full: 'FULL JOIN' };
+// Words that are never the name or the alias of a FROM item.
+const BUILDER_FROM_KEYWORDS = new Set([
+    'lateral', 'only', 'rows', 'with', 'as', 'on', 'using', 'natural', 'join', 'inner', 'cross', 'left',
+    'right', 'full', 'outer', 'tablesample', 'repeatable', 'ordinality', 'select', 'values', 'from', 'where'
+]);
+// Words that read like a column but are a value.
+const BUILDER_VALUE_WORDS = new Set([
+    'true', 'false', 'null', 'default', 'current_date', 'current_time', 'current_timestamp', 'localtime',
+    'localtimestamp', 'current_user', 'session_user', 'user', 'current_role', 'current_catalog', 'current_schema'
+]);
+const BUILDER_CLAUSE_RANKS = { from: 1, where: 2, group: 3, having: 4, window: 5, order: 6, limit: 7, offset: 7, fetch: 7, locking: 8 };
+const BUILDER_NUMBER = /^-?\d+(?:\.\d+)?$/;
+
+// `sql` (and its mask) from `start` to `end` without the blanks and comments
+// around it.
+function builderSlice(sql, masked, start, end) {
+    while (start < end && /\s/.test(masked[start])) start++;
+    while (end > start && /\s/.test(masked[end - 1])) end--;
+    return { text: sql.slice(start, end), masked: masked.slice(start, end), start, end };
+}
+
+// A column reference `col` or `qualifier.col` as { qualifier, column } as
+// written, or null.
+function builderColumnRef(text, masked) {
+    const m = masked === undefined ? maskSqlStructure(text) : masked;
+    const re = new RegExp(`^${BUILDER_NAME_MASKED}(?:\\s*\\.\\s*${BUILDER_NAME_MASKED})?$`);
+    if (!re.test(m) || hasSqlComment(text)) return null;
+    const dot = m.indexOf('.');
+    if (dot === -1) return { qualifier: '', column: text };
+    return { qualifier: text.slice(0, dot).trim(), column: text.slice(dot + 1).trim() };
+}
+
+// The name the query refers to a FROM item by: its alias, else its table name
+// as written; '' for a subquery or function without an alias.
+function builderQualifier(table) {
+    if (!table) return '';
+    if (table.alias) return table.alias;
+    const ref = String(table.tableReference || '');
+    if (!ref) return '';
+    const parts = ref.split(/\s*\.\s*(?=(?:[^"]*"[^"]*")*[^"]*$)/);
+    return parts[parts.length - 1].trim();
+}
+
+// The index of the one table among the first `count` that `qualifier` names,
+// or -1.
+function builderResolveQualifier(tables, qualifier, count) {
+    const name = sqlIdentifierName(qualifier);
+    const n = count === undefined ? tables.length : count;
+    let found = -1;
+    for (let i = 0; i < n; i++) {
+        const q = builderQualifier(tables[i]);
+        if (!q || sqlIdentifierName(q) !== name) continue;
+        if (found !== -1) return -1;
+        found = i;
+    }
+    return found;
+}
+
+// True when `text` has an OR outside parentheses.
+function builderHasTopLevelOr(text) {
+    return sqlStructureTokens(maskSqlStructure(text)).some(t => t.depth === 0 && t.lower === 'or');
+}
+
+// The conditions of a WHERE or ON from `start` to `end`, split at the ANDs
+// outside parentheses (not at the one of a BETWEEN); one part when an OR joins
+// them at the top level.
+function builderSplitAnd(sql, masked, tokens, start, end) {
+    const top = tokens.filter(t => t.depth === 0 && t.lower && t.start >= start && t.end <= end);
+    if (top.some(t => t.lower === 'or')) {
+        const whole = builderSlice(sql, masked, start, end);
+        return whole.text ? [whole] : [];
+    }
+    const parts = [];
+    let from = start, between = false;
+    for (const t of top) {
+        if (t.lower === 'between') between = true;
+        else if (t.lower === 'and') {
+            if (between) { between = false; continue; }
+            parts.push(builderSlice(sql, masked, from, t.start));
+            from = t.end;
+        }
+    }
+    parts.push(builderSlice(sql, masked, from, end));
+    return parts.filter(p => p.text !== '');
+}
+
+// The value of a literal a join's literal condition can hold: a number as
+// written or the text of a string literal; null for anything else, also for a
+// quoted number, which would be written back unquoted.
+function builderLiteralValue(text) {
+    if (BUILDER_NUMBER.test(text)) return text;
+    const m = /^'((?:[^']|'')*)'$/.exec(text);
+    if (!m) return null;
+    const value = m[1].replace(/''/g, "'");
+    return BUILDER_NUMBER.test(value) ? null : value;
+}
+
+function builderLiteralSql(value) {
+    const text = String(value == null ? '' : value);
+    return BUILDER_NUMBER.test(text) ? text : "'" + escapeSqlString(text) + "'";
+}
+
+// A WHERE condition: { kind: 'compare', left, operator, right } for a column
+// compared with one value, column, placeholder or variable (a cast allowed),
+// or tested for NULL; { kind: 'raw', text } for anything else.
+function readBuilderCondition(text) {
+    if (!hasSqlComment(text) && !builderHasTopLevelOr(text)) {
+        const name = BUILDER_NAME;
+        const ref = `${name}(?:\\s*\\.\\s*${name})?`;
+        const atom = `(?:'(?:[^']|'')*'|-?\\d+(?:\\.\\d+)?|:'[A-Za-z_][A-Za-z0-9_]*'|:"[A-Za-z_][A-Za-z0-9_]*"|:[A-Za-z_][A-Za-z0-9_]*|\\$\\d+|${ref})`;
+        const cast = `(?:\\s*::\\s*${name}(?:\\s+${name})*(?:\\s*\\(\\s*\\d+(?:\\s*,\\s*\\d+)?\\s*\\))?(?:\\s*\\[\\s*\\])*)*`;
+        const op = '<>|!=|<=|>=|=|<|>|(?:NOT\\s+)?I?LIKE|IS\\s+NOT\\s+NULL|IS\\s+NULL';
+        const m = new RegExp(`^(${ref})\\s*(${op})(?:\\s*(${atom}${cast}))?$`, 'i').exec(text);
+        if (m) {
+            const operator = m[2].toUpperCase().replace(/\s+/g, ' ');
+            const unary = /^IS /.test(operator);
+            if (unary === (m[3] === undefined)) return { kind: 'compare', left: m[1], operator, right: m[3] || '' };
+        }
+    }
+    return { kind: 'raw', text };
+}
+
+// Sorts the parts of the ON condition of the join of tables[index] into column
+// pairs with an earlier table, literal conditions and raw conditions.
+function readBuilderJoinConditions(join, parts, tables, index) {
+    const ref = `(${BUILDER_NAME_MASKED}\\s*\\.\\s*${BUILDER_NAME_MASKED})`;
+    const pair = new RegExp(`^${ref}\\s*=\\s*${ref}$`);
+    const literal = new RegExp(`^${ref}\\s*(<>|!=|<=|>=|=|<|>)\\s*(\\S[\\s\\S]*)$`);
+    for (const part of parts) {
+        if (!hasSqlComment(part.text)) {
+            const p = pair.exec(part.masked);
+            if (p) {
+                const eq = p[1].length + part.masked.slice(p[1].length).indexOf('=');
+                const a = builderColumnRef(part.text.slice(0, eq).trim());
+                const b = builderColumnRef(part.text.slice(eq + 1).trim());
+                const ai = a ? builderResolveQualifier(tables, a.qualifier, index + 1) : -1;
+                const bi = b ? builderResolveQualifier(tables, b.qualifier, index + 1) : -1;
+                if (ai !== -1 && bi !== -1 && ai !== bi && (ai === index || bi === index)) {
+                    const own = ai === index ? a : b;
+                    const other = ai === index ? b : a;
+                    const otherIndex = ai === index ? bi : ai;
+                    join.conditions.push({ leftAlias: builderQualifier(tables[otherIndex]), leftColumn: other.column, rightColumn: own.column });
+                    continue;
+                }
+            }
+            const l = literal.exec(part.masked);
+            if (l) {
+                const col = builderColumnRef(part.text.slice(0, l[1].length).trim());
+                const at = col ? builderResolveQualifier(tables, col.qualifier, index + 1) : -1;
+                const value = builderLiteralValue(part.text.slice(part.masked.length - l[3].length).trim());
+                if (at !== -1 && value !== null) {
+                    join.literalConditions.push({ literalAlias: builderQualifier(tables[at]), literalColumn: col.column, operator: l[2], value });
+                    continue;
+                }
+            }
+        }
+        join.rawConditions.push(part.text);
+    }
+}
+
+// The alias a raw FROM item (subquery, function, …) declares, or ''.
+function builderRawAlias(item, isKeyword) {
+    const m = item.masked;
+    let end = m.length;
+    if (m[end - 1] === ')') {
+        // A column alias list `alias(a, b)` or the item's own parentheses.
+        let depth = 0, i = end - 1;
+        for (; i >= 0; i--) {
+            if (m[i] === ')') depth++;
+            else if (m[i] === '(' && --depth === 0) break;
+        }
+        if (i <= 0) return '';
+        end = i;
+        while (end > 0 && /\s/.test(m[end - 1])) end--;
+    }
+    let start = end;
+    if (m[end - 1] === '"') start = m.lastIndexOf('"', end - 2);
+    else while (start > 0 && /[A-Za-z0-9_$\u0080-\uffff]/.test(m[start - 1])) start--;
+    if (start <= 0 || start >= end || !/^["A-Za-z_\u0080-\uffff]/.test(m[start])) return '';
+    const word = item.text.slice(start, end);
+    if (word[0] !== '"' && isKeyword(word)) return '';
+    let p = start;
+    while (p > 0 && /\s/.test(m[p - 1])) p--;
+    const before = m[p - 1];
+    if (before === ')' || before === '"') return word;
+    if (p === start || !/[A-Za-z0-9_$\u0080-\uffff]/.test(before)) return '';
+    let w = p;
+    while (w > 0 && /[A-Za-z0-9_$\u0080-\uffff]/.test(m[w - 1])) w--;
+    const prev = m.slice(w, p).toLowerCase();
+    return prev === 'as' || !isKeyword(prev) ? word : '';
+}
+
+// The FROM item from `start` to `end`: a table (schema and table name, the
+// reference and alias as written) or a raw item — subquery, function, LATERAL,
+// ONLY, TABLESAMPLE, column alias list, CTE — kept as written with its alias.
+function readBuilderFromItem(ctx, start, end) {
+    const { sql, masked, tokens, cteNames, reserved } = ctx;
+    const item = builderSlice(sql, masked, start, end);
+    if (!item.text) return null;
+    const isKeyword = word => BUILDER_FROM_KEYWORDS.has(word.toLowerCase()) || !!reserved(word.toLowerCase());
+    const plainKeyword = word => word[0] !== '"' && isKeyword(word);
+    const name = BUILDER_NAME_MASKED;
+    const rel = new RegExp(`^(${name}(?:\\s*\\.\\s*${name})?)(?:\\s+(?:as\\s+)?(${name}))?$`, 'i').exec(item.masked);
+    if (rel) {
+        const parts = item.text.slice(0, rel[1].length).split(/\s*\.\s*(?=(?:[^"]*"[^"]*")*[^"]*$)/).map(p => p.trim());
+        const alias = rel[2] ? item.text.slice(item.text.length - rel[2].length) : '';
+        if (!parts.some(plainKeyword) && !(alias && plainKeyword(alias))) {
+            const table = {
+                schema: parts.length > 1 ? sqlIdentifierName(parts[0]) : '',
+                table: sqlIdentifierName(parts[parts.length - 1]),
+                tableReference: parts.join('.'),
+                alias,
+                columns: []
+            };
+            if (parts.length === 1 && cteNames.has(table.table)) table.raw = item.text;
+            return table;
+        }
+    }
+    const table = { schema: '', table: '', tableReference: '', alias: '', columns: [], raw: item.text };
+    // ONLY t / t TABLESAMPLE …: the table still names the item.
+    const words = tokens.filter(t => t.depth === 0 && t.lower && t.start >= item.start && t.end <= item.end);
+    let relStart = item.start, relEnd = item.end;
+    if (words[0] && words[0].lower === 'only' && words[0].start === item.start) relStart = words[0].end;
+    const sample = words.find(t => t.lower === 'tablesample');
+    if (sample) relEnd = sample.start;
+    if (relStart !== item.start || relEnd !== item.end) {
+        const inner = relStart < relEnd ? readBuilderFromItem(ctx, relStart, relEnd) : null;
+        if (inner && !inner.raw) {
+            table.schema = inner.schema;
+            table.table = inner.table;
+            table.tableReference = inner.tableReference;
+            table.alias = inner.alias;
+        }
+        return table;
+    }
+    table.alias = builderRawAlias(item, isKeyword);
+    return table;
+}
+
+// The join keywords starting at words[w] ([NATURAL] [INNER | CROSS | LEFT |
+// RIGHT | FULL [OUTER]] JOIN), or null.
+function builderJoinKeywords(masked, words, w) {
+    const touching = (a, b) => !!b && masked.slice(a.end, b.start).trim() === '';
+    let i = w, natural = false, type = 'INNER JOIN';
+    if (words[i].lower === 'natural') {
+        if (!touching(words[i], words[i + 1])) return null;
+        natural = true;
+        i++;
+    }
+    const lower = words[i].lower;
+    if (BUILDER_JOIN_TYPES[lower]) {
+        if (!touching(words[i], words[i + 1])) return null;
+        type = BUILDER_JOIN_TYPES[lower];
+        i++;
+        if (lower !== 'inner' && lower !== 'cross' && words[i].lower === 'outer') {
+            if (!touching(words[i], words[i + 1])) return null;
+            i++;
+        }
+    }
+    if (words[i].lower !== 'join') return null;
+    return { mark: { start: words[w].start, end: words[i].end, type, natural, comma: false }, last: i };
+}
+
+// Reads the FROM clause from `start` to `end` into state.tables and
+// state.joins; commaJoins[i] tells that tables[i] follows a comma. False when
+// a FROM item is missing.
+function readBuilderFrom(ctx, start, end, state, commaJoins) {
+    const { sql, masked, tokens } = ctx;
+    const marks = [];
+    let depth = 0;
+    for (let i = start; i < end; i++) {
+        const ch = masked[i];
+        if (ch === '(' || ch === '[') depth++;
+        else if (ch === ')' || ch === ']') depth--;
+        else if (ch === ',' && depth === 0) marks.push({ start: i, end: i + 1, type: 'CROSS JOIN', natural: false, comma: true });
+    }
+    const words = tokens.filter(t => t.depth === 0 && t.lower && t.start >= start && t.end <= end);
+    for (let w = 0; w < words.length; w++) {
+        const seq = builderJoinKeywords(masked, words, w);
+        if (seq) { marks.push(seq.mark); w = seq.last; }
+    }
+    marks.sort((a, b) => a.start - b.start);
+    const segments = [];
+    let from = start, info = { type: '', natural: false, comma: false };
+    for (const m of marks) {
+        segments.push(Object.assign({}, info, { start: from, end: m.start }));
+        from = m.end;
+        info = m;
+    }
+    segments.push(Object.assign({}, info, { start: from, end }));
+    // `a, b RIGHT JOIN c ON …` joins c to b alone; read as a left-deep chain it
+    // would join it to a × b, so such a group stays one parenthesised item.
+    const grouped = [];
+    for (let s = 0; s < segments.length;) {
+        let e = s + 1;
+        while (e < segments.length && !segments[e].comma) e++;
+        if (s > 0 && segments.slice(s + 1, e).some(g => g.type === 'RIGHT JOIN' || g.type === 'FULL JOIN')) {
+            grouped.push(Object.assign({}, segments[s], { end: segments[e - 1].end, wrapped: true }));
+        } else {
+            grouped.push(...segments.slice(s, e));
+        }
+        s = e;
+    }
+    for (const seg of grouped) {
+        const index = state.tables.length;
+        let table, cond = null;
+        if (seg.wrapped) {
+            const body = builderSlice(sql, masked, seg.start, seg.end);
+            table = { schema: '', table: '', tableReference: '', alias: '', columns: [], raw: '(' + body.text + ')' };
+        } else {
+            cond = words.find(t => t.start >= seg.start && t.end <= seg.end && (t.lower === 'on' || t.lower === 'using')) || null;
+            table = readBuilderFromItem(ctx, seg.start, cond ? cond.start : seg.end);
+        }
+        if (!table) return false;
+        state.tables.push(table);
+        if (index === 0) continue;
+        const join = { type: seg.type, conditions: [], literalConditions: [], rawConditions: [] };
+        commaJoins[index] = seg.comma;
+        if (seg.natural) join.rawConditions.push('NATURAL');
+        else if (cond && cond.lower === 'using') join.rawConditions.push('USING ' + builderSlice(sql, masked, cond.end, seg.end).text);
+        else if (cond) readBuilderJoinConditions(join, builderSplitAnd(sql, masked, tokens, cond.end, seg.end), state.tables, index);
+        state.joins.push(join);
+    }
+    return true;
+}
+
+// One select item: a column of a FROM item, or an expression with its alias.
+function readBuilderSelectItem(ctx, item, tables) {
+    const { sql, masked, reserved } = ctx;
+    const info = analyzeSelectItem(sql, masked, item, reserved);
+    if (info.wildcard) return { kind: 'expr', text: sql.slice(item.start, item.end) };
+    const expr = builderSlice(sql, masked, item.start, info.exprEnd);
+    if (info.alias) return { kind: 'expr', text: expr.text, alias: sql.slice(info.alias.start, info.alias.end) };
+    const ref = builderColumnRef(expr.text, expr.masked);
+    if (ref) {
+        let index = -1;
+        if (ref.qualifier) {
+            index = builderResolveQualifier(tables, ref.qualifier);
+        } else {
+            const word = ref.column.toLowerCase();
+            const isValue = ref.column[0] !== '"' && (BUILDER_VALUE_WORDS.has(word) || !!reserved(word));
+            // A bare name stays bare: it might be a variable rather than a column.
+            if (!isValue && tables.length === 1 && !tables[0].alias) index = 0;
+        }
+        if (index !== -1) return { kind: 'column', tableIndex: index, column: ref.column };
+    }
+    return { kind: 'expr', text: expr.text };
+}
+
+// Moves a WHERE equality `a.x = b.y` into the join of the later of the two
+// tables when that one follows a comma (an INNER JOIN then). True when moved.
+function builderMoveToJoin(state, commaJoins, condition) {
+    const a = builderColumnRef(condition.left);
+    const b = builderColumnRef(condition.right);
+    if (!a || !b || !a.qualifier || !b.qualifier) return false;
+    const ai = builderResolveQualifier(state.tables, a.qualifier);
+    const bi = builderResolveQualifier(state.tables, b.qualifier);
+    if (ai === -1 || bi === -1 || ai === bi) return false;
+    const hi = Math.max(ai, bi);
+    if (!commaJoins[hi]) return false;
+    const join = state.joins[hi - 1];
+    const own = ai === hi ? a : b;
+    const other = ai === hi ? b : a;
+    join.type = 'INNER JOIN';
+    join.conditions.push({ leftAlias: builderQualifier(state.tables[Math.min(ai, bi)]), leftColumn: other.column, rightColumn: own.column });
+    return true;
+}
+
+// The Query Builder state of a SELECT (see above), or null when `sql` is no
+// single SELECT / WITH … SELECT or its clauses cannot be told apart.
+// `isReservedWord(lowerCaseWord)` tells the words that cannot be a bare alias.
+function readBuilderState(sql, isReservedWord) {
+    const reserved = typeof isReservedWord === 'function'
+        ? isReservedWord
+        : (word => SELECT_ITEM_NON_ALIAS_WORDS.has(String(word).toLowerCase()));
+    try {
+        return readBuilderStateOrNull(String(sql == null ? '' : sql), reserved);
+    } catch {
+        return null;
+    }
+}
+
+function readBuilderStateOrNull(sql, reserved) {
+    const masked = maskSqlStructure(sql);
+    const tokens = sqlStructureTokens(masked);
+    const top = tokens.filter(t => t.depth === 0);
+    if (!top.length || (top[0].lower !== 'select' && top[0].lower !== 'with')) return null;
+    let stmtEnd = masked.length;
+    const semi = top.find(t => t.text === ';');
+    if (semi) {
+        if (!/^[\s;]*$/.test(masked.slice(semi.start))) return null;
+        stmtEnd = semi.start;
+    }
+    const words = top.filter(t => t.lower && t.end <= stmtEnd);
+    const selIdx = words.findIndex(t => t.lower === 'select');
+    if (selIdx === -1) return null;
+    if (words.slice(0, selIdx).some(t => ['insert', 'update', 'delete', 'merge', 'values', 'table'].indexOf(t.lower) !== -1)) return null;
+    const ctx = { sql, masked, tokens, reserved, cteNames: new Set() };
+    const state = { distinct: false, selectItems: [], tables: [], joins: [], where: [], orderBy: [], carried: {} };
+    const selectTok = words[selIdx];
+    if (selIdx > 0) {
+        state.carried.with = builderSlice(sql, masked, 0, selectTok.start).text;
+        for (const t of words.slice(1, selIdx)) {
+            if (['recursive', 'as', 'not', 'materialized'].indexOf(t.lower) !== -1) continue;
+            ctx.cteNames.add(masked[t.start - 1] === '"' ? sqlIdentifierName(sql.slice(t.start - 1, t.end + 1)) : t.lower);
+        }
+    }
+    const adjacent = (a, b) => !!b && masked.slice(a.end, b.start).trim() === '';
+    let k = selIdx + 1;
+    let listStart = selectTok.end;
+    if (adjacent(selectTok, words[k]) && words[k].lower === 'all') {
+        listStart = words[k].end;
+        k++;
+    } else if (adjacent(selectTok, words[k]) && words[k].lower === 'distinct') {
+        state.distinct = true;
+        listStart = words[k].end;
+        k++;
+        if (adjacent(words[k - 1], words[k]) && words[k].lower === 'on') {
+            const at = top.indexOf(words[k]);
+            const open = top[at + 1];
+            if (!open || open.text !== '(' || masked.slice(words[k].end, open.start).trim() !== '') return null;
+            const close = top.slice(at + 2).find(t => t.text === ')');
+            if (!close) return null;
+            state.distinctOn = builderSlice(sql, masked, open.end, close.start).text;
+            listStart = close.end;
+            k++;
+        }
+    }
+    const clauses = [];
+    let setOpStart = -1;
+    for (; k < words.length; k++) {
+        const t = words[k], next = words[k + 1];
+        if (t.start < listStart) continue;
+        if (['union', 'intersect', 'except'].indexOf(t.lower) !== -1) { setOpStart = t.start; break; }
+        if (t.lower === 'into') return null;
+        let kind = '', bodyStart = t.end;
+        if (t.lower === 'from') {
+            // Not the FROM of IS [NOT] DISTINCT FROM.
+            if (!(words[k - 1] && words[k - 1].lower === 'distinct')) kind = 'from';
+        } else if (['where', 'having', 'window', 'limit', 'offset', 'fetch'].indexOf(t.lower) !== -1) {
+            kind = t.lower;
+        } else if ((t.lower === 'group' || t.lower === 'order') && next && next.lower === 'by') {
+            kind = t.lower;
+            bodyStart = next.end;
+            k++;
+        } else if (t.lower === 'for' && next && ['update', 'share', 'no', 'key'].indexOf(next.lower) !== -1) {
+            kind = 'locking';
+            bodyStart = t.start;
+        }
+        if (!kind) continue;
+        const last = clauses[clauses.length - 1];
+        if (clauses.some(c => c.kind === kind) || (last && BUILDER_CLAUSE_RANKS[last.kind] > BUILDER_CLAUSE_RANKS[kind])) return null;
+        clauses.push({ kind, start: t.start, bodyStart });
+        if (kind === 'locking') break;
+    }
+    const bodyEnd = setOpStart !== -1 ? setOpStart : stmtEnd;
+    const range = {};
+    clauses.forEach((c, i) => { range[c.kind] = { start: c.bodyStart, end: i + 1 < clauses.length ? clauses[i + 1].start : bodyEnd }; });
+    if (setOpStart !== -1) state.carried.setOps = builderSlice(sql, masked, setOpStart, stmtEnd).text;
+
+    const commaJoins = [];
+    if (range.from && !readBuilderFrom(ctx, range.from.start, range.from.end, state, commaJoins)) return null;
+
+    const listEnd = clauses.length ? clauses[0].start : bodyEnd;
+    if (builderSlice(sql, masked, listStart, listEnd).text) {
+        const items = splitSelectItems(masked, { start: listStart, end: listEnd });
+        if (!items) return null;
+        for (const item of items) state.selectItems.push(readBuilderSelectItem(ctx, item, state.tables));
+    }
+
+    if (range.where) {
+        for (const part of builderSplitAnd(sql, masked, tokens, range.where.start, range.where.end)) {
+            const condition = readBuilderCondition(part.text);
+            if (condition.kind === 'compare' && condition.operator === '=' && builderMoveToJoin(state, commaJoins, condition)) continue;
+            state.where.push(condition);
+        }
+    }
+
+    if (range.order) {
+        const items = splitSelectItems(masked, range.order);
+        if (!items) return null;
+        for (const item of items) {
+            const m = /^([\s\S]*?)(?:\s+(asc|desc))?(?:\s+nulls\s+(first|last))?$/i.exec(masked.slice(item.start, item.end));
+            const entry = { expr: builderSlice(sql, masked, item.start, item.start + m[1].length).text };
+            if (m[2]) entry.direction = m[2].toUpperCase();
+            if (m[3]) entry.nulls = m[3].toUpperCase();
+            state.orderBy.push(entry);
+        }
+    }
+
+    const carry = (kind, key) => {
+        if (!range[kind]) return;
+        const text = builderSlice(sql, masked, range[kind].start, range[kind].end).text;
+        if (text) state.carried[key] = text;
+    };
+    carry('group', 'groupBy');
+    carry('having', 'having');
+    carry('window', 'window');
+    carry('limit', 'limit');
+    carry('offset', 'offset');
+    carry('fetch', 'fetch');
+    carry('locking', 'locking');
+    return state;
+}
+
+function builderFromItemSql(table) {
+    if (table.raw) return table.raw;
+    return table.alias ? table.tableReference + ' ' + table.alias : table.tableReference;
+}
+
+function builderSelectItemSql(item, tables) {
+    if (!item) return '';
+    let text = '';
+    if (item.kind === 'column') {
+        const table = tables[item.tableIndex];
+        if (!table || !item.column) return '';
+        const qualifier = tables.length > 1 || table.alias ? builderQualifier(table) : '';
+        text = qualifier ? qualifier + '.' + item.column : item.column;
+    } else {
+        text = String(item.text || '').trim();
+    }
+    if (!text) return '';
+    const alias = String(item.alias || '').trim();
+    return alias ? appendSql(text, ' AS ', alias) : text;
+}
+
+// A condition as SQL; a raw one with a top-level OR is parenthesised when
+// `wrapOr`, so that it keeps its meaning next to other conditions.
+function builderConditionSql(condition, wrapOr) {
+    if (!condition) return '';
+    if (condition.kind === 'compare') {
+        if (!condition.left || !condition.operator) return '';
+        return condition.left + ' ' + condition.operator + (condition.right ? ' ' + condition.right : '');
+    }
+    const text = String(condition.text || '').trim();
+    if (!text || !wrapOr || !builderHasTopLevelOr(text)) return text;
+    return '(' + text + (endsInLineComment(text) ? '\n' : '') + ')';
+}
+
+// `USING (a, b)` of the join of tables[index] as the equivalent ON pairs
+// `own.a = partner.a`, for a join with further conditions; the partner of a
+// column is the latest earlier table known to have it, else the table just
+// before. Null when the marker is not a plain column list. Same as
+// usingToOnPairs in src/statementBuilder.ts.
+function usingToOnPairs(tables, index, marker) {
+    const m = /^USING\s*\(([\s\S]*)\)$/i.exec(String(marker).trim());
+    if (!m) return null;
+    const columns = [];
+    let current = '', quoted = false;
+    for (const ch of m[1]) {
+        if (ch === '"') quoted = !quoted;
+        if (ch === ',' && !quoted) { columns.push(current.trim()); current = ''; } else current += ch;
+    }
+    columns.push(current.trim());
+    const ident = /^(?:"(?:[^"]|"")+"|[A-Za-z_\u0080-\uffff][A-Za-z0-9_$\u0080-\uffff]*)$/;
+    if (!columns.every(c => ident.test(c)) || index < 1) return null;
+    const own = builderQualifier(tables[index]);
+    const qualified = (q, c) => (q ? q + '.' + c : c);
+    return columns.map(column => {
+        let partner = index - 1;
+        for (let i = index - 1; i >= 0; i--) {
+            const known = (tables[i] && Array.isArray(tables[i].columns)) ? tables[i].columns : [];
+            if (known.some(c => sqlIdentifierName(c) === sqlIdentifierName(column))) { partner = i; break; }
+        }
+        return qualified(own, column) + ' = ' + qualified(builderQualifier(tables[partner]), column);
+    });
+}
+
+// The JOIN of tables[index]. A NATURAL or USING marker counts as such only
+// when it is the join's one condition; next to others USING becomes its ON
+// pairs and NATURAL is left out.
+function builderJoinSql(tables, join, index) {
+    const table = tables[index];
+    const item = builderFromItemSql(table);
+    const j = join || { type: 'CROSS JOIN', conditions: [] };
+    const conditions = (j.conditions || []).filter(c => c && c.leftColumn && c.rightColumn);
+    const literals = (j.literalConditions || []).filter(c => c && c.literalColumn && c.operator);
+    const raws = (j.rawConditions || []).map(r => String(r == null ? '' : r).trim()).filter(Boolean);
+    const isMarker = r => /^NATURAL$/i.test(r) || /^USING\s*\(/i.test(r);
+    const type = j.type || 'CROSS JOIN';
+    const typed = type === 'CROSS JOIN' ? 'INNER JOIN' : type;
+    if (raws.length === 1 && conditions.length === 0 && literals.length === 0) {
+        if (/^NATURAL$/i.test(raws[0])) return `NATURAL ${typed} ${item}`;
+        if (/^USING\s*\(/i.test(raws[0])) return `${typed} ${item} ${raws[0]}`;
+    }
+    const own = builderQualifier(table);
+    const parts = [];
+    for (const r of raws) {
+        if (/^USING\s*\(/i.test(r)) parts.push(...(usingToOnPairs(tables, index, r) || []));
+    }
+    for (const c of conditions) parts.push(`${own ? own + '.' : ''}${c.rightColumn} = ${c.leftAlias ? c.leftAlias + '.' : ''}${c.leftColumn}`);
+    for (const lc of literals) {
+        parts.push(`${lc.literalAlias ? lc.literalAlias + '.' : ''}${lc.literalColumn} ${lc.operator} ${builderLiteralSql(lc.value)}`);
+    }
+    const plain = raws.filter(r => !isMarker(r));
+    const total = parts.length + plain.length;
+    for (const r of plain) parts.push(builderConditionSql({ kind: 'raw', text: r }, total > 1));
+    if (parts.length === 0) return type === 'CROSS JOIN' ? `CROSS JOIN ${item}` : `${type} ${item} ON TRUE`;
+    return `${typed} ${item} ON ${joinSqlParts(parts, ' AND ')}`;
+}
+
+// The SELECT a Query Builder state stands for, on one line except where a
+// comment needs a line break; layout is the formatter's job.
+function builderStateToSql(state) {
+    if (!state) return '';
+    const carried = state.carried || {};
+    const tables = state.tables || [];
+    const joins = state.joins || [];
+    const items = (state.selectItems || []).map(item => builderSelectItemSql(item, tables)).filter(Boolean);
+    // Like buildBuilderSql: nothing selected from nothing is no query.
+    if (items.length === 0 && tables.length === 0) return '';
+    let sql = '';
+    const add = (glue, text) => { sql = sql ? appendSql(sql, glue, text) : text; };
+    if (carried.with) add('', carried.with);
+    let head = 'SELECT';
+    if (state.distinct) head += state.distinctOn ? ` DISTINCT ON (${state.distinctOn})` : ' DISTINCT';
+    add(' ', head);
+    if (items.length === 0 && tables.length > 0) items.push('*');
+    if (items.length) add(' ', joinSqlParts(items, ', '));
+    if (tables.length) {
+        add(' FROM ', builderFromItemSql(tables[0]));
+        for (let i = 1; i < tables.length; i++) add(' ', builderJoinSql(tables, joins[i - 1], i));
+    }
+    const conditions = state.where || [];
+    const where = conditions.map(c => builderConditionSql(c, conditions.length > 1)).filter(Boolean);
+    if (where.length) add(' WHERE ', joinSqlParts(where, ' AND '));
+    if (carried.groupBy) add(' GROUP BY ', carried.groupBy);
+    if (carried.having) add(' HAVING ', carried.having);
+    if (carried.window) add(' WINDOW ', carried.window);
+    // The ORDER BY, LIMIT, OFFSET and FETCH of a UNION / INTERSECT / EXCEPT
+    // belong after its last part, which setOps holds as written.
+    const setOps = carried.setOps;
+    const order = setOps ? [] : (state.orderBy || [])
+        .filter(o => o && String(o.expr || '').trim())
+        .map(o => o.expr + (o.direction ? ' ' + o.direction : '') + (o.nulls ? ' NULLS ' + o.nulls : ''));
+    if (order.length) add(' ORDER BY ', joinSqlParts(order, ', '));
+    if (!setOps) {
+        if (carried.limit) add(' LIMIT ', carried.limit);
+        if (carried.offset) add(' OFFSET ', carried.offset);
+        if (carried.fetch) add(' FETCH ', carried.fetch);
+    }
+    if (carried.locking) add(' ', carried.locking);
+    if (setOps) add(' ', setOps);
+    return sql;
+}
+
+// --- Query Builder tab ---------------------------------------------------------
+
+// The builder state of an empty query bar.
+function emptyBuilderState() {
+    return { distinct: false, selectItems: [], tables: [], joins: [], where: [], orderBy: [], carried: {} };
+}
+
+// The tables of a builder state the host is asked about (see
+// loadBuilderMetadata in src/dataViewerBuilder.ts), once each; raw FROM items
+// need nothing.
+function builderMetadataRequest(state) {
+    const out = [];
+    for (const t of (state && state.tables) || []) {
+        if (!t || t.raw || !t.table) continue;
+        const schema = t.schema || '';
+        if (!out.some(o => o.schema === schema && o.table === t.table)) out.push({ schema, table: t.table });
+    }
+    return out;
+}
+
+// `state` with what the host found out about its tables: the schema a table
+// was found in, its columns and its saved alias. The select items, aliases and
+// references of the query stay as written; a column the query names is listed
+// as the query spells it, so it shows as selected. A table the host did not
+// find keeps no columns.
+function mergeBuilderMetadata(state, answer) {
+    const found = answer && Array.isArray(answer.tables) ? answer.tables : [];
+    const tables = (state.tables || []).map((t, index) => {
+        if (!t || t.raw) return t;
+        const meta = found.find(m => m && m.table === t.table && (m.schema || '') === (t.schema || ''));
+        if (!meta) return t;
+        const spelled = new Map();
+        for (const item of state.selectItems || []) {
+            if (item && item.kind === 'column' && item.tableIndex === index && item.column !== '*') {
+                spelled.set(sqlIdentifierName(item.column), item.column);
+            }
+        }
+        const columns = (Array.isArray(meta.columns) ? meta.columns : []).map(c => spelled.get(sqlIdentifierName(c)) || c);
+        const merged = Object.assign({}, t, { schema: meta.resolvedSchema || t.schema, columns });
+        if (meta.savedAlias) merged.savedAlias = meta.savedAlias;
+        return merged;
+    });
+    // A sort by a qualified column of a known table is offered as that column.
+    const orderBy = (state.orderBy || []).map(o => {
+        if (!o || o.column) return o;
+        const ref = builderColumnRef(String(o.expr || '').trim());
+        const index = ref && ref.qualifier ? builderResolveQualifier(tables, ref.qualifier) : -1;
+        const table = tables[index];
+        const name = ref ? sqlIdentifierName(ref.column) : '';
+        const column = table && !table.raw ? (table.columns || []).find(c => sqlIdentifierName(c) === name) : undefined;
+        return column ? Object.assign({}, o, { column: { tableIndex: index, column } }) : o;
+    });
+    return Object.assign({}, state, { tables, orderBy });
+}
+
+// The tabs at the top of the panel, in order.
+const VIEW_TABS = ['data', 'builder'];
+
+// The tab the arrow, Home and End keys move to from `current`, or null.
+function viewTabForKey(current, key) {
+    const n = VIEW_TABS.length;
+    const i = Math.max(0, VIEW_TABS.indexOf(current));
+    if (key === 'ArrowRight') return VIEW_TABS[(i + 1) % n];
+    if (key === 'ArrowLeft') return VIEW_TABS[(i - 1 + n) % n];
+    if (key === 'Home') return VIEW_TABS[0];
+    if (key === 'End') return VIEW_TABS[n - 1];
+    return null;
+}
+
+// --- Stale-data hint and Run -----------------------------------------------------
+
+const RUN_SQL_TOKEN = /--[^\n]*|\/\*[\s\S]*?\*\/|[Ee]'(?:[^'\\]|\\[\s\S]|'')*'|'(?:[^']|'')*'|"(?:[^"]|"")*"|\$([A-Za-z_][A-Za-z0-9_]*)?\$[\s\S]*?\$\1\$|[A-Za-z_\u0080-\uffff][A-Za-z0-9_$\u0080-\uffff]*|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\s+|[\s\S]/g;
+const RUN_SQL_WORD = /^[A-Za-z_\u0080-\uffff][A-Za-z0-9_$\u0080-\uffff]*$/;
+const RUN_SQL_OPERATOR_CHARS = '+-*/<>=~!@#%^&|`?';
+
+// A query in a form that is equal for the same query however it is laid out:
+// no comments, no trailing semicolon, unquoted words in lower case (PostgreSQL
+// reads them so), and a space only where one separates two words or two
+// operator characters. Literals and quoted names stay as written.
+function normalizeRunSql(sql) {
+    const parts = [];
+    let gap = false;
+    for (const t of String(sql == null ? '' : sql).match(RUN_SQL_TOKEN) || []) {
+        if (/^\s/.test(t) || t.startsWith('--') || t.startsWith('/*')) { gap = true; continue; }
+        parts.push({ text: RUN_SQL_WORD.test(t) ? t.toLowerCase() : t, gap });
+        gap = false;
+    }
+    while (parts.length && parts[parts.length - 1].text === ';') parts.pop();
+    const isPunct = t => t.length === 1 && !/[A-Za-z0-9_$'"\u0080-\uffff]/.test(t);
+    const isOperator = t => t.length === 1 && RUN_SQL_OPERATOR_CHARS.indexOf(t) !== -1;
+    let out = '';
+    parts.forEach((p, i) => {
+        const prev = parts[i - 1];
+        if (prev && p.gap && (!(isPunct(prev.text) || isPunct(p.text)) || (isOperator(prev.text) && isOperator(p.text)))) out += ' ';
+        out += p.text;
+    });
+    return out;
+}
+
+// True when the query bar shows another query than `lastRunSql`, the one the
+// rows on screen came from; false while nothing has run.
+function queryDiffersFromRun(queryText, lastRunSql) {
+    if (!lastRunSql) return false;
+    return normalizeRunSql(queryText) !== normalizeRunSql(lastRunSql);
+}
+
+// What to do with the host's answer to a Run (`runPrepared`): `ignore` an
+// answer to an older Run, `cancel` when the placeholder values were not
+// given, otherwise `run` the SQL with the values filled in.
+function preparedRunOutcome(msg, pendingRequestId) {
+    if (!msg || pendingRequestId == null || msg.requestId !== pendingRequestId) return { action: 'ignore' };
+    if (msg.cancelled || typeof msg.sql !== 'string') return { action: 'cancel' };
+    return { action: 'run', sql: msg.sql };
+}
+
 // --- Executable columns ------------------------------------------------------
 // NOTE: Copy of EXECUTABLE_COLUMN_TYPES in src/executableColumns.ts, which this
 // script cannot import; src/test/executableColumns.test.ts keeps them in sync.
@@ -4721,6 +5551,51 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // the row-count indicator. null when not yet known.
     let lastQueryDurationMs = null;
     const PAGE_SIZE = 50;
+    // ===== View tabs, Query Builder tab and stale-data hint =====
+    // Which tab of the panel shows: 'data' (the grid) or 'builder'.
+    let activeViewTab = 'data';
+    // The query, as the query bar showed it, whose rows are on screen; '' while
+    // nothing has run. When the query bar shows another query, a hint says so.
+    let lastRunSql = '';
+    // The run on its way ({ loadId, previous }): should it bring no rows, the
+    // rows on screen still show `previous`.
+    let pendingRunCheck = null;
+    // Runs of setQueryTextAndRun waiting for the formatter; the hint waits too.
+    let queuedRuns = 0;
+    // The Run waiting for the host to fill in placeholders ({ requestId, raw }).
+    let pendingPrepare = null;
+    let prepareCounter = 0;
+    // Where Apply to File writes the query ({ label }), or null.
+    let applyTarget = null;
+    // The join builder component of the Query Builder tab, once created.
+    let joinBuilder = null;
+    // The query bar text the builder shows (read from it or written by it);
+    // another text there is read again. null until first read.
+    let builderSyncedSql = null;
+    // Join edges among the builder's tables, and what is known per table
+    // (keyed `schema.table` as the query names it).
+    let builderEdges = [];
+    const builderMetaCache = new Map();
+    let builderReadTimer = null;
+    let builderSqlTimer = null;
+    let builderRequestCounter = 0;
+    // The latest request of each kind; older answers are dropped.
+    const builderLatest = { metadata: 0, sql: 0, addTables: 0, saveAlias: 0 };
+    // The query read while its metadata is on its way: { text, state }.
+    let builderPendingRead = null;
+    const viewTabsEl = document.getElementById('viewTabs');
+    const builderArea = document.getElementById('builderArea');
+    const builderMessage = document.getElementById('builderMessage');
+    const builderHost = document.getElementById('builderHost');
+    const applyToFileBtn = document.getElementById('applyToFileBtn');
+    const staleHint = document.getElementById('staleHint');
+    const gridEmptyState = document.getElementById('gridEmptyState');
+    const tableArea = document.querySelector('.table-area');
+    if (tableArea) {
+        tableArea.id = 'dataPanel';
+        tableArea.setAttribute('role', 'tabpanel');
+        tableArea.setAttribute('aria-labelledby', 'tabData');
+    }
     // NOTE: Single source of truth is src/reservedKeywords.ts. This browser
     // script is injected as a plain string and cannot import it at runtime;
     // src/test/reservedKeywords.test.ts enforces that this copy stays in sync.
@@ -5093,6 +5968,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     // `options.highlight` the query box then scrolls to what changed and
     // lights it up once — used for the filters and sorts of the grid.
     let queryFormatSeq = 0;
+    // The text setQueryText last put into the query bar (shown, then formatted).
+    let queryTextWritten = null;
     function setQueryText(sql, options) {
         const highlight = !!(options && options.highlight);
         const before = queryInput.value;
@@ -5100,6 +5977,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         queryInput.value = text;
         // What the editor shows, which is what the undo history records.
         const shown = queryInput.value;
+        queryTextWritten = shown;
         autoSizeQueryInput();
         recordEditHistory();
         const seq = ++queryFormatSeq;
@@ -5116,6 +5994,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (formatted !== null && formatted !== text && queryInput.value === shown
                 && keepsQueryPlaceholders(text, formatted)) {
                 queryInput.value = formatted;
+                queryTextWritten = queryInput.value;
                 autoSizeQueryInput();
                 editHistory = replaceHistoryQuery(editHistory, shown, queryInput.value);
             }
@@ -5139,15 +6018,57 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     // Show `sql` in the query bar and run it once it is formatted, unless a
-    // newer query was set in the meantime — that one runs instead.
+    // newer query was set in the meantime — that one runs instead. The
+    // stale-data hint waits for the run instead of flashing up meanwhile.
     function setQueryTextAndRun(sql, options) {
-        return setQueryText(sql, options).then(latest => { if (latest) runQuery(); });
+        queuedRuns++;
+        return setQueryText(sql, options).then(latest => {
+            queuedRuns--;
+            if (latest) runQuery(); else updateStaleHint();
+        }, () => {
+            queuedRuns--;
+            updateStaleHint();
+        });
+    }
+
+    // Rewrite the query bar with the same query in another form — the columns
+    // of `*` listed, the column order of the grid — without running it: when
+    // the rows on screen came from the old text, they still show the new one.
+    function rewriteQueryTextKeepingRun(sql) {
+        const wasCurrent = !!lastRunSql && !queryDiffersFromRun(queryInput.value, lastRunSql);
+        queuedRuns++;
+        return setQueryText(sql).then(latest => {
+            queuedRuns--;
+            lastRunSql = runSqlAfterRewrite(lastRunSql, wasCurrent, latest, queryInput.value, queryTextWritten);
+            updateStaleHint();
+        }, () => {
+            queuedRuns--;
+            updateStaleHint();
+        });
+    }
+
+    // The query bar text may have changed (typing, undo, a rewrite): update the
+    // stale-data hint and let the Query Builder tab read the new text.
+    function queryTextChanged() {
+        updateStaleHint();
+        if (activeViewTab === 'builder' && queryInput.value !== builderSyncedSql) scheduleBuilderRead();
+    }
+
+    // Say so when the rows on screen came from another query than the one in
+    // the query bar, and dim them a little.
+    function updateStaleHint() {
+        const stale = queuedRuns === 0 && !pendingPrepare && queryDiffersFromRun(queryInput.value, lastRunSql);
+        if (staleHint) staleHint.classList.toggle('hidden', !stale);
+        if (tableArea) tableArea.classList.toggle('stale-data', stale);
     }
 
     // Grow/shrink the query textarea to fit its content (bounded by the CSS
     // max-height), or give it the height the user dragged the query bar to.
+    // Every change of the query text passes here, so it also tells the hint
+    // and the Query Builder tab.
     function autoSizeQueryInput() {
         if (!queryInput) return;
+        queryTextChanged();
         if (queryBoxHeight !== null) {
             queryInput.style.height = (queryBoxHeight + 2) + 'px';
             return;
@@ -5272,10 +6193,23 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
     }
     queryRunBtn.addEventListener('click', runQuery);
-    const queryBuilderBtn = document.getElementById('queryBuilderBtn');
-    if (queryBuilderBtn) {
-        queryBuilderBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'editInQueryBuilder', sql: queryInput.value });
+    if (viewTabsEl) {
+        viewTabsEl.addEventListener('click', (e) => {
+            const tab = e.target && e.target.closest ? e.target.closest('[data-view-tab]') : null;
+            if (tab) selectViewTab(tab.dataset.viewTab, true);
+        });
+        viewTabsEl.addEventListener('keydown', (e) => {
+            const tab = e.target && e.target.closest ? e.target.closest('[data-view-tab]') : null;
+            const next = tab ? viewTabForKey(tab.dataset.viewTab, e.key) : null;
+            if (!next) return;
+            e.preventDefault();
+            selectViewTab(next, true);
+        });
+    }
+    if (applyToFileBtn) {
+        applyToFileBtn.addEventListener('click', () => {
+            if (!applyTarget) return;
+            vscode.postMessage({ command: 'applyToFile', sql: queryInput.value });
         });
     }
     if (queryFormatBtn) {
@@ -6629,9 +7563,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             case 'queryBarHeightChanged':
                 applyQueryBoxHeight(normalizeQueryBoxHeight(msg.height, queryBoxMaxHeight()));
                 break;
-            case 'setQueryAndRun':
-                // Apply of the Query Builder opened from this panel.
-                setQueryTextAndRun(msg.sql);
+            case 'runPrepared':
+                handleRunPrepared(msg);
+                break;
+            case 'joinBuilderResponse':
+                handleJoinBuilderResponse(msg);
+                break;
+            case 'applyToFileDone':
+                // The host showed how it went; the query bar stays as it is.
                 break;
             case 'rowsLoaded':
                 if (isStaleLoadAnswer(msg.loadId, latestLoadId)) break;
@@ -6658,6 +7597,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 if (isStaleLoadAnswer(msg.loadId, latestLoadId)) break;
                 endAppendWithoutRows();
                 setDataLoading(false);
+                runBroughtNoRows(msg.loadId);
                 break;
             case 'primaryKeysLoaded':
                 handlePrimaryKeysLoaded(msg);
@@ -6740,6 +7680,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
                 }
                 endAppendWithoutRows();
                 showError(msg.text);
+                runBroughtNoRows(msg.loadId);
                 break;
             case 'autoRefreshStopped':
                 if (isAutoRefreshAnswer(msg)) stopAutoRefresh(msg.reason || 'Stopped');
@@ -6813,16 +7754,28 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         savedQueryValues = msg.savedQueryValues && typeof msg.savedQueryValues === 'object' ? msg.savedQueryValues : {};
         savedQueryTemplate = msg.sql || '';
         updateQueryParamsButton();
-        // Both entry points start by running a query: a table view simply starts
-        // with the default query for that table.
-        const shown = setQueryText(msg.sql || getDefaultQuery());
+        applyTarget = msg.applyTarget && typeof msg.applyTarget.label === 'string' ? msg.applyTarget : null;
+        if (applyToFileBtn) {
+            applyToFileBtn.classList.toggle('hidden', !applyTarget);
+            if (applyTarget) applyToFileBtn.title = 'Replace the statement in ' + applyTarget.label + ' with the query of the query bar';
+        }
+        // A panel opened for the Query Builder waits for Run; every other one
+        // starts by running a query — a table view the default query of its table.
+        const runOnOpen = msg.run !== false;
+        const shown = setQueryText(runOnOpen ? (msg.sql || getDefaultQuery()) : (msg.sql || ''));
         applyCapabilities(caps);
-        if (msg.awaitParameters && savedQueryParameters.length) {
+        if (!runOnOpen) {
+            setDataLoading(false);
+            if (gridEmptyState) gridEmptyState.classList.remove('hidden');
+        } else if (msg.awaitParameters && savedQueryParameters.length) {
             // The template cannot run as-is: ask for the placeholder values and
             // let the dialog trigger the first query.
             openQueryParamsDialog(true);
         } else {
             shown.then(latest => { if (latest) runQuery(); });
+        }
+        if (msg.tab === 'builder') {
+            shown.then(() => selectViewTab('builder', false));
         }
         vscode.postMessage({ command: 'getQueryHistory' });
     }
@@ -6876,7 +7829,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // Now that the columns are known, refresh an untouched default query so
         // it lists all columns explicitly instead of the `*` placeholder.
         if (wasDefaultQuery) {
-            setQueryText(getDefaultQuery());
+            rewriteQueryTextKeepingRun(getDefaultQuery());
         }
     }
 
@@ -6945,6 +7898,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         columns = msg.columns || columns;
         if (msg.columns) pruneStateOfRemovedColumns();
         if (!isAppend) {
+            // The rows of the run on its way have come.
+            if (!auto) pendingRunCheck = null;
             applyCapabilities(msg.capabilities);
             adoptSourceTable(msg);
             // An auto refresh re-runs the same query, so the host sends no
@@ -7134,12 +8089,46 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     // Run the query currently shown in the query bar. This is the single data
     // path of the viewer: the default table view is just the query the panel
-    // was opened with.
+    // was opened with. The host fills in placeholders first (`prepareRun`);
+    // the query bar keeps them.
     function runQuery() {
         const raw = queryInput.value.trim();
         if (!raw) return;
+        // A Shift+Ctrl+A on the rows on screen gives way to the new query.
+        pendingSelectAll = null;
+        // A bookmarked query shown with its placeholders asks through its own form.
+        if (savedQueryParameters.length && savedQueryTemplate && !queryDiffersFromRun(raw, savedQueryTemplate)
+            && placeholderNames(raw).length > 0) {
+            openQueryParamsDialog(false);
+            return;
+        }
+        // Rows are shown on the Data tab.
+        if (activeViewTab !== 'data') selectViewTab('data', false);
         // Save to history (raw, user-entered form)
         vscode.postMessage({ command: 'saveQueryHistory', sql: raw });
+        pendingPrepare = { requestId: ++prepareCounter, raw };
+        setDataLoading(true);
+        updateStaleHint();
+        vscode.postMessage({ command: 'prepareRun', requestId: pendingPrepare.requestId, sql: raw });
+    }
+
+    // The host's answer to `prepareRun`: run the SQL with the placeholder
+    // values filled in, or — when they were not given — nothing.
+    function handleRunPrepared(msg) {
+        const outcome = preparedRunOutcome(msg, pendingPrepare ? pendingPrepare.requestId : null);
+        if (outcome.action === 'ignore') return;
+        const shown = pendingPrepare.raw;
+        pendingPrepare = null;
+        if (outcome.action === 'cancel') {
+            setDataLoading(false);
+            updateStaleHint();
+            return;
+        }
+        startRun(shown, outcome.sql.trim() || shown);
+    }
+
+    // Run `raw`, which the query bar shows as `shownSql` (with its placeholders).
+    function startRun(shownSql, raw) {
         const stripped = stripTrailingLimitOffset(raw);
         currentSql = stripped.base;
         userPaged = stripped.hadLimit;
@@ -7157,6 +8146,11 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         // A run started by the user supersedes an auto refresh still on its way.
         autoRefreshInFlight = null;
         latestLoadId = ++loadCounter;
+        // From now on the rows are those of the query bar's query.
+        pendingRunCheck = { loadId: latestLoadId, previous: lastRunSql };
+        lastRunSql = shownSql;
+        if (gridEmptyState) gridEmptyState.classList.add('hidden');
+        updateStaleHint();
         setDataLoading(true);
         // An exact row count is cheap and expected for the plain table view, but
         // can be very expensive for an arbitrary query — there it is only
@@ -7168,9 +8162,206 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             append: false,
             wantTotal,
             loadId: latestLoadId,
-            // The statement as the user ran it, for the Select History.
+            // The statement as it ran, for the Select History.
             historySql: raw
         });
+    }
+
+    // A run that ended without rows (it failed, or nothing ran) leaves the
+    // rows of the run before on screen.
+    function runBroughtNoRows(loadId) {
+        if (!pendingRunCheck || pendingRunCheck.loadId !== loadId) return;
+        lastRunSql = pendingRunCheck.previous;
+        pendingRunCheck = null;
+        updateStaleHint();
+    }
+
+    // ===== View tabs and the Query Builder tab =====
+    // Both tabs work on the one query of the query bar. The builder reads it
+    // (readBuilderState), the host adds what the database knows about its
+    // tables, and every change in the builder comes back from the host as
+    // formatted SQL for the query bar — it runs only on Run.
+
+    // Show the tab `name`; `focus` moves the keyboard focus to its tab button.
+    function selectViewTab(name, focus) {
+        const next = VIEW_TABS.indexOf(name) === -1 ? 'data' : name;
+        const changed = next !== activeViewTab;
+        activeViewTab = next;
+        if (viewTabsEl) {
+            viewTabsEl.querySelectorAll('[data-view-tab]').forEach(btn => {
+                const selected = btn.dataset.viewTab === next;
+                btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+                btn.tabIndex = selected ? 0 : -1;
+                if (selected && focus) btn.focus();
+            });
+        }
+        const container = document.querySelector('.container');
+        if (container) container.classList.toggle('builder-active', next === 'builder');
+        if (builderArea) builderArea.classList.toggle('hidden', next !== 'builder');
+        if (next === 'builder') {
+            // Keys typed in the builder must not move a cell selection nobody sees.
+            if (changed) clearCellRangeSelection();
+            if (queryInput.value !== builderSyncedSql) readBuilderFromQuery();
+        } else {
+            clearTimeout(builderReadTimer);
+            builderReadTimer = null;
+            // The grid was hidden: the rows in view are measured again.
+            if (changed) renderWindow(false);
+        }
+    }
+
+    // Read the query bar again once the user pauses typing.
+    function scheduleBuilderRead() {
+        clearTimeout(builderReadTimer);
+        builderReadTimer = setTimeout(readBuilderFromQuery, 400);
+    }
+
+    function builderMetaKey(t) {
+        return (t.schema || '') + '.' + t.table;
+    }
+
+    // Read the query bar into the builder. A statement the builder cannot show
+    // leaves it read-only, with a message; tables not seen before are first
+    // looked up by the host.
+    function readBuilderFromQuery() {
+        clearTimeout(builderReadTimer);
+        builderReadTimer = null;
+        const text = queryInput.value;
+        builderSyncedSql = text;
+        builderPendingRead = null;
+        const state = text.trim() ? readBuilderState(text) : emptyBuilderState();
+        if (!state) {
+            showBuilderMessage('This statement is not a SELECT the Query Builder can show — edit it in the query bar.');
+            return;
+        }
+        const wanted = builderMetadataRequest(state);
+        if (wanted.every(t => builderMetaCache.has(builderMetaKey(t)))) {
+            const known = wanted.map(t => builderMetaCache.get(builderMetaKey(t))).filter(Boolean);
+            showBuilderState(mergeBuilderMetadata(state, { tables: known }));
+            return;
+        }
+        builderPendingRead = { text, state };
+        showBuilderMessage('Reading the tables of the query…');
+        postBuilderRequest('metadata', { tables: wanted });
+    }
+
+    function showBuilderMessage(text) {
+        if (builderMessage) {
+            builderMessage.textContent = text;
+            builderMessage.classList.remove('hidden');
+        }
+        if (builderHost) builderHost.classList.add('hidden');
+    }
+
+    function showBuilderState(state) {
+        if (!window.JoinBuilder) {
+            showBuilderMessage('The Query Builder could not be loaded.');
+            return;
+        }
+        if (builderMessage) builderMessage.classList.add('hidden');
+        if (builderHost) builderHost.classList.remove('hidden');
+        if (joinBuilder) {
+            joinBuilder.setState(state, builderEdges);
+            return;
+        }
+        joinBuilder = window.JoinBuilder.createJoinBuilder(builderHost, state, {
+            post: handleBuilderPost,
+            onChange: scheduleBuilderSql,
+            identityEdges: builderEdges,
+            canAddTables: true,
+            selectNewTableColumns: true,
+            sections: { select: true, where: true, orderBy: true }
+        });
+    }
+
+    // What the builder component asks of the host.
+    function handleBuilderPost(message) {
+        if (!message) return;
+        if (message.command === 'requestAddTables') {
+            postBuilderRequest('addTables', { tables: joinBuilder ? builderMetadataRequest(joinBuilder.getState()) : [] });
+        } else if (message.command === 'saveAlias') {
+            postBuilderRequest('saveAlias', { schema: message.schema, table: message.table, alias: message.alias });
+        }
+        // `tableRemoved` needs nothing: the change itself arrives through onChange.
+    }
+
+    function postBuilderRequest(kind, payload) {
+        const requestId = ++builderRequestCounter;
+        builderLatest[kind] = requestId;
+        vscode.postMessage(Object.assign({ command: 'joinBuilderRequest', kind, requestId }, payload));
+    }
+
+    // A change in the builder: once the user pauses, the host turns it into
+    // formatted SQL for the query bar.
+    function scheduleBuilderSql(state) {
+        clearTimeout(builderSqlTimer);
+        // The builder is the source now; a pending read of the older text must not undo the change.
+        clearTimeout(builderReadTimer);
+        builderReadTimer = null;
+        builderSqlTimer = setTimeout(() => postBuilderRequest('sql', { state }), 150);
+    }
+
+    function rememberBuilderEdges(edges) {
+        if (!Array.isArray(edges)) return;
+        const seen = new Set(builderEdges.map(e => JSON.stringify(e)));
+        for (const e of edges) {
+            const key = JSON.stringify(e);
+            if (!seen.has(key)) {
+                seen.add(key);
+                builderEdges.push(e);
+            }
+        }
+    }
+
+    // The host's answer to a `joinBuilderRequest`; answers to older requests are dropped.
+    function handleJoinBuilderResponse(msg) {
+        const kind = msg.kind;
+        if (!Object.prototype.hasOwnProperty.call(builderLatest, kind) || msg.requestId !== builderLatest[kind]) return;
+        const result = msg.result;
+        if (kind === 'metadata') {
+            const pending = builderPendingRead;
+            builderPendingRead = null;
+            // Text typed meanwhile is read again on its own.
+            if (!pending || pending.text !== queryInput.value) return;
+            if (result) {
+                for (const t of builderMetadataRequest(pending.state)) {
+                    const found = (Array.isArray(result.tables) ? result.tables : [])
+                        .find(m => m && m.table === t.table && (m.schema || '') === (t.schema || ''));
+                    builderMetaCache.set(builderMetaKey(t), found || null);
+                }
+                rememberBuilderEdges(result.identityEdges);
+            }
+            showBuilderState(mergeBuilderMetadata(pending.state, result));
+        } else if (kind === 'sql') {
+            if (typeof result !== 'string') return;
+            // Text typed into the query bar meanwhile wins; the builder reads it.
+            if (queryInput.value !== builderSyncedSql) {
+                if (activeViewTab === 'builder') scheduleBuilderRead();
+                return;
+            }
+            writeBuilderSql(result);
+        } else if (kind === 'addTables') {
+            if (!result || !joinBuilder) return;
+            rememberBuilderEdges(result.fkEdges);
+            for (const t of Array.isArray(result.tables) ? result.tables : []) {
+                if (t && t.schema && t.table) {
+                    builderMetaCache.set(builderMetaKey(t), { schema: t.schema, table: t.table, resolvedSchema: t.schema, columns: t.columns || [], savedAlias: t.savedAlias });
+                }
+            }
+            joinBuilder.addTables(result);
+        } else if (kind === 'saveAlias') {
+            if (result && joinBuilder) joinBuilder.aliasSaved(result.schema, result.table, result.alias);
+        }
+    }
+
+    // Write the builder's SQL, already formatted by the host, into the query
+    // bar as one undoable step; it does not run.
+    function writeBuilderSql(sql) {
+        if (sql === queryInput.value) return;
+        queryInput.value = sql;
+        builderSyncedSql = queryInput.value;
+        autoSizeQueryInput();
+        recordEditHistory();
     }
 
     // True when the query bar still shows the untouched default query of the
@@ -7344,23 +8535,26 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
     // Move column `fromCol` in front of / onto `toCol`, update the grid and
     // reflect the new order in the query bar. The SELECT column expressions in
-    // the current query text are reordered in place, so manual edits (aliases,
-    // removed columns, custom WHERE/ORDER BY, a run custom query) are preserved.
-    // Only when the current text cannot be reordered by column index (e.g. a
-    // `SELECT *` fallback) does the standard table view regenerate its default
-    // query.
+    // the current query text are reordered in place (a `*` spelled out into
+    // its columns first), so manual edits (aliases, removed columns, custom
+    // WHERE/JOIN/ORDER BY/LIMIT, a run custom query) are preserved. When the
+    // select list cannot follow, the query is left as it is; an empty query
+    // bar of a table view gets the default query in the new order.
     function moveColumn(fromCol, toCol) {
         if (!fromCol || !toCol || fromCol === toCol) return;
         const fromIndex = columns.findIndex(c => c.name === fromCol);
         const toIndex = columns.findIndex(c => c.name === toCol);
         if (fromIndex < 0 || toIndex < 0) return;
+        const before = groupingColumns();
         columns = reorderColumns(columns, fromIndex, toIndex);
         renderTable();
-        const reordered = reorderSelectColumns((queryInput.value || '').trim(), fromIndex, toIndex);
+        const current = (queryInput.value || '').trim();
+        const reordered = columnMoveQuery(current, fromIndex, toIndex, before, groupingOptions());
         if (reordered) {
-            setQueryText(reordered);
-        } else if (table) {
+            rewriteQueryTextKeepingRun(reordered);
+        } else if (table && !current) {
             setQueryText(getDefaultQuery());
+            updateStaleHint();
         }
     }
 
@@ -11806,6 +13000,18 @@ if (typeof module !== 'undefined' && module.exports) {
         formatExecutionTime,
         reorderColumns,
         reorderSelectColumns,
+        expandSelectWildcard,
+        columnMoveQuery,
+        runSqlAfterRewrite,
+        readBuilderState,
+        builderStateToSql,
+        emptyBuilderState,
+        builderMetadataRequest,
+        mergeBuilderMetadata,
+        viewTabForKey,
+        normalizeRunSql,
+        queryDiffersFromRun,
+        preparedRunOutcome,
         isFreshRowLoad,
         dataLoadingLabel,
         appendMustWait,

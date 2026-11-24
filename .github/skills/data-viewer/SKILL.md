@@ -10,7 +10,7 @@ The grid is five files that must stay in agreement:
 
 | File | Role |
 | --- | --- |
-| [src/webview/tableView.html](../../../src/webview/tableView.html) | skeleton + one template per dialog, plus four placeholders |
+| [src/webview/tableView.html](../../../src/webview/tableView.html) | skeleton + one template per dialog, plus six placeholders |
 | [src/webview/tableView.css](../../../src/webview/tableView.css) | surface-specific styling only (base styling lives in `shared.css`) |
 | [src/webview/tableView.js](../../../src/webview/tableView.js) | ~4900 lines of browser code |
 | [src/webview/queryEditor.js](../../../src/webview/queryEditor.js) | the query bar's Monaco editor: loading, theme, autocomplete, formatting |
@@ -46,6 +46,26 @@ bundle is missing — the textarea then stays the editor).
 Follow [STYLEGUIDE.md](../../../STYLEGUIDE.md) for anything visual — no literal
 colours, no raw `z-index`, `.btn` classes, `icon()` for glyphs.
 
+### The Query Builder tab and the stale-data hint
+
+Tabs *Data* | *Query Builder* sit above the toolbar; both work on the one query
+of the query bar. The builder tab is the shared join builder
+(`src/webview/joinBuilder.js`, injected through its own placeholder and
+`<script>` block). `readBuilderFromQuery()` reads the query bar with
+`readBuilderState` and asks the host for the tables' columns
+(`joinBuilderRequest` kind `metadata`); every builder change comes back as
+formatted SQL (kind `sql`) and is written to the query bar **without running**.
+The other kinds are `addTables` and `saveAlias`; every request is answered
+with `joinBuilderResponse` (`result` null on failure). The host side lives in
+[src/dataViewerBuilder.ts](../../../src/dataViewerBuilder.ts).
+
+Run goes through the host first (`prepareRun` → `runPrepared`), which asks the
+values of `:name` / `$1` / PL/pgSQL variables; the query bar keeps them.
+`lastRunSql` is the query the rows on screen came from; whenever the query bar
+differs from it (`queryDiffersFromRun`) the toolbar says so and the grid is
+dimmed. A flow that rewrites the same query without running it uses
+`rewriteQueryTextKeepingRun`.
+
 ## How the host side is organised
 
 One open panel is a `PanelSession` (`{ id, panel, origin, schema, table, historyKey, columns, disposed }`),
@@ -63,13 +83,15 @@ Send to the webview only through `this.post(session, …)` — it checks
 `session.disposed`, so a late answer to a closed panel is not an error.
 
 `getWebviewContent()` first applies the panel's CSP and script nonce
-(`applyDataViewerCsp`), then substitutes four placeholders and always uses
+(`applyDataViewerCsp`), then substitutes six placeholders and always uses
 the function form of `replace`, so `$&` inside injected SQL cannot expand:
 
 ```ts
 html = html.replace('/* SHARED_CSS_PLACEHOLDER */', () => getSharedStyles());
 html = html.replace('<!-- ICON_SPRITE_PLACEHOLDER -->', () => getIconSprite());
 html = html.replace('/* CSS_PLACEHOLDER */', () => css);
+html = html.replace('/* JOIN_BUILDER_CSS_PLACEHOLDER */', () => joinBuilder.css);
+html = html.replace('/* JOIN_BUILDER_JS_PLACEHOLDER */', () => joinBuilder.script); // own <script> block
 html = html.replace('/* JS_PLACEHOLDER */', () => script); // assets + queryEditor.js + tableView.js
 ```
 

@@ -1830,3 +1830,95 @@ body.export-file-assist .export-dialog .export-target-preview {
 .typeahead-item:hover {
     background: var(--c-hover);
 }
+
+
+/* ===== View tabs: Data | Query Builder ===================================== */
+/* Both tabs work on the one query of the query bar; the builder replaces the
+   grid while it is shown, the toolbar keeps only what is not about the grid. */
+.view-tabs {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-3) 0;
+    background: var(--c-surface);
+    border-bottom: 1px solid var(--c-border);
+    flex-shrink: 0;
+}
+
+.view-tablist {
+    display: flex;
+    gap: var(--sp-1);
+}
+
+.view-tab {
+    border-radius: var(--radius) var(--radius) 0 0;
+    color: var(--c-muted);
+}
+
+.view-tab[aria-selected="true"] {
+    color: var(--c-fg);
+    box-shadow: inset 0 -2px 0 var(--c-accent);
+}
+
+.apply-to-file {
+    margin-bottom: var(--sp-1);
+}
+
+.apply-to-file.hidden,
+.builder-area.hidden,
+.builder-message.hidden,
+.builder-host.hidden,
+.grid-empty-state.hidden,
+.stale-hint.hidden {
+    display: none;
+}
+
+.builder-area {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: var(--sp-3);
+}
+
+.builder-message {
+    margin-bottom: var(--sp-3);
+    color: var(--c-muted);
+}
+
+.container.builder-active .table-area,
+.container.builder-active .toolbar-right {
+    display: none;
+}
+
+/* A query that has never run: the grid says how to get its rows. */
+.grid-empty-state {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--c-muted);
+    pointer-events: none;
+}
+
+/* The rows shown came from another query than the one in the query bar. */
+.stale-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--c-warning);
+    font-size: var(--fs-sm);
+}
+
+.table-area {
+    --stale-data-opacity: 0.6;
+}
+
+.table-area.stale-data .table-wrapper {
+    opacity: var(--stale-data-opacity);
+}

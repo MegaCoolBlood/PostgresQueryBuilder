@@ -66,7 +66,7 @@ which the design tests scan like the Data Viewer's.
 
 **The Data Viewer** is assembled from files instead
 ([src/tableWebView.ts](src/tableWebView.ts), `getWebviewContent`). Its HTML
-carries four placeholders that are replaced at runtime:
+carries six placeholders that are replaced at runtime:
 
 | Placeholder | Replaced with |
 | --- | --- |
@@ -74,6 +74,8 @@ carries four placeholders that are replaced at runtime:
 | `/* CSS_PLACEHOLDER */` | `tableView.css` |
 | `<!-- ICON_SPRITE_PLACEHOLDER -->` | `getIconSprite()` |
 | `/* JS_PLACEHOLDER */` | `tableView.js` |
+| `/* JOIN_BUILDER_CSS_PLACEHOLDER */` | `joinBuilder.css` (the Query Builder tab) |
+| `/* JOIN_BUILDER_JS_PLACEHOLDER */` | `joinDialogLogic.js` + `joinBuilder.js`, in a `<script>` block of its own |
 
 Always replace with a **function** (`html.replace(p, () => css)`), never a
 string — `$&` and `$'` inside the injected SQL/JS would otherwise expand and

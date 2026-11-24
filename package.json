@@ -207,12 +207,6 @@
         "icon": "$(type-hierarchy)"
       },
       {
-        "command": "postgresQueryBuilder.addTablesToQueryBuilder",
-        "title": "Add to Query Builder",
-        "category": "PostgreSQL Query Booster",
-        "icon": "$(add)"
-      },
-      {
         "command": "postgresQueryBuilder.editSelectInQueryBuilder",
         "title": "Edit SELECT in Query Builder",
         "category": "PostgreSQL Query Booster",
@@ -832,11 +826,6 @@
           "command": "postgresQueryBuilder.openTablesInQueryBuilder",
           "when": "view == postgresTableExplorer && viewItem =~ /^table(\\.differs)?$/",
           "group": "0_queryBuilder@1"
-        },
-        {
-          "command": "postgresQueryBuilder.addTablesToQueryBuilder",
-          "when": "view == postgresTableExplorer && viewItem =~ /^table(\\.differs)?$/",
-          "group": "0_queryBuilder@2"
         }
       ],
       "commandPalette": [
@@ -934,10 +923,6 @@
         },
         {
           "command": "postgresQueryBuilder.openTablesInQueryBuilder",
-          "when": "false"
-        },
-        {
-          "command": "postgresQueryBuilder.addTablesToQueryBuilder",
           "when": "false"
         },
         {

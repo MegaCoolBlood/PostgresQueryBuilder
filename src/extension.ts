@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as os from 'os';
 import { ConnectionManager } from './connectionManager';
 import { TableExplorerProvider } from './tableExplorer';
-import { TableWebViewManager, formatQueryBarText } from './tableWebView';
+import { TableWebViewManager } from './tableWebView';
 import { SqlEditorManager } from './sqlEditor';
 import { SearchViewProvider } from './searchViewProvider';
 import { ModifyHistoryStore } from './modifyHistoryStore';
@@ -16,9 +16,9 @@ import { SavedQueryDragController, SavedQueryDropProvider } from './savedQueryDr
 import { ManageMappingsPanel } from './manageMappingsPanel';
 import { ManageBookmarksPanel } from './manageBookmarksPanel';
 import { QueryRunner } from './queryRunner';
-import { TableDragAndDropController, TableStatementDropProvider, QualifierStore, onDidChangeTableAliases, takeLastDraggedTables } from './tableStatementDrop';
+import { TableDragAndDropController, TableStatementDropProvider, QualifierStore, onDidChangeTableAliases } from './tableStatementDrop';
 import { ViewDataFromSelect } from './viewDataFromSelect';
-import { QueryBuilderManager, editSelectInQueryBuilder, relationsFromNodes, runPreviewQuery, type PreviewClient } from './queryBuilder';
+import { editSelectInQueryBuilder, openNewQueryBuilder, openTablesInQueryBuilder, relationsFromNodes, type OpenQueryView } from './dataViewerBuilder';
 import { DbSessionManager, parseCommitMode } from './dbSession';
 import { SqlFileSessions, messageLogRefFor, queryViewTitle, resetSessionWithConfirmation } from './sqlFileSession';
 import {
@@ -42,7 +42,7 @@ import { PsqlConsole } from './psqlConsole';
 import { ExecutableValueRunner } from './executableColumns';
 import { ExportService } from './exportService';
 import { ADD_EXPORT_INSTRUCTION_COMMAND, ExportInstructionAssist } from './exportInstructionAssist';
-import { CompletionCatalogCache, SqlFileCompletionProvider, loadCompletionCatalog, loadCompletionColumns, loadSqlCompletionApi, loadSqlWords } from './sqlCompletion';
+import { CompletionCatalogCache, SqlFileCompletionProvider, loadCompletionColumns, loadSqlCompletionApi, loadSqlWords } from './sqlCompletion';
 import { ObjectNavigatorProvider, readNavigatorSettings } from './objectNavigator';
 import { RepositoryIndex, readRepositorySettings } from './repositoryIndex';
 import { ObjectStatusDecorationProvider } from './objectDecorations';
@@ -83,7 +83,6 @@ let savedQueryStore: SavedQueryStore;
 let savedQueryExplorer: SavedQueryExplorerProvider;
 let savedQueryEditor: SavedQueryEditor;
 let viewDataFromSelect: ViewDataFromSelect;
-let queryBuilderManager: QueryBuilderManager;
 let sqlFileSessions: SqlFileSessions;
 let exportInstructionAssist: ExportInstructionAssist;
 let statusBarItem: vscode.StatusBarItem;
@@ -123,6 +122,8 @@ export function activate(context: vscode.ExtensionContext) {
     outputChannel.appendLine(`[activate] starting (version ${context.extension?.packageJSON?.version ?? '?'})`);
 
     try {
+        // The Query Builder is a tab of the Data Viewer; its commands open one.
+        const openDataViewer: OpenQueryView = (...args) => tableWebViewManager.openQueryView(...args);
         // Register commands FIRST so viewsWelcome / menu links always work,
         // even if later initialization throws.
         context.subscriptions.push(
@@ -283,9 +284,7 @@ export function activate(context: vscode.ExtensionContext) {
             }),
             vscode.commands.registerCommand('postgresQueryBuilder.openQueryBuilder', async () => {
                 try {
-                    // Tables are added from the Tables view, which needs a connection; without one SQL can still be pasted.
-                    await connectionManager.ensureConnected();
-                    await queryBuilderManager.open();
+                    await openNewQueryBuilder(openDataViewer);
                 } catch (err: unknown) {
                     outputChannel.appendLine(`[openQueryBuilder] ${getErrorStack(err)}`);
                     vscode.window.showErrorMessage(`The Query Builder could not be opened: ${getErrorMessage(err)}`);
@@ -299,29 +298,23 @@ export function activate(context: vscode.ExtensionContext) {
                         return;
                     }
                     if (!await connectionManager.ensureConnected()) return;
-                    await queryBuilderManager.open({ tables });
+                    await openTablesInQueryBuilder({
+                        queryRunner: new QueryRunner(connectionManager),
+                        mappings: columnMappingManager,
+                        qualifiers: new QualifierStore(context.globalState),
+                        open: openDataViewer
+                    }, tables);
                 } catch (err: unknown) {
                     outputChannel.appendLine(`[openTablesInQueryBuilder] ${getErrorStack(err)}`);
                     vscode.window.showErrorMessage(`The Query Builder could not be opened: ${getErrorMessage(err)}`);
                 }
             }),
-            vscode.commands.registerCommand('postgresQueryBuilder.addTablesToQueryBuilder', async (node?: unknown, nodes?: unknown) => {
-                try {
-                    const tables = relationsFromNodes(node, nodes);
-                    if (tables.length === 0) {
-                        vscode.window.showWarningMessage('Select one or more tables or views in the Tables view first.');
-                        return;
-                    }
-                    if (!await connectionManager.ensureConnected()) return;
-                    await queryBuilderManager.addTables(tables);
-                } catch (err: unknown) {
-                    outputChannel.appendLine(`[addTablesToQueryBuilder] ${getErrorStack(err)}`);
-                    vscode.window.showErrorMessage(`The tables could not be added to the Query Builder: ${getErrorMessage(err)}`);
-                }
-            }),
             vscode.commands.registerCommand('postgresQueryBuilder.editSelectInQueryBuilder', async () => {
                 try {
-                    await editSelectInQueryBuilder(queryBuilderManager, vscode.window.activeTextEditor, () => connectionManager.ensureConnected());
+                    await editSelectInQueryBuilder({
+                        open: openDataViewer,
+                        sessionRefFor: (document) => sqlFileSessions.acquire(document).ref
+                    }, vscode.window.activeTextEditor);
                 } catch (err: unknown) {
                     outputChannel.appendLine(`[editSelectInQueryBuilder] ${getErrorStack(err)}`);
                     vscode.window.showErrorMessage(`The Query Builder could not be opened: ${getErrorMessage(err)}`);
@@ -522,40 +515,9 @@ export function activate(context: vscode.ExtensionContext) {
             openPsqlConsole: () => new PsqlConsole(connectionManager).open()
         }));
         viewDataFromSelect = new ViewDataFromSelect(context, connectionManager, tableWebViewManager, sqlFileSessions);
-
-        // The graphical Query Builder. Its catalog lookups use the pool; its
-        // Results tab runs read-only on a pooled connection.
-        const builderQualifiers = new QualifierStore(context.globalState);
-        queryBuilderManager = new QueryBuilderManager({
-            extensionPath: context.extensionPath,
-            ensureConnected: () => connectionManager.ensureConnected(),
-            isConnected: () => connectionManager.isConnected(),
-            catalogQuery: (sql, params) => connectionManager.queryMetadata(sql, params),
-            mappings: () => columnMappingManager.getAllMappings(),
-            takeDraggedTables: takeLastDraggedTables,
-            onConnectionChanged: (listener) => connectionManager.onConnectionChanged(listener),
-            runPreview: (sql) => runPreviewQuery(async () => {
-                const pool = connectionManager.getPool();
-                if (!pool) throw new Error('Not connected to a database');
-                return (await pool.connect()) as unknown as PreviewClient;
-            }, sql),
-            openInDataViewer: (sql, title) => tableWebViewManager.openQueryView(sql, title),
-            askForVariables: (sql, actionLabel) => viewDataFromSelect.askForVariableValues(sql, { actionLabel }),
-            editorRequest: async (kind, message) => {
-                if (kind === 'catalog') {
-                    return loadCompletionCatalog(connectionManager, (schema, table) => builderQualifiers.get(schema, table));
-                }
-                if (kind === 'columns') {
-                    return loadCompletionColumns(connectionManager, String(message.schema ?? ''), String(message.table ?? ''));
-                }
-                if (kind === 'format') {
-                    return formatQueryBarText(String(message.sql ?? ''), message.quiet === true);
-                }
-                return null;
-            }
-        });
-        context.subscriptions.push(queryBuilderManager);
-        tableWebViewManager.setQueryBuilderOpener((sql, target) => queryBuilderManager.open({ sql, target }));
+        // Run in a Data Viewer asks the values of the query's placeholders with the View Data form.
+        tableWebViewManager.setVariableValuePrompt((sql, variables) =>
+            viewDataFromSelect.askForVariableValues(sql, { variables, actionLabel: 'Run' }));
 
         statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
         statusBarItem.command = 'postgresQueryBuilder.selectConnection';

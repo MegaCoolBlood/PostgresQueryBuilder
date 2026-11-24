@@ -695,6 +695,15 @@ export function queryVariableNames(sql: string): string[] {
 }
 
 /**
+ * The variables a Run of the Data Viewer's query bar asks values for: those
+ * of {@link queryVariableNames} except built-in values such as `current_user`,
+ * which are plain SQL there.
+ */
+export function queryBarVariableNames(sql: string): string[] {
+    return queryVariableNames(sql).filter(name => !BUILTIN_VALUE_KEYWORDS.has(name.toLowerCase()));
+}
+
+/**
  * The statement at the cursor (or the selection) as it stands in the text, for
  * a tool that rewrites it in place: its `[start, end)` offsets, its text and
  * whether it is an UPDATE or carries a PL/pgSQL `INTO` clause — both of which

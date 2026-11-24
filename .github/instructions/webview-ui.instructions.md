@@ -47,7 +47,7 @@ return buildHtmlDocument({ webview, title: 'My Panel', styles, body, script });
 ```
 
 The Data Viewer (`src/tableWebView.ts`, `getWebviewContent`) instead substitutes
-four placeholders in `src/webview/tableView.html`, after `applyDataViewerCsp`
+six placeholders in `src/webview/tableView.html`, after `applyDataViewerCsp`
 has added its CSP and nonce. Always replace with a
 **function** — `html.replace(p, () => css)` — never a string, or `$&` / `$'`
 inside injected SQL will expand and corrupt the document.

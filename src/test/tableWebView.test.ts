@@ -12,6 +12,8 @@ import { QueryRunner } from '../queryRunner';
 import { QualifierStore } from '../tableStatementDrop';
 import { ManageBookmarksPanel } from '../manageBookmarksPanel';
 import { getIconSprite, getSharedStyles } from '../webviewAssets';
+import { formatJoinSql, getJoinBuilderAssets } from '../joinDialog';
+import { buildBuilderSql } from '../statementBuilder';
 import { formatSqlChecked } from '../plpgsqlFormatter';
 import { getFormatOptions } from '../formatSettings';
 
@@ -217,6 +219,7 @@ function createManager(overrides: { connection?: any; mappings?: any[]; dbSessio
         onDidChange: () => ({ dispose() {} }),
         getMappingsForTable: (schema: string, table: string) =>
             (overrides.mappings || []).filter((m: any) => m.sourceSchema === schema && m.sourceTable === table),
+        getAllMappings: () => overrides.mappings || [],
         deletedMappings: [] as string[],
         deleteMapping(id: string) { this.deletedMappings.push(id); return Promise.resolve(); }
     };
@@ -626,6 +629,8 @@ test('data viewer: no placeholder survives in the rendered document', async () =
         '/* SHARED_CSS_PLACEHOLDER */',
         '/* CSS_PLACEHOLDER */',
         '/* JS_PLACEHOLDER */',
+        '/* JOIN_BUILDER_CSS_PLACEHOLDER */',
+        '/* JOIN_BUILDER_JS_PLACEHOLDER */',
         '<!-- ICON_SPRITE_PLACEHOLDER -->'
     ]) {
         assert.equal(panel.webview.html.includes(placeholder), false, `${placeholder} was not replaced`);
@@ -2432,42 +2437,175 @@ test('the Shift+Ctrl+A row limit is a setting of the Data Viewer', () => {
     assert.deepEqual([setting.type, setting.default, setting.minimum], ['integer', 100000, 0]);
 });
 
-// ===== Edit in Query Builder =====
 
-test('Edit in Query Builder opens the builder on the query; its Apply runs the query in this panel, or in a new one once it is closed', async () => {
-    const { manager } = createManager();
-    const opened: Array<{ sql: string; target: any }> = [];
-    manager.setQueryBuilderOpener(async (sql, target) => { opened.push({ sql, target }); });
-    const panels = [createFakePanel(), createFakePanel()];
-    (panels[0] as any).title = 'orders';
-    let next = 0;
-    const originalCreate = vscodeStub.window.createWebviewPanel;
-    vscodeStub.window.createWebviewPanel = () => panels[next++];
-    try {
-        await manager.openQueryView('SELECT 1', 'orders');
-        await panels[0].state.onMessage({ command: 'editInQueryBuilder', sql: 'SELECT * FROM orders' });
-        assert.equal(opened.length, 1);
-        assert.equal(opened[0].sql, 'SELECT * FROM orders');
-        assert.match(opened[0].target.description, /Data Viewer "orders"/);
+// ===== Query Builder tab =====
 
-        const applied = await opened[0].target.apply('SELECT id FROM orders');
-        assert.equal(applied.ok, true);
-        assert.deepEqual(panels[0].posted.filter((m: any) => m.command === 'setQueryAndRun'), [{ command: 'setQueryAndRun', sql: 'SELECT id FROM orders' }]);
+/** Open a query panel with options and return it with its init message. */
+async function openBuilderPanel(options: any = {}, overrides: any = {}) {
+    const created = createManager(overrides);
+    const panel = await withPanel(() => created.manager.openQueryView(options.sql ?? '', 'Query Builder', undefined, undefined, undefined, options));
+    return { ...created, panel, send: (m: any) => panel.state.onMessage(m), init: panel.posted.find((m: any) => m.command === 'init') };
+}
 
-        panels[0].dispose();
-        const reopened = await opened[0].target.apply('SELECT 2');
-        assert.match(reopened.message, /was closed, so the query was opened in a new Data Viewer/);
-        assert.equal(next, 2, 'a new Data Viewer was opened');
-        assert.equal(panels[1].posted.find((m: any) => m.command === 'init').sql, 'SELECT 2');
-    } finally {
-        vscodeStub.window.createWebviewPanel = originalCreate;
-    }
+/** The answer the panel got to the joinBuilderRequest with `requestId`. */
+function builderAnswer(panel: any, requestId: number) {
+    return panel.posted.find((m: any) => m.command === 'joinBuilderResponse' && m.requestId === requestId);
+}
+
+test('a Data Viewer opened for the Query Builder starts on the builder tab and waits for Run', async () => {
+    const { init } = await openBuilderPanel({ sql: 'SELECT 1', tab: 'builder', run: false });
+    assert.deepEqual([init.tab, init.run, init.applyTarget], ['builder', false, null]);
+    const { panel } = await openCustomQueryPanel();
+    const plain = panel.posted.find((m: any) => m.command === 'init');
+    assert.deepEqual([plain.tab, plain.run], ['data', true], 'every other panel runs its query on the Data tab');
+    const js = fs.readFileSync(path.join(EXTENSION_PATH, 'src', 'webview', 'tableView.js'), 'utf8');
+    assert.match(js, /const runOnOpen = msg\.run !== false;/);
+    assert.match(js, /if \(!runOnOpen\) \{\s*setDataLoading\(false\);/, 'a panel that waits for Run starts no load');
 });
 
-test('the Data Viewer posts Edit in Query Builder and runs what the builder applies', () => {
+test('the builder tab turns a builder state into the formatted SQL of the query bar', async () => {
+    const { panel, send } = await openBuilderPanel({ tab: 'builder', run: false });
+    const state = {
+        distinct: false,
+        selectItems: [{ kind: 'column', tableIndex: 0, column: 'id', alias: 'order_id' }],
+        tables: [{ schema: 'public', table: 'orders', tableReference: 'orders', alias: 'o', columns: ['id'] }],
+        joins: [], where: [{ kind: 'compare', left: 'o.id', operator: '=', right: ':id' }], orderBy: [], carried: {}
+    };
+    await send({ command: 'joinBuilderRequest', kind: 'sql', requestId: 1, state });
+    const answer = builderAnswer(panel, 1);
+    assert.equal(answer.kind, 'sql');
+    assert.equal(answer.result, formatJoinSql(buildBuilderSql(state as any, { semicolon: false })));
+    assert.match(answer.result, /o\.id AS order_id/);
+    assert.match(answer.result, /:id/, 'placeholders stay as written');
+    assert.doesNotMatch(answer.result, /;\s*$/, 'the query bar gets no semicolon');
+});
+
+test('every builder request is answered, with null when it cannot be served', async (t) => {
+    const original = QueryRunner.prototype.getMultiTableJoinData;
+    QueryRunner.prototype.getMultiTableJoinData = async () => { throw new Error('connection lost'); };
+    t.after(() => { QueryRunner.prototype.getMultiTableJoinData = original; });
+    const { panel, send } = await openBuilderPanel({ tab: 'builder', run: false });
+    await send({ command: 'joinBuilderRequest', kind: 'metadata', requestId: 1, tables: [{ schema: 'public', table: 'orders' }] });
+    await send({ command: 'joinBuilderRequest', kind: 'sql', requestId: 2, state: null });
+    await send({ command: 'joinBuilderRequest', kind: 'nonsense', requestId: 3 });
+    await send({ command: 'joinBuilderRequest', kind: 'saveAlias', requestId: 4, schema: 'public', table: 'orders', alias: '' });
+    for (const id of [1, 2, 3, 4]) {
+        const answer = builderAnswer(panel, id);
+        assert.ok(answer, `request ${id} was not answered`);
+        assert.equal(answer.result, null);
+    }
+    assert.equal(panel.posted.some((m: any) => m.command === 'error'), false, 'nothing is reported while the user edits');
+});
+
+test('the builder tab learns the columns, saved aliases and join edges of its tables, schema-less ones from the search path', async (t) => {
+    const original = QueryRunner.prototype.getMultiTableJoinData;
+    const asked: any[] = [];
+    QueryRunner.prototype.getMultiTableJoinData = async (tables: any) => {
+        asked.push(tables);
+        return {
+            tables: tables.map((x: any) => ({ ...x, tableReference: x.table, columns: x.table === 'orders' ? ['id', 'customer_id'] : ['id'], rawColumns: [], firstColumnRaw: 'id' })),
+            foreignKeys: [{ fromSchema: 'sales', fromTable: 'orders', fromColumn: 'customer_id', toSchema: 'public', toTable: 'customers', toColumn: 'id' }]
+        };
+    };
+    t.after(() => { QueryRunner.prototype.getMultiTableJoinData = original; });
+    const resolved: any[] = [];
+    const { panel, send, globalStateStore } = await openBuilderPanel({ tab: 'builder', run: false }, {
+        connection: {
+            queryMetadata: async (sql: string, params?: any[]) => {
+                if (!sql.includes('to_regclass')) return [];
+                resolved.push(params?.[0]);
+                return params?.[0] === '"orders"' ? [{ schema: 'sales' }] : [];
+            }
+        }
+    });
+    globalStateStore.tableQualifiers = { 'public.customers': 'cu' };
+    await send({ command: 'joinBuilderRequest', kind: 'metadata', requestId: 7, tables: [{ schema: '', table: 'orders' }, { schema: 'public', table: 'customers' }, { schema: '', table: 'missing' }] });
+    assert.deepEqual(resolved, ['"orders"', '"missing"']);
+    assert.deepEqual(asked, [[{ schema: 'sales', table: 'orders' }, { schema: 'public', table: 'customers' }]]);
+    const { result } = builderAnswer(panel, 7);
+    assert.deepEqual(result.tables, [
+        { schema: '', table: 'orders', resolvedSchema: 'sales', columns: ['id', 'customer_id'], savedAlias: undefined },
+        { schema: 'public', table: 'customers', resolvedSchema: 'public', columns: ['id'], savedAlias: 'cu' }
+    ]);
+    assert.equal(result.identityEdges.length, 1);
+
+    await send({ command: 'joinBuilderRequest', kind: 'saveAlias', requestId: 8, schema: 'sales', table: 'orders', alias: 'ord' });
+    assert.deepEqual(builderAnswer(panel, 8).result, { schema: 'sales', table: 'orders', alias: 'ord' });
+    assert.equal(globalStateStore.tableQualifiers['sales.orders'], 'ord');
+});
+
+// ===== Run with placeholders =====
+
+test('Run asks the values of placeholders once and runs the filled-in SQL; the query bar keeps them', async () => {
+    const { manager } = createManager();
+    const asked: Array<{ sql: string; variables: readonly string[] }> = [];
+    manager.setVariableValuePrompt(async (sql, variables) => { asked.push({ sql, variables }); return sql.replace(':id', '42'); });
+    const panel = await withPanel(() => manager.openQueryView('SELECT 1', 'Q'));
+    await panel.state.onMessage({ command: 'prepareRun', requestId: 3, sql: 'SELECT * FROM t WHERE id = :id' });
+    assert.deepEqual(asked, [{ sql: 'SELECT * FROM t WHERE id = :id', variables: [':id'] }]);
+    assert.deepEqual(panel.posted.find((m: any) => m.command === 'runPrepared'), {
+        command: 'runPrepared', requestId: 3, sql: 'SELECT * FROM t WHERE id = 42', cancelled: false
+    });
+
+    await panel.state.onMessage({ command: 'prepareRun', requestId: 4, sql: 'SELECT current_user, $$:x$$ FROM t' });
+    assert.equal(asked.length, 1, 'built-in values and quoted text ask nothing');
+    assert.equal(panel.posted.filter((m: any) => m.command === 'runPrepared').pop().sql, 'SELECT current_user, $$:x$$ FROM t');
+});
+
+test('Run with placeholders whose values are not given runs nothing', async () => {
+    const { manager } = createManager();
+    manager.setVariableValuePrompt(async () => undefined);
+    const panel = await withPanel(() => manager.openQueryView('SELECT 1', 'Q'));
+    await panel.state.onMessage({ command: 'prepareRun', requestId: 1, sql: 'SELECT * FROM t WHERE id = $1' });
+    assert.deepEqual(panel.posted.find((m: any) => m.command === 'runPrepared'), { command: 'runPrepared', requestId: 1, sql: null, cancelled: true });
+    assert.equal(panel.posted.some((m: any) => m.command === 'rowsLoaded'), false);
+    const js = fs.readFileSync(path.join(EXTENSION_PATH, 'src', 'webview', 'tableView.js'), 'utf8');
+    assert.match(js, /if \(outcome\.action === 'cancel'\) \{\s*setDataLoading\(false\);/, 'a cancelled Run releases the loading state');
+});
+
+// ===== Apply to File =====
+
+test('Apply to File writes the formatted query bar over the statement of the file', async () => {
+    const applied: string[] = [];
+    const applyTarget = { label: 'report.sql', apply: async (sql: string) => { applied.push(sql); return { ok: true, message: 'replaced' }; } };
+    const { panel, send, init } = await openBuilderPanel({ sql: 'SELECT a FROM t', tab: 'builder', run: false, applyTarget });
+    assert.deepEqual(init.applyTarget, { label: 'report.sql' }, 'the webview learns only the label');
+    await send({ command: 'applyToFile', sql: 'select a from t' });
+    assert.deepEqual(applied, [formatQueryBarText('select a from t', true).text]);
+    assert.deepEqual(panel.posted.find((m: any) => m.command === 'applyToFileDone'), { command: 'applyToFileDone', ok: true, message: 'replaced' });
+
+    const plain = await openBuilderPanel({ sql: 'SELECT 1' });
+    await plain.send({ command: 'applyToFile', sql: 'SELECT 1' });
+    assert.equal(plain.panel.posted.find((m: any) => m.command === 'applyToFileDone').ok, false);
+});
+
+// ===== Markup =====
+
+test('the Data Viewer has the Data and Query Builder tabs at the top and no Edit in Query Builder button', () => {
     const html = fs.readFileSync(path.join(EXTENSION_PATH, 'src', 'webview', 'tableView.html'), 'utf8');
     const js = fs.readFileSync(path.join(EXTENSION_PATH, 'src', 'webview', 'tableView.js'), 'utf8');
-    assert.match(html, /<button class="btn btn-icon" id="queryBuilderBtn" title="Edit in Query Builder[^"]*"><svg class="ico" aria-hidden="true"><use href="#icon-diagram"\/><\/svg><\/button>/);
-    assert.ok(js.includes("vscode.postMessage({ command: 'editInQueryBuilder', sql: queryInput.value })"));
-    assert.match(js, /case 'setQueryAndRun':\s*\/\/[^\n]*\n\s*setQueryTextAndRun\(msg\.sql\);/);
+    assert.ok(html.indexOf('id="viewTabs"') < html.indexOf('class="toolbar"'), 'the tabs sit above the toolbar');
+    assert.ok(html.indexOf('class="toolbar"') < html.indexOf('id="queryBar"'));
+    const tabs = html.match(/<button[^>]*role="tab"[^>]*>/g) || [];
+    assert.equal(tabs.length, 2);
+    assert.match(tabs[0], /data-view-tab="data"[^>]*aria-selected="true"/);
+    assert.match(tabs[1], /data-view-tab="builder"[^>]*aria-selected="false"[^>]*aria-controls="builderArea"/);
+    assert.match(html, /role="tablist"/);
+    assert.match(html, /id="builderArea" role="tabpanel"/);
+    assert.match(html, /id="staleHint"[^>]*>[\s\S]*?The data shows the previous query \u2014 press Run to refresh</);
+    assert.match(html, /<script>\/\* JOIN_BUILDER_JS_PLACEHOLDER \*\/<\/script>\s*<script>\/\* JS_PLACEHOLDER \*\/<\/script>/);
+    assert.equal(html.includes('queryBuilderBtn'), false);
+    assert.equal(js.includes('editInQueryBuilder'), false);
+    assert.equal(js.includes('setQueryAndRun'), false);
+});
+
+test('the Data Viewer document carries the join builder in its own script block with the nonce', async () => {
+    const { panel } = await openCustomQueryPanel();
+    const html = panel.webview.html;
+    const assets = getJoinBuilderAssets();
+    assert.ok(html.includes(assets.script), 'the join builder script is injected verbatim');
+    assert.ok(html.includes(assets.css), 'the join builder stylesheet is injected');
+    const nonce = /script-src 'nonce-([^']+)'/.exec(html)?.[1];
+    assert.ok(nonce);
+    assert.equal((html.match(new RegExp(`<script nonce="${nonce}">`, 'g')) || []).length, 2);
 });

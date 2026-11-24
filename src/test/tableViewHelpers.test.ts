@@ -13,6 +13,8 @@ const {
     deriveTableAlias,
     reorderColumns,
     reorderSelectColumns,
+    columnMoveQuery,
+    runSqlAfterRewrite,
     buildColumnHeaderTitle,
     nextSortState,
     computeResizedRowHeight,
@@ -750,6 +752,31 @@ test('reorderSelectColumns returns null for a no-op or non-SELECT input', () => 
     assert.equal(reorderSelectColumns('SELECT a, b FROM t', 1, 1), null);
     assert.equal(reorderSelectColumns('UPDATE t SET a = 1', 0, 1), null);
     assert.equal(reorderSelectColumns('', 0, 1), null);
+});
+
+// ===== columnMoveQuery / runSqlAfterRewrite =====
+
+test('columnMoveQuery spells out a * and keeps the rest of the query', () => {
+    const columns = [{ name: 'id' }, { name: 'Name' }, { name: 'total', qualifier: 'o', sourceColumn: 'sum_total' }];
+    assert.equal(
+        columnMoveQuery('SELECT * FROM t JOIN o ON o.id = t.id WHERE t.x > 1 LIMIT 5', 0, 2, columns),
+        'SELECT "Name", o.sum_total AS total, id FROM t JOIN o ON o.id = t.id WHERE t.x > 1 LIMIT 5'
+    );
+    assert.equal(columnMoveQuery('SELECT a, t.* FROM t', 2, 0, ['a', 'b', 'c']), 'SELECT t.c, a, t.b FROM t');
+});
+
+test('columnMoveQuery leaves a query alone when its select list cannot follow the grid', () => {
+    assert.equal(columnMoveQuery('SELECT * FROM t WHERE x > 1', 0, 1, []), null, 'columns not known');
+    assert.equal(columnMoveQuery('SELECT a.*, b.* FROM a, b', 0, 1, ['x', 'y']), null, 'two wildcards');
+    assert.equal(columnMoveQuery('SELECT * FROM a UNION SELECT * FROM b', 0, 1, ['x', 'y']), null, 'a set operation');
+});
+
+test('runSqlAfterRewrite keeps the rows current only for the text the rewrite left in the query bar', () => {
+    assert.equal(runSqlAfterRewrite('SELECT * FROM t', true, true, 'SELECT a FROM t', 'SELECT a FROM t'), 'SELECT a FROM t');
+    assert.equal(runSqlAfterRewrite('SELECT * FROM t', true, true, 'SELECT a FROM t WHERE', 'SELECT a FROM t'), 'SELECT * FROM t',
+        'text typed meanwhile');
+    assert.equal(runSqlAfterRewrite('SELECT * FROM t', false, true, 'SELECT a FROM t', 'SELECT a FROM t'), 'SELECT * FROM t');
+    assert.equal(runSqlAfterRewrite('SELECT * FROM t', true, false, 'SELECT a FROM t', 'SELECT a FROM t'), 'SELECT * FROM t');
 });
 
 // ===== buildColumnHeaderTitle =====

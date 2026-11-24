@@ -24,12 +24,19 @@ import { resetSessionWithConfirmation, type QueryViewLoad, type ViewerPlacement 
 import { executableColumnType, executableTypePickItems, type ExecutableValueRunner } from './executableColumns';
 import { EXPORT_FILE_EXTENSIONS, exportDialogChoiceFrom, type ExportDialogChoice, type ExportDialogRequest, type ExportFileAssist, type ExportFormat } from './exportInstructions';
 import { ExportCancelledError, ExportTracker, notificationProgress } from './exportProgress';
-import type { QueryBuilderTarget } from './queryBuilder';
+import { getJoinBuilderAssets } from './joinDialog';
+import { addBuilderTables, builderSqlFromState, builderTableRefs, loadBuilderMetadata, type QueryViewOptions } from './dataViewerBuilder';
+import type { ApplyTarget } from './applyToDocument';
+import { queryBarVariableNames } from './selectStatementExtractor';
 import * as path from 'path';
 import * as fs from 'fs';
 
-/** Opens the Query Builder on a query, with where its Apply writes back. */
-export type QueryBuilderOpener = (sql: string, target: QueryBuilderTarget) => Promise<unknown>;
+/**
+ * Asks the values of the placeholders and variables of a query the user runs
+ * (`:name`, `$1`, PL/pgSQL variables) and returns the SQL with them filled in,
+ * or undefined when cancelled.
+ */
+export type VariableValuePrompt = (sql: string, variables: readonly string[]) => Promise<string | undefined>;
 
 /** Said after a save that joined a transaction the user opened in the session. */
 const PENDING_HINT = 'they become permanent once that transaction is committed with COMMIT or Commit in the PostgreSQL Messages panel.';
@@ -73,6 +80,8 @@ interface PanelSession {
     exportFileAssist?: ExportFileAssist;
     /** The export this panel is running, so its Cancel button can stop it. */
     runningExport?: ExportTracker;
+    /** Where Apply to File writes the panel's query, for one opened by "Edit SELECT in Query Builder". */
+    applyTarget?: ApplyTarget;
     disposed: boolean;
 }
 
@@ -363,7 +372,7 @@ export class TableWebViewManager {
     /** Runs the values of executable columns; set once the extension has wired it. */
     private executableValueRunner?: ExecutableValueRunner;
     private selectHistory?: SelectHistorySink;
-    private queryBuilderOpener?: QueryBuilderOpener;
+    private variablePrompt?: VariableValuePrompt;
     /** Cell values currently open in an editor tab, keyed by scratch file path. */
     private cellEditors: Map<string, CellEditorLink> = new Map();
     private cellEditorCounter = 0;
@@ -430,44 +439,9 @@ export class TableWebViewManager {
         this.selectHistory = history;
     }
 
-    /** Opens the Query Builder for "Edit in Query Builder"; set once the extension has created it. */
-    setQueryBuilderOpener(opener: QueryBuilderOpener): void {
-        this.queryBuilderOpener = opener;
-    }
-
-    /**
-     * Write a query into the query bar of a panel and run it — the Apply of a
-     * Query Builder opened from that panel. False when the panel is closed.
-     */
-    private applyQueryToPanel(session: PanelSession, sql: string): boolean {
-        if (session.disposed) return false;
-        this.post(session, { command: 'setQueryAndRun', sql });
-        session.panel.reveal();
-        return true;
-    }
-
-    /**
-     * "Edit in Query Builder" of the query bar: open the builder on the query
-     * shown; its Apply writes the query back into this panel and runs it, or
-     * opens a new Data Viewer when this one was closed meanwhile.
-     */
-    private async handleEditInQueryBuilder(ctx: MessageContext): Promise<void> {
-        const { session, message } = ctx;
-        ctx.nothingRan = true;
-        if (!this.queryBuilderOpener) {
-            throw new Error('The Query Builder is not available.');
-        }
-        const title = session.panel.title;
-        await this.queryBuilderOpener(typeof message.sql === 'string' ? message.sql : '', {
-            description: `Write the query into the Data Viewer "${title}" and run it`,
-            apply: async (sql: string) => {
-                if (this.applyQueryToPanel(session, sql)) {
-                    return { ok: true, message: `The query was applied to the Data Viewer "${title}".` };
-                }
-                await this.openQueryView(sql, title);
-                return { ok: true, message: `The Data Viewer "${title}" was closed, so the query was opened in a new Data Viewer.` };
-            }
-        });
+    /** Asks the values of a query's placeholders when it is run; set once the extension has wired it. */
+    setVariableValuePrompt(prompt: VariableValuePrompt): void {
+        this.variablePrompt = prompt;
     }
 
     private broadcastMappings(): void {
@@ -724,15 +698,18 @@ export class TableWebViewManager {
      * @param savedQuery A saved query whose `:name` placeholders the panel asks for before running.
      * @param sessionRef The database session to run on — that of the SQL file
      * or panel it was opened from. Without one the panel gets its own.
+     * @param options The tab it opens on, whether the query waits for Run, and
+     * where Apply to File writes the query (see {@link QueryViewOptions}).
      */
     async openQueryView(
         sql: string,
         title: string,
         viewColumn: vscode.ViewColumn = vscode.ViewColumn.Beside,
         savedQuery?: { id: string; parameters: SavedQueryParameter[]; values: Record<string, string> },
-        sessionRef?: DbSessionRef
+        sessionRef?: DbSessionRef,
+        options: QueryViewOptions = {}
     ): Promise<void> {
-        await this.createQueryPanel(sql, title, viewColumn, savedQuery, sessionRef);
+        await this.createQueryPanel(sql, title, viewColumn, savedQuery, sessionRef, undefined, false, options);
     }
 
     /**
@@ -764,7 +741,8 @@ export class TableWebViewManager {
         savedQuery: { id: string; parameters: SavedQueryParameter[]; values: Record<string, string> } | undefined,
         sessionRef: DbSessionRef | undefined,
         onFirstLoad?: (outcome: QueryViewLoad) => void,
-        preserveFocus = false
+        preserveFocus = false,
+        options: QueryViewOptions = {}
     ): Promise<PanelSession | undefined> {
         // Running the query needs a connection; without this the panel would
         // open and spin forever.
@@ -775,6 +753,7 @@ export class TableWebViewManager {
         const id = `query:${++this.querySessionCounter}`;
         const session = this.createSession(id, title, 'query', '', '', `query:${title}`, viewColumn, sessionRef, preserveFocus);
         session.onFirstLoad = onFirstLoad;
+        session.applyTarget = options.applyTarget;
         const parameters = savedQuery?.parameters ?? [];
 
         this.post(session, {
@@ -798,6 +777,10 @@ export class TableWebViewManager {
             savedQueryValues: savedQuery?.values ?? {},
             // With placeholders the panel must collect values before it can run.
             awaitParameters: parameters.length > 0,
+            // The tab the panel opens on, and false when the query waits for Run.
+            tab: options.tab === 'builder' ? 'builder' : 'data',
+            run: options.run !== false,
+            applyTarget: options.applyTarget ? { label: options.applyTarget.label } : null,
             queryBarHeight: this.getQueryBarHeight()
         });
         this.postSessionInfo(session);
@@ -843,8 +826,122 @@ export class TableWebViewManager {
         exportDialogResult: this.handleExportDialogResult,
         exportPlaceholderSuggest: this.handleExportPlaceholderSuggest,
         exportTargetPreview: this.handleExportTargetPreview,
-        editInQueryBuilder: this.handleEditInQueryBuilder
+        joinBuilderRequest: this.handleJoinBuilderRequest,
+        prepareRun: this.handlePrepareRun,
+        applyToFile: this.handleApplyToFile
     };
+
+    /**
+     * The Query Builder tab asks the host (`joinBuilderRequest`) and is always
+     * answered with `joinBuilderResponse` carrying its `requestId` and `kind`,
+     * and `result` null when it cannot be served — failures are logged, not
+     * shown, as they happen while the user edits:
+     *  - `metadata` `{ tables }`: columns, saved aliases and join edges
+     *    ({@link loadBuilderMetadata}); a table without schema is looked up on
+     *    the search path.
+     *  - `sql` `{ state }`: the formatted SELECT of a builder state.
+     *  - `addTables` `{ tables }` (those in the builder): the tables just
+     *    dragged or picked from a list, with their join edges.
+     *  - `saveAlias` `{ schema, table, alias }`: keeps the alias for the table;
+     *    answers `{ schema, table, alias }`.
+     */
+    private async handleJoinBuilderRequest(ctx: MessageContext): Promise<void> {
+        const { session, message, queryRunner } = ctx;
+        const kind = String(message.kind ?? '');
+        const qualifiers = new QualifierStore(this.context.globalState);
+        let result: unknown = null;
+        try {
+            if (kind === 'sql') {
+                result = builderSqlFromState(message.state);
+            } else if (kind === 'metadata') {
+                const tables = builderTableRefs(message.tables);
+                if (tables.length > 0 && this.connectionManager.isConnected()) {
+                    result = await loadBuilderMetadata(queryRunner, this.columnMappingManager, qualifiers, tables,
+                        (table) => this.resolveTableSchema(table));
+                }
+            } else if (kind === 'addTables') {
+                if (await this.connectionManager.ensureConnected()) {
+                    result = await addBuilderTables(queryRunner, this.columnMappingManager, qualifiers, builderTableRefs(message.tables));
+                }
+            } else if (kind === 'saveAlias') {
+                const alias = String(message.alias ?? '').trim();
+                const schema = String(message.schema ?? '');
+                const table = String(message.table ?? '');
+                if (alias && schema && table) {
+                    await qualifiers.set(schema, table, alias);
+                    result = { schema, table, alias };
+                }
+            }
+        } catch (err: unknown) {
+            Logger.error(`TableWebViewManager.handleJoinBuilderRequest(${kind})`, err);
+            result = null;
+        }
+        this.post(session, { command: 'joinBuilderResponse', requestId: message.requestId, kind, result });
+    }
+
+    /** The schema an unqualified table name resolves to on the search path, if it exists. */
+    private async resolveTableSchema(table: string): Promise<string | undefined> {
+        const rows = await this.connectionManager.queryMetadata(
+            `SELECT n.nspname AS schema
+             FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.oid = pg_catalog.to_regclass($1)`,
+            [`"${table.replace(/"/g, '""')}"`]
+        );
+        const schema = rows[0]?.schema;
+        return typeof schema === 'string' && schema ? schema : undefined;
+    }
+
+    /**
+     * Run asks here first (`prepareRun`): a query with placeholders or
+     * variables (`:name`, `$1`, PL/pgSQL variables) gets their values from the
+     * user, the query bar keeps the placeholders. Answered with `runPrepared`
+     * carrying the SQL to run, or `cancelled` when the values were not given.
+     */
+    private async handlePrepareRun(ctx: MessageContext): Promise<void> {
+        const { session, message } = ctx;
+        const sql = typeof message.sql === 'string' ? message.sql : '';
+        let run: string | undefined = sql;
+        try {
+            const variables = this.variablePrompt ? queryBarVariableNames(sql) : [];
+            if (this.variablePrompt && variables.length > 0) {
+                run = await this.variablePrompt(sql, variables);
+            }
+        } catch (err: unknown) {
+            // The database reports what is wrong with the query as it is.
+            Logger.error('TableWebViewManager.handlePrepareRun', err);
+            run = sql;
+        }
+        this.post(session, {
+            command: 'runPrepared',
+            requestId: message.requestId,
+            sql: run ?? null,
+            cancelled: run === undefined
+        });
+    }
+
+    /**
+     * Apply to File: write the query of the query bar (formatted) over the
+     * statement of the SQL file the panel was opened on. Answered with
+     * `applyToFileDone`; the outcome is shown to the user.
+     */
+    private async handleApplyToFile(ctx: MessageContext): Promise<void> {
+        const { session, message } = ctx;
+        const target = session.applyTarget;
+        let outcome: { ok: boolean; message: string };
+        if (!target) {
+            outcome = { ok: false, message: 'This Data Viewer was not opened from a SQL file, so there is no statement to replace.' };
+        } else {
+            const formatted = formatQueryBarText(String(message.sql ?? ''), true).text;
+            outcome = await target.apply(formatted);
+        }
+        if (outcome.ok) {
+            vscode.window.showInformationMessage(outcome.message);
+        } else {
+            vscode.window.showErrorMessage(outcome.message);
+        }
+        this.post(session, { command: 'applyToFileDone', ok: outcome.ok, message: outcome.message });
+    }
 
     /**
      * Open an "Export" tab that holds only the export dialog of the Data
@@ -2048,6 +2145,8 @@ export class TableWebViewManager {
         );
         // The SQL editor module comes first: tableView.js attaches it to the query box.
         const script = `window.QUERY_EDITOR_ASSETS = ${JSON.stringify(assets)};\n${editorJs}\n${js}`;
+        // The Query Builder tab's component, in a script block of its own.
+        const joinBuilder = getJoinBuilderAssets();
 
         // The policy and nonce go in before the placeholders are filled, so a
         // "<script>" inside the injected code can never pick up the nonce.
@@ -2060,6 +2159,8 @@ export class TableWebViewManager {
         html = html.replace('/* SHARED_CSS_PLACEHOLDER */', () => getSharedStyles());
         html = html.replace('<!-- ICON_SPRITE_PLACEHOLDER -->', () => getIconSprite());
         html = html.replace('/* CSS_PLACEHOLDER */', () => css);
+        html = html.replace('/* JOIN_BUILDER_CSS_PLACEHOLDER */', () => joinBuilder.css);
+        html = html.replace('/* JOIN_BUILDER_JS_PLACEHOLDER */', () => joinBuilder.script);
         html = html.replace('/* JS_PLACEHOLDER */', () => script);
 
         return html;

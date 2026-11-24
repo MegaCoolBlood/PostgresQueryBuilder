@@ -5,17 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Table View</title>
     <style>/* SHARED_CSS_PLACEHOLDER */
-/* CSS_PLACEHOLDER */</style>
+/* CSS_PLACEHOLDER */
+/* JOIN_BUILDER_CSS_PLACEHOLDER */</style>
 </head>
 <body>
 <!-- ICON_SPRITE_PLACEHOLDER -->
     <div class="container">
+        <div class="view-tabs" id="viewTabs">
+            <div class="view-tablist" role="tablist" aria-label="View of the query">
+                <button type="button" class="btn btn-ghost view-tab" role="tab" id="tabData" data-view-tab="data" aria-selected="true" aria-controls="dataPanel" tabindex="0" title="The rows the query returned"><svg class="ico" aria-hidden="true"><use href="#icon-table"/></svg>Data</button>
+                <button type="button" class="btn btn-ghost view-tab" role="tab" id="tabBuilder" data-view-tab="builder" aria-selected="false" aria-controls="builderArea" tabindex="-1" title="Edit the query's tables, joins, columns, filters and sort order; the query runs when you press Run"><svg class="ico" aria-hidden="true"><use href="#icon-diagram"/></svg>Query Builder</button>
+            </div>
+            <button type="button" class="btn btn-sm apply-to-file hidden" id="applyToFileBtn" title="Replace the statement in the SQL file with the query of the query bar"><svg class="ico" aria-hidden="true"><use href="#icon-save"/></svg>Apply to File</button>
+        </div>
         <div class="toolbar">
             <div class="toolbar-left">
                 <span class="table-name" id="tableName"></span>
                 <span class="connection-info" id="connectionInfo" title="Connection used for the currently displayed data"></span>
                 <span class="session-info hidden" id="sessionInfo" role="button" tabindex="0"></span>
                 <span class="row-count" id="rowCount"></span>
+                <span class="stale-hint hidden" id="staleHint" role="status" aria-live="polite" title="The query in the query bar differs from the one that produced the rows shown"><svg class="ico" aria-hidden="true"><use href="#icon-warning"/></svg>The data shows the previous query — press Run to refresh</span>
                 <span class="loading-indicator" id="dataLoading"><span class="spinner"></span> <span id="dataLoadingText">Loading data...</span></span>
                 <span class="loading-indicator hidden" id="metaLoading"><span class="spinner"></span> Loading relations...</span>
                 <span class="export-progress hidden" id="exportProgress" role="status" aria-live="polite">
@@ -68,9 +77,12 @@
             <button class="btn btn-icon" id="queryParamsBtn" title="Change the placeholder values of this bookmarked query" style="display:none;"><svg class="ico" aria-hidden="true"><use href="#icon-params"/></svg></button>
             <button class="btn btn-icon" id="querySaveBtn" title="Bookmark this query for reuse"><svg class="ico" aria-hidden="true"><use href="#icon-star"/></svg></button>
             <button class="btn btn-icon" id="queryFormatBtn" title="Format SQL"><svg class="ico" aria-hidden="true"><use href="#icon-format"/></svg></button>
-            <button class="btn btn-icon" id="queryBuilderBtn" title="Edit in Query Builder: tables, joins and columns as a diagram; Apply writes the query back here and runs it"><svg class="ico" aria-hidden="true"><use href="#icon-diagram"/></svg></button>
             <button class="btn btn-primary" id="queryRunBtn" title="Run query (Ctrl+Enter)"><svg class="ico" aria-hidden="true"><use href="#icon-run"/></svg>Run</button>
             <div class="query-bar-resize" id="queryBarResize" role="separator" aria-orientation="horizontal" aria-label="Height of the query box" tabindex="0" title="Drag to change the height of the query box. Double-click to let it follow the query again."></div>
+        </div>
+        <div class="builder-area hidden" id="builderArea" role="tabpanel" aria-labelledby="tabBuilder">
+            <div class="builder-message hidden" id="builderMessage" role="status"></div>
+            <div class="builder-host" id="builderHost"></div>
         </div>
         <div class="table-area">
             <div class="table-wrapper" id="tableWrapper">
@@ -79,6 +91,7 @@
                     <tbody id="tableBody"></tbody>
                 </table>
             </div>
+            <div class="grid-empty-state hidden" id="gridEmptyState" role="status">Press Run to see the data</div>
             <div class="data-loading-overlay" id="dataLoadingOverlay" role="status" aria-label="Loading data">
                 <span class="spinner spinner-lg"></span>
             </div>
@@ -430,6 +443,7 @@
             </div>
         </div>
     </div>
+    <script>/* JOIN_BUILDER_JS_PLACEHOLDER */</script>
     <script>/* JS_PLACEHOLDER */</script>
 </body>
 </html>
