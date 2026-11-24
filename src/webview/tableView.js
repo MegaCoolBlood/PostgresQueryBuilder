@@ -2281,6 +2281,33 @@ function reorderSelectColumns(sql, fromIndex, toIndex) {
     return clauses.map(c => (c.content ? `${c.kw} ${c.content}` : c.kw)).join(' ').trim();
 }
 
+// The select items a `*` (qualified with `qualifier`, or not) at position `at`
+// of a select list of `listLength` items stands for, given the result columns
+// `cols` ({ name, qualifier?, sourceColumn? }): { items: [{ ref, alias, name,
+// text }] }, or { error } when that cannot be told.
+function spellOutWildcard(cols, at, listLength, qualifier, formatIdent) {
+    const count = cols.length - (listLength - 1);
+    if (count < 1) {
+        return { error: 'The * of the query cannot be spelled out into its columns. Run the query first if you have changed it.' };
+    }
+    const covered = cols.slice(at, at + count);
+    const items = [];
+    for (const c of covered) {
+        let ref;
+        if (c.qualifier && c.sourceColumn) {
+            ref = formatIdent(c.qualifier) + '.' + formatIdent(c.sourceColumn);
+        } else if (covered.filter(o => o.name === c.name).length > 1) {
+            return { error: `The result has several columns named "${c.name}", so the * cannot be spelled out.` };
+        } else {
+            ref = (qualifier ? qualifier + '.' : '') + formatIdent(c.name);
+        }
+        const renamed = c.sourceColumn && c.sourceColumn !== c.name;
+        const alias = renamed ? formatIdent(c.name) : null;
+        items.push({ ref, alias, name: c.name, text: alias ? `${ref} AS ${alias}` : ref });
+    }
+    return { items };
+}
+
 // --- Executable columns ------------------------------------------------------
 // NOTE: Copy of EXECUTABLE_COLUMN_TYPES in src/executableColumns.ts, which this
 // script cannot import; src/test/executableColumns.test.ts keeps them in sync.
@@ -2836,6 +2863,393 @@ function renameSelectColumn(sql, target, newName, formatIdent, isReservedWord) {
         ? { start: item.alias.start, end: item.alias.end, text: newText }
         : { start: item.exprEnd, end: item.exprEnd, text: ' AS ' + newText };
     return { sql: applyTextEdits(source, [edit].concat(orderBy)) };
+}
+
+// --- Grouping from the column header ------------------------------------------
+// The column header menu groups the result by a column or aggregates one by
+// rewriting the SELECT of the query bar. Rules:
+// - Group by a column: the select list keeps that column, the columns already
+//   grouped, constants and the aggregates; every other column is dropped, and
+//   `count(*) AS count` is added when no aggregate is left.
+// - Aggregate a column: it becomes `fn(expr) AS name` under its result name,
+//   and every other non-aggregated column goes into GROUP BY by its expression.
+// - Remove grouping: drops GROUP BY and HAVING and unwraps every
+//   `count|sum|avg|min|max(expr) AS name` back to the column; an added
+//   `count(*) AS …` goes away. Other aggregates stay as written.
+// A `*` is first spelled out into the columns of the result.
+
+const GROUPING_AGGREGATES = ['count', 'sum', 'avg', 'min', 'max'];
+
+// Base types `sum` and `avg` work on (besides `interval`).
+const GROUPING_NUMERIC_TYPES = new Set([
+    'smallint', 'int2', 'integer', 'int', 'int4', 'bigint', 'int8', 'numeric', 'decimal',
+    'real', 'float4', 'double precision', 'float8'
+]);
+// Base types with an ordering, so `min` and `max` work on them.
+const GROUPING_ORDERABLE_TYPES = new Set([
+    'money', 'text', 'varchar', 'character varying', 'character', 'char', 'bpchar', 'name', 'citext',
+    'date', 'time', 'timetz', 'timestamp', 'timestamptz', 'inet', 'cidr', 'oid'
+]);
+
+// The aggregate functions the column header offers for a column of type
+// `dataType` (a `format_type` name such as 'numeric(10,2)' or a pg_type name
+// such as 'int4' / '_text'), out of count, sum, avg, min and max.
+function aggregatesFor(dataType) {
+    const parsed = parsePgType(dataType);
+    let base = parsed.base.replace(/\s*\(\s*\d+(?:\s*,\s*\d+)?\s*\)/g, '').trim();
+    let isArray = parsed.isArray;
+    // The pg_type name of an array type starts with an underscore.
+    if (base.startsWith('_')) { isArray = true; base = base.slice(1); }
+    if (!base) return ['count'];
+    const numeric = GROUPING_NUMERIC_TYPES.has(base) || base.startsWith('interval');
+    const orderable = numeric || GROUPING_ORDERABLE_TYPES.has(base)
+        || base.startsWith('timestamp') || base.startsWith('time ');
+    if (isArray) return orderable ? ['count', 'min', 'max'] : ['count'];
+    if (numeric) return GROUPING_AGGREGATES.slice();
+    if (base === 'money') return ['count', 'sum', 'min', 'max'];
+    return orderable ? ['count', 'min', 'max'] : ['count'];
+}
+
+// Quotes a name for the grouping rewrites when the caller gives no formatter.
+function defaultGroupingIdent(name) {
+    const s = String(name);
+    return /^[a-z_][a-z0-9_$]*$/.test(s) && !SELECT_ITEM_NON_ALIAS_WORDS.has(s) && !SELECT_LIST_END_KEYWORDS.has(s)
+        ? s
+        : '"' + s.replace(/"/g, '""') + '"';
+}
+
+// An expression in a form that compares equal however it is spaced or cased:
+// whitespace collapsed and dropped around . ( ) , outside literals, words in
+// lower case, needless quotes around a lower-case name removed.
+function normalizeGroupingExpr(text) {
+    const s = collapseSqlWhitespace(String(text == null ? '' : text));
+    let out = '';
+    let i = 0;
+    while (i < s.length) {
+        const ch = s[i];
+        if (ch === "'" || ch === '"') {
+            let j = i + 1;
+            while (j < s.length) {
+                if (s[j] === ch) { if (s[j + 1] === ch) { j += 2; continue; } break; }
+                j++;
+            }
+            const quoted = s.slice(i, j + 1);
+            const inner = quoted.slice(1, -1);
+            out += ch === '"' && /^[a-z_][a-z0-9_$]*$/.test(inner) ? inner : quoted;
+            i = j + 1;
+            continue;
+        }
+        if (ch === ' ' && (/[.(),]/.test(out[out.length - 1] || '') || /[.(),]/.test(s[i + 1] || ''))) { i++; continue; }
+        out += ch.toLowerCase();
+        i++;
+    }
+    return out;
+}
+
+// A select-list expression (masked SQL) that is a constant — a literal, NULL,
+// TRUE/FALSE, possibly cast — which needs no GROUP BY.
+function isConstantSelectExpression(masked) {
+    const t = String(masked).trim()
+        .replace(/(?:\s*::\s*[A-Za-z_][A-Za-z0-9_$ ]*(?:\(\s*\d+(?:\s*,\s*\d+)?\s*\))?(?:\s*\[\s*\])*)+$/, '')
+        .trim();
+    return /^(?:0+|[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?|null|true|false)$/i.test(t);
+}
+
+// `count|sum|avg|min|max(<one argument>)` as { fn, inner }, the shape the
+// aggregate rewrite produces; null for anything else (`count(*)`, DISTINCT,
+// several arguments, an ORDER BY or FILTER, other functions).
+function groupingWrapper(expr) {
+    const m = /^(count|sum|avg|min|max)\s*\(/i.exec(expr);
+    if (!m) return null;
+    const masked = maskSqlStructure(expr);
+    let depth = 0;
+    for (let i = m[0].length - 1; i < masked.length; i++) {
+        if (masked[i] === '(') depth++;
+        else if (masked[i] === ')') {
+            depth--;
+            if (depth === 0) { if (i !== masked.length - 1) return null; break; }
+        }
+    }
+    if (depth !== 0) return null;
+    const innerMasked = masked.slice(m[0].length, masked.length - 1);
+    const inner = expr.slice(m[0].length, expr.length - 1).trim();
+    if (!inner || inner === '*' || /^(?:distinct|all)\b/i.test(innerMasked.trim())) return null;
+    let d = 0;
+    for (const ch of innerMasked) {
+        if (ch === '(' || ch === '[') d++;
+        else if (ch === ')' || ch === ']') d--;
+        else if (ch === ',' && d === 0) return null;
+    }
+    if (sqlStructureTokens(innerMasked).some(t => t.depth === 0 && t.lower === 'order')) return null;
+    return { fn: m[1].toLowerCase(), inner };
+}
+
+// A select item for `expr` that keeps the result name `name`: the alias is
+// left out when the expression is named so anyway.
+function groupingPlainItem(expr, aliasText, name) {
+    if (!aliasText) return expr;
+    return implicitSelectItemName(expr, maskSqlStructure(expr), 0, expr.length) === name ? expr : `${expr} AS ${aliasText}`;
+}
+
+// The parts of a SELECT the grouping rewrites work on, or { error } when the
+// query is none they can rewrite safely. With `expand`, a `*` is spelled out
+// into `columns` (names, or { name, qualifier, sourceColumn }).
+function analyzeGroupingQuery(sql, columns, options, expand) {
+    const opts = options || {};
+    const formatIdent = typeof opts.formatIdent === 'function' ? opts.formatIdent : defaultGroupingIdent;
+    const reserved = typeof opts.isReservedWord === 'function'
+        ? opts.isReservedWord
+        : (word => SELECT_ITEM_NON_ALIAS_WORDS.has(String(word).toLowerCase()));
+    const src = String(sql == null ? '' : sql).trim().replace(/;\s*$/, '').trim();
+    const masked = maskSqlStructure(src);
+    const range = findSelectListRange(masked);
+    if (!range) return { error: 'Only a SELECT can be grouped, and the query bar holds none.' };
+    const tokens = range.tokens;
+    let selectAt = -1;
+    for (let k = 0; k < tokens.length && tokens[k].start < range.start; k++) {
+        if (tokens[k].depth === 0 && tokens[k].lower === 'select') selectAt = k;
+    }
+    for (let k = selectAt + 1; k < tokens.length && tokens[k].start < range.start; k++) {
+        if (tokens[k].lower === 'on') return { error: 'A SELECT DISTINCT ON cannot be grouped here.' };
+    }
+    let trailerStart = -1;
+    for (let k = range.endToken; k < tokens.length; k++) {
+        const t = tokens[k];
+        if (t.depth !== 0) continue;
+        if (t.text === ';') return { error: 'The query bar holds more than one statement.' };
+        if (t.lower === 'into') return { error: 'A SELECT … INTO cannot be grouped here.' };
+        if (t.lower === 'union' || t.lower === 'intersect' || t.lower === 'except') {
+            return { error: 'A query combined with UNION, INTERSECT or EXCEPT cannot be grouped here.' };
+        }
+        if (t.lower === 'for') return { error: 'A query with FOR UPDATE or FOR SHARE cannot be grouped.' };
+        if (trailerStart === -1 && ((t.lower === 'order' && tokens[k + 1] && tokens[k + 1].lower === 'by')
+            || t.lower === 'limit' || t.lower === 'offset' || t.lower === 'fetch')) {
+            trailerStart = t.start;
+        }
+    }
+    const items = splitSelectItems(masked, range);
+    if (!items) return { error: 'The select list of the query has an empty entry.' };
+
+    const list = [];
+    for (const item of items) {
+        const info = analyzeSelectItem(src, masked, item, reserved);
+        const text = src.slice(item.start, item.end);
+        if (info.wildcard) { list.push({ wildcard: true, qualifier: info.qualifier, text }); continue; }
+        const exprMasked = masked.slice(item.start, info.exprEnd).trim();
+        const kind = classifySelectExpression(exprMasked);
+        if (kind.window || kind.setReturning) {
+            return { error: 'The select list has a window function or a set-returning function, so the query cannot be grouped here.' };
+        }
+        const expr = src.slice(item.start, info.exprEnd).trim();
+        list.push({
+            wildcard: false,
+            expr,
+            alias: info.alias ? src.slice(info.alias.start, info.alias.end) : null,
+            name: info.name,
+            aggregate: kind.aggregate,
+            constant: isConstantSelectExpression(exprMasked),
+            wrapper: info.alias ? groupingWrapper(expr) : null,
+            text
+        });
+    }
+
+    const cols = (Array.isArray(columns) ? columns : [])
+        .map(c => (c && typeof c === 'object' ? c : { name: String(c) }));
+    let expanded = list;
+    const wildcards = list.filter(it => it.wildcard).length;
+    if (expand && wildcards > 1) {
+        return { error: 'The select list has more than one *, which cannot be spelled out into its columns.' };
+    }
+    if (expand && wildcards === 1) {
+        const at = list.findIndex(it => it.wildcard);
+        const spelledOut = spellOutWildcard(cols, at, list.length, list[at].qualifier, formatIdent);
+        if (spelledOut.error) return { error: spelledOut.error };
+        const spelled = spelledOut.items.map(it => ({
+            wildcard: false, expr: it.ref, alias: it.alias, name: it.name,
+            aggregate: false, constant: false, wrapper: null, text: it.text
+        }));
+        expanded = list.slice(0, at).concat(spelled, list.slice(at + 1));
+    }
+    if (expanded.length === cols.length) {
+        expanded.forEach((it, i) => { if (!it.wildcard && it.name === null) it.name = cols[i].name; });
+    }
+
+    const body = (trailerStart === -1 ? src : src.slice(0, trailerStart)).replace(/\s+$/, '');
+    const trailer = trailerStart === -1 ? '' : src.slice(trailerStart).trim();
+    const parsed = parseSqlForWhere(body);
+    if (parsed.base.length < range.end && masked.slice(parsed.base.length, range.end).trim() !== '') {
+        return { error: 'The select list of the query could not be told apart from its clauses.' };
+    }
+    let groups = [];
+    if (parsed.groupBy) {
+        groups = splitTopLevelCommas(parsed.groupBy.replace(/^GROUP\s+BY\s+/i, '')).map(g => g.trim()).filter(Boolean);
+    }
+    // A position in GROUP BY names the select item there, which the rewrite may move.
+    groups = groups.map(g => {
+        const it = /^\d+$/.test(g) ? expanded[Number(g) - 1] : null;
+        return it && !it.wildcard ? it.expr : g;
+    });
+    return {
+        prefix: parsed.base.slice(0, range.start),
+        rest: parsed.base.slice(range.end).replace(/^\s+/, ''),
+        where: parsed.where || '',
+        groups,
+        having: parsed.having || '',
+        window: parsed.window || '',
+        trailer,
+        items: expanded,
+        cols,
+        formatIdent
+    };
+}
+
+// Whether a GROUP BY entry already covers the select item: the same
+// expression, or the item's alias.
+function isGroupedItem(item, groups) {
+    const expr = normalizeGroupingExpr(item.expr);
+    return groups.some(g => normalizeGroupingExpr(g) === expr
+        || (!!item.alias && /^(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)$/.test(g) && sqlIdentifierName(g) === item.name));
+}
+
+function assembleGroupingQuery(model, items, groups, having) {
+    const list = items.map(it => it.text).join(', ');
+    const base = model.prefix + ' ' + list + (model.rest ? ' ' + model.rest : '');
+    let sql = assembleWhereQuery(
+        { base, groupBy: groups.length > 0 ? 'GROUP BY ' + groups.join(', ') : '', having, window: model.window, orderBy: '' },
+        model.where ? [model.where] : []
+    );
+    if (model.trailer) sql = appendSql(sql, ' ', model.trailer);
+    return sql;
+}
+
+// Index of the select item behind the result column `columnName`, or { error }.
+function findGroupingTarget(model, columnName) {
+    const names = model.cols.map(c => c.name);
+    const same = names.filter(n => n === columnName).length;
+    if (same > 1) {
+        return { error: `The result has ${same} columns named "${columnName}", so the one meant is not clear. Give them different aliases first.` };
+    }
+    const at = names.indexOf(columnName);
+    if (at >= 0 && model.items.length === names.length) {
+        const candidate = model.items[at];
+        if (!candidate.wildcard && (candidate.name === null || candidate.name === columnName)) return { index: at };
+    }
+    const named = [];
+    model.items.forEach((it, i) => { if (!it.wildcard && it.name === columnName) named.push(i); });
+    if (named.length === 1) return { index: named[0] };
+    return { error: `"${columnName}" was not found in the select list of the query. Run the query first if you have changed it.` };
+}
+
+// A name for an added column that no item of `items` has yet.
+function uniqueGroupingName(base, items) {
+    const taken = new Set(items.map(it => it.name).filter(n => n));
+    let name = base;
+    for (let n = 2; taken.has(name); n++) name = `${base}_${n}`;
+    return name;
+}
+
+// Rewrites `sql` for `request` — { action: 'group', column }, { action:
+// 'aggregate', column, fn } or { action: 'ungroup' } — following the rules
+// above. `columns` are the result columns (names, or { name, qualifier,
+// sourceColumn }); `options.formatIdent` quotes a name, `options.isReservedWord`
+// knows the reserved keywords. Returns { sql } or { error } saying why not.
+function groupingRewrite(sql, request, columns, options) {
+    const action = request && request.action;
+    if (action !== 'group' && action !== 'aggregate' && action !== 'ungroup') return { error: 'Unknown grouping action.' };
+    const model = analyzeGroupingQuery(sql, columns, options, action !== 'ungroup');
+    if (model.error) return model;
+    const formatIdent = model.formatIdent;
+
+    if (action === 'ungroup') {
+        let changed = model.groups.length > 0 || model.having !== '';
+        let items = [];
+        const counts = [];
+        for (const it of model.items) {
+            if (it.wrapper) {
+                items.push(Object.assign({}, it, { text: groupingPlainItem(it.wrapper.inner, it.alias, it.name) }));
+                changed = true;
+            } else if (!it.wildcard && it.alias && /^count\s*\(\s*\*\s*\)$/i.test(it.expr)) {
+                counts.push(it);
+            } else {
+                items.push(it);
+            }
+        }
+        if (items.length === 0) items = counts;
+        else if (counts.length > 0) changed = true;
+        if (!changed) return { error: 'The query has no grouping to remove.' };
+        return { sql: assembleGroupingQuery(model, items, [], '') };
+    }
+
+    const columnName = String(request.column);
+    const found = findGroupingTarget(model, columnName);
+    if (found.error) return found;
+    const target = model.items[found.index];
+
+    if (action === 'group') {
+        let grouped = target;
+        if (target.wrapper) {
+            grouped = Object.assign({}, target, {
+                expr: target.wrapper.inner,
+                text: groupingPlainItem(target.wrapper.inner, target.alias, target.name),
+                aggregate: false,
+                wrapper: null
+            });
+        } else if (target.aggregate) {
+            return { error: `"${columnName}" is computed by an aggregate, so the rows cannot be grouped by it.` };
+        } else if (target.constant) {
+            return { error: `"${columnName}" is a constant, so grouping by it changes nothing.` };
+        }
+        const groups = model.groups.slice();
+        const kept = [];
+        model.items.forEach((it, i) => {
+            if (i === found.index) kept.push(grouped);
+            else if (it.aggregate || it.constant || isGroupedItem(it, groups)) kept.push(it);
+        });
+        if (!kept.some(it => it.aggregate)) {
+            const name = uniqueGroupingName('count', kept);
+            kept.push({ wildcard: false, expr: 'count(*)', alias: formatIdent(name), name, aggregate: true, constant: false, wrapper: null, text: `count(*) AS ${formatIdent(name)}` });
+        }
+        if (!isGroupedItem(grouped, groups)) groups.push(grouped.expr);
+        return { sql: assembleGroupingQuery(model, kept, groups, model.having) };
+    }
+
+    const fn = String(request.fn || '').toLowerCase();
+    if (GROUPING_AGGREGATES.indexOf(fn) === -1) return { error: `"${request.fn}" is not an aggregate the column header offers.` };
+    let inner;
+    if (target.wrapper) inner = target.wrapper.inner;
+    else if (target.aggregate) return { error: `"${columnName}" is already computed by an aggregate.` };
+    else if (target.constant) return { error: `"${columnName}" is a constant, so aggregating it is pointless.` };
+    else inner = target.expr;
+    const aliasText = target.alias || formatIdent(columnName);
+    const wrapped = {
+        wildcard: false, expr: `${fn}(${inner})`, alias: aliasText, name: target.name || columnName,
+        aggregate: true, constant: false, wrapper: { fn, inner }, text: `${fn}(${inner}) AS ${aliasText}`
+    };
+    // GROUP BY must not name what is aggregated now.
+    const groups = model.groups.filter(g => !isGroupedItem({ expr: inner, alias: aliasText, name: wrapped.name }, [g]));
+    const items = model.items.map((it, i) => (i === found.index ? wrapped : it));
+    items.forEach((it, i) => {
+        if (i !== found.index && !it.aggregate && !it.constant && !isGroupedItem(it, groups)) groups.push(it.expr);
+    });
+    return { sql: assembleGroupingQuery(model, items, groups, model.having) };
+}
+
+// `sql` grouped by the result column `columnName`, or null when the query
+// cannot be rewritten for it.
+function groupByColumn(sql, columnName, columns, options) {
+    return groupingRewrite(sql, { action: 'group', column: columnName }, columns, options).sql || null;
+}
+
+// `sql` with the result column `columnName` aggregated by `fn` (count, sum,
+// avg, min or max) and the other columns grouped, or null.
+function aggregateColumn(sql, columnName, fn, columns, options) {
+    return groupingRewrite(sql, { action: 'aggregate', column: columnName, fn }, columns, options).sql || null;
+}
+
+// `sql` without GROUP BY / HAVING and with the aggregates the column header
+// added unwrapped, or null when there is nothing to remove.
+function removeGrouping(sql, options) {
+    return groupingRewrite(sql, { action: 'ungroup' }, [], options).sql || null;
 }
 
 // --- Virtual scrolling ---------------------------------------------------------
@@ -7438,8 +7852,81 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         items.push({ separator: true });
         items.push({ label: 'Make Column Executable...', action: () => chooseExecutableType(colName) });
 
+        addHeaderGroupingItems(e, items, colName);
+
         addHeaderRelationItems(items, colName);
 
+        showContextMenu(e, items);
+    }
+
+    const GROUP_BY_HINT = 'Groups the rows by this column. The select list keeps this column, the columns already '
+        + 'grouped and the aggregates; other columns are removed, and count(*) is added when there is no aggregate yet. '
+        + 'The query goes to the query bar: press Run to see the result.';
+    const AGGREGATE_HINT = 'Computes count, sum, average, minimum or maximum of this column under the same name and '
+        + 'groups the rows by every other column of the select list. The query goes to the query bar: press Run to see the result.';
+    const REMOVE_GROUPING_HINT = 'Removes GROUP BY and HAVING and turns count/sum/avg/min/max(column) AS name back into '
+        + 'the column. The query goes to the query bar: press Run to see the result.';
+    const AGGREGATE_LABELS = { count: 'Count of', sum: 'Sum of', avg: 'Average of', min: 'Minimum of', max: 'Maximum of' };
+
+    // The result columns as the grouping rewrites need them to spell out a `*`.
+    function groupingColumns() {
+        return columns.map(c => {
+            const source = (caps.columnSources || {})[c.name] || {};
+            return { name: c.name, qualifier: source.qualifier, sourceColumn: source.sourceColumn };
+        });
+    }
+
+    function groupingOptions() {
+        return { formatIdent: formatIdentifier, isReservedWord: word => POSTGRES_RESERVED_KEYWORDS.has(word) };
+    }
+
+    // Group by / aggregate the column, or remove the grouping: the rewritten
+    // query goes into the query bar, formatted, and runs when Run is pressed.
+    // An entry the query cannot be rewritten for is disabled and says why.
+    function addHeaderGroupingItems(e, items, colName) {
+        const sql = (queryInput.value || '').trim() || getDefaultQuery();
+        const cols = groupingColumns();
+        const options = groupingOptions();
+        const group = groupingRewrite(sql, { action: 'group', column: colName }, cols, options);
+        const probe = groupingRewrite(sql, { action: 'aggregate', column: colName, fn: 'count' }, cols, options);
+        const ungroup = groupingRewrite(sql, { action: 'ungroup' }, cols, options);
+        items.push({ separator: true });
+        items.push({
+            label: `Group by ${colName}`,
+            title: group.error || GROUP_BY_HINT,
+            disabled: !!group.error,
+            action: () => setQueryText(group.sql, { highlight: true })
+        });
+        items.push({
+            label: `Aggregate ${colName}`,
+            title: probe.error || AGGREGATE_HINT,
+            disabled: !!probe.error,
+            action: () => showAggregateMenu(e, colName, sql, cols, options)
+        });
+        if (ungroup.sql) {
+            items.push({ label: 'Remove grouping', title: REMOVE_GROUPING_HINT, action: () => setQueryText(ungroup.sql, { highlight: true }) });
+        }
+    }
+
+    // The aggregates of a column; sum and average only for numbers, minimum and
+    // maximum only for values that can be ordered.
+    function showAggregateMenu(e, colName, sql, cols, options) {
+        const colMeta = columns.find(c => c.name === colName);
+        const allowed = aggregatesFor(colMeta ? (colMeta.fullType || colMeta.dataType) : '');
+        const items = GROUPING_AGGREGATES.map(fn => {
+            const label = `${AGGREGATE_LABELS[fn]} ${colName}`;
+            if (allowed.indexOf(fn) === -1) {
+                const why = fn === 'sum' || fn === 'avg' ? 'a numeric column' : 'a column whose values can be ordered';
+                return { label, disabled: true, title: `${AGGREGATE_LABELS[fn].replace(/ of$/, '')} needs ${why}.` };
+            }
+            const result = groupingRewrite(sql, { action: 'aggregate', column: colName, fn }, cols, options);
+            return {
+                label,
+                disabled: !!result.error,
+                title: result.error || `${fn}() of this column under the same name, grouped by every other column. Press Run to see the result.`,
+                action: () => setQueryText(result.sql, { highlight: true })
+            };
+        });
         showContextMenu(e, items);
     }
 
@@ -7561,7 +8048,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (item.separator) {
                 html += '<li class="separator"></li>';
             } else {
-                html += `<li data-action-idx="${i}">${escapeHtml(item.label)}</li>`;
+                // A disabled entry stays visible and says in its tooltip why it cannot be used.
+                const state = item.disabled ? ' class="disabled" aria-disabled="true"' : '';
+                const title = item.title ? ` title="${escapeAttr(item.title)}"` : '';
+                html += `<li data-action-idx="${i}"${state}${title}>${escapeHtml(item.label)}</li>`;
             }
         });
         contextMenuItems.innerHTML = html;
@@ -7607,6 +8097,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             li.addEventListener('click', (ev) => {
                 ev.stopPropagation();
                 const idx = parseInt(li.getAttribute('data-action-idx'));
+                if (items[idx] && items[idx].disabled) return;
                 hideContextMenu();
                 if (items[idx] && items[idx].action) {
                     items[idx].action();
@@ -11390,6 +11881,11 @@ if (typeof module !== 'undefined' && module.exports) {
         columnFilterTarget,
         mergeColumnConditions,
         splitGroupTail,
+        aggregatesFor,
+        groupingRewrite,
+        groupByColumn,
+        aggregateColumn,
+        removeGrouping,
         refreshIdentityColumns,
         rowIdentityKey,
         remapRowIndex,

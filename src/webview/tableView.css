@@ -1104,6 +1104,16 @@ td.cell-multiline.has-fk-btn > .lines-btn {
     background: none;
 }
 
+.context-menu li.disabled {
+    color: var(--c-muted);
+    cursor: default;
+}
+
+.context-menu li.disabled:hover {
+    background: none;
+    color: var(--c-muted);
+}
+
 /* SQL Preview Dialog */
 .sql-dialog-overlay {
     position: fixed;

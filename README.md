@@ -540,6 +540,15 @@ joined or completed after `FROM` / `JOIN`. It is the *Query Builder* tab of the
 Data Viewer, and the dialog that opens when several tables are dragged into a
 SQL file; both write the statement through the formatter, with your settings.
 
+### Grouping
+
+The context menu of a column header groups the result: **Group by** keeps the
+column, the columns already grouped and the aggregates, and adds `count(*)` if
+there is no aggregate yet; **Aggregate** turns the column into its *Count*,
+*Sum*, *Average*, *Minimum* or *Maximum* — as far as its type allows — and
+groups by every other column; **Remove grouping** takes it back. The query bar
+gets the formatted query, which runs when you press Run.
+
 ### Export
 
 **Export** writes the complete result of the current query — filters included —
