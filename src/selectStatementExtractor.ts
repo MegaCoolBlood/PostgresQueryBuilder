@@ -786,90 +786,137 @@ export function selectStatementRange(
     return end > start ? { start, end } : null;
 }
 
-/** Keywords that end a `FROM`/`JOIN` table reference (alias or list). */
+/**
+ * Words that cannot be a table alias: they end a `FROM`/`JOIN` table
+ * reference (or continue the surrounding statement) instead.
+ */
 const TABLE_REF_STOP = new Set([
     'where', 'group', 'having', 'window', 'order', 'limit', 'offset', 'fetch',
     'for', 'union', 'intersect', 'except', 'on', 'using', 'join', 'inner',
-    'left', 'right', 'full', 'cross', 'natural', 'lateral', 'returning',
-    'set', 'as', 'and', 'or'
+    'left', 'right', 'full', 'outer', 'cross', 'natural', 'lateral', 'returning',
+    'set', 'as', 'and', 'or', 'not', 'is', 'in', 'between', 'like', 'ilike',
+    'into', 'loop', 'then', 'else', 'end', 'when', 'with', 'tablesample',
+    'select', 'values', 'from', 'only', 'do'
 ]);
+
+/**
+ * Walk every table reference introduced by a `FROM` or `JOIN` keyword (at any
+ * nesting depth) and report it through `onRef`.
+ *
+ * `table` is the lower-cased base-table name (schema qualifier dropped), or
+ * `null` for a reference that is not a table — a derived table
+ * (`(SELECT …) x`), a set-returning function (`generate_series(1, 3) g`,
+ * `unnest(a) WITH ORDINALITY AS u(v, i)`) or `ROWS FROM (…)`. `alias` is the
+ * lower-cased alias, or `null` when there is none. Leading `LATERAL` / `ONLY`,
+ * column alias lists and `TABLESAMPLE` clauses are skipped so the following
+ * references still parse.
+ */
+function walkTableRefs(
+    tokens: Token[],
+    onRef: (table: string | null, alias: string | null, tableText: string | null) => void
+): void {
+    const n = tokens.length;
+    const isWord = (k: number, w?: string): boolean =>
+        k >= 0 && k < n && tokens[k].type === 'word' && (w === undefined || tokens[k].text.toLowerCase() === w);
+    const isPunct = (k: number, p: string): boolean =>
+        k >= 0 && k < n && tokens[k].type === 'punct' && tokens[k].text === p;
+    // `k` sits on `(`; return the index just after its matching `)`.
+    const skipParens = (k: number): number => {
+        const depth = tokens[k].depth;
+        k++;
+        while (k < n && !(isPunct(k, ')') && tokens[k].depth === depth)) k++;
+        return k < n ? k + 1 : k;
+    };
+    // `TABLESAMPLE method (args) [REPEATABLE (seed)]`.
+    const skipTableSample = (k: number): number => {
+        if (!isWord(k, 'tablesample')) return k;
+        k++;
+        if (isWord(k)) k++;
+        if (isPunct(k, '(')) k = skipParens(k);
+        if (isWord(k, 'repeatable') && isPunct(k + 1, '(')) k = skipParens(k + 1);
+        return k;
+    };
+
+    // Consume one table reference plus its optional alias; return the index after it.
+    const consumeRef = (start: number): number => {
+        let k = start;
+        while (isWord(k, 'lateral') || isWord(k, 'only')) k++;
+        let table: string | null = null;
+        let tableText: string | null = null;
+        if (isPunct(k, '(')) {
+            k = skipParens(k);
+        } else if (isWord(k, 'rows') && isWord(k + 1, 'from') && isPunct(k + 2, '(')) {
+            k = skipParens(k + 2);
+        } else if (isWord(k)) {
+            // Dotted chain: keep the last identifier as the table name.
+            let lastName = tokens[k].text;
+            k++;
+            while (isPunct(k, '.') && isWord(k + 1)) {
+                lastName = tokens[k + 1].text;
+                k += 2;
+            }
+            if (isPunct(k, '(')) {
+                // A function call in table position (`FROM fn(...)`) is not a table.
+                k = skipParens(k);
+            } else {
+                table = lastName.toLowerCase();
+                tableText = lastName;
+            }
+        } else {
+            return k;
+        }
+        if (isWord(k, 'with') && isWord(k + 1, 'ordinality')) k += 2;
+        k = skipTableSample(k);
+
+        let alias: string | null = null;
+        if (isWord(k, 'as')) {
+            k++;
+            if (isWord(k)) { alias = tokens[k].text.toLowerCase(); k++; }
+        } else if (isWord(k) && !TABLE_REF_STOP.has(tokens[k].text.toLowerCase())) {
+            alias = tokens[k].text.toLowerCase();
+            k++;
+        }
+        // Column alias list: `alias(c1, c2)`.
+        if (alias !== null && isPunct(k, '(')) k = skipParens(k);
+        k = skipTableSample(k);
+
+        onRef(table, alias, tableText);
+        return k;
+    };
+
+    for (let i = 0; i < n; i++) {
+        const t = tokens[i];
+        if (t.type !== 'word') continue;
+        const w = t.text.toLowerCase();
+        if (w !== 'from' && w !== 'join') continue;
+        // `ROWS FROM (...)` is a table reference itself, handled by consumeRef.
+        if (w === 'from' && isWord(i - 1, 'rows') && isPunct(i + 1, '(')) continue;
+
+        let j = consumeRef(i + 1);
+        // `FROM a, b, c` — keep reading comma-separated table references.
+        if (w === 'from') {
+            while (isPunct(j, ',')) j = consumeRef(j + 1);
+        }
+    }
+}
 
 /**
  * Return the distinct base-table names referenced after a `FROM` or `JOIN`
  * keyword (at any nesting depth, so tables inside subqueries are included).
  *
  * Schema-qualified names (`schema.table`) yield the table part. Derived tables
- * / subqueries (`FROM (SELECT ...) alias`) and aliases are skipped. The result
- * is used to look up real column names so that columns are not mistaken for
- * substitutable variables.
+ * / subqueries (`FROM (SELECT ...) alias`), table functions and aliases are
+ * skipped. The result is used to look up real column names so that columns
+ * are not mistaken for substitutable variables.
  */
 export function extractTableNames(sql: string): string[] {
-    const masked = maskSql(sql);
-    const tokens = tokenize(masked);
     const names: string[] = [];
     const seen = new Set<string>();
-    const add = (name: string) => {
-        const key = name.toLowerCase();
-        if (!seen.has(key)) { seen.add(key); names.push(name); }
-    };
-
-    // Consume a single table reference (plus optional alias) starting at `start`.
-    // Returns the index just after the reference and any alias.
-    const consumeRef = (start: number): number => {
-        let k = start;
-        if (k >= tokens.length) return k;
-        const tk = tokens[k];
-        if (tk.type === 'punct' && tk.text === '(') {
-            // Derived table / subquery: skip to the matching close paren.
-            const depth = tk.depth;
-            k++;
-            while (k < tokens.length &&
-                !(tokens[k].type === 'punct' && tokens[k].text === ')' && tokens[k].depth === depth)) {
-                k++;
-            }
-            if (k < tokens.length) k++;
-        } else if (tk.type === 'word') {
-            // Dotted chain: keep the last identifier as the table name.
-            let lastName = tk.text;
-            k++;
-            while (k + 1 < tokens.length &&
-                tokens[k].type === 'punct' && tokens[k].text === '.' &&
-                tokens[k + 1].type === 'word') {
-                lastName = tokens[k + 1].text;
-                k += 2;
-            }
-            // A function call in table position (`FROM fn(...)`) is not a table.
-            if (!(k < tokens.length && tokens[k].type === 'punct' && tokens[k].text === '(')) {
-                add(lastName);
-            }
-        } else {
-            return k;
-        }
-        // Optional alias: `AS name` or a bare identifier that is not a keyword.
-        if (k < tokens.length && tokens[k].type === 'word' && tokens[k].text.toLowerCase() === 'as') {
-            k++;
-            if (k < tokens.length && tokens[k].type === 'word') k++;
-        } else if (k < tokens.length && tokens[k].type === 'word' &&
-            !TABLE_REF_STOP.has(tokens[k].text.toLowerCase())) {
-            k++;
-        }
-        return k;
-    };
-
-    for (let i = 0; i < tokens.length; i++) {
-        const t = tokens[i];
-        if (t.type !== 'word') continue;
-        const w = t.text.toLowerCase();
-        if (w !== 'from' && w !== 'join') continue;
-
-        let j = consumeRef(i + 1);
-        // `FROM a, b, c` — keep reading comma-separated table references.
-        if (w === 'from') {
-            while (j < tokens.length && tokens[j].type === 'punct' && tokens[j].text === ',') {
-                j = consumeRef(j + 1);
-            }
-        }
-    }
+    walkTableRefs(tokenize(maskSql(sql)), (table, _alias, tableText) => {
+        if (table === null || tableText === null || seen.has(table)) return;
+        seen.add(table);
+        names.push(tableText);
+    });
     return names;
 }
 
@@ -890,70 +937,17 @@ export function extractTableQualifiers(sql: string): Set<string> {
  * clause (at any nesting depth) to the lower-cased table it stands for, so a
  * qualified column `alias.column` can be resolved to its table. Schema
  * qualifiers are dropped. When an alias is reused, the first table wins.
+ * Aliases of derived tables and table functions map to `''`.
  */
 export function extractTableAliasMap(sql: string): Map<string, string> {
-    const masked = maskSql(sql);
-    const tokens = tokenize(masked);
     const qualifiers = new Map<string, string>();
     const record = (name: string, table: string) => {
         if (!qualifiers.has(name)) qualifiers.set(name, table);
     };
-
-    // Consume one table reference; record its table name and optional alias.
-    const consumeRef = (start: number): number => {
-        let k = start;
-        if (k >= tokens.length) return k;
-        const tk = tokens[k];
-        let table = '';
-        if (tk.type === 'punct' && tk.text === '(') {
-            const depth = tk.depth;
-            k++;
-            while (k < tokens.length &&
-                !(tokens[k].type === 'punct' && tokens[k].text === ')' && tokens[k].depth === depth)) {
-                k++;
-            }
-            if (k < tokens.length) k++;
-        } else if (tk.type === 'word') {
-            let lastName = tk.text;
-            k++;
-            while (k + 1 < tokens.length &&
-                tokens[k].type === 'punct' && tokens[k].text === '.' &&
-                tokens[k + 1].type === 'word') {
-                lastName = tokens[k + 1].text;
-                k += 2;
-            }
-            // A function call in table position (`FROM fn(...)`) is not a table.
-            if (!(k < tokens.length && tokens[k].type === 'punct' && tokens[k].text === '(')) {
-                table = lastName.toLowerCase();
-                record(table, table);
-            }
-        } else {
-            return k;
-        }
-        // Optional alias: `AS name` or a bare non-keyword identifier.
-        if (k < tokens.length && tokens[k].type === 'word' && tokens[k].text.toLowerCase() === 'as') {
-            k++;
-            if (k < tokens.length && tokens[k].type === 'word') { record(tokens[k].text.toLowerCase(), table); k++; }
-        } else if (k < tokens.length && tokens[k].type === 'word' &&
-            !TABLE_REF_STOP.has(tokens[k].text.toLowerCase())) {
-            record(tokens[k].text.toLowerCase(), table);
-            k++;
-        }
-        return k;
-    };
-
-    for (let i = 0; i < tokens.length; i++) {
-        const t = tokens[i];
-        if (t.type !== 'word') continue;
-        const w = t.text.toLowerCase();
-        if (w !== 'from' && w !== 'join') continue;
-        let j = consumeRef(i + 1);
-        if (w === 'from') {
-            while (j < tokens.length && tokens[j].type === 'punct' && tokens[j].text === ',') {
-                j = consumeRef(j + 1);
-            }
-        }
-    }
+    walkTableRefs(tokenize(maskSql(sql)), (table, alias) => {
+        if (table !== null) record(table, table);
+        if (alias !== null) record(alias, table ?? '');
+    });
     return qualifiers;
 }
 

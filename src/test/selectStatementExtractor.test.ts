@@ -134,6 +134,11 @@ test('substituteVariables replaces a :name placeholder including its colon', () 
     assert.equal(out, "SELECT '2026-01-01' AS from_day FROM t WHERE d <= '2026-12-31'");
 });
 
+test('queryVariableNames and substituteVariables read SQL that starts with FROM', () => {
+    assert.deepEqual(queryVariableNames('FROM t WHERE id = v_id'), ['v_id']);
+    assert.equal(substituteVariables('FROM t WHERE id = :id', { ':id': '1' }), 'FROM t WHERE id = 1');
+});
+
 test('queryVariableNames treats the colon of an array slice as a slice, not a placeholder', () => {
     const sql = 'SELECT a[1:n] FROM t WHERE a[lo:hi] = ARRAY[:x]';
     assert.deepEqual(queryVariableNames(sql), [':x']);
@@ -222,6 +227,199 @@ test('extractTableQualifiers collects table names and aliases', () => {
     assert.ok(q.has('lbe'));
     assert.ok(q.has('bos_leistungen'));
     assert.ok(q.has('lei'));
+});
+
+// A real-world query: LATERAL subqueries (sed, saw, eoa) are referenced by alias.
+const LATERAL_JOIN_QUERY = `
+WITH param AS (
+  SELECT
+    date_trunc('month', oracle.sysdate()) - INTERVAL '3 months' AS von,  -- earliest mtd_datum
+    date_trunc('day', oracle.sysdate()) AS bis,  -- exclusive
+    'DEB'::VARCHAR AS region,  -- bos_regionen.rk_rk
+    NULL::VARCHAR AS persnr  -- NULL = all employees
+), deb AS MATERIALIZED (
+  SELECT
+    mit.mit_id,
+    mit.mit_persnr,
+    mit.mit_name,
+    mit.mit_vorname,
+    rk.rk_id,
+    GREATEST(mia.mia_gvon, p.von) AS von,
+    LEAST(mia.mia_gbis, p.bis - INTERVAL '1 second') AS bis
+  FROM param p
+  JOIN bos_regionen rk ON rk.rk_rk = p.region
+  JOIN bos_personalteilbereiche ptb ON ptb.ptb_rk_id = rk.rk_id
+  JOIN bos_mit_attributes mia
+     ON mia.mia_type = 'PTB'
+    AND mia.mia_ref_id = ptb.ptb_id
+  JOIN bos_mitarbeiter mit ON mit.mit_id = mia.mia_mit_id
+  WHERE mia.mia_gvon < p.bis
+    AND mia.mia_gbis >= p.von
+    AND oracle.sysdate() BETWEEN mia.mia_svon AND mia.mia_sbis
+    AND (
+      p.persnr IS NULL
+      OR mit.mit_persnr = p.persnr
+    )
+), chk AS (
+  SELECT
+    d.mit_id,
+    d.mit_persnr,
+    d.mit_name,
+    d.mit_vorname,
+    d.rk_id,
+    m.mtd_id,
+    m.mtd_datum,
+    COALESCE(m.mtd_manager_awart, m.mtd_awart) AS awart,
+    COALESCE(m.mtd_manager_von, m.mtd_von) AS von,
+    COALESCE(m.mtd_manager_bis, m.mtd_bis) AS bis,
+    m.mtd_cost_object,
+    sed.sed_id,
+    sed.sed_status,
+    sed.sed_confirmed,
+    sed.sed_session_id,
+    sed.sed_saw_variante,
+    COALESCE(
+      (sed.sed_impdaten ->> 'p_catshours')::NUMERIC,
+      sed.sed_catshours,
+      m.mtd_manager_stunden,
+      m.mtd_stunden,
+      round(EXTRACT(EPOCH FROM (COALESCE(m.mtd_manager_bis, m.mtd_bis) - COALESCE(m.mtd_manager_von, m.mtd_von))) / 3600, 2)
+    ) AS stunden
+  FROM deb d
+  JOIN bos_mit_timedata m
+     ON m.mtd_persnr = d.mit_persnr
+    AND m.mtd_datum BETWEEN d.von AND d.bis
+  LEFT JOIN LATERAL (
+    SELECT s.*
+    FROM bos_sap_einsatzdaten s
+    WHERE s.sed_counter = LPAD(m.mtd_id::TEXT, 10, '0')
+      AND s.sed_persnr = m.mtd_persnr
+    ORDER BY (s.sed_status = '30') DESC, s.sed_confirmed DESC NULLS LAST, s.sed_id DESC
+    LIMIT 1
+  ) sed ON TRUE
+  WHERE m.mtd_gueltig = 'J'
+    AND COALESCE(m.mtd_approved, 'J') = 'J'
+    AND COALESCE(m.mtd_manager_awart, m.mtd_awart) NOT IN ('0600', '0601', '0602')
+    AND COALESCE(sed.sed_ausgeblendet, 'N') = 'N'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM bos_leistungen_ex lex
+      JOIN bos_leistungen lei ON lei.lei_id = lex.lei_ref_id
+      JOIN bos_leistungsbelege lbe ON lbe.lbe_id = lei.lei_lbe_id
+      WHERE lex.lei_sed_id = sed.sed_id
+        AND lei.lei_modifiziert IN ('O', 'U', 'I')
+        AND lei.lei_storno_ref_id IS NULL
+        AND lbe.lbe_modifiziert IN ('O', 'U', 'I')
+    )
+), kand AS MATERIALIZED (
+  SELECT c.*, saw.saw_lbe_herkunft
+  FROM chk c
+  JOIN LATERAL (
+    SELECT a.saw_lbe_herkunft
+    FROM bos_sap_awarten a
+    WHERE a.saw_awart = c.awart
+      AND (
+        c.sed_saw_variante IS NULL
+        OR a.saw_variante = c.sed_saw_variante
+      )
+    ORDER BY (a.saw_lbe_herkunft <> 'XX') DESC
+    LIMIT 1
+  ) saw ON saw.saw_lbe_herkunft <> 'XX'
+  -- claims only matter for zero-hour entries; CASE keeps the lookups lazy
+  WHERE CASE
+    WHEN c.stunden IS NULL
+      OR c.stunden <> 0
+    THEN
+      TRUE
+    ELSE
+      EXISTS (SELECT 1 FROM bos_mit_timedata_lumpsums l WHERE l.mtdl_mtd_id = c.mtd_id) OR EXISTS (SELECT 1 FROM bos_mit_timedata_specialcharges s WHERE s.mtds_mtd_id = c.mtd_id) OR EXISTS (SELECT 1 FROM bos_mit_timedata_travelexpenses t WHERE t.mtdt_mtd_id = c.mtd_id)
+  END
+),
+-- same rule as pk_gensed2tkn.p_auto_gen_f_store_v_pref_auto_tkn_gen, evaluated once per employee and day
+pref AS MATERIALIZED (
+  SELECT
+    t.mit_id,
+    t.mtd_datum,
+    COALESCE(
+      NULLIF(pk_azmutil.f_get_azmparam(t.mit_id, t.mtd_datum, 'RUECKRECHNUNG'), 'N'),
+      pk_pref_interface.f_get_orgpref_value(
+        'MANDANTEN_STEUERUNG',
+        'R_S_ADM',
+        pk_mitarbeiter_merkmale.vorgplanstelle(t.mit_id, t.mtd_datum),
+        t.rk_id,
+        NULL,
+        oracle.sysdate(),
+        'AUTO_TKN_GEN'
+      )
+    ) AS auto_tkn_gen,
+    COALESCE(pk_azmutil.f_get_azmparam(t.mit_id, t.mtd_datum, 'KEINE_RUECKRECHNUNG'), 'N') AS keine_rueckrechnung
+  FROM (
+    SELECT DISTINCT
+      k.mit_id,
+      k.rk_id,
+      k.mtd_datum
+    FROM kand k
+  ) t
+)
+SELECT
+  k.mit_persnr,
+  format('CALL pk_gensed2tkn.p_tkn_rueckrechnung(%L, %L, TRUE, TRUE, TRUE, pi_mit_id => %L);', MIN(k.mtd_datum), MAX(k.mtd_datum), k.mit_id) AS rueckrechnung
+FROM kand k
+JOIN pref p
+   ON p.mit_id = k.mit_id
+  AND p.mtd_datum = k.mtd_datum
+LEFT JOIN LATERAL (
+  SELECT string_agg(lbe.lbe_id || ' (' || lbe.lbe_herkunft || ')', ', ' ORDER BY lbe.lbe_id) AS eoa_am_tag
+  FROM bos_leistungsbelege lbe
+  WHERE lbe.lbe_mit_id = k.mit_id
+    AND lbe.lbe_modifiziert IN ('O', 'U', 'I')
+    AND k.mtd_datum BETWEEN lbe.lbe_min_tag AND lbe.lbe_max_tag
+) eoa ON TRUE
+WHERE p.auto_tkn_gen IN ('R', 'V', 'C', 'A')
+  AND p.keine_rueckrechnung <> 'J'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM bos_cico_eoa_reject cer
+    WHERE cer.cer_employee_id = k.mit_id
+      AND cer.cer_state = 'REJECTED'
+  )
+GROUP BY k.mit_id, k.mit_persnr
+ORDER BY k.mit_persnr;
+`;
+
+test('queryVariableNames finds no variables in a query with aliased LATERAL subqueries', () => {
+    assert.deepEqual(queryVariableNames(LATERAL_JOIN_QUERY), []);
+    const q = extractTableQualifiers(LATERAL_JOIN_QUERY);
+    for (const alias of ['sed', 'saw', 'eoa', 't', 'p', 'k', 'c']) {
+        assert.ok(q.has(alias), `alias ${alias} is known`);
+    }
+});
+
+test('extractTableQualifiers records the alias of a LATERAL subquery', () => {
+    const sql = 'SELECT x.a FROM t JOIN LATERAL (SELECT 1 a) x ON TRUE WHERE x.a = 1';
+    assert.ok(extractTableQualifiers(sql).has('x'));
+    assert.deepEqual(queryVariableNames(sql), []);
+});
+
+test('extractTableQualifiers records aliases of table functions, ONLY and TABLESAMPLE references', () => {
+    const cases: Array<[string, string[]]> = [
+        ['SELECT g.n FROM generate_series(1, 3) g WHERE g.n > 1', ['g']],
+        ['SELECT u.v FROM t, unnest(t.arr) WITH ORDINALITY AS u(v, i) WHERE u.v = 1 AND u.i > 0', ['t', 'u']],
+        ['SELECT r.a FROM ROWS FROM (f(), g()) AS r(a, b) WHERE r.b = 1', ['r']],
+        ['SELECT p.id FROM ONLY parent p WHERE p.id = 1', ['parent', 'p']],
+        ['SELECT s.id FROM t s TABLESAMPLE SYSTEM (10) REPEATABLE (1), u WHERE s.id = u.id', ['t', 's', 'u']],
+        ['SELECT s.id FROM t TABLESAMPLE SYSTEM (10) s WHERE s.id = 1', ['t', 's']]
+    ];
+    for (const [sql, aliases] of cases) {
+        const q = extractTableQualifiers(sql);
+        for (const alias of aliases) assert.ok(q.has(alias), `${alias} known in: ${sql}`);
+        assert.ok(!q.has('tablesample') && !q.has('lateral') && !q.has('with'), `no keyword alias in: ${sql}`);
+        assert.deepEqual(queryVariableNames(sql), [], sql);
+    }
+});
+
+test('queryVariableNames still reports a record-field access next to a known table', () => {
+    assert.deepEqual(queryVariableNames('SELECT * FROM t WHERE t.id = pi_obj.emplid'), ['pi_obj.emplid']);
 });
 
 test('substituteVariables replaces a record-field variable', () => {
@@ -596,6 +794,15 @@ test('extractTableNames does not treat a table-position function as a table', ()
 test('extractTableNames de-duplicates repeated tables', () => {
     const sql = 'SELECT * FROM t a JOIN t b ON a.id = b.parent';
     assert.deepEqual(extractTableNames(sql), ['t']);
+});
+
+test('extractTableNames skips LATERAL, table functions and ROWS FROM but keeps following tables', () => {
+    const sql =
+        'SELECT * FROM a, LATERAL (SELECT 1 FROM b) x, ' +
+        'LATERAL generate_series(1, 3) g, ' +
+        'unnest(a.arr) WITH ORDINALITY AS u(v, i), ROWS FROM (f(), g()) AS r(c, d), ' +
+        'ONLY parent p, c s TABLESAMPLE SYSTEM (10), d';
+    assert.deepEqual(extractTableNames(sql).sort(), ['a', 'b', 'c', 'd', 'parent']);
 });
 
 // ===== substituteVariables =====
