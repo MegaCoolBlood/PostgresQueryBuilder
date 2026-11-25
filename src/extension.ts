@@ -51,7 +51,7 @@ import { DatabaseCatalog } from './databaseCatalog';
 import { SqlIntel, registerSqlLanguageFeatures } from './sqlLanguageFeatures';
 import { DependenciesProvider } from './objectDependencies';
 import { ComparisonProvider, comparisonReport, computeComparison, marksOf, registerComparison } from './comparisonView';
-import { createMcpServices, registerMcpCliAccess, registerMcpServer } from './mcpServer';
+import { createMcpHttpServer, createMcpServices, registerMcpCliAccess, registerMcpServer } from './mcpServer';
 import { registerPlpgsqlCheck } from './plpgsqlCheck';
 import { registerDebugger } from './plpgsqlDebugger';
 import { resolveCommandTarget } from './databaseObjectCommands';
@@ -706,7 +706,7 @@ export function activate(context: vscode.ExtensionContext) {
             trees: [objectNavigator, tableExplorer]
         });
         const extensionVersion = String(context.extension?.packageJSON?.version ?? '0.0.0');
-        const mcpHttpServer = registerMcpServer(context, createMcpServices({
+        const mcpHttpServer = createMcpHttpServer(createMcpServices({
             connectionManager,
             tableWebViewManager,
             savedQueryStore,
@@ -725,6 +725,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
         }), extensionVersion);
         const mcpCliAccess = registerMcpCliAccess(context, mcpHttpServer, extensionVersion);
+        registerMcpServer(context, mcpHttpServer, extensionVersion, mcpCliAccess);
         context.subscriptions.push(
             vscode.commands.registerCommand('postgresQueryBuilder.showMcpStatus', () => mcpCliAccess.showStatus())
         );

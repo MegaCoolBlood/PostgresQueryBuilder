@@ -12,6 +12,7 @@ import {
     McpCliAccess,
     McpHttpServer,
     checkRequestAccess,
+    createMcpHttpServer,
     createMcpServer,
     hasBearerToken,
     registerMcpServer,
@@ -120,28 +121,75 @@ test('the server answers an MCP client on 127.0.0.1 with the token, and refuses 
 
 // ===== registration =====
 
-test('registerMcpServer offers the server to VS Code and starts it only when VS Code resolves it', async () => {
+test('registerMcpServer offers a complete definition: the running server with its token, so Copilot can use it unresolved', async () => {
     const subscriptions: Array<{ dispose(): unknown }> = [];
     const registered = vscodeStub.lm.mcpServerDefinitionProviders;
     registered.length = 0;
-    const http = registerMcpServer({ subscriptions } as never, services(), '9.9.9');
+    const http = createMcpHttpServer(services(), '9.9.9');
+    registerMcpServer({ subscriptions } as never, http, '9.9.9');
     try {
-        assert.ok(http);
         assert.deepEqual(registered.map((r) => r.id), [MCP_PROVIDER_ID]);
         const provider = registered[0].provider;
         const [definition] = await provider.provideMcpServerDefinitions();
         assert.equal(definition.label, 'PostgreSQL Query Booster');
         assert.equal(definition.version, '9.9.9');
-        assert.deepEqual(definition.headers, {}, 'no token before the server is started');
-        assert.equal(http.endpoint === undefined, true, 'not started yet');
+        const started = http.endpoint as { url: string } | undefined;
+        assert.ok(started, 'providing the definition starts the server');
+        assert.equal(String(definition.uri), started.url);
+        assert.equal(definition.headers.Authorization, `Bearer ${http.token}`, 'the token is in the provided definition, not only in the resolved one');
 
         const resolved = await provider.resolveMcpServerDefinition(definition);
-        const started = http.endpoint as { url: string } | undefined;
-        assert.equal(String(resolved.uri), started?.url);
+        assert.equal(String(resolved.uri), started.url);
         assert.equal(resolved.headers.Authorization, `Bearer ${http.token}`);
     } finally {
         subscriptions.forEach((s) => s.dispose());
-        await http?.stop();
+        await http.stop();
+    }
+});
+
+test('registerMcpServer offers nothing while the server is listed in Copilot\'s own configuration, and again once it is not', async () => {
+    const subscriptions: Array<{ dispose(): unknown }> = [];
+    const registered = vscodeStub.lm.mcpServerDefinitionProviders;
+    registered.length = 0;
+    const http = createMcpHttpServer(services(), '9.9.9');
+    const emitter = new vscodeStub.EventEmitter<void>();
+    let active = true;
+    let settledCalls = 0;
+    registerMcpServer({ subscriptions } as never, http, '9.9.9', {
+        isActive: () => active,
+        settled: async () => { settledCalls++; },
+        onDidChange: emitter.event
+    });
+    try {
+        const provider = registered[0].provider;
+        let changes = 0;
+        provider.onDidChangeMcpServerDefinitions(() => changes++);
+        assert.deepEqual(await provider.provideMcpServerDefinitions(), [], 'the native entry already serves VS Code and Copilot');
+        assert.equal(settledCalls, 1, 'waits for the native entry to be set up first');
+        active = false;
+        emitter.fire();
+        assert.equal(changes, 1, 'VS Code is told to ask again');
+        const [definition] = await provider.provideMcpServerDefinitions();
+        assert.equal(definition.headers.Authorization, `Bearer ${http.token}`);
+    } finally {
+        subscriptions.forEach((s) => s.dispose());
+        await http.stop();
+    }
+});
+
+test('a refused request carries no OAuth challenge, so no client starts a sign-in that cannot succeed', async () => {
+    const server = createMcpHttpServer(services(), '1.2.3');
+    const endpoint = await server.start();
+    try {
+        const response = await fetch(endpoint.url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} })
+        });
+        assert.equal(response.status, 401);
+        assert.equal(response.headers.get('www-authenticate'), null);
+    } finally {
+        await server.stop();
     }
 });
 
@@ -212,6 +260,9 @@ test('McpCliAccess publishes the running server for Copilot CLI and withdraws it
         });
         assert.equal(configText.includes(endpoint.token), false, 'the token never reaches the Copilot CLI configuration');
         assert.ok(access.statusLines().some((l) => l.includes('up to date: yes')));
+        assert.equal(access.isActive(), true, 'VS Code\'s own registration steps back while the entry serves Copilot');
+        let entryChanges = 0;
+        access.onDidChange(() => entryChanges++);
 
         folders = [path.join(root, 'other')];
         access.publish();
@@ -221,6 +272,8 @@ test('McpCliAccess publishes the running server for Copilot CLI and withdraws it
         await access.sync();
         assert.equal(JSON.parse(fs.readFileSync(paths.copilotConfigFile, 'utf8')).mcpServers[COPILOT_SERVER_NAME], undefined);
         assert.ok(fs.existsSync(access.discoveryFile), 'the server stays published for the VS Code window');
+        assert.equal(access.isActive(), false, 'without the entry VS Code\'s own registration offers the server again');
+        assert.equal(entryChanges, 1);
         restore.pop()!();
 
         restore.push(withSettings({ 'mcp.enabled': false }));
@@ -261,6 +314,7 @@ test('McpCliAccess leaves a malformed Copilot CLI configuration alone and warns 
         assert.equal(fs.readFileSync(paths.copilotConfigFile, 'utf8'), '{ "mcpServers": ');
         assert.equal(warnings.length, 1);
         assert.ok(warnings[0].includes(paths.copilotConfigFile), 'the warning names the file');
+        assert.equal(access.isActive(), false, 'with no entry written, VS Code\'s own registration offers the server');
     } finally {
         vscodeStub.window.showWarningMessage = original;
         access.dispose();

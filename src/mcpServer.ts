@@ -219,7 +219,10 @@ export class McpHttpServer {
         }, this.token, this.port);
         if (denial) {
             Logger.log('mcp', `Refused a request: ${denial.message}`);
-            sendJsonError(res, denial.status, denial.message, denial.status === 401 ? { 'WWW-Authenticate': 'Bearer' } : {});
+            // No `WWW-Authenticate` challenge: the token is handed out by the
+            // extension, not by a sign-in, and a challenge would only send the
+            // client into an OAuth discovery that can never succeed.
+            sendJsonError(res, denial.status, denial.message);
             return;
         }
         const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
@@ -373,15 +376,29 @@ export function hasMcpServerApi(): boolean {
     return typeof lm?.registerMcpServerDefinitionProvider === 'function' && typeof vscode.McpHttpServerDefinition === 'function';
 }
 
+/** The server the extension offers, not started yet; see {@link registerMcpServer} and {@link registerMcpCliAccess}. */
+export function createMcpHttpServer(services: McpServices, version: string): McpHttpServer {
+    return new McpHttpServer(() => createMcpServer(services, version));
+}
+
+/** Whether the server is already reachable through the native Copilot configuration, and when that changes. */
+export interface NativeMcpEntry {
+    isActive(): boolean;
+    /** Resolves once the entry has been brought in line with the settings. */
+    settled(): Promise<void>;
+    onDidChange: vscode.Event<void>;
+}
+
 /**
- * Offer the MCP server to VS Code. The HTTP listener starts when VS Code first
- * starts the server (or when {@link registerMcpCliAccess} publishes it) and
- * stops when `postgresQueryBuilder.mcp.enabled` is turned off or the extension
- * is deactivated. Without the editor's MCP API the server is still returned,
- * for agents outside the editor.
+ * Offer the MCP server to VS Code's chat. VS Code forwards the definition to
+ * Copilot sessions without resolving it, so the definition carries everything:
+ * the running server's address and its token. While the server is already
+ * listed in Copilot's own configuration (`nativeEntry`), which VS Code and
+ * Copilot read as well, nothing is offered, so the tools do not appear twice.
+ * The listener stops when `postgresQueryBuilder.mcp.enabled` is turned off or
+ * the extension is deactivated.
  */
-export function registerMcpServer(context: vscode.ExtensionContext, services: McpServices, version: string): McpHttpServer {
-    const http = new McpHttpServer(() => createMcpServer(services, version));
+export function registerMcpServer(context: vscode.ExtensionContext, http: McpHttpServer, version: string, nativeEntry?: NativeMcpEntry): void {
     const enabled = (): boolean => readMcpSettings().enabled;
     const stopServer = { dispose: () => { http.stop().catch((err: unknown) => Logger.error('McpHttpServer.stop', err)); } };
     if (!hasMcpServerApi()) {
@@ -389,23 +406,28 @@ export function registerMcpServer(context: vscode.ExtensionContext, services: Mc
         context.subscriptions.push(stopServer, vscode.workspace.onDidChangeConfiguration((e) => {
             if (e.affectsConfiguration('postgresQueryBuilder.mcp.enabled') && !enabled()) stopServer.dispose();
         }));
-        return http;
+        return;
     }
     const lm = vscode.lm;
     const changed = new vscode.EventEmitter<void>();
+    const complete = async (definition?: vscode.McpHttpServerDefinition): Promise<vscode.McpHttpServerDefinition> => {
+        const endpoint = await http.start();
+        const headers = { ...(definition?.headers ?? {}), Authorization: `Bearer ${endpoint.token}` };
+        if (!definition) return new vscode.McpHttpServerDefinition(MCP_SERVER_LABEL, vscode.Uri.parse(endpoint.url), headers, version);
+        definition.uri = vscode.Uri.parse(endpoint.url);
+        definition.headers = headers;
+        return definition;
+    };
     const provider: vscode.McpServerDefinitionProvider<vscode.McpHttpServerDefinition> = {
         onDidChangeMcpServerDefinitions: changed.event,
-        provideMcpServerDefinitions: () => {
-            if (!enabled()) return [];
-            const uri = vscode.Uri.parse(http.endpoint?.url ?? `http://127.0.0.1${MCP_PATH}`);
-            return [new vscode.McpHttpServerDefinition(MCP_SERVER_LABEL, uri, {}, version)];
+        provideMcpServerDefinitions: async () => {
+            if (nativeEntry) await nativeEntry.settled();
+            if (!enabled() || nativeEntry?.isActive()) return [];
+            return [await complete()];
         },
         resolveMcpServerDefinition: async (definition) => {
             if (!enabled()) return undefined;
-            const endpoint = await http.start();
-            definition.uri = vscode.Uri.parse(endpoint.url);
-            definition.headers = { ...definition.headers, Authorization: `Bearer ${endpoint.token}` };
-            return definition;
+            return complete(definition);
         }
     };
     context.subscriptions.push(
@@ -418,7 +440,7 @@ export function registerMcpServer(context: vscode.ExtensionContext, services: Mc
             changed.fire();
         })
     );
-    return http;
+    if (nativeEntry) context.subscriptions.push(nativeEntry.onDidChange(() => changed.fire()));
 }
 
 // ===== Agents outside VS Code (Copilot CLI / SDK) =====
@@ -444,11 +466,15 @@ function readCliSettings(): { enabled: boolean; copilotCli: boolean } {
  * Code installation (Stable, Insiders, …) has an entry of its own
  * ({@link copilotServerName}) and only ever removes an entry that is exactly its own.
  */
-export class McpCliAccess implements vscode.Disposable {
+export class McpCliAccess implements vscode.Disposable, NativeMcpEntry {
     private readonly startedAt = new Date().toISOString();
     private published = false;
     private queue: Promise<void> = Promise.resolve();
     private warnedMalformed = false;
+    /** True while this installation's entry is in mcp-config.json and its bridge is installed. */
+    private entryActive = false;
+    private readonly entryChanged = new vscode.EventEmitter<void>();
+    readonly onDidChange = this.entryChanged.event;
 
     constructor(
         private readonly http: McpHttpServer,
@@ -480,9 +506,27 @@ export class McpCliAccess implements vscode.Disposable {
 
     /** Bring server, discovery file, bridge and Copilot CLI entry in line with the settings. */
     sync(): Promise<void> {
-        const next = this.queue.then(() => this.apply()).catch((err: unknown) => Logger.error('McpCliAccess.sync', err));
+        const next = this.queue.then(() => this.apply()).catch((err: unknown) => {
+            Logger.error('McpCliAccess.sync', err);
+            this.setEntryActive(false);
+        });
         this.queue = next;
         return next;
+    }
+
+    /** True while Copilot (CLI, SDK agents and VS Code's chat) reaches the server through this installation's entry. */
+    isActive(): boolean {
+        return this.entryActive;
+    }
+
+    settled(): Promise<void> {
+        return this.queue;
+    }
+
+    private setEntryActive(active: boolean): void {
+        if (active === this.entryActive) return;
+        this.entryActive = active;
+        this.entryChanged.fire();
     }
 
     private async apply(): Promise<void> {
@@ -490,6 +534,7 @@ export class McpCliAccess implements vscode.Disposable {
         if (!settings.enabled) {
             this.unpublish();
             await this.removeCopilotEntries();
+            this.setEntryActive(false);
             return;
         }
         const stale = removeStaleDiscoveryFiles(this.discoveryDir);
@@ -498,12 +543,17 @@ export class McpCliAccess implements vscode.Disposable {
         this.publish();
         if (!settings.copilotCli) {
             await this.removeCopilotEntries();
+            this.setEntryActive(false);
             return;
         }
-        if (!this.installBridge()) return;
-        await this.updateCopilotConfig(this.serverName, this.copilotEntry);
+        if (!this.installBridge()) {
+            this.setEntryActive(false);
+            return;
+        }
+        const entered = await this.updateCopilotConfig(this.serverName, this.copilotEntry);
         // Older versions entered every installation as "postgres-query-booster".
         if (this.serverName !== COPILOT_SERVER_NAME) await this.updateCopilotConfig(COPILOT_SERVER_NAME, undefined);
+        this.setEntryActive(entered);
     }
 
     /** Remove this installation's entry, and nothing another installation or the user put there. */
@@ -546,15 +596,18 @@ export class McpCliAccess implements vscode.Disposable {
         return true;
     }
 
-    /** Set `name` to `entry`, or with `entry` undefined remove it when it is exactly this installation's entry. */
-    private async updateCopilotConfig(name: string, entry: CopilotServerEntry | undefined): Promise<void> {
+    /**
+     * Set `name` to `entry`, or with `entry` undefined remove it when it is exactly
+     * this installation's entry. True when the file holds `entry` afterwards.
+     */
+    private async updateCopilotConfig(name: string, entry: CopilotServerEntry | undefined): Promise<boolean> {
         const file = this.paths.copilotConfigFile;
         let edit: ConfigEdit;
         try {
             edit = await updateCopilotConfigFile(file, entry, name, this.copilotEntry);
         } catch (err: unknown) {
             Logger.error('McpCliAccess.updateCopilotConfig', err);
-            return;
+            return false;
         }
         if (edit.kind === 'write') {
             Logger.log('mcp', entry ? `Entered "${name}" in ${file}` : `Removed "${name}" from ${file}`);
@@ -564,7 +617,9 @@ export class McpCliAccess implements vscode.Disposable {
                 this.warnedMalformed = true;
                 void vscode.window.showWarningMessage(`PostgreSQL Query Booster could not set up GitHub Copilot CLI: ${file} is not valid JSON, so it was left unchanged.`);
             }
+            return false;
         }
+        return entry !== undefined;
     }
 
     /** What an agent outside VS Code would find, line by line. */
@@ -575,7 +630,9 @@ export class McpCliAccess implements vscode.Disposable {
         const lines = [
             `Extension version: ${this.version}`,
             `postgresQueryBuilder.mcp.enabled: ${settings.enabled}; postgresQueryBuilder.mcp.copilotCli: ${settings.copilotCli}`,
-            `VS Code chat registration: ${hasMcpServerApi() ? `available (provider ${MCP_PROVIDER_ID})` : 'not available in this editor'}`,
+            `VS Code chat registration: ${!hasMcpServerApi() ? 'not available in this editor'
+                : this.entryActive ? `not offered — VS Code and Copilot reach the server through the "${this.serverName}" entry below`
+                    : `offered as "${MCP_SERVER_LABEL}" (provider ${MCP_PROVIDER_ID})`}`,
             `Server: ${endpoint ? `running on 127.0.0.1:${endpoint.port}` : 'not running'}`,
             `Discovery file: ${this.discoveryFile} (${exists(this.discoveryFile)})`
         ];
@@ -603,6 +660,7 @@ export class McpCliAccess implements vscode.Disposable {
 
     dispose(): void {
         this.unpublish();
+        this.entryChanged.dispose();
     }
 }
 

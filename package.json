@@ -1900,7 +1900,7 @@
           "default": true,
           "scope": "application",
           "order": 4,
-          "markdownDescription": "Make the MCP server available to GitHub Copilot CLI and Copilot SDK agents outside VS Code: the extension enters a small bridge as `postgres-query-booster` (`postgres-query-booster-insiders` for VS Code Insiders) in `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`), which runs with VS Code's own executable and reaches the server of a running VS Code window. The file holds no secret; turning this off removes the entry. VS Code must be running for the tools to work. **Show MCP Server Status** shows what an agent would find."
+          "markdownDescription": "Make the MCP server available to GitHub Copilot through its own configuration: the extension enters a small bridge as `postgres-query-booster` (`postgres-query-booster-insiders` for VS Code Insiders) in `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`), which runs with VS Code's own executable and reaches the server of a running VS Code window. Copilot CLI, Copilot SDK agents and VS Code's chat all read that file. The file holds no secret; turning this off removes the entry, and VS Code's chat then lists the server as *PostgreSQL Query Booster*, registered by the extension. VS Code must be running for the tools to work. **Show MCP Server Status** shows which way Copilot reaches the server."
         }
       }
     }

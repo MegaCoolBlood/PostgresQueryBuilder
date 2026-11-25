@@ -930,23 +930,24 @@ use it too.
 
 ## AI assistants (MCP)
 
-The extension brings an MCP server, so GitHub Copilot in agent mode and other
-MCP clients in VS Code can work with your saved connections. There is nothing
-to set up: VS Code lists **PostgreSQL Query Booster** among its MCP servers. The
-server runs inside VS Code, listens on `127.0.0.1` only and accepts only
-requests carrying a token that changes with every VS Code session.
+The extension brings an MCP server, so GitHub Copilot — in VS Code's chat, in
+Copilot CLI and in agents built on the Copilot SDK — can work with your saved
+connections. There is nothing to set up. The server runs inside VS Code,
+listens on `127.0.0.1` only and accepts only requests carrying a token that
+changes with every VS Code session.
 
-Agents outside VS Code's chat — GitHub Copilot CLI and agents built on the
-Copilot SDK — read their MCP servers from `~/.copilot/mcp-config.json`
-(`$COPILOT_HOME` when set). The extension enters a small bridge there as
-`postgres-query-booster` (`postgres-query-booster-insiders` from VS Code
-Insiders). It runs with VS Code's own executable, so no Node.js
+Copilot reads its MCP servers from `~/.copilot/mcp-config.json`
+(`$COPILOT_HOME` when set), and so does VS Code. The extension enters a small
+bridge there as `postgres-query-booster` (`postgres-query-booster-insiders`
+from VS Code Insiders). It runs with VS Code's own executable, so no Node.js
 is needed, and passes every request on to the running VS Code window whose
 workspace contains the agent's folder, or else to the one started last; VS Code
 has to be running. The file holds no token, and other servers in it are left
 alone. `postgresQueryBuilder.mcp.copilotCli` turns this off and removes the
-entry again. **Show MCP Server Status** shows whether the server runs, on which
-port, and what an agent would find.
+entry again; VS Code's chat then lists the server as **PostgreSQL Query
+Booster** instead, registered by the extension itself, so it never appears
+twice. **Show MCP Server Status** shows whether the server runs, on which
+port, and which of the two ways Copilot reaches it.
 
 An assistant can list schemas and objects, describe tables, read `CREATE`
 scripts and dependencies, explain and run queries, execute changes, open a
@@ -1107,7 +1108,7 @@ Empty Schemas** / **Hide Empty Schemas**.
 | `postgresQueryBuilder.mcp.enabled` | `true` | Offer the MCP server to Copilot and other AI assistants in VS Code |
 | `postgresQueryBuilder.mcp.maxRows` | `500` | Most rows a query returns to an AI assistant |
 | `postgresQueryBuilder.mcp.statementTimeout` | `30` | `statement_timeout` in seconds of what an AI assistant runs |
-| `postgresQueryBuilder.mcp.copilotCli` | `true` | Enter the MCP server in `~/.copilot/mcp-config.json` for Copilot CLI and Copilot SDK agents |
+| `postgresQueryBuilder.mcp.copilotCli` | `true` | Enter the MCP server in `~/.copilot/mcp-config.json`, through which Copilot CLI, Copilot SDK agents and VS Code's chat reach it; off, VS Code's chat gets it registered by the extension |
 
 The formatter brings around twenty further settings under
 `postgresQueryBuilder.format.*`; the settings UI describes each of them, and
