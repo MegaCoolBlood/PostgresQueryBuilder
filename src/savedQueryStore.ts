@@ -3,16 +3,22 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { maskSql } from './selectStatementExtractor';
 import { getErrorMessage } from './logger';
+import { formatVariableValue } from './sqlVariableValues';
 
 /** How a placeholder value is turned into SQL text. */
-export type SavedQueryParameterKind = 'text' | 'number' | 'identifier' | 'raw';
+export type SavedQueryParameterKind = 'text' | 'number' | 'date' | 'timestamp' | 'identifier' | 'raw';
 
 export interface SavedQueryParameter {
     name: string;
     label?: string;
     kind: SavedQueryParameterKind;
     defaultValue?: string;
+    /** The value is NULL unless one is given; stored only when true, and then without `defaultValue`. */
+    defaultNull?: boolean;
 }
+
+/** Placeholder values by name; `null` stands for an explicit SQL NULL. */
+export type SavedQueryParameterValues = Record<string, string | null>;
 
 export type SavedQueryScope = 'workspace' | 'global';
 
@@ -39,7 +45,11 @@ interface WorkspaceQueriesFile {
 
 const DEFAULT_WORKSPACE_FILE = 'postgres-query-builder.queries.json';
 const FILE_VERSION = 1;
-const PARAMETER_KINDS: SavedQueryParameterKind[] = ['text', 'number', 'identifier', 'raw'];
+export const PARAMETER_KINDS: readonly SavedQueryParameterKind[] = ['text', 'number', 'date', 'timestamp', 'identifier', 'raw'];
+
+export function isParameterKind(value: unknown): value is SavedQueryParameterKind {
+    return typeof value === 'string' && (PARAMETER_KINDS as readonly string[]).includes(value);
+}
 
 export interface PlaceholderOccurrence {
     name: string;
@@ -139,15 +149,34 @@ export function mergeParameters(sql: string, existing: unknown): SavedQueryParam
     });
 }
 
-/** Render a single value as SQL text according to its declared kind. */
-export function renderParameterValue(value: string, kind: SavedQueryParameterKind): string {
-    const text = value === null || value === undefined ? '' : String(value);
+/**
+ * Render a single value as SQL text according to its declared kind; `null`
+ * is SQL NULL, which an identifier cannot be. A date or timestamp accepts what
+ * the 24-hour date picker writes or accepts (`2026-11-25`, `25.11.2026 10:39`,
+ * `2026-11-25T10:39:15+01`, `infinity`) and becomes a typed literal.
+ */
+export function renderParameterValue(value: string | null, kind: SavedQueryParameterKind, name?: string): string {
+    if (value === null) {
+        if (kind === 'identifier') {
+            throw new Error(`${name ? `:${name}` : 'An identifier'} cannot be NULL: it is an identifier.`);
+        }
+        return 'NULL';
+    }
+    const text = value === undefined ? '' : String(value);
     switch (kind) {
         case 'number':
             if (!/^-?\d+(\.\d+)?$/.test(text.trim())) {
                 throw new Error(`"${text}" is not a valid number.`);
             }
             return text.trim();
+        case 'date':
+        case 'timestamp': {
+            const result = formatVariableValue(text, kind);
+            if (result.error !== undefined) {
+                throw new Error(`"${text.trim()}" is not a valid ${kind}.`);
+            }
+            return result.sql;
+        }
         case 'identifier':
             return `"${text.replace(/"/g, '""')}"`;
         case 'raw':
@@ -158,13 +187,15 @@ export function renderParameterValue(value: string, kind: SavedQueryParameterKin
 }
 
 /**
- * Replace every placeholder in `sql` with its rendered value. Occurrences are
- * resolved up front and spliced in from right to left, so an inserted value that
- * itself contains `:name` is never substituted again.
+ * Replace every placeholder in `sql` with its rendered value. A value of
+ * `null` is SQL NULL; a missing or empty one falls back to NULL when the
+ * parameter defaults to it, else to its default value. Occurrences are
+ * resolved up front and spliced in from right to left, so an inserted value
+ * that itself contains `:name` is never substituted again.
  */
 export function applyQueryParameters(
     sql: string,
-    values: Record<string, string>,
+    values: SavedQueryParameterValues,
     parameters: SavedQueryParameter[]
 ): string {
     const occurrences = parseQueryPlaceholders(sql);
@@ -175,10 +206,10 @@ export function applyQueryParameters(
     for (const p of normalizeParameters(parameters)) {
         byName.set(p.name.toLowerCase(), p);
     }
-    const lookup = new Map<string, string>();
+    const lookup = new Map<string, string | null>();
     for (const [k, v] of Object.entries(values || {})) {
-        if (v !== undefined && v !== null) {
-            lookup.set(k.toLowerCase(), String(v));
+        if (v !== undefined) {
+            lookup.set(k.toLowerCase(), v === null ? null : String(v));
         }
     }
 
@@ -189,12 +220,12 @@ export function applyQueryParameters(
         const param = byName.get(key) || { name: occ.name, kind: 'text' as const };
         let value = lookup.get(key);
         if (value === undefined || value === '') {
-            value = param.defaultValue;
+            value = param.defaultNull ? null : param.defaultValue;
         }
         if (value === undefined || value === '') {
             throw new Error(`No value supplied for :${occ.name}.`);
         }
-        result = result.slice(0, occ.start) + renderParameterValue(value, param.kind) + result.slice(occ.end);
+        result = result.slice(0, occ.start) + renderParameterValue(value, param.kind, occ.name) + result.slice(occ.end);
     }
     return result;
 }
@@ -212,12 +243,15 @@ export function normalizeParameters(parameters: unknown): SavedQueryParameter[] 
             continue;
         }
         seen.add(name.toLowerCase());
-        const kind: SavedQueryParameterKind = PARAMETER_KINDS.includes(p?.kind) ? p.kind : 'text';
+        const kind: SavedQueryParameterKind = isParameterKind(p?.kind) ? p.kind : 'text';
         const param: SavedQueryParameter = { name, kind };
         if (typeof p?.label === 'string' && p.label.trim()) {
             param.label = p.label.trim();
         }
-        if (typeof p?.defaultValue === 'string' && p.defaultValue !== '') {
+        // An identifier names a column or table, so it can never default to NULL.
+        if (p?.defaultNull === true && kind !== 'identifier') {
+            param.defaultNull = true;
+        } else if (typeof p?.defaultValue === 'string' && p.defaultValue !== '') {
             param.defaultValue = p.defaultValue;
         }
         result.push(param);
@@ -551,22 +585,23 @@ export class SavedQueryStore {
         await this.update(id, { lastUsed: Date.now() });
     }
 
-    getParameterValues(id: string): Record<string, string> {
-        const all = this.context.globalState.get<Record<string, Record<string, string>>>(
+    /** The values last used for a query's placeholders; `null` is an explicit NULL. */
+    getParameterValues(id: string): SavedQueryParameterValues {
+        const all = this.context.globalState.get<Record<string, SavedQueryParameterValues>>(
             SavedQueryStore.VALUES_KEY, {}
         );
         const values = all[id];
         return values && typeof values === 'object' ? values : {};
     }
 
-    async setParameterValues(id: string, values: Record<string, string>): Promise<void> {
+    async setParameterValues(id: string, values: SavedQueryParameterValues): Promise<void> {
         const all = {
-            ...this.context.globalState.get<Record<string, Record<string, string>>>(SavedQueryStore.VALUES_KEY, {})
+            ...this.context.globalState.get<Record<string, SavedQueryParameterValues>>(SavedQueryStore.VALUES_KEY, {})
         };
-        const sanitized: Record<string, string> = {};
+        const sanitized: SavedQueryParameterValues = {};
         for (const [k, v] of Object.entries(values || {})) {
-            if (typeof k === 'string' && k && v !== undefined && v !== null) {
-                sanitized[k] = String(v);
+            if (typeof k === 'string' && k && v !== undefined) {
+                sanitized[k] = v === null ? null : String(v);
             }
         }
         if (Object.keys(sanitized).length === 0) {

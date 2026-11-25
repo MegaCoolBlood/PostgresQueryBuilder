@@ -1,12 +1,11 @@
 import * as vscode from 'vscode';
-import { SavedQueryStore, SavedQueryParameter, SavedQueryScope, mergeParameters, normalizeTags, collectTags } from './savedQueryStore';
+import { SavedQueryStore, SavedQueryParameter, SavedQueryScope, PARAMETER_KINDS, isParameterKind, mergeParameters, normalizeTags, collectTags } from './savedQueryStore';
 import { buildHtmlDocument, WEBVIEW_ESCAPE_HTML_JS } from './webviewUtils';
-import { icon } from './webviewAssets';
+import { getDateTimePickerAssets, icon } from './webviewAssets';
 import { getErrorMessage } from './logger';
 import { editSavedQueryTags } from './savedQueryTags';
 import { confirmBulkAction } from './bulkActionConfirmation';
 
-const PARAMETER_KINDS = ['text', 'number', 'identifier', 'raw'];
 const QUERY_NOUN = { singular: 'query', plural: 'queries' };
 
 /** Read a parameter list back from the webview's edit dialog. */
@@ -22,15 +21,20 @@ export function toParameters(raw: unknown): SavedQueryParameter[] {
         }
         const param: SavedQueryParameter = {
             name,
-            kind: PARAMETER_KINDS.includes(p?.kind) ? p.kind : 'text'
+            kind: isParameterKind(p?.kind) ? p.kind : 'text'
         };
         const label = typeof p?.label === 'string' ? p.label.trim() : '';
         if (label) {
             param.label = label;
         }
-        const defaultValue = typeof p?.defaultValue === 'string' ? p.defaultValue : '';
-        if (defaultValue !== '') {
-            param.defaultValue = defaultValue;
+        // A NULL default replaces the default value; an identifier cannot be NULL.
+        if (p?.defaultNull === true && param.kind !== 'identifier') {
+            param.defaultNull = true;
+        } else {
+            const defaultValue = typeof p?.defaultValue === 'string' ? p.defaultValue : '';
+            if (defaultValue !== '') {
+                param.defaultValue = defaultValue;
+            }
         }
         result.push(param);
     }
@@ -337,10 +341,13 @@ export class ManageBookmarksPanel {
         .dlg input[type="text"], .dlg select { width: 100%; }
         .dlg-row { display: flex; gap: var(--sp-2); align-items: center; margin-top: var(--sp-2); }
         .dlg-row label { font-size: var(--fs-sm); }
-        .param-head, .param-row { display: grid; grid-template-columns: 110px 90px minmax(120px, 1.4fr) minmax(100px, 1fr); gap: var(--sp-1); align-items: center; }
+        .param-head, .param-row { display: grid; grid-template-columns: 110px 100px minmax(120px, 1.4fr) minmax(100px, 1fr) auto; gap: var(--sp-1); align-items: center; }
         .param-head { font-size: var(--fs-xs); color: var(--c-muted); margin-bottom: var(--sp-1); }
         .param-row { margin-top: var(--sp-1); }
         .param-name { font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; }
+        .param-default { display: flex; min-width: 0; }
+        .param-default input[type="text"] { flex: 1; min-width: 0; }
+        .param-null { display: inline-flex; align-items: center; gap: 2px; font-size: var(--fs-sm); }
         .dlg textarea { width: 100%; min-height: 140px; resize: vertical; }
         .legend-row { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-1); }
         .legend-row span { font-size: var(--fs-xs); color: var(--c-muted); }
@@ -435,6 +442,7 @@ export class ManageBookmarksPanel {
                         <span>Type</span>
                         <span>Description</span>
                         <span>Default value</span>
+                        <span></span>
                     </div>
                     <div id="editParams"></div>
                     <div class="sub" id="noParams" style="display:none;">This query takes no placeholders. Write <em>:name</em> in the statement to add one.</div>
@@ -449,7 +457,8 @@ export class ManageBookmarksPanel {
     </div>
 
 `;
-        const script = `
+        const picker = getDateTimePickerAssets();
+        const script = `${picker.script}
         ${WEBVIEW_ESCAPE_HTML_JS}
 
         const KINDS = ${JSON.stringify(PARAMETER_KINDS)};
@@ -478,7 +487,8 @@ export class ManageBookmarksPanel {
         function describeParam(p) {
             let text = ':' + escapeHtml(p.name) + ' <span class="muted">(' + escapeHtml(p.kind || 'text') + ')</span>';
             if (p.label) text += ' — ' + escapeHtml(p.label);
-            if (p.defaultValue) text += ' <span class="muted">= ' + escapeHtml(p.defaultValue) + '</span>';
+            if (p.defaultNull) text += ' <span class="muted">= NULL</span>';
+            else if (p.defaultValue) text += ' <span class="muted">= ' + escapeHtml(p.defaultValue) + '</span>';
             return text;
         }
 
@@ -759,6 +769,7 @@ export class ManageBookmarksPanel {
             hideTagSuggestions();
             renderDialogTags();
             document.getElementById('editSql').value = item.sql;
+            destroyParamPickers();
             editParams.innerHTML = '';
             item.parameters.forEach(p => addParamRow(p));
             noParams.style.display = item.parameters.length ? 'none' : 'block';
@@ -768,6 +779,7 @@ export class ManageBookmarksPanel {
         }
 
         function closeEditDialog() {
+            destroyParamPickers();
             editOverlay.classList.remove('open');
             editingId = null;
             clearDialogError();
@@ -790,6 +802,16 @@ export class ManageBookmarksPanel {
         document.getElementById('editName').addEventListener('input', clearDialogError);
         document.getElementById('editSql').addEventListener('input', clearDialogError);
 
+        const NULL_TITLE = 'Default is NULL: the placeholder is NULL unless a value is given when the query runs';
+        const IDENTIFIER_NULL_TITLE = 'An identifier names a column or table, so it cannot be NULL';
+        // Date pickers of the default fields, by row; a row of another kind has none.
+        const paramPickers = new Map();
+
+        function destroyParamPickers() {
+            paramPickers.forEach(entry => entry.handle.destroy());
+            paramPickers.clear();
+        }
+
         function addParamRow(p) {
             const row = document.createElement('div');
             row.className = 'param-row';
@@ -800,19 +822,58 @@ export class ManageBookmarksPanel {
                 '<span class="param-name mono" title="' + escapeHtml(':' + p.name) + '">:' + escapeHtml(p.name) + '</span>' +
                 '<select class="p-kind" title="How the value is written into the statement">' + kindOptions + '</select>' +
                 '<input type="text" class="p-label" placeholder="what this value means" value="' + escapeHtml(p.label || '') + '" />' +
-                '<input type="text" class="p-default" placeholder="optional" value="' + escapeHtml(p.defaultValue || '') + '" />';
+                '<div class="param-default"><input type="text" class="p-default" placeholder="optional" value="' + escapeHtml(p.defaultValue || '') + '" /></div>' +
+                '<label class="param-null"><input type="checkbox" class="p-null"' + (p.defaultNull ? ' checked' : '') + ' />NULL</label>';
             row.setAttribute('data-name', p.name);
             editParams.appendChild(row);
+            row.querySelector('.p-kind').addEventListener('change', () => syncParamRow(row));
+            row.querySelector('.p-null').addEventListener('change', () => syncParamRow(row));
+            syncParamRow(row);
+        }
+
+        // The kind decides whether the default gets the date picker and whether
+        // it can be NULL; a ticked NULL box disables the default value.
+        function syncParamRow(row) {
+            const kind = row.querySelector('.p-kind').value;
+            const nullBox = row.querySelector('.p-null');
+            const input = row.querySelector('.p-default');
+            const identifier = kind === 'identifier';
+            if (identifier) nullBox.checked = false;
+            nullBox.disabled = identifier;
+            row.querySelector('.param-null').title = identifier ? IDENTIFIER_NULL_TITLE : NULL_TITLE;
+            const pickerKind = kind === 'date' || kind === 'timestamp' ? kind : '';
+            const existing = paramPickers.get(row);
+            if (existing && existing.kind !== pickerKind) {
+                existing.handle.destroy();
+                paramPickers.delete(row);
+                input.placeholder = 'optional';
+                input.removeAttribute('inputmode');
+                input.title = '';
+            }
+            if (pickerKind && !paramPickers.has(row) && window.DateTimePicker) {
+                paramPickers.set(row, {
+                    kind: pickerKind,
+                    handle: window.DateTimePicker.attachDateTimePicker(input, { kind: pickerKind, allowEmpty: true })
+                });
+            }
+            input.disabled = nullBox.checked;
+            const current = paramPickers.get(row);
+            if (current) {
+                if (nullBox.checked) current.handle.close(false);
+                current.handle.button.disabled = nullBox.checked;
+            }
         }
 
         function gatherParameters() {
             const out = [];
             editParams.querySelectorAll('.param-row').forEach(row => {
+                const nullBox = row.querySelector('.p-null');
                 out.push({
                     name: row.getAttribute('data-name'),
                     kind: row.querySelector('.p-kind').value,
                     label: row.querySelector('.p-label').value,
-                    defaultValue: row.querySelector('.p-default').value
+                    defaultValue: row.querySelector('.p-default').value,
+                    defaultNull: nullBox.checked && !nullBox.disabled
                 });
             });
             return out;
@@ -880,6 +941,6 @@ export class ManageBookmarksPanel {
         });
 
         vscode.postMessage({ command: 'ready' });`;
-        return buildHtmlDocument({ webview, title: 'Bookmarked Queries', styles, body, script });
+        return buildHtmlDocument({ webview, title: 'Bookmarked Queries', styles: `${styles}\n${picker.css}`, body, script });
     }
 }

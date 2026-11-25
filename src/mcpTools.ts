@@ -1101,7 +1101,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
     defineTool({
         name: 'list_saved_queries',
         title: 'List bookmarked queries',
-        description: 'Lists the bookmarked queries of the user with their :name placeholders and tags. Bookmarked queries belong to no connection, so no capability is needed.',
+        description: 'Lists the bookmarked queries of the user with their :name placeholders and tags. A placeholder shows its kind (text, number, date, timestamp, identifier, raw) and its default: a value, or defaultNull: true when it is NULL unless a value is given. Bookmarked queries belong to no connection, so no capability is needed.',
         inputSchema: {
             name: z.string().optional().describe('Part of the name, or a pattern with * or %.'),
             tag: z.string().optional().describe('Only queries with this tag.')
@@ -1116,7 +1116,7 @@ export const MCP_TOOLS: readonly McpTool[] = [
                     id: q.id,
                     name: q.name,
                     sql: truncateText(q.sql, 4000),
-                    parameters: q.parameters.map((p) => compact({ name: p.name, kind: p.kind, default: p.defaultValue })),
+                    parameters: q.parameters.map((p) => compact({ name: p.name, kind: p.kind, default: p.defaultValue, defaultNull: p.defaultNull })),
                     tags: q.tags,
                     scope: q.scope === 'workspace' ? 'workspace' : 'personal'
                 }));
@@ -1126,12 +1126,12 @@ export const MCP_TOOLS: readonly McpTool[] = [
     defineTool({
         name: 'run_saved_query',
         title: 'Run a bookmarked query',
-        description: 'Runs a bookmarked query like run_query, after filling in its :name placeholders. Needs the readData capability of the connection it runs on.',
+        description: 'Runs a bookmarked query like run_query, after filling in its :name placeholders. A value null makes the placeholder NULL (not allowed for an identifier); a missing value uses the default. A date or timestamp is written as YYYY-MM-DD or YYYY-MM-DD HH:MM[:SS] (24-hour). Needs the readData capability of the connection it runs on.',
         inputSchema: {
             connection: connectionArg,
             id: z.string().optional().describe('Id of the query (see list_saved_queries).'),
             name: z.string().optional().describe('Instead of id: the exact name of the query.'),
-            values: z.record(z.string(), z.string()).optional().describe('Values of the placeholders, by name.'),
+            values: z.record(z.string(), z.string().nullable()).optional().describe('Values of the placeholders, by name; null for NULL.'),
             maxRows: z.number().int().min(1).optional().describe('Return at most this many rows (never more than the user\'s limit).')
         },
         annotations: READ_ONLY,

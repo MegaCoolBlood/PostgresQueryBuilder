@@ -4,7 +4,7 @@ import { QueryRunner, buildRelationListQuery, uniqueFieldNames, type CommitTarge
 import { ExportService } from './exportService';
 import { ColumnMappingManager, MAPPING_CONDITION_OPERATORS, type CustomColumnMapping } from './columnMappingManager';
 import { PermanentConstraintManager } from './permanentConstraintManager';
-import { SavedQueryStore, SavedQueryParameter } from './savedQueryStore';
+import { SavedQueryStore, SavedQueryParameter, SavedQueryParameterValues } from './savedQueryStore';
 import { ManageBookmarksPanel } from './manageBookmarksPanel';
 import { ModifyHistoryStore, isModifyingSql, splitSqlStatements } from './modifyHistoryStore';
 import { buildRelatedTableJoin, deriveQualifier, type RelatedJoinCondition } from './statementBuilder';
@@ -705,7 +705,7 @@ export class TableWebViewManager {
         sql: string,
         title: string,
         viewColumn: vscode.ViewColumn = vscode.ViewColumn.Beside,
-        savedQuery?: { id: string; parameters: SavedQueryParameter[]; values: Record<string, string> },
+        savedQuery?: { id: string; parameters: SavedQueryParameter[]; values: SavedQueryParameterValues },
         sessionRef?: DbSessionRef,
         options: QueryViewOptions = {}
     ): Promise<void> {
@@ -738,7 +738,7 @@ export class TableWebViewManager {
         sql: string,
         title: string,
         viewColumn: vscode.ViewColumn,
-        savedQuery: { id: string; parameters: SavedQueryParameter[]; values: Record<string, string> } | undefined,
+        savedQuery: { id: string; parameters: SavedQueryParameter[]; values: SavedQueryParameterValues } | undefined,
         sessionRef: DbSessionRef | undefined,
         onFirstLoad?: (outcome: QueryViewLoad) => void,
         preserveFocus = false,

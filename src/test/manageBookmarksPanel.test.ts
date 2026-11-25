@@ -25,6 +25,21 @@ test('toParameters falls back to a text placeholder when the kind is unknown', (
     assert.deepEqual(toParameters([{ name: 'x', kind: 'sql-injection' }]), [{ name: 'x', kind: 'text' }]);
 });
 
+test('toParameters keeps date and timestamp kinds and a NULL default instead of the default value', () => {
+    assert.deepEqual(
+        toParameters([
+            { name: 'd', kind: 'date', defaultValue: '2026-11-25', defaultNull: false },
+            { name: 'ts', kind: 'timestamp', defaultValue: 'left in the disabled field', defaultNull: true },
+            { name: 'col', kind: 'identifier', defaultValue: 'id', defaultNull: true }
+        ]),
+        [
+            { name: 'd', kind: 'date', defaultValue: '2026-11-25' },
+            { name: 'ts', kind: 'timestamp', defaultNull: true },
+            { name: 'col', kind: 'identifier', defaultValue: 'id' }
+        ]
+    );
+});
+
 test('toParameters ignores rows without a name and anything that is not a list', () => {
     assert.deepEqual(toParameters([{ name: '  ' }, { kind: 'text' }, null]), []);
     assert.deepEqual(toParameters(undefined), []);
@@ -149,6 +164,20 @@ test('the panel offers a scope, a description and a default value for every plac
     assert.ok(panel.html.includes('Share with workspace'), 'the dialog does not say where the query is stored');
     assert.ok(panel.html.includes('>Description<'), 'the dialog does not label the description');
     assert.ok(panel.html.includes('>Default value<'), 'the dialog does not label the default value');
+});
+
+test('every placeholder row offers the date kinds, a NULL default and the date picker', (t) => {
+    const panel = openPanel(t, [query('a', 'global', [{ name: 'since', kind: 'date' }])]);
+
+    assert.match(panel.html, /const KINDS = \["text","number","date","timestamp","identifier","raw"\];/);
+    assert.ok(panel.html.includes('class="p-null"'), 'the rows have no NULL box');
+    assert.ok(panel.html.includes('Default is NULL'), 'the NULL box does not say what it does');
+    assert.ok(panel.html.includes('so it cannot be NULL'), 'an identifier row does not say why NULL is off');
+    assert.ok(panel.html.includes('input.disabled = nullBox.checked'), 'a NULL default leaves the default value editable');
+    assert.ok(panel.html.includes('root.DateTimePicker = exported'), 'the date picker is not loaded');
+    assert.ok(panel.html.includes("window.DateTimePicker.attachDateTimePicker(input, { kind: pickerKind, allowEmpty: true })"));
+    assert.ok(panel.html.includes('defaultNull: nullBox.checked && !nullBox.disabled'), 'the NULL default is not sent back');
+    assert.ok(!/type="date"|datetime-local/.test(panel.html), 'a native date field follows the OS locale');
 });
 
 test('the edit dialog holds the statement itself and a way into a real editor', (t) => {

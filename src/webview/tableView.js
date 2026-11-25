@@ -145,14 +145,57 @@ function placeholderNames(sql) {
     return names;
 }
 
+// NOTE: Keep in sync with readDateTimeInput / formatVariableValue in
+// src/sqlVariableValues.ts: the forms the date picker writes or accepts
+// (`2026-11-25`, `25.11.2026 10:39`, `2026-11-25T10:39:15+01`, `infinity`)
+// as a typed literal, or null when the text is no date / timestamp.
+const SAVED_QUERY_DATE_TIME = /^(\S+?)(?:(?:T\s*|\s+)(\d{1,2}):(\d{2})(?::(\d{2})(\.\d{1,6})?)?(Z|\s*[+-]\d{2}(?::?\d{2})?)?)?$/i;
+
+function savedQueryDatePart(text) {
+    const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(text);
+    const dotted = iso ? null : /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(text);
+    const ymd = iso ? [iso[1], iso[2], iso[3]] : dotted ? [dotted[3], dotted[2], dotted[1]] : null;
+    if (!ymd) return null;
+    const y = Number(ymd[0]), m = Number(ymd[1]), d = Number(ymd[2]);
+    if (y < 1 || m < 1 || m > 12 || d < 1) return null;
+    const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+    if (d > [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1]) return null;
+    return ymd[0] + '-' + ymd[1].padStart(2, '0') + '-' + ymd[2].padStart(2, '0');
+}
+
+function savedQueryDateTimeLiteral(value, kind) {
+    const s = String(value === null || value === undefined ? '' : value).trim();
+    const inf = /^([+-]?)infinity$/i.exec(s);
+    if (inf) return (kind === 'date' ? 'DATE' : 'TIMESTAMP') + " '" + (inf[1] === '-' ? '-infinity' : 'infinity') + "'";
+    const m = SAVED_QUERY_DATE_TIME.exec(s);
+    const date = m ? savedQueryDatePart(m[1]) : null;
+    if (!m || !date) return null;
+    const zone = (m[6] || '').trim().toUpperCase();
+    if (m[2] !== undefined && (Number(m[2]) > 23 || Number(m[3]) > 59 || Number(m[4] || 0) > 59)) return null;
+    if (kind === 'date') return zone ? null : "DATE '" + date + "'";
+    const time = m[2] === undefined ? '00:00:00' : m[2].padStart(2, '0') + ':' + m[3] + ':' + (m[4] || '00') + (m[5] || '');
+    return (zone ? 'TIMESTAMPTZ' : 'TIMESTAMP') + " '" + date + ' ' + time + zone + "'";
+}
+
 // NOTE: Keep in sync with renderParameterValue in src/savedQueryStore.ts.
-function renderParameterValue(value, kind) {
-    const text = value === null || value === undefined ? '' : String(value);
+function renderParameterValue(value, kind, name) {
+    if (value === null) {
+        if (kind === 'identifier') {
+            throw new Error((name ? ':' + name : 'An identifier') + ' cannot be NULL: it is an identifier.');
+        }
+        return 'NULL';
+    }
+    const text = value === undefined ? '' : String(value);
     if (kind === 'number') {
         if (!/^-?\d+(\.\d+)?$/.test(text.trim())) {
             throw new Error('"' + text + '" is not a valid number.');
         }
         return text.trim();
+    }
+    if (kind === 'date' || kind === 'timestamp') {
+        const literal = savedQueryDateTimeLiteral(text, kind);
+        if (literal === null) throw new Error('"' + text.trim() + '" is not a valid ' + kind + '.');
+        return literal;
     }
     if (kind === 'identifier') return '"' + text.replace(/"/g, '""') + '"';
     if (kind === 'raw') return text;
@@ -172,7 +215,7 @@ function applyQueryParameters(sql, values, parameters) {
     const lookup = new Map();
     for (const key of Object.keys(values || {})) {
         const v = values[key];
-        if (v !== undefined && v !== null) lookup.set(key.toLowerCase(), String(v));
+        if (v !== undefined) lookup.set(key.toLowerCase(), v === null ? null : String(v));
     }
     let result = sql;
     for (let i = occurrences.length - 1; i >= 0; i--) {
@@ -180,15 +223,50 @@ function applyQueryParameters(sql, values, parameters) {
         const key = occ.name.toLowerCase();
         const param = byName.get(key) || { name: occ.name, kind: 'text' };
         let value = lookup.get(key);
-        if (value === undefined || value === '') value = param.defaultValue;
+        if (value === undefined || value === '') {
+            value = param.defaultNull === true && param.kind !== 'identifier' ? null : param.defaultValue;
+        }
         if (value === undefined || value === '') {
             throw new Error('No value supplied for :' + occ.name + '.');
         }
         result = result.slice(0, occ.start)
-            + renderParameterValue(value, param.kind || 'text')
+            + renderParameterValue(value, param.kind || 'text', occ.name)
             + result.slice(occ.end);
     }
     return result;
+}
+
+/**
+ * Starting state of the run-time parameter form: per placeholder the text of
+ * its input and whether its NULL box is ticked. A remembered value wins
+ * (`null` meaning NULL); without one the default applies — NULL when the
+ * placeholder defaults to it. An identifier can never be NULL.
+ */
+function initialQueryParamDraft(parameters, remembered) {
+    const draft = {};
+    for (const p of Array.isArray(parameters) ? parameters : []) {
+        if (!p || typeof p.name !== 'string') continue;
+        const canBeNull = p.kind !== 'identifier';
+        const stored = remembered && typeof remembered === 'object' ? remembered[p.name] : undefined;
+        if (stored === null && canBeNull) {
+            draft[p.name] = { text: '', isNull: true };
+        } else if (stored !== undefined && stored !== null && stored !== '') {
+            draft[p.name] = { text: String(stored), isNull: false };
+        } else {
+            draft[p.name] = { text: p.defaultValue || '', isNull: canBeNull && p.defaultNull === true };
+        }
+    }
+    return draft;
+}
+
+/** The values of the parameter form for `applyQueryParameters`; a ticked NULL box gives `null`. */
+function queryParamDraftValues(draft) {
+    const values = {};
+    for (const name of Object.keys(draft || {})) {
+        const entry = draft[name] || {};
+        values[name] = entry.isNull ? null : String(entry.text || '');
+    }
+    return values;
 }
 
 function normalizeNumericInput(value, thousandSeparator = DEFAULT_THOUSAND_SEPARATOR) {
@@ -11558,12 +11636,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const PARAMETER_KINDS = [
         { value: 'text', label: 'Text (quoted)' },
         { value: 'number', label: 'Number' },
+        { value: 'date', label: 'Date' },
+        { value: 'timestamp', label: 'Timestamp (24 h)' },
         { value: 'identifier', label: 'Identifier (quoted)' },
         { value: 'raw', label: 'Raw SQL (unchecked!)' }
     ];
 
-    // Values entered in the parameter dialog before they are applied.
+    // Per placeholder: the text typed and whether NULL is ticked, until applied.
     let queryParamsDraft = {};
+    // Date pickers of the rows on screen, destroyed when the rows go away.
+    const queryParamPickers = new Map();
 
     if (querySaveBtn) querySaveBtn.addEventListener('click', bookmarkQuery);
     if (queryParamsBtn) queryParamsBtn.addEventListener('click', () => openQueryParamsDialog(false));
@@ -11598,21 +11680,22 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
      */
     function openQueryParamsDialog(initial) {
         queryParamsPendingInitialRun = Boolean(initial);
-        queryParamsDraft = {};
-        savedQueryParameters.forEach(p => {
-            const stored = savedQueryValues[p.name];
-            queryParamsDraft[p.name] = stored !== undefined && stored !== null && stored !== ''
-                ? String(stored)
-                : (p.defaultValue || '');
-        });
+        queryParamsDraft = initialQueryParamDraft(savedQueryParameters, savedQueryValues);
         queryParamsDialogTitle.textContent = 'Parameters for "' + (tableName.textContent || 'query') + '"';
         renderQueryParamRows();
         queryParamsDialogOverlay.style.display = 'flex';
-        const first = queryParamsList.querySelector('input');
+        const first = queryParamsList.querySelector('input[data-query-param]:not(:disabled)')
+            || queryParamsList.querySelector('input');
         if (first) first.focus();
     }
 
+    function destroyQueryParamPickers() {
+        queryParamPickers.forEach(picker => picker.destroy());
+        queryParamPickers.clear();
+    }
+
     function closeQueryParamsDialog() {
+        destroyQueryParamPickers();
         queryParamsDialogOverlay.style.display = 'none';
         if (queryParamsPendingInitialRun) {
             // The panel opened for a saved query but the values were dismissed,
@@ -11623,48 +11706,100 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     }
 
     function renderQueryParamRows() {
+        destroyQueryParamPickers();
         queryParamsList.innerHTML = savedQueryParameters.map((p, i) => {
             const kind = PARAMETER_KINDS.find(k => k.value === p.kind) || PARAMETER_KINDS[0];
+            const draft = queryParamsDraft[p.name] || { text: '', isNull: false };
             const warn = p.kind === 'raw'
                 ? '<span class="mapping-hint">inserted unchanged</span>'
                 : '<span class="mapping-hint">' + escapeHtml(kind.label) + '</span>';
+            const nullTitle = p.kind === 'identifier'
+                ? 'An identifier names a column or table, so it cannot be NULL'
+                : 'Use NULL as the value';
             return '<div class="cond-row">' +
                 '<label for="queryParamInput' + i + '">' + escapeHtml(p.label || (':' + p.name)) + '</label>' +
-                '<input class="cust-raw" id="queryParamInput' + i + '" data-query-param="' + escapeAttr(p.name) + '" value="' +
-                escapeAttr(queryParamsDraft[p.name] || '') + '">' +
+                '<input class="cust-raw" id="queryParamInput' + i + '" data-query-param="' + escapeAttr(p.name) +
+                '" data-param-kind="' + escapeAttr(kind.value) + '" value="' + escapeAttr(draft.text || '') + '"' +
+                (draft.isNull ? ' disabled' : '') + '>' +
+                '<label class="query-param-null" title="' + escapeAttr(nullTitle) + '">' +
+                '<input type="checkbox" data-query-param-null="' + escapeAttr(p.name) + '"' +
+                (draft.isNull ? ' checked' : '') + (p.kind === 'identifier' ? ' disabled' : '') + '>NULL</label>' +
                 warn +
                 '</div>';
         }).join('');
-        queryParamsList.querySelectorAll('[data-query-param]').forEach(el => {
-            el.oninput = () => {
-                queryParamsDraft[el.dataset.queryParam] = el.value;
+        queryParamsList.querySelectorAll('input[data-query-param]').forEach(el => {
+            const kind = el.dataset.paramKind;
+            // Attached before the keydown handler below, so an Enter commits the typed date first.
+            if ((kind === 'date' || kind === 'timestamp') && window.DateTimePicker) {
+                const picker = window.DateTimePicker.attachDateTimePicker(el, { kind: kind, allowEmpty: true });
+                picker.button.disabled = el.disabled;
+                queryParamPickers.set(el.dataset.queryParam, picker);
+            }
+            el.addEventListener('input', () => {
+                queryParamsDraft[el.dataset.queryParam].text = el.value;
                 updateQueryParamsPreview();
-            };
-            el.onkeydown = (e) => {
+            });
+            el.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') { e.preventDefault(); applyQueryParamsDialog(); }
-            };
+            });
+        });
+        queryParamsList.querySelectorAll('[data-query-param-null]').forEach(box => {
+            box.addEventListener('change', () => {
+                const name = box.dataset.queryParamNull;
+                queryParamsDraft[name].isNull = box.checked;
+                const input = Array.from(queryParamsList.querySelectorAll('input[data-query-param]'))
+                    .find(el => el.dataset.queryParam === name);
+                if (input) {
+                    input.disabled = box.checked;
+                    const picker = queryParamPickers.get(name);
+                    if (picker) {
+                        picker.close(false);
+                        picker.button.disabled = box.checked;
+                    }
+                    if (!box.checked) input.focus();
+                }
+                updateQueryParamsPreview();
+            });
         });
         updateQueryParamsPreview();
+    }
+
+    // A date typed as `now`, `today` or `10:39` becomes the text the picker
+    // would write, so Run and Enter use the value the field is about to show.
+    function commitQueryParamInputs() {
+        queryParamsList.querySelectorAll('input[data-query-param]').forEach(el => {
+            const entry = queryParamsDraft[el.dataset.queryParam];
+            if (!entry) return;
+            entry.text = el.value;
+            if (!queryParamPickers.has(el.dataset.queryParam) || el.disabled) return;
+            const r = window.DateTimePicker.parseDateTimeInput(el.value, el.dataset.paramKind);
+            if (!r.error && r.value !== el.value) {
+                el.value = r.value;
+                entry.text = r.value;
+            }
+        });
     }
 
     function updateQueryParamsPreview() {
         try {
             queryParamsPreview.textContent =
-                applyQueryParameters(savedQueryTemplate, queryParamsDraft, savedQueryParameters);
+                applyQueryParameters(savedQueryTemplate, queryParamDraftValues(queryParamsDraft), savedQueryParameters);
         } catch (err) {
             queryParamsPreview.textContent = err && err.message ? err.message : String(err);
         }
     }
 
     function applyQueryParamsDialog() {
+        commitQueryParamInputs();
+        const values = queryParamDraftValues(queryParamsDraft);
         let sql;
         try {
-            sql = applyQueryParameters(savedQueryTemplate, queryParamsDraft, savedQueryParameters);
+            sql = applyQueryParameters(savedQueryTemplate, values, savedQueryParameters);
         } catch (err) {
             showError(err && err.message ? err.message : String(err));
             return;
         }
-        savedQueryValues = Object.assign({}, queryParamsDraft);
+        savedQueryValues = values;
         if (savedQueryId) {
             vscode.postMessage({
                 command: 'saveSavedQueryValues',
@@ -13210,6 +13345,8 @@ if (typeof module !== 'undefined' && module.exports) {
         placeholderNames,
         renderParameterValue,
         applyQueryParameters,
+        initialQueryParamDraft,
+        queryParamDraftValues,
         liveFormatNumeric,
         stripThousandSeparators,
         copyUnsavedRow,

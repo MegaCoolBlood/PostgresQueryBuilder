@@ -148,6 +148,34 @@ test('renderParameterValue emits a raw value verbatim', () => {
     assert.equal(renderParameterValue('CURRENT_DATE - 7', 'raw'), 'CURRENT_DATE - 7');
 });
 
+test('renderParameterValue reads a date in the forms of the date picker', () => {
+    assert.equal(renderParameterValue('2026-11-25', 'date'), `DATE '2026-11-25'`);
+    assert.equal(renderParameterValue(' 5.1.2026 ', 'date'), `DATE '2026-01-05'`);
+    assert.equal(renderParameterValue('2026-11-25 10:39', 'date'), `DATE '2026-11-25'`, 'a time is dropped, as by the picker');
+    assert.equal(renderParameterValue('-infinity', 'date'), `DATE '-infinity'`);
+});
+
+test('renderParameterValue reads a 24-hour timestamp and keeps a typed offset', () => {
+    assert.equal(renderParameterValue('2026-11-25T18:05', 'timestamp'), `TIMESTAMP '2026-11-25 18:05:00'`);
+    assert.equal(renderParameterValue('25.11.2026 18:05:09.25', 'timestamp'), `TIMESTAMP '2026-11-25 18:05:09.25'`);
+    assert.equal(renderParameterValue('2026-11-25', 'timestamp'), `TIMESTAMP '2026-11-25 00:00:00'`);
+    assert.equal(renderParameterValue('2026-11-25 18:05+01', 'timestamp'), `TIMESTAMPTZ '2026-11-25 18:05:00+01'`);
+    assert.equal(renderParameterValue('infinity', 'timestamp'), `TIMESTAMP 'infinity'`);
+});
+
+test('renderParameterValue rejects a date or timestamp that does not exist', () => {
+    assert.throws(() => renderParameterValue('31.02.2026', 'date'), /^Error: "31\.02\.2026" is not a valid date\.$/);
+    assert.throws(() => renderParameterValue('2026-11-25 10:39+01', 'date'), /not a valid date/, 'a date takes no offset');
+    assert.throws(() => renderParameterValue('2026-11-25 24:00', 'timestamp'), /^Error: "2026-11-25 24:00" is not a valid timestamp\.$/);
+    assert.throws(() => renderParameterValue("2026-11-25'; DROP TABLE t; --", 'timestamp'), /not a valid timestamp/);
+});
+
+test('renderParameterValue writes NULL for null, except for an identifier', () => {
+    assert.equal(renderParameterValue(null, 'text'), 'NULL');
+    assert.equal(renderParameterValue(null, 'timestamp'), 'NULL');
+    assert.throws(() => renderParameterValue(null, 'identifier', 'col'), /:col cannot be NULL/);
+});
+
 // ===== applyQueryParameters =====
 
 test('applyQueryParameters substitutes every occurrence of a placeholder', () => {
@@ -223,6 +251,34 @@ test('applyQueryParameters does not touch a literal that looks like a placeholde
     );
 });
 
+test('applyQueryParameters writes NULL for a null value of every kind but an identifier', () => {
+    for (const kind of ['text', 'number', 'date', 'timestamp', 'raw'] as const) {
+        assert.equal(applyQueryParameters('SELECT :v', { v: null }, [{ name: 'v', kind, defaultValue: '1' }]), 'SELECT NULL', kind);
+    }
+    assert.throws(
+        () => applyQueryParameters('SELECT * FROM t ORDER BY :col', { col: null }, [{ name: 'col', kind: 'identifier' }]),
+        /^Error: :col cannot be NULL: it is an identifier\.$/
+    );
+});
+
+test('applyQueryParameters falls back to NULL for a missing value when the default is NULL', () => {
+    const params: SavedQueryParameter[] = [{ name: 'until', kind: 'date', defaultNull: true }];
+    assert.equal(applyQueryParameters('SELECT :until', {}, params), 'SELECT NULL');
+    assert.equal(applyQueryParameters('SELECT :until', { until: '' }, params), 'SELECT NULL');
+    assert.equal(applyQueryParameters('SELECT :until', { until: '25.11.2026' }, params), `SELECT DATE '2026-11-25'`);
+});
+
+test('applyQueryParameters renders date and timestamp placeholders as typed literals', () => {
+    assert.equal(
+        applyQueryParameters(
+            'SELECT * FROM t WHERE d = :d AND ts >= :ts',
+            { d: '2026-11-25', ts: '25.11.2026 10:39' },
+            [{ name: 'd', kind: 'date' }, { name: 'ts', kind: 'timestamp' }]
+        ),
+        `SELECT * FROM t WHERE d = DATE '2026-11-25' AND ts >= TIMESTAMP '2026-11-25 10:39:00'`
+    );
+});
+
 // ===== normalization =====
 
 test('normalizeParameters defaults an unknown kind to text and drops nameless entries', () => {
@@ -236,6 +292,35 @@ test('normalizeParameters keeps only the first of two identically named paramete
     assert.deepEqual(
         normalizeParameters([{ name: 'a', kind: 'number' }, { name: 'A', kind: 'raw' }] as any),
         [{ name: 'a', kind: 'number' }]
+    );
+});
+
+test('normalizeParameters keeps date and timestamp kinds and a NULL default instead of a default value', () => {
+    assert.deepEqual(
+        normalizeParameters([
+            { name: 'd', kind: 'date', defaultValue: '2026-01-01' },
+            { name: 'ts', kind: 'timestamp', defaultNull: true, defaultValue: 'ignored' },
+            { name: 'col', kind: 'identifier', defaultNull: true, defaultValue: 'id' },
+            { name: 'x', kind: 'text', defaultNull: 'yes' }
+        ] as any),
+        [
+            { name: 'd', kind: 'date', defaultValue: '2026-01-01' },
+            { name: 'ts', kind: 'timestamp', defaultNull: true },
+            { name: 'col', kind: 'identifier', defaultValue: 'id' },
+            { name: 'x', kind: 'text' }
+        ]
+    );
+});
+
+test('a NULL default survives the workspace file and a changed statement', () => {
+    const stored = serializeWorkspaceQuery({
+        id: '1', name: 'x', sql: 'SELECT :until', parameters: [{ name: 'until', kind: 'timestamp', defaultNull: true }]
+    });
+    const loaded = normalizeSavedQuery(JSON.parse(JSON.stringify(stored)))!;
+    assert.deepEqual(loaded.parameters, [{ name: 'until', kind: 'timestamp', defaultNull: true }]);
+    assert.deepEqual(
+        mergeParameters('SELECT :until, :since', loaded.parameters),
+        [{ name: 'until', kind: 'timestamp', defaultNull: true }, { name: 'since', kind: 'text' }]
     );
 });
 
@@ -484,6 +569,12 @@ test('parameter values are cached per query and cleared when empty', async () =>
     assert.deepEqual(store.getParameterValues('q2'), {});
     await store.setParameterValues('q1', {});
     assert.deepEqual(store.getParameterValues('q1'), {});
+});
+
+test('a remembered NULL value is kept as null, next to the remembered strings', async () => {
+    const store = new SavedQueryStore(createMockContext());
+    await store.setParameterValues('q1', { from: '2024-01-01', until: null, skipped: undefined as any });
+    assert.deepEqual(store.getParameterValues('q1'), { from: '2024-01-01', until: null });
 });
 
 test('a query without a workspace folder stays in the personal store', async () => {

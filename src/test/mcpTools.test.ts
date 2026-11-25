@@ -481,3 +481,39 @@ test('running a bookmarked query needs only the readData permission of the conne
     assert.ok(!result.isError, text(result));
     assert.ok(allowed.sql.some((s) => /BEGIN.*READ ONLY/i.test(s)), 'runs read-only');
 });
+
+test('run_saved_query writes NULL for a null value and for a placeholder that defaults to NULL', async () => {
+    const f = fake({ saved: [granted({ readData: true })] });
+    f.services.savedQueries.list = () => [{
+        id: 'q7', name: 'Orders', sql: 'SELECT * FROM orders WHERE c = :customer AND d < :until AND s = :since',
+        parameters: [
+            { name: 'customer', kind: 'number' },
+            { name: 'until', kind: 'timestamp', defaultNull: true },
+            { name: 'since', kind: 'date' }
+        ]
+    }];
+    const result = await callTool(tool('run_saved_query'), { id: 'q7', values: { customer: null, since: '25.11.2026' } }, f.services);
+    assert.ok(!result.isError, text(result));
+    assert.ok(f.sql.some((s) => s.includes(`SELECT * FROM orders WHERE c = NULL AND d < NULL AND s = DATE '2026-11-25'`)), f.sql.join('\n'));
+});
+
+test('run_saved_query refuses NULL for an identifier placeholder', async () => {
+    const f = fake({ saved: [granted({ readData: true })] });
+    f.services.savedQueries.list = () => [{ id: 'q7', name: 'Sorted', sql: 'SELECT * FROM t ORDER BY :col', parameters: [{ name: 'col', kind: 'identifier' }] }];
+    const result = await callTool(tool('run_saved_query'), { id: 'q7', values: { col: null } }, f.services);
+    assert.equal(result.isError, true);
+    assert.match(text(result), /:col cannot be NULL/);
+});
+
+test('list_saved_queries shows a NULL default and the kind of each placeholder', async () => {
+    const f = fake();
+    f.services.savedQueries.list = () => [{
+        id: 'q7', name: 'Orders', sql: 'SELECT :until, :since',
+        parameters: [{ name: 'until', kind: 'timestamp', defaultNull: true }, { name: 'since', kind: 'date', defaultValue: '2026-01-01' }]
+    }];
+    const result = await callTool(tool('list_saved_queries'), {}, f.services);
+    assert.deepEqual(JSON.parse(text(result))[0].parameters, [
+        { name: 'until', kind: 'timestamp', defaultNull: true },
+        { name: 'since', kind: 'date', default: '2026-01-01' }
+    ]);
+});

@@ -1430,6 +1430,18 @@ body.export-file-assist .export-dialog .export-target-preview {
     font-family: var(--font-mono);
 }
 
+/* A timestamp with seconds and an offset needs more room than a plain value. */
+.constraints-dialog-content .cust-raw.dtp-input {
+    width: 190px;
+}
+
+.query-param-null {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-size: var(--fs-sm);
+}
+
 .constraints-preview-wrap {
     margin-top: var(--sp-4);
 }

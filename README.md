@@ -615,9 +615,13 @@ can commit so that everyone on the team has it.
 
 Placeholders written as `:name` are asked for when the query runs, and the
 values are remembered for the session. Every placeholder has a kind — text,
-number, identifier or raw — so its value ends up in the SQL properly quoted
-instead of merely concatenated. A bookmarked query can be dragged into an
-editor to insert its SQL.
+number, date, timestamp, identifier or raw — so its value ends up in the SQL
+properly quoted instead of merely concatenated; dates and timestamps are picked
+with the 24-hour date picker and written as `DATE '…'` / `TIMESTAMP '…'`. Any
+placeholder except an identifier can default to NULL (the *NULL* box next to
+its default value) or be set to NULL with the *NULL* box of the parameter form
+when the query runs. A bookmarked query can be dragged into an editor to insert
+its SQL.
 
 Tags sort the view into folders: every tag is a folder, a query with several
 tags appears in each of them, and queries without a tag are collected under
