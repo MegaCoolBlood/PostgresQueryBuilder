@@ -1311,12 +1311,15 @@ function splitGroupTail(s) {
     };
 }
 
+// Splits a WHERE / HAVING condition at its top-level ANDs, but never at the
+// AND of a `[NOT] BETWEEN [SYMMETRIC] x AND y`, which belongs to that BETWEEN.
 function splitWhereByAnd(whereClause) {
     const parts = [];
     let buf = '';
     let depth = 0;
     let inStr = false;
     let strCh = '';
+    let inBetween = false;
     let i = 0;
     while (i < whereClause.length) {
         const ch = whereClause[i];
@@ -1335,9 +1338,22 @@ function splitWhereByAnd(whereClause) {
         if (ch === '(') { depth++; buf += ch; i++; continue; }
         if (ch === ')') { depth--; buf += ch; i++; continue; }
         if (depth === 0) {
+            if (/[A-Za-z_]/.test(ch) && !/[\w$]/.test(whereClause[i - 1] || '')) {
+                const word = /^[A-Za-z_][\w$]*/.exec(whereClause.substring(i))[0];
+                if (word.toLowerCase() === 'between') inBetween = true;
+                buf += word;
+                i += word.length;
+                continue;
+            }
             const rest = whereClause.substring(i);
             const m = rest.match(/^\s+AND\s+/i);
             if (m && /\s/.test(whereClause[i] || '')) {
+                if (inBetween) {
+                    inBetween = false;
+                    buf += m[0];
+                    i += m[0].length;
+                    continue;
+                }
                 parts.push(buf.trim());
                 buf = '';
                 i += m[0].length;
@@ -1358,12 +1374,34 @@ function splitWhereByAnd(whereClause) {
 function whereClauseTargetsColumn(clause, colName, reference) {
     const code = String(clause).replace(/^(?:\s*(?:--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/))*/, '');
     if (reference && clauseStartsWithReference(code, reference)) return true;
+    const group = parenthesizedConditionParts(code);
+    if (group) return group.every(part => whereClauseTargetsColumn(part, colName, reference));
     // Match an optional schema/table prefix then the column identifier (quoted or bare)
     const m = code.match(/^\s*(?:(?:"[^"]+"|[A-Za-z_][\w$]*)\s*\.\s*)*("[^"]+"|[A-Za-z_][\w$]*)(?![\w$])(?!\s*[.(])/);
     if (!m) return false;
     let tok = m[1];
     if (tok.startsWith('"') && tok.endsWith('"')) tok = tok.substring(1, tok.length - 1);
     return tok.toLowerCase() === colName.toLowerCase();
+}
+
+// The AND-ed conditions inside a condition wrapped as a whole in parentheses,
+// optionally negated — `(c >= 'a' AND c < 'b')` or `NOT (…)`, the shape of a
+// date range filter. Null for any other condition and for a group with a
+// top-level OR, which is no condition on one column.
+function parenthesizedConditionParts(code) {
+    const m = /^\s*(?:NOT\s*)?\(/i.exec(code);
+    if (!m) return null;
+    const masked = maskSqlStructure(code);
+    const open = m[0].length - 1;
+    let depth = 0, close = -1;
+    for (let i = open; i < masked.length; i++) {
+        if (masked[i] === '(') depth++;
+        else if (masked[i] === ')' && --depth === 0) { close = i; break; }
+    }
+    if (close === -1 || masked.substring(close + 1).trim() !== '') return null;
+    const inner = code.substring(open + 1, close);
+    if (!inner.trim() || builderHasTopLevelOr(inner)) return null;
+    return splitWhereByAnd(inner);
 }
 
 // True when `code` begins with the SQL text `reference`, ignoring differences
@@ -1829,16 +1867,171 @@ function filterOperatorForMode(mode) {
     }
 }
 
+// ===== Date / timestamp filters =====
+// A date or timestamp filter value stands for the whole unit it is written in:
+// `2026-11-25` is that day, `2026-11-25 10:39` that minute, `… 10:39:15` that
+// second and `… 10:39:15.12` that hundredth of a second. Every operator is
+// built from the half-open interval [start, end) of that unit, so `=` finds
+// every row inside it and the database gets ISO text it parses in any DateStyle.
+// `infinity` and `-infinity` are single points: `=` becomes `col = 'infinity'`.
+// A value with an offset (`10:39+01`, for a timestamptz column) keeps the
+// offset in both bounds, so the database compares the exact instant.
+
+const DATE_FILTER_INFINITY = 10n ** 30n;
+
+// The forms the date picker accepts: ISO with `T` or spaces, one-digit month,
+// day and hour, the dotted `25.11.2026`, seconds, fractions and an offset.
+const DATE_FILTER_INPUT = /^(?:(\d{4})-(\d{1,2})-(\d{1,2})|(\d{1,2})\.(\d{1,2})\.(\d{4}))(?:(?:T\s*|\s+)(\d{1,2}):(\d{2})(?::(\d{2})(\.\d{1,6})?)?\s*(Z|[+-]\d{2}(?::?\d{2})?)?)?$/i;
+
+// Reads a filter value — ISO with `T` or a space, with or without seconds,
+// fractions or an offset, the dotted `25.11.2026 10:39`, or ±infinity — into
+// { iso, end, unit, startPos, endPos, zone }: `iso` the normalised start
+// (`2026-11-25 10:39`), `end` the start of the next unit in the same shape,
+// `unit` 'day' | 'minute' | 'second' | 'fraction' | 'infinity', both as
+// microsecond positions for comparing, and `zone` the offset written ('' for
+// none). An infinity has no end (`end` null, both positions ±∞). A `date`
+// column (`kind` 'date') always works on whole days and takes no offset.
+// Null for anything unreadable.
+function normalizeDateTimeFilterValue(text, kind) {
+    const raw = String(text == null ? '' : text).trim();
+    if (/^[+-]?infinity$/i.test(raw)) {
+        const negative = raw[0] === '-';
+        const pos = negative ? -DATE_FILTER_INFINITY : DATE_FILTER_INFINITY;
+        return { iso: negative ? '-infinity' : 'infinity', end: null, unit: 'infinity', startPos: pos, endPos: pos, zone: '' };
+    }
+    const m = DATE_FILTER_INPUT.exec(raw);
+    if (!m) return null;
+    const pad = (n, w) => String(n).padStart(w, '0');
+    const date = m[1] ? `${m[1]}-${pad(m[2], 2)}-${pad(m[3], 2)}` : `${m[6]}-${pad(m[5], 2)}-${pad(m[4], 2)}`;
+    const zone = m[11] ? m[11].toUpperCase() : '';
+    if (zone && kind === 'date') return null;
+    const time = m[7] === undefined ? '' : ` ${pad(m[7], 2)}:${m[8]}` + (m[9] === undefined ? '' : `:${m[9]}${m[10] || ''}`);
+    const p = parseSeriesDateTime(date + time, 'timestamp');
+    if (!p) return null;
+    let unit, micros, shape;
+    if (kind === 'date' || !p.hasTime) {
+        unit = 'day';
+        micros = SERIES_DAY_MICROS;
+        shape = { hasDate: true, hasTime: false };
+    } else {
+        unit = p.fracDigits > 0 ? 'fraction' : p.hasSeconds ? 'second' : 'minute';
+        micros = p.fracDigits > 0 ? 10n ** BigInt(6 - p.fracDigits) : p.hasSeconds ? 1000000n : 60000000n;
+        shape = { hasDate: true, hasTime: true, sep: ' ', hasSeconds: p.hasSeconds, fracDigits: p.fracDigits, zone };
+    }
+    const startPos = unit === 'day' ? BigInt(p.days) * SERIES_DAY_MICROS : p.pos;
+    const endPos = startPos + micros;
+    return { iso: formatSeriesDateTime(startPos, shape), end: formatSeriesDateTime(endPos, shape), unit, startPos, endPos, zone };
+}
+
+// The microsecond position of a date / timestamp cell value for comparing with
+// a filter: the offset of a timestamptz is ignored, so the local time shown is
+// what is compared. ±infinity sort outside every value; null when unreadable.
+function dateTimeCellPosition(value) {
+    if (value === null || value === undefined) return null;
+    const s = String(value).trim();
+    if (/^\+?infinity$/i.test(s)) return DATE_FILTER_INFINITY;
+    if (/^-infinity$/i.test(s)) return -DATE_FILTER_INFINITY;
+    const p = parseSeriesDateTime(s.replace(/^(\d{4}-\d{2}-\d{2})(?:T|\s+)/i, '$1 '), 'timestamp');
+    return p ? p.pos : null;
+}
+
+// The bound at the start of value `v` (`after` false) or just after it
+// (`after` true), as { sql, pos, op } with `op` the comparison a cell must pass.
+// A unit ends where the next one starts; a point (±infinity) ends on itself.
+function dateFilterLower(v, after) {
+    if (!after) return { sql: v.iso, pos: v.startPos, op: '>=' };
+    return v.end === null ? { sql: v.iso, pos: v.startPos, op: '>' } : { sql: v.end, pos: v.endPos, op: '>=' };
+}
+
+function dateFilterUpper(v, after) {
+    if (!after) return { sql: v.iso, pos: v.startPos, op: '<' };
+    return v.end === null ? { sql: v.iso, pos: v.startPos, op: '<=' } : { sql: v.end, pos: v.endPos, op: '<' };
+}
+
+// The interval a date filter lets through: { lower, upper, negate, zoned },
+// each bound { sql, pos, op } or null for an open side, `negate` for `!=`, and
+// `zoned` when a value carries an offset. `val` is one value with its
+// comparison `operator`, or a { from, to } range. Null when the filter does
+// not constrain anything — no readable value.
+function dateFilterBounds(val, operator, kind) {
+    if (val === null || val === undefined || val === '') return null;
+    if (typeof val === 'object') {
+        const from = val.from ? normalizeDateTimeFilterValue(val.from, kind) : null;
+        const to = val.to ? normalizeDateTimeFilterValue(val.to, kind) : null;
+        if (!from && !to) return null;
+        return {
+            lower: from ? dateFilterLower(from, false) : null,
+            upper: to ? dateFilterUpper(to, true) : null,
+            negate: false,
+            zoned: !!((from && from.zone) || (to && to.zone))
+        };
+    }
+    const v = normalizeDateTimeFilterValue(val, kind);
+    if (!v) return null;
+    const bounds = (lower, upper, negate) => ({ lower, upper, negate, zoned: !!v.zone });
+    switch (operator) {
+        case '<': return bounds(null, dateFilterUpper(v, false), false);
+        case '<=': return bounds(null, dateFilterUpper(v, true), false);
+        case '>': return bounds(dateFilterLower(v, true), null, false);
+        case '>=': return bounds(dateFilterLower(v, false), null, false);
+        case '!=':
+        case '<>': return bounds(dateFilterLower(v, false), dateFilterUpper(v, true), true);
+        default: return bounds(dateFilterLower(v, false), dateFilterUpper(v, true), false);
+    }
+}
+
+// The WHERE condition of a date filter (see dateFilterBounds), or null. Both
+// sides make one parenthesised condition — `NOT (…)` for `!=`, which like `<>`
+// lets no NULL through — so the query keeps it together as the column's filter.
+// Bounds that close on one point (±infinity) become `=` / `<>`.
+function buildDateFilterClause(fmtCol, val, operator, kind) {
+    const bounds = dateFilterBounds(val, operator, kind);
+    if (!bounds) return null;
+    const { lower, upper } = bounds;
+    if (lower && upper && lower.op === '>=' && upper.op === '<=' && lower.sql === upper.sql) {
+        return `${fmtCol} ${bounds.negate ? '<>' : '='} '${escapeSqlString(lower.sql)}'`;
+    }
+    const parts = [lower, upper].filter(Boolean).map(b => `${fmtCol} ${b.op} '${escapeSqlString(b.sql)}'`);
+    if (parts.length === 1) return parts[0];
+    return `${bounds.negate ? 'NOT ' : ''}(${parts.join(' AND ')})`;
+}
+
+function dateBoundAdmits(bound, pos) {
+    if (!bound) return true;
+    switch (bound.op) {
+        case '>': return pos > bound.pos;
+        case '>=': return pos >= bound.pos;
+        case '<': return pos < bound.pos;
+        default: return pos <= bound.pos;
+    }
+}
+
+// Whether a date / timestamp cell passes a date filter, with the semantics of
+// buildDateFilterClause. A filter without a readable value lets every row
+// through. So does a filter value with an offset: the cells show their local
+// time, not the instant, and the database has already filtered exactly.
+function dateCellMatchesFilter(cellVal, filterVal, operator, kind) {
+    const bounds = dateFilterBounds(filterVal, operator, kind);
+    if (!bounds || bounds.zoned) return true;
+    const pos = dateTimeCellPosition(cellVal);
+    if (pos === null) return false;
+    const inside = dateBoundAdmits(bounds.lower, pos) && dateBoundAdmits(bounds.upper, pos);
+    return bounds.negate ? !inside : inside;
+}
+
 // Build the SQL WHERE-clause fragment for a single column filter, or return
 // null when the filter does not constrain the query. `fmtCol` is the already
 // quoted/qualified column identifier and `operator` is the comparison operator
-// for single-value numeric/date filters.
-function buildFilterClause(fmtCol, val, filterType, isExact, operator, thousandSeparator) {
+// for single-value numeric/date filters. `dateKind` ('date' or 'timestamp')
+// tells a date filter which column type it works on.
+function buildFilterClause(fmtCol, val, filterType, isExact, operator, thousandSeparator, dateKind) {
     if (val === null || val === undefined || val === '') return null;
 
     if (isExact) {
         return `${fmtCol} = ${formatExactMatchValue(val, filterType, thousandSeparator)}`;
     }
+
+    if (filterType === 'date') return buildDateFilterClause(fmtCol, val, operator, dateKind);
 
     if (typeof val === 'object' && val.from !== undefined) {
         const fromRaw = val.from ? normalizeFilterInputValue(val.from, filterType, thousandSeparator) : '';
@@ -1863,10 +2056,6 @@ function buildFilterClause(fmtCol, val, filterType, isExact, operator, thousandS
         const numericValue = toNumericLiteral(normalizeFilterInputValue(val, filterType, thousandSeparator));
         if (numericValue === null) return null;
         return `${fmtCol} ${operator} ${numericValue}`;
-    }
-
-    if (filterType === 'date') {
-        return `${fmtCol} ${operator} '${escapeSqlString(val)}'`;
     }
 
     return `${fmtCol}::text ILIKE '%${escapeSqlString(val)}%'`;
@@ -4539,8 +4728,10 @@ function buildSessionBadge(info) {
 
 // Predicate for local (in-memory) row filtering. Returns true when `cellVal`
 // passes the given column filter. A filter that cannot constrain the data
-// (empty range, invalid number) matches every row.
-function rowValueMatchesFilter(cellVal, filterVal, filterType, mode, thousandSeparator) {
+// (empty range, invalid number or date) matches every row. `dateKind` is
+// passed on to a date filter as in buildFilterClause.
+function rowValueMatchesFilter(cellVal, filterVal, filterType, mode, thousandSeparator, dateKind) {
+    if (filterType === 'date') return dateCellMatchesFilter(cellVal, filterVal, filterOperatorForMode(mode), dateKind);
     if (typeof filterVal === 'object' && filterVal !== null && filterVal.from !== undefined) {
         const from = filterVal.from;
         const to = filterVal.to;
@@ -4562,19 +4753,12 @@ function rowValueMatchesFilter(cellVal, filterVal, filterType, mode, thousandSep
         return val <= to;
     }
 
-    if ((filterType === 'numeric' || filterType === 'date') && mode && mode !== 'equals') {
+    if (filterType === 'numeric' && mode && mode !== 'equals') {
         if (cellVal === null || cellVal === undefined) return false;
         const normalizedFilterVal = normalizeFilterInputValue(filterVal, filterType, thousandSeparator);
-        let cmp;
-        if (filterType === 'numeric') {
-            if (toNumericLiteral(normalizedFilterVal) === null) return true;
-            if (isNaN(Number(cellVal))) return false;
-            cmp = compareNumericText(cellVal, normalizedFilterVal);
-        } else {
-            const a = String(cellVal);
-            const b = String(normalizedFilterVal);
-            cmp = a < b ? -1 : a > b ? 1 : 0;
-        }
+        if (toNumericLiteral(normalizedFilterVal) === null) return true;
+        if (isNaN(Number(cellVal))) return false;
+        const cmp = compareNumericText(cellVal, normalizedFilterVal);
         switch (mode) {
             case 'not_equals': return cmp !== 0;
             case 'gt': return cmp > 0;
@@ -8773,7 +8957,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             buildByCol[col.name] = ref => (val
                 ? buildFilterClause(
                     ref, val, filterType,
-                    !!exactFilters[col.name], getFilterOperator(col.name), thousandSeparator
+                    !!exactFilters[col.name], getFilterOperator(col.name), thousandSeparator,
+                    pgDateTimeKind(col.dataType)
                 )
                 : '');
         }
@@ -9314,8 +9499,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             if (!colMeta && columns.length > 0) continue;
             const filterType = colMeta ? getColumnFilterType(colMeta.dataType) : 'text';
             const mode = filterModes[col];
+            const dateKind = colMeta ? pgDateTimeKind(colMeta.dataType) : '';
             order = order.filter(idx =>
-                rowValueMatchesFilter(allRows[idx][col], filterVal, filterType, mode, thousandSeparator)
+                rowValueMatchesFilter(allRows[idx][col], filterVal, filterType, mode, thousandSeparator, dateKind)
             );
         }
 
@@ -12967,6 +13153,10 @@ if (typeof module !== 'undefined' && module.exports) {
         formatSql,
         filterOperatorForMode,
         buildFilterClause,
+        normalizeDateTimeFilterValue,
+        dateTimeCellPosition,
+        buildDateFilterClause,
+        dateCellMatchesFilter,
         buildNullConstraintClause,
         buildErrorDialogState,
         mappingConditionToClause,
