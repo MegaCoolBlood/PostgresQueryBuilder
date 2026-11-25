@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as path from 'node:path';
 import { extractTableAliasMap } from '../selectStatementExtractor';
+import { PICKER_INPUTS, PICKER_SHORTCUTS } from './helpers/dateTimeInputs';
 import {
     buildColumnTypeLookup,
     detectVariableContext,
@@ -17,6 +19,8 @@ import {
     untypedArrayLiteral,
     type ColumnTypeLookup
 } from '../sqlVariableValues';
+
+const dtp = require(path.join(__dirname, '../../../src/webview/dateTimePicker.js'));
 
 function spanOf(sql: string, token: string, nth = 0): { start: number; end: number } {
     let start = -1;
@@ -56,7 +60,9 @@ test('formatVariableValue rejects text and ambiguous grouping as a number', () =
 test('formatVariableValue renders a date and rejects an impossible one', () => {
     assert.deepEqual(formatVariableValue('2024-02-29', 'date'), { sql: "DATE '2024-02-29'" });
     assert.ok(formatVariableValue('2023-02-29', 'date').error);
-    assert.ok(formatVariableValue('31.01.2024', 'date').error);
+    assert.deepEqual(formatVariableValue('31.01.2024', 'date'), { sql: "DATE '2024-01-31'" }, 'typed day first, as the picker accepts it');
+    assert.deepEqual(formatVariableValue('1.2.2024', 'date'), { sql: "DATE '2024-02-01'" });
+    assert.ok(formatVariableValue('31.02.2024', 'date').error);
     assert.ok(formatVariableValue("2024-01-31'; --", 'date').error);
 });
 
@@ -64,8 +70,38 @@ test('formatVariableValue renders a timestamp from the date-time field and a typ
     assert.deepEqual(formatVariableValue('2024-01-31T13:45', 'timestamp'), { sql: "TIMESTAMP '2024-01-31 13:45:00'" });
     assert.deepEqual(formatVariableValue('2024-01-31 13:45:07.123', 'timestamp'), { sql: "TIMESTAMP '2024-01-31 13:45:07.123'" });
     assert.deepEqual(formatVariableValue('2024-01-31', 'timestamp'), { sql: "TIMESTAMP '2024-01-31 00:00:00'" });
+    assert.deepEqual(formatVariableValue('31.01.2024 9:05', 'timestamp'), { sql: "TIMESTAMP '2024-01-31 09:05:00'" });
     assert.ok(formatVariableValue('2024-01-31 24:00', 'timestamp').error);
+    assert.ok(formatVariableValue('2024-01-31 23:60', 'timestamp').error);
+    assert.ok(formatVariableValue("31.01.2024 10:00'; --", 'timestamp').error);
     assert.ok(formatVariableValue('yesterday', 'timestamp').error);
+});
+
+test('formatVariableValue renders infinity and keeps an offset as TIMESTAMPTZ', () => {
+    assert.deepEqual(formatVariableValue('infinity', 'date'), { sql: "DATE 'infinity'" });
+    assert.deepEqual(formatVariableValue('-Infinity', 'date'), { sql: "DATE '-infinity'" });
+    assert.deepEqual(formatVariableValue('+infinity', 'timestamp'), { sql: "TIMESTAMP 'infinity'" });
+    assert.deepEqual(formatVariableValue('-infinity', 'timestamp'), { sql: "TIMESTAMP '-infinity'" });
+    assert.deepEqual(formatVariableValue('2026-11-25 10:39+01', 'timestamp'), { sql: "TIMESTAMPTZ '2026-11-25 10:39:00+01'" });
+    assert.deepEqual(formatVariableValue('25.11.2026T10:39:15.5 -05:30', 'timestamp'), { sql: "TIMESTAMPTZ '2026-11-25 10:39:15.5-05:30'" });
+    assert.deepEqual(formatVariableValue('2026-11-25t10:39z', 'timestamp'), { sql: "TIMESTAMPTZ '2026-11-25 10:39:00Z'" });
+    assert.deepEqual(formatVariableValue('2026-11-25 10:39', 'date'), { sql: "DATE '2026-11-25'" }, 'the picker drops the time of a date');
+    assert.ok(formatVariableValue('2026-11-25 10:39+01', 'date').error, 'a date has no offset');
+    assert.ok(formatVariableValue("2026-11-25 10:39+01'; --", 'timestamp').error);
+});
+
+test('formatVariableValue accepts every value the date picker accepts and writes', () => {
+    const now = new Date(2026, 10, 25, 14, 7, 33);
+    for (const kind of ['date', 'timestamp'] as const) {
+        for (const text of [...PICKER_INPUTS, ...PICKER_SHORTCUTS]) {
+            const picked = dtp.parseDateTimeInput(text, kind, now);
+            if (picked.error) continue;
+            assert.equal(formatVariableValue(picked.value, kind).error, undefined, `${kind} ${text} → ${picked.value}`);
+            if (PICKER_INPUTS.includes(text)) {
+                assert.equal(formatVariableValue(text, kind).error, undefined, `${kind} ${text} as typed`);
+            }
+        }
+    }
 });
 
 test('formatVariableValue renders a boolean and NULL', () => {

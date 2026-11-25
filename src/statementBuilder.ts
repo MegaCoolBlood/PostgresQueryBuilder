@@ -268,6 +268,8 @@ export interface JoinBuilderTable {
     savedAlias?: string;
     /** Already-quoted column identifiers (may be empty, e.g. for a raw item). */
     columns: string[];
+    /** The data type of each of `columns`, when known (date and timestamp columns get the date picker). */
+    columnTypes?: string[];
     /**
      * A FROM item the builder cannot read — `(SELECT …) s`, `generate_series(1, 3) g`,
      * a CTE reference — as written, alias included; emitted verbatim. `alias`

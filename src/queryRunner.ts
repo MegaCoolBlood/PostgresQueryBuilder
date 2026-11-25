@@ -399,6 +399,8 @@ export class QueryRunner {
             tableReference: string;
             columns: string[];
             rawColumns: string[];
+            /** The data type of each column, as information_schema names it (`timestamp without time zone`). */
+            columnTypes?: string[];
             firstColumnRaw: string | null;
         }>;
         foreignKeys: Array<{
@@ -425,6 +427,7 @@ export class QueryRunner {
                 tableReference,
                 columns: cols.map(c => this.formatIdentifier(c.name, alwaysQuote)),
                 rawColumns: cols.map(c => c.name),
+                columnTypes: cols.map(c => c.dataType),
                 firstColumnRaw: cols.length ? cols[0].name : null
             });
 

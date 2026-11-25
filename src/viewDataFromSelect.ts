@@ -17,7 +17,7 @@ import {
     type VariableInput
 } from './sqlVariableValues';
 import { buildHtmlDocument } from './webviewUtils';
-import { icon } from './webviewAssets';
+import { getDateTimePickerAssets, icon } from './webviewAssets';
 import { Logger } from './logger';
 
 const VARIABLE_CACHE_KEY = 'viewDataVariableCache';
@@ -239,7 +239,7 @@ export class ViewDataFromSelect {
     .var-input { display: flex; min-width: 0; }
     .var-input > input, .var-input > select, .var-input > textarea { flex: 1; min-width: 0; font-family: var(--font-mono); }
     .var-input > .hint { padding-top: 3px; font-family: var(--font-mono); }
-    .var-row.invalid .var-input > * { border-color: var(--c-danger); }
+    .var-row.invalid .var-input > :not(.dtp-button) { border-color: var(--c-danger); }
     .var-error { grid-column: 3 / -1; color: var(--c-danger); font-size: var(--fs-xs); }
     .var-error:empty { display: none; }
     .buttons { margin-top: var(--sp-4); display: flex; gap: var(--sp-2); justify-content: flex-end; }`;
@@ -247,7 +247,8 @@ export class ViewDataFromSelect {
     <h2>Provide query variables</h2>
     <p class="hint">Choose how each value is inserted: <em>Plain SQL</em> is used verbatim (leave it empty to keep
        the variable as it is), the other types are checked and quoted for you. A <em>List</em> takes one value per
-       line or values separated by commas. Press Enter to run, Esc to cancel.</p>
+       line or values separated by commas. A <em>Date</em> or <em>Timestamp</em> is typed as 2026-11-25 10:39
+       (24-hour) or picked from the calendar next to it. Press Enter to run, Esc to cancel.</p>
     <form id="form">
         ${rows}
         <div class="hint preview-label">Preview</div>
@@ -257,7 +258,8 @@ export class ViewDataFromSelect {
             <button type="submit" class="btn btn-primary" id="runBtn">${icon('run')}${esc(actionLabel)}</button>
         </div>
     </form>`;
-        const script = `
+        const picker = getDateTimePickerAssets();
+        const script = `${picker.script}
         const vscode = acquireVsCodeApi();
         const VARS = ${initial};
         const PLACEHOLDERS = {
@@ -276,13 +278,9 @@ export class ViewDataFromSelect {
         // Carry a value over to another type where it still makes sense.
         function adaptValue(value, kind) {
             const v = String(value || '').trim();
-            if (kind === 'date') {
-                const m = /^\\d{4}-\\d{2}-\\d{2}/.exec(v);
-                return m ? m[0] : '';
-            }
-            if (kind === 'timestamp') {
-                const m = /^(\\d{4}-\\d{2}-\\d{2})(?:[T ](\\d{2}:\\d{2}(?::\\d{2})?))?/.exec(v);
-                return m ? m[1] + 'T' + (m[2] || '00:00') : '';
+            if (kind === 'date' || kind === 'timestamp') {
+                const r = window.DateTimePicker.parseDateTimeInput(v, kind);
+                return r.error ? '' : r.value;
             }
             if (kind === 'boolean') return /^(false|f|no|n|off|0)$/i.test(v) ? 'false' : 'true';
             if (kind === 'null') return '';
@@ -310,8 +308,7 @@ export class ViewDataFromSelect {
                 el.rows = 3;
             } else {
                 el = document.createElement('input');
-                el.type = s.kind === 'date' ? 'date' : s.kind === 'timestamp' ? 'datetime-local' : 'text';
-                if (s.kind === 'timestamp') el.step = '1';
+                el.type = 'text';
                 if (s.kind === 'number') el.inputMode = 'decimal';
             }
             if (PLACEHOLDERS[s.kind]) el.placeholder = PLACEHOLDERS[s.kind];
@@ -323,11 +320,19 @@ export class ViewDataFromSelect {
         function renderInput(i) {
             const row = rows[i];
             const s = state[i];
+            if (s.picker) {
+                s.picker.destroy();
+                s.picker = null;
+            }
             const el = makeControl(s);
             el.id = 'var_' + i;
             row.querySelector('[data-role="input"]').replaceChildren(el);
             row.querySelector('[data-role="listKind"]').hidden = s.kind !== 'list';
-            // A date field drops text it cannot show; keep what is visible.
+            // Dates and timestamps are typed (24-hour, ISO) or picked from a calendar.
+            if (s.kind === 'date' || s.kind === 'timestamp') {
+                s.picker = window.DateTimePicker.attachDateTimePicker(el, { kind: s.kind, allowEmpty: false });
+            }
+            // A value that does not fit the type is dropped; keep what is visible.
             if (s.kind !== 'null') s.value = el.value;
         }
 
@@ -342,8 +347,11 @@ export class ViewDataFromSelect {
             vscode.postMessage({ command: 'preview', seq, inputs: collect() });
         }
 
+        // Enter and Run always ask the host: it checks the current values and
+        // either runs or posts their errors back. Run's disabled state may be
+        // stale — a date field that just turned now / today / 10:39 into a
+        // timestamp on this very Enter has only asked for a new preview.
         function submit() {
-            if (runBtn.disabled) return;
             seq++;
             vscode.postMessage({ command: 'submit', seq, inputs: collect() });
         }
@@ -406,6 +414,6 @@ export class ViewDataFromSelect {
             first.focus();
             if (typeof first.select === 'function' && first.tagName !== 'SELECT') first.select();
         }`;
-        return buildHtmlDocument({ webview, styles, body, script });
+        return buildHtmlDocument({ webview, styles: `${styles}\n${picker.css}`, body, script });
     }
 }

@@ -443,3 +443,36 @@ test('the builder offers no ORDER BY of its own for a UNION query', () => {
     assert.match(rootEl.innerHTML, /A UNION query is sorted after its last part — edit the ORDER BY in the query bar\./);
     assert.ok(!rootEl.innerHTML.includes('data-jb="add-order"'));
 });
+
+// ===== the date picker on values compared with a date or timestamp column =====
+
+test('a value compared with a date or timestamp column is marked for the date picker', () => {
+    const state = sampleState();
+    state.tables[1].columnTypes = ['integer', 'integer', 'timestamp without time zone'];
+    state.tables[0].columnTypes = ['integer', 'date'];
+    state.where = [
+        { kind: 'compare', left: 'o.total', operator: '>=', right: "'2026-11-25 10:39'" },
+        { kind: 'compare', left: 'c.name', operator: 'BETWEEN', right: "'2026-01-01' AND '2026-12-31'" },
+        { kind: 'compare', left: 'o.total', operator: 'LIKE', right: "'2026%'" },
+        { kind: 'compare', left: 'o.id', operator: '=', right: '1' }
+    ];
+    const model = jb.createModel(state);
+    assert.equal(jb.operandPickerKind(model, model.where[0].left), 'timestamp');
+    assert.equal(jb.operandPickerKind(model, model.where[1].left), 'date');
+    assert.equal(jb.operandPickerKind(model, model.where[3].left), '');
+    assert.equal(jb.operandPickerKind(model, { kind: 'raw', text: 'now()' }), '');
+    assert.deepEqual(jb.stateFromModel(model).tables.map((t: any) => t.columnTypes), [state.tables[0].columnTypes, state.tables[1].columnTypes],
+        'the types survive the round trip');
+
+    const { rootEl } = mountBuilder(state);
+    const marked = rootEl.innerHTML.match(/data-jb="where-raw" data-i="\d" data-s="\w+" value="[^"]*" placeholder="value \/ expression" data-dtp-kind="\w+"/g) || [];
+    assert.deepEqual(marked.map((m: string) => /data-i="(\d)" data-s="(\w+)".*data-dtp-kind="(\w+)"/.exec(m)!.slice(1).join(' ')),
+        ['0 right timestamp', '1 right date', '1 right2 date'], 'not for LIKE, not for an integer column');
+});
+
+test('a table without known column types offers no date picker', () => {
+    const state = sampleState();
+    state.where = [{ kind: 'compare', left: 'o.total', operator: '=', right: "'2026-11-25'" }];
+    const { rootEl } = mountBuilder(state);
+    assert.ok(!rootEl.innerHTML.includes('data-dtp-kind'));
+});

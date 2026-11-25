@@ -90,10 +90,17 @@ the function form of `replace`, so `$&` inside injected SQL cannot expand:
 html = html.replace('/* SHARED_CSS_PLACEHOLDER */', () => getSharedStyles());
 html = html.replace('<!-- ICON_SPRITE_PLACEHOLDER -->', () => getIconSprite());
 html = html.replace('/* CSS_PLACEHOLDER */', () => css);
-html = html.replace('/* JOIN_BUILDER_CSS_PLACEHOLDER */', () => joinBuilder.css);
-html = html.replace('/* JOIN_BUILDER_JS_PLACEHOLDER */', () => joinBuilder.script); // own <script> block
+html = html.replace('/* JOIN_BUILDER_CSS_PLACEHOLDER */', () => joinBuilder.css); // + dateTimePicker.css
+html = html.replace('/* JOIN_BUILDER_JS_PLACEHOLDER */', () => joinBuilder.script); // own <script> block, + dateTimePicker.js
 html = html.replace('/* JS_PLACEHOLDER */', () => script); // assets + queryEditor.js + tableView.js
 ```
+
+The join builder bundle (`getJoinBuilderAssets`) also carries the 24-hour date
+picker (`src/webview/dateTimePicker.js`), so `tableView.js` finds
+`window.DateTimePicker`: the filter row attaches it to date / timestamp filter
+boxes (`data-dtp-kind`), and a date / timestamp cell in edit mode gets a floating
+calendar button (`openDateTimePopover`). A blur handler of an edit must ignore a
+focus move into the popover (`DateTimePicker.isInsidePicker(e.relatedTarget)`).
 
 ## How the browser side is organised
 

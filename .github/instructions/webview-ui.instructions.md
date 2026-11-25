@@ -25,6 +25,9 @@ the rules below are the ones that break `npm test` (`webviewDesign.test.ts`,
   exist in `shared.css`; a surface stylesheet holds only surface-specific rules.
 - **Every user-visible string is English.**
 - **Never hide an action** behind an overflow menu — make it `.btn-sm` instead.
+- **No native `type="date"` / `datetime-local` field** — its AM/PM follows the
+  OS locale. Use a text input with `DateTimePicker.attachDateTimePicker()` from
+  `src/webview/dateTimePicker.js` (24-hour ISO, `getDateTimePickerAssets()`).
 
 ## Buttons
 

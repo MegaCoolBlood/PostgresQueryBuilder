@@ -256,7 +256,8 @@ export async function loadJoinMetadata(
             tableReference: td.tableReference,
             alias: savedAlias ?? deriveQualifier(td.firstColumnRaw, td.table),
             savedAlias,
-            columns: [...td.columns]
+            columns: [...td.columns],
+            ...(td.columnTypes ? { columnTypes: [...td.columnTypes] } : {})
         });
     }
 

@@ -180,8 +180,6 @@ input[type="text"],
 input[type="number"],
 input[type="password"],
 input[type="search"],
-input[type="date"],
-input[type="datetime-local"],
 select,
 textarea {
     padding: 3px var(--sp-2);

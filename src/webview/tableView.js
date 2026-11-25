@@ -3251,6 +3251,7 @@ function mergeBuilderMetadata(state, answer) {
         }
         const columns = (Array.isArray(meta.columns) ? meta.columns : []).map(c => spelled.get(sqlIdentifierName(c)) || c);
         const merged = Object.assign({}, t, { schema: meta.resolvedSchema || t.schema, columns });
+        if (Array.isArray(meta.columnTypes) && meta.columnTypes.length === columns.length) merged.columnTypes = meta.columnTypes.slice();
         if (meta.savedAlias) merged.savedAlias = meta.savedAlias;
         return merged;
     });
@@ -6075,6 +6076,7 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     let filters = {};
     let exactFilters = {}; // FK filters that use exact match
     let filterModes = {}; // 'contains' | 'between' per column
+    let filterPickers = []; // the date pickers of the filter row, rebuilt with it
 
     const tableHead = document.getElementById('tableHead');
     const dataTable = document.getElementById('dataTable');
@@ -8643,15 +8645,10 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         return 'text';
     }
 
-    function getInputTypeForColumn(col) {
-        const filterType = getColumnFilterType(col.dataType);
-        if (filterType === 'date') {
-            const dt = col.dataType.toLowerCase();
-            if (dt.includes('timestamp')) return 'datetime-local';
-            return 'date';
-        }
-        if (filterType === 'numeric') return 'text';
-        return 'text';
+    // The date picker kind of a column's filter boxes: 'date', 'timestamp' or ''.
+    function filterPickerKind(col) {
+        if (getColumnFilterType(col.dataType) !== 'date') return '';
+        return col.dataType.toLowerCase() === 'date' ? 'date' : 'timestamp';
     }
 
     function getMaxFormattedWidth(colName) {
@@ -8769,7 +8766,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         const filterExpressions = currentSelectExpressions();
         columns.forEach(col => {
             const filterType = getColumnFilterType(col.dataType);
-            const inputType = getInputTypeForColumn(col);
+            const pickerKind = filterPickerKind(col);
+            const pickerAttr = pickerKind ? ` data-dtp-kind="${pickerKind}"` : '';
             const mode = filterModes[col.name] || (filterType === 'text' ? 'contains' : 'equals');
             const val = filters[col.name] || '';
             // A window or set-returning column cannot be filtered in SQL.
@@ -8794,16 +8792,14 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
 
                 if (mode === 'between') {
                     const rangeVal = (typeof val === 'object' && val !== null) ? val : { from: '', to: '' };
-                    const langAttr = (filterType === 'date') ? ' lang="en-GB"' : '';
                     const fromDisplay = (filterType === 'numeric' && rangeVal.from) ? escapeAttr(formatNumberDisplay(rangeVal.from, thousandSeparator) || rangeVal.from) : escapeAttr(rangeVal.from || '');
                     const toDisplay = (filterType === 'numeric' && rangeVal.to) ? escapeAttr(formatNumberDisplay(rangeVal.to, thousandSeparator) || rangeVal.to) : escapeAttr(rangeVal.to || '');
-                    html += `<input class="filter-input filter-input-range" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" data-range="from" placeholder="From" value="${fromDisplay}"${numWidthStyle}${hint}${inputType === 'number' ? ' step="any"' : ''}>`;
-                    html += `<input class="filter-input filter-input-range" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" data-range="to" placeholder="To" value="${toDisplay}"${numWidthStyle}${hint}${inputType === 'number' ? ' step="any"' : ''}>`;
+                    html += `<input class="filter-input filter-input-range" type="text"${pickerAttr} data-col="${escapeAttr(col.name)}" data-range="from" placeholder="From" value="${fromDisplay}"${numWidthStyle}${hint}>`;
+                    html += `<input class="filter-input filter-input-range" type="text"${pickerAttr} data-col="${escapeAttr(col.name)}" data-range="to" placeholder="To" value="${toDisplay}"${numWidthStyle}${hint}>`;
                 } else {
                     const singleVal = (typeof val === 'string') ? val : '';
-                    const langAttr = (filterType === 'date') ? ' lang="en-GB"' : '';
                     const displayVal = (filterType === 'numeric' && singleVal) ? escapeAttr(formatNumberDisplay(singleVal, thousandSeparator) || singleVal) : escapeAttr(singleVal);
-                    html += `<input class="filter-input" type="${inputType}"${langAttr} data-col="${escapeAttr(col.name)}" placeholder="Filter..." value="${displayVal}"${numWidthStyle}${hint}${inputType === 'number' ? ' step="any"' : ''}>`;
+                    html += `<input class="filter-input" type="text"${pickerAttr} data-col="${escapeAttr(col.name)}" placeholder="Filter..." value="${displayVal}"${numWidthStyle}${hint}>`;
                 }
             } else {
                 // Text filter (ILIKE)
@@ -8815,6 +8811,8 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         });
         html += '</tr>';
 
+        filterPickers.forEach(p => p.destroy());
+        filterPickers = [];
         tableHead.innerHTML = html;
         updateStickyFilterOffset();
 
@@ -8846,6 +8844,21 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
             }
             attachColumnDragHandlers(th);
         });
+
+        // Date and timestamp filters are typed (24-hour ISO) or picked. The picker
+        // listens first, so Enter below applies the normalised value; a value
+        // picked from the calendar applies the filter at once.
+        if (window.DateTimePicker) {
+            tableHead.querySelectorAll('.filter-input[data-dtp-kind]').forEach(input => {
+                const picker = window.DateTimePicker.attachDateTimePicker(input, {
+                    kind: input.getAttribute('data-dtp-kind'),
+                    onCommit: (_value, how) => { if (how === 'picker') applyFiltersToQuery(); }
+                });
+                const range = input.getAttribute('data-range');
+                if (range) input.placeholder = range === 'from' ? 'From' : 'To';
+                filterPickers.push(picker);
+            });
+        }
 
         tableHead.querySelectorAll('.filter-input').forEach(input => {
             const col = input.getAttribute('data-col');
@@ -9961,12 +9974,16 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         if (kind === 'row') handleNullCellFocus(el);
         else if (kind === 'dup') clearDefaultMarker(el);
         if (kind) showCharBudgetBadge(el);
+        if (kind) showCellDateButton(el); else hideCellDateButton();
     });
 
     tableBody.addEventListener('focusout', (e) => {
         const el = e.target;
         const kind = editableKind(el);
         if (!kind) return;
+        // Choosing in the date picker keeps the cell in edit mode; the focus comes back to it.
+        if (window.DateTimePicker && window.DateTimePicker.isInsidePicker(e.relatedTarget)) return;
+        hideCellDateButton();
         hideCharBudgetBadge();
         if (kind === 'row') handleCellEdit(e);
         else if (kind === 'insert') handleInsertCellEdit(e);
@@ -9974,6 +9991,106 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
         exitCellEditMode(el);
         commitMultiEdit(el);
     });
+
+    tableBody.addEventListener('keydown', (e) => {
+        if (e.altKey && e.key === 'ArrowDown' && cellDateKind(e.target)) {
+            e.preventDefault();
+            e.stopPropagation();
+            openCellDatePicker();
+        }
+    });
+
+    // ===== Date picker of a date or timestamp cell in edit mode =====
+    // One floating calendar button at the right edge of the cell being edited
+    // (an inserted row's cell is itself the editable, so nothing can go inside
+    // it). The chosen ISO text replaces the cell's text; leaving the cell saves
+    // it as any typed value.
+
+    let cellDateTarget = null;
+    let cellDatePopover = null;
+    const cellDateButton = document.createElement('button');
+    cellDateButton.type = 'button';
+    cellDateButton.className = 'btn btn-sm btn-icon cell-date-btn';
+    cellDateButton.tabIndex = -1;
+    cellDateButton.hidden = true;
+    cellDateButton.innerHTML = icon('calendar');
+    document.body.appendChild(cellDateButton);
+
+    // 'date' or 'timestamp' for an editable cell of such a column, else ''.
+    function cellDateKind(el) {
+        if (!window.DateTimePicker || !editableKind(el)) return '';
+        const td = el.closest('td');
+        const colMeta = td ? columns.find(c => c.name === td.getAttribute('data-col')) : null;
+        const type = colMeta ? String(colMeta.dataType || '') : '';
+        return /\[\]$/.test(type) ? '' : pgDateTimeKind(type);
+    }
+
+    function hideCellDateButton() {
+        if (cellDatePopover) return;
+        cellDateTarget = null;
+        cellDateButton.hidden = true;
+    }
+
+    function showCellDateButton(editable) {
+        const kind = cellDateKind(editable);
+        if (!kind) {
+            hideCellDateButton();
+            return;
+        }
+        cellDateTarget = editable;
+        const label = kind === 'date' ? 'Pick a date' : 'Pick a date and time';
+        cellDateButton.title = label + ' (Alt+Down)';
+        cellDateButton.setAttribute('aria-label', label);
+        cellDateButton.hidden = false;
+        positionCellDateButton();
+    }
+
+    function positionCellDateButton() {
+        const td = cellDateTarget ? cellDateTarget.closest('td') : null;
+        if (!td || !document.body.contains(td)) {
+            cellDateButton.hidden = true;
+            return;
+        }
+        const cell = td.getBoundingClientRect();
+        const button = cellDateButton.getBoundingClientRect();
+        cellDateButton.style.setProperty('--cell-date-top', Math.round(cell.top + (cell.height - button.height) / 2) + 'px');
+        cellDateButton.style.setProperty('--cell-date-left', Math.round(cell.right - button.width - 2) + 'px');
+    }
+
+    function openCellDatePicker() {
+        const editable = cellDateTarget;
+        const kind = cellDateKind(editable);
+        if (!kind || cellDatePopover) return;
+        cellDatePopover = window.DateTimePicker.openDateTimePopover(editable.closest('td'), {
+            kind,
+            value: editable.textContent,
+            focusTarget: editable,
+            ignore: [cellDateButton],
+            onPick: (value) => {
+                editable.textContent = value;
+                const sel = window.getSelection();
+                if (sel) {
+                    const range = document.createRange();
+                    range.selectNodeContents(editable);
+                    range.collapse(false);
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                }
+                editable.dispatchEvent(new Event('input', { bubbles: true }));
+            },
+            onClose: () => { cellDatePopover = null; }
+        });
+    }
+
+    // Pressing the button must not take the focus out of the cell, which would end the edit.
+    cellDateButton.addEventListener('mousedown', (e) => e.preventDefault());
+    cellDateButton.addEventListener('click', () => {
+        if (cellDatePopover) cellDatePopover.close(true);
+        else openCellDatePicker();
+    });
+    document.addEventListener('scroll', () => {
+        if (cellDateTarget) positionCellDateButton();
+    }, true);
 
     tableBody.addEventListener('input', (e) => {
         const el = e.target;

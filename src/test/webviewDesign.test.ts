@@ -23,7 +23,8 @@ const STYLE_OWNERS = [
 
 /** Surfaces built from files in src/webview: their stylesheet, script and the TypeScript that writes their markup. */
 const FILE_SURFACES = [
-    { css: 'joinBuilder.css', js: 'joinBuilder.js', host: 'joinDialog.ts' }
+    { css: 'joinBuilder.css', js: 'joinBuilder.js', host: 'joinDialog.ts' },
+    { css: 'dateTimePicker.css', js: 'dateTimePicker.js', host: 'viewDataFromSelect.ts' }
 ];
 
 /** Literal colours. Everything must come from a --vscode- or --c- variable instead. */
@@ -415,4 +416,22 @@ test('the data viewer has no inline event handlers, which its CSP blocks', () =>
         const inline = src.match(/\son[a-z]+=\\?["']/g) || [];
         assert.deepEqual(inline, [], `${file} uses inline handlers; use data-* attributes and delegation`);
     }
+});
+
+// ===== Dates and times are typed or picked in 24-hour ISO, never in a native field =====
+
+test('no surface uses a native date or datetime-local field, whose AM/PM follows the OS locale', () => {
+    const files = [
+        ...fs.readdirSync(WEBVIEW).filter(f => /\.(js|html|css)$/.test(f)).map(f => path.join(WEBVIEW, f)),
+        ...fs.readdirSync(SRC).filter(f => f.endsWith('.ts')).map(f => path.join(SRC, f))
+    ];
+    const native = /type\s*=\s*\\?["']?(?:date|datetime-local|time)\b|\.type\s*=\s*['"](?:date|datetime-local|time)['"]|\[type="(?:date|datetime-local)"\]/;
+    const offenders = files.filter(file => native.test(fs.readFileSync(file, 'utf8'))).map(file => path.relative(ROOT, file));
+    assert.deepEqual(offenders, [], 'use a text input with DateTimePicker.attachDateTimePicker instead');
+});
+
+test('the date and timestamp filters and cells of the data viewer get the date picker', () => {
+    assert.match(VIEW_JS, /DateTimePicker\.attachDateTimePicker\(input, \{\s*kind: input\.getAttribute\('data-dtp-kind'\)/);
+    assert.match(VIEW_JS, /DateTimePicker\.openDateTimePopover\(/);
+    assert.match(VIEW_JS, /DateTimePicker\.isInsidePicker\(e\.relatedTarget\)/, 'picking must not end the cell edit');
 });

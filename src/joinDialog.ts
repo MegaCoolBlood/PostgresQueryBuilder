@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { buildBuilderSql, JoinBuilderState, JoinClause, JoinType } from './statementBuilder';
 import { getNonce, buildHtmlDocument } from './webviewUtils';
-import { icon } from './webviewAssets';
+import { getDateTimePickerAssets, icon } from './webviewAssets';
 import { getErrorMessage, Logger } from './logger';
 import { formatSqlChecked } from './plpgsqlFormatter';
 import { getFormatOptions, isFormatterEnabled } from './formatSettings';
@@ -23,14 +23,16 @@ function readWebviewFile(name: string): string {
 }
 
 /**
- * The shared join builder component for a webview: `script` (joinDialogLogic.js
- * followed by joinBuilder.js, which then offers `window.JoinBuilder`) and its
+ * The shared join builder component for a webview: `script` (joinDialogLogic.js,
+ * the date and time picker its value fields use, then joinBuilder.js, which
+ * offers `window.JoinBuilder`; `window.DateTimePicker` comes along) and its
  * stylesheet `css`. Read from disk on every call, like the Data Viewer's assets.
  */
 export function getJoinBuilderAssets(): { script: string; css: string } {
+    const picker = getDateTimePickerAssets();
     return {
-        script: `${readWebviewFile('joinDialogLogic.js')}\n${readWebviewFile('joinBuilder.js')}`,
-        css: readWebviewFile('joinBuilder.css')
+        script: `${readWebviewFile('joinDialogLogic.js')}\n${picker.script}\n${readWebviewFile('joinBuilder.js')}`,
+        css: `${readWebviewFile('joinBuilder.css')}\n${picker.css}`
     };
 }
 
@@ -61,6 +63,8 @@ export interface JoinDialogTable {
     savedAlias?: string;
     /** Already-quoted column identifiers. */
     columns: string[];
+    /** The data type of each of `columns`, when known; the builder offers the date picker for date and timestamp columns. */
+    columnTypes?: string[];
 }
 
 /** Foreign-key or custom-mapping edge identified by schema/table/column (order-independent). */

@@ -37,6 +37,8 @@ export interface BuilderTableMetadata extends BuilderTableRef {
     resolvedSchema: string;
     /** Quoted column identifiers. */
     columns: string[];
+    /** The data type of each of `columns`, when known. */
+    columnTypes?: string[];
     savedAlias?: string;
 }
 
@@ -97,7 +99,10 @@ export async function loadBuilderMetadata(
     for (const t of located) {
         const found = meta.tables.find(m => m.schema === t.resolvedSchema && m.table === t.table);
         if (found && !answer.some(a => a.schema === t.schema && a.table === t.table)) {
-            answer.push({ ...t, columns: [...found.columns], savedAlias: found.savedAlias });
+            answer.push({
+                ...t, columns: [...found.columns], savedAlias: found.savedAlias,
+                ...(found.columnTypes ? { columnTypes: [...found.columnTypes] } : {})
+            });
         }
     }
     return { tables: answer, identityEdges: meta.identityEdges };

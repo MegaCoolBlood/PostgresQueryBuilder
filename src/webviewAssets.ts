@@ -49,3 +49,15 @@ export function getIconSprite(): string {
 export function icon(name: string): string {
     return `<svg class="ico" aria-hidden="true"><use href="#icon-${name}"/></svg>`;
 }
+
+/**
+ * The shared 24-hour date and time picker (`dateTimePicker.js`, which offers
+ * `window.DateTimePicker`) and its stylesheet. Read from disk on every call,
+ * like the Data Viewer's assets, so a reloaded panel picks up a change.
+ */
+export function getDateTimePickerAssets(): { script: string; css: string } {
+    return {
+        script: readWebviewAsset('dateTimePicker.js'),
+        css: readWebviewAsset('dateTimePicker.css')
+    };
+}

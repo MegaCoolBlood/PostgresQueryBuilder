@@ -2,7 +2,7 @@ import './helpers/vscodeMock';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ViewDataFromSelect } from '../viewDataFromSelect';
-import { VARIABLE_KINDS } from '../sqlVariableValues';
+import { VARIABLE_KINDS, formatVariableValue } from '../sqlVariableValues';
 
 type PromptVariable = { name: string; value: string; kind: string; listKind?: string };
 
@@ -26,8 +26,26 @@ class FakeElement {
     [key: string]: any;
     constructor(public tagName: string) {}
     get classList() {
-        return { toggle: (name: string, on: boolean) => { if (on) this.classes.add(name); else this.classes.delete(name); } };
+        return {
+            toggle: (name: string, on: boolean) => { if (on) this.classes.add(name); else this.classes.delete(name); },
+            add: (...names: string[]) => names.forEach(n => this.classes.add(n)),
+            remove: (...names: string[]) => names.forEach(n => this.classes.delete(n)),
+            contains: (name: string) => this.classes.has(name)
+        };
     }
+    attributes: Record<string, string> = {};
+    setAttribute(name: string, value: string): void { this.attributes[name] = value; }
+    removeAttribute(name: string): void { delete this.attributes[name]; }
+    insertAdjacentElement(_where: 'afterend', el: FakeElement): void {
+        const siblings = this.parent!.children;
+        siblings.splice(siblings.indexOf(this) + 1, 0, el);
+        el.parent = this.parent;
+    }
+    remove(): void {
+        if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1);
+        this.parent = null;
+    }
+    removeEventListener(type: string): void { delete this.listeners[type]; }
     appendChild(child: FakeElement): void { child.parent = this; this.children.push(child); }
     replaceChildren(...children: FakeElement[]): void {
         this.children = [];
@@ -49,6 +67,10 @@ class FakeElement {
         return null;
     }
     addEventListener(type: string, listener: (event: any) => void): void { this.listeners[type] = listener; }
+    dispatchEvent(event: { type: string }): boolean {
+        for (let el: FakeElement | null = this; el; el = el.parent) el.listeners[event.type]?.({ type: event.type, target: this });
+        return true;
+    }
     focus(): void { focused = this; }
     select(): void { /* nothing to select */ }
 }
@@ -88,8 +110,12 @@ function runFormScript(variables: PromptVariable[]) {
     );
     const valueOf = (i: number) => rows[i].querySelector('[data-role="input"]')!.children[0];
     const edit = (target: FakeElement, value: string) => { target.value = value; form.listeners.input({ target }); };
-    const key = (k: string, target: FakeElement, ctrlKey = false) =>
-        docListeners.keydown({ key: k, ctrlKey, target, preventDefault: () => undefined });
+    // The element's own keydown listener (the date picker's) runs before the document's.
+    const key = (k: string, target: FakeElement, ctrlKey = false) => {
+        const event = { key: k, ctrlKey, target, preventDefault: () => undefined, stopPropagation: () => undefined };
+        target.listeners.keydown?.(event);
+        docListeners.keydown(event);
+    };
     return { rows, sent, elements, valueOf, edit, key, send: (data: any) => receive({ data }) };
 }
 
@@ -138,22 +164,36 @@ test('a boolean without a remembered value starts as true instead of an invalid 
 
 test('changing the type swaps the control and keeps the value where it fits', () => {
     const form = runFormScript([{ name: ':d', value: '2024-01-31 13:45:00', kind: 'timestamp' }]);
-    assert.equal(form.valueOf(0).type, 'datetime-local');
-    assert.equal(form.valueOf(0).value, '2024-01-31T13:45:00');
+    assert.equal(form.valueOf(0).type, 'text', 'no AM/PM browser field: a typed 24-hour value plus the picker');
+    assert.equal(form.valueOf(0).value, '2024-01-31 13:45:00');
+    assert.equal(form.valueOf(0).placeholder, 'YYYY-MM-DD HH:MM');
+    const pickerButton = form.rows[0].querySelector('[data-role="input"]')!.children[1];
+    assert.equal(pickerButton.title, 'Pick a date and time (Alt+Down)');
 
     form.edit(form.rows[0].querySelector('[data-role="kind"]')!, 'date');
-    assert.equal(form.valueOf(0).type, 'date');
+    assert.equal(form.valueOf(0).type, 'text');
     assert.equal(form.valueOf(0).value, '2024-01-31');
+    assert.equal(form.valueOf(0).placeholder, 'YYYY-MM-DD');
+    assert.equal(form.rows[0].querySelector('[data-role="input"]')!.children.length, 2, 'one picker button, the old one is gone');
 
     form.edit(form.rows[0].querySelector('[data-role="kind"]')!, 'boolean');
     assert.equal(form.valueOf(0).tagName, 'SELECT');
+    assert.equal(form.rows[0].querySelector('[data-role="input"]')!.children.length, 1);
 
     form.edit(form.rows[0].querySelector('[data-role="kind"]')!, 'timestamp');
-    assert.equal(form.valueOf(0).value, '2024-01-31T13:45:00', 'the earlier timestamp comes back');
-    assert.deepEqual(form.sent[form.sent.length - 1].inputs[':d'], { value: '2024-01-31T13:45:00', kind: 'timestamp', listKind: 'string' });
+    assert.equal(form.valueOf(0).value, '2024-01-31 13:45:00', 'the earlier timestamp comes back');
+    assert.deepEqual(form.sent[form.sent.length - 1].inputs[':d'], { value: '2024-01-31 13:45:00', kind: 'timestamp', listKind: 'string' });
 });
 
-test('an error from the host disables Run until a later preview is clean; Enter runs, Esc cancels', () => {
+test('a value typed day first becomes ISO text when it is carried over to a date', () => {
+    const form = runFormScript([{ name: ':d', value: '25.11.2026 10:39', kind: 'string' }]);
+    form.edit(form.rows[0].querySelector('[data-role="kind"]')!, 'timestamp');
+    assert.equal(form.valueOf(0).value, '2026-11-25 10:39');
+    form.edit(form.rows[0].querySelector('[data-role="kind"]')!, 'date');
+    assert.equal(form.valueOf(0).value, '2026-11-25');
+});
+
+test('an error from the host disables Run until a later preview is clean; Enter asks the host, Esc cancels', () => {
     const form = runFormScript([{ name: ':n', value: '', kind: 'number' }]);
     form.edit(form.valueOf(0), 'abc');
     const seq = form.sent[form.sent.length - 1].seq;
@@ -165,19 +205,38 @@ test('an error from the host disables Run until a later preview is clean; Enter 
     assert.equal(form.elements.runBtn.disabled, true);
     assert.equal(form.rows[0].querySelector('[data-role="error"]')!.textContent, '"abc" is not a number.');
     form.key('Enter', form.valueOf(0));
-    assert.equal(form.sent.some(m => m.command === 'submit'), false);
+    assert.deepEqual(form.sent[form.sent.length - 1], {
+        command: 'submit', seq: seq + 1, inputs: { ':n': { value: 'abc', kind: 'number', listKind: 'string' } }
+    }, 'the host checks the values and posts the errors back instead of running');
+    form.send({ command: 'preview', seq: seq + 1, sql: 'SELECT :n', errors: { ':n': '"abc" is not a number.' } });
+    assert.equal(form.elements.runBtn.disabled, true);
 
     form.edit(form.valueOf(0), '12');
-    form.send({ command: 'preview', seq: seq + 1, sql: 'SELECT 12', errors: {} });
+    form.send({ command: 'preview', seq: seq + 2, sql: 'SELECT 12', errors: {} });
     assert.equal(form.elements.runBtn.disabled, false);
     assert.equal(form.elements.preview.textContent, 'SELECT 12');
     form.key('Enter', form.valueOf(0));
     assert.deepEqual(form.sent[form.sent.length - 1], {
-        command: 'submit', seq: seq + 2, inputs: { ':n': { value: '12', kind: 'number', listKind: 'string' } }
+        command: 'submit', seq: seq + 3, inputs: { ':n': { value: '12', kind: 'number', listKind: 'string' } }
     });
 
     form.key('Escape', form.valueOf(0));
     assert.deepEqual(form.sent[form.sent.length - 1], { command: 'cancel' });
+});
+
+test('Enter right after typing now runs with the timestamp the picker wrote, though Run was disabled', () => {
+    const form = runFormScript([{ name: ':t', value: '', kind: 'timestamp' }]);
+    form.edit(form.valueOf(0), 'now');
+    const seq = form.sent[form.sent.length - 1].seq;
+    form.send({ command: 'preview', seq, sql: 'SELECT :t', errors: { ':t': 'Enter a timestamp.' } });
+    assert.equal(form.elements.runBtn.disabled, true);
+
+    form.key('Enter', form.valueOf(0));
+    const last = form.sent[form.sent.length - 1];
+    assert.equal(last.command, 'submit');
+    assert.match(last.inputs[':t'].value, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    assert.equal(form.valueOf(0).value, last.inputs[':t'].value);
+    assert.equal(formatVariableValue(last.inputs[':t'].value, 'timestamp').error, undefined, 'the host accepts it and runs');
 });
 
 // ===== askForVariableValues =====

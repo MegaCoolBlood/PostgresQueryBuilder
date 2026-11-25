@@ -803,6 +803,7 @@ function fakeJoinData() {
                     tableReference: t.table,
                     columns: known[t.table].columns,
                     rawColumns: known[t.table].columns.map(c => c.replace(/"/g, '')),
+                    ...(t.table === 'orders' ? { columnTypes: ['integer', 'integer', 'timestamp with time zone'] } : {}),
                     firstColumnRaw: known[t.table].first
                 })),
                 foreignKeys: [{ fromSchema: 'public', fromTable: 'orders', fromColumn: 'ord_cus_id', toSchema: 'public', toTable: 'customers', toColumn: 'cus_id' }]
@@ -824,6 +825,8 @@ test('loadJoinMetadata reads each table once and gives every instance a unique a
     assert.equal(requested[0].length, 2);
     assert.deepEqual(meta.tables.map(t => [t.alias, t.savedAlias]), [['cus', undefined], ['o', 'o'], ['o2', 'o']]);
     assert.deepEqual(meta.tables[0].columns, ['cus_id', '"Name"']);
+    assert.deepEqual(meta.tables[1].columnTypes, ['integer', 'integer', 'timestamp with time zone'], 'the types feed the date picker');
+    assert.equal('columnTypes' in meta.tables[0], false, 'no types, no key');
     assert.deepEqual(meta.identityEdges, [
         { fromSchema: 'public', fromTable: 'orders', fromColumn: 'ord_cus_id', toSchema: 'public', toTable: 'customers', toColumn: 'cus_id' }
     ]);

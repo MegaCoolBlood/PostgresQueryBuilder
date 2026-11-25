@@ -61,7 +61,12 @@ pass it.** `includeSharedAssets: false` exists only for a document that must
 stand entirely on its own; no current surface uses it. The join builder, shared
 by the join dialog and the Data Viewer's Query Builder tab, keeps its stylesheet
 and script as files in `src/webview/` (`joinBuilder.css`, `joinBuilder.js`),
-which the design tests scan like the Data Viewer's.
+which the design tests scan like the Data Viewer's. So does the 24-hour date and
+time picker (`dateTimePicker.css`, `dateTimePicker.js`, loaded through
+`getDateTimePickerAssets()`): every date or timestamp field — Data Viewer filter
+row and cell editing, Query Builder values, View Data form — is a text input with
+`attachDateTimePicker()`, never a native `type="date"` / `datetime-local` field,
+whose AM/PM display follows the operating system's locale.
 
 **The Data Viewer** is assembled from files instead
 ([src/tableWebView.ts](src/tableWebView.ts), `getWebviewContent`). Its HTML
@@ -73,8 +78,8 @@ carries six placeholders that are replaced at runtime:
 | `/* CSS_PLACEHOLDER */` | `tableView.css` |
 | `<!-- ICON_SPRITE_PLACEHOLDER -->` | `getIconSprite()` |
 | `/* JS_PLACEHOLDER */` | `tableView.js` |
-| `/* JOIN_BUILDER_CSS_PLACEHOLDER */` | `joinBuilder.css` (the Query Builder tab) |
-| `/* JOIN_BUILDER_JS_PLACEHOLDER */` | `joinDialogLogic.js` + `joinBuilder.js`, in a `<script>` block of its own |
+| `/* JOIN_BUILDER_CSS_PLACEHOLDER */` | `joinBuilder.css` + `dateTimePicker.css` (the Query Builder tab, the date picker) |
+| `/* JOIN_BUILDER_JS_PLACEHOLDER */` | `joinDialogLogic.js` + `dateTimePicker.js` + `joinBuilder.js`, in a `<script>` block of its own that runs before `tableView.js` |
 
 Always replace with a **function** (`html.replace(p, () => css)`), never a
 string — `$&` and `$'` inside the injected SQL/JS would otherwise expand and

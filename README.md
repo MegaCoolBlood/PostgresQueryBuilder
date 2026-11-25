@@ -415,7 +415,13 @@ warning says that its settings are gone.
 - **Filter** in the row underneath the headers. Text columns match
   case-insensitively, numeric and date columns offer `=`, `<>`, `<`, `<=`, `>`,
   `>=` and *between*. Several filters are combined with `AND`. Filter values
-  are sent as query parameters and never pasted into the SQL. A computed
+  are sent as query parameters and never pasted into the SQL. A date or
+  timestamp value stands for the whole day, minute or second it names: `=
+  2026-11-25 10:39` finds every row of that minute, and *between* includes its
+  whole last minute. Type `2026-11-25 10:39`, `25.11.2026 10:39` or `10:39` for
+  today, or pick it in the 24-hour calendar behind the button next to the field
+  (`Alt+↓`); the same picker serves date and timestamp cells while editing,
+  the WHERE values of the Query Builder and the *View Data* form. A computed
   column such as `region(id) AS region` is filtered on its expression, an
   aggregate such as `count(*)` in `HAVING`, and a window function only in the
   rows already loaded. When a filtered column is removed from the query, its

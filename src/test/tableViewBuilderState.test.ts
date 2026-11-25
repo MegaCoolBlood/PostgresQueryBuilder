@@ -306,6 +306,15 @@ test('mergeBuilderMetadata lists a selected column as the query spells it', () =
     assert.deepEqual(merged.tables[0].columns, ['"id"', 'name']);
 });
 
+test('mergeBuilderMetadata keeps the column types, so a date column gets the date picker', () => {
+    const state = readBuilderState('SELECT c."id" FROM customers c');
+    const merged = mergeBuilderMetadata(state, {
+        tables: [{ schema: '', table: 'customers', resolvedSchema: 'public', columns: ['id', 'born'], columnTypes: ['integer', 'date'] }]
+    });
+    assert.deepEqual(merged.tables[0].columnTypes, ['integer', 'date']);
+    assert.equal(builderStateToSql(merged), builderStateToSql(state));
+});
+
 test('the arrow keys, Home and End move between the tabs', () => {
     assert.equal(viewTabForKey('data', 'ArrowRight'), 'builder');
     assert.equal(viewTabForKey('builder', 'ArrowRight'), 'data');

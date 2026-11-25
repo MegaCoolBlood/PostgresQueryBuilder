@@ -35,8 +35,9 @@
  * @typedef {{ expr: string, column?: { tableIndex: number, column: string }, direction?: 'ASC'|'DESC', nulls?: 'FIRST'|'LAST' }} JoinBuilderOrderBy
  *   One ORDER BY item. `column`, when given, wins over `expr`, which then mirrors it.
  *
- * @typedef {{ schema: string, table: string, tableReference: string, alias: string, savedAlias?: string, columns: string[], raw?: string }} JoinBuilderTable
- *   A FROM item. `columns` are quoted identifiers. Without an alias the table is
+ * @typedef {{ schema: string, table: string, tableReference: string, alias: string, savedAlias?: string, columns: string[], columnTypes?: string[], raw?: string }} JoinBuilderTable
+ *   A FROM item. `columns` are quoted identifiers, `columnTypes` their data types when known (a value
+ *   compared with a date or timestamp column gets the date picker). Without an alias the table is
  *   referred to by its table name. `raw` is a FROM item the builder cannot read
  *   (sub-select, function, CTE reference) as written, alias included; it is
  *   emitted verbatim, `alias` only names it, and it is joined through text conditions.
@@ -123,8 +124,24 @@
             tableReference: String(t.tableReference || ''),
             columns: Array.isArray(t.columns) ? t.columns.map(String) : []
         };
+        if (Array.isArray(t.columnTypes)) out.columnTypes = t.columnTypes.map(x => String(x == null ? '' : x));
         if (t.raw) out.raw = String(t.raw);
         return out;
+    }
+
+    /** 'date' or 'timestamp' for a column type that the date picker serves, else ''. */
+    function temporalKind(type) {
+        const t = String(type == null ? '' : type).trim().toLowerCase();
+        if (t === 'date') return 'date';
+        return /^timestamp(?:tz)?(?![a-z0-9_[])/.test(t) ? 'timestamp' : '';
+    }
+
+    /** The picker kind for the value compared with `operand`: that of a date or timestamp column, else ''. */
+    function operandPickerKind(model, operand) {
+        if (!operand || operand.kind !== 'column') return '';
+        const t = model.tables[operand.orig];
+        if (!t || !t.columnTypes) return '';
+        return temporalKind(t.columnTypes[t.columns.indexOf(operand.column)]);
     }
 
     /** Orig index of the table referred to as `name`, preferring tables listed before `before`. */
@@ -539,6 +556,7 @@
         const tables = model.order.map(oi => {
             const t = model.tables[oi];
             const out = { schema: t.schema, table: t.table, tableReference: t.tableReference, alias: model.aliases[oi], columns: t.columns.slice() };
+            if (t.columnTypes) out.columnTypes = t.columnTypes.slice();
             if (t.raw) {
                 out.raw = t.raw;
             } else if (model.savedAliases[tableKey(t)]) {
@@ -864,8 +882,11 @@
         }).join('');
     }
 
-    /** Column picker of any table plus "Custom value…", with a text box for the latter. */
-    function operandControls(model, scope, o, i, side, operand) {
+    /**
+     * Column picker of any table plus "Custom value…", with a text box for the latter.
+     * `pickerKind` ('date' / 'timestamp') gives that box the date picker.
+     */
+    function operandControls(model, scope, o, i, side, operand, pickerKind) {
         const op = operand || { kind: 'raw', text: '' };
         const column = op.kind === 'column' ? op : null;
         let html = '<select class="jb-operand"' + at(scope + '-operand', o, i, side) + ' title="Column or custom value">' +
@@ -873,7 +894,7 @@
             '<option value="__raw__"' + (column ? '' : ' selected') + '>Custom value…</option></select>';
         if (!column) {
             html += '<input type="text" class="jb-value"' + at(scope + '-raw', o, i, side) + ' value="' + escapeHtml(op.text || '') +
-                '" placeholder="value / expression">';
+                '" placeholder="value / expression"' + (pickerKind ? ' data-dtp-kind="' + pickerKind + '"' : '') + '>';
         }
         return html;
     }
@@ -891,12 +912,16 @@
 
     /** Operands and operator of a structured condition (fixed ON condition or WHERE row). */
     function conditionControls(model, scope, o, i, c) {
+        // A pattern or a list (LIKE, IN, …) is no single date.
+        const comparison = /^(?:=|<>|!=|<|<=|>|>=|(?:NOT\s+)?BETWEEN(?:\s+SYMMETRIC)?|IS\s+(?:NOT\s+)?DISTINCT\s+FROM)$/i
+            .test(String(c.operator || '').trim());
+        const kind = comparison ? operandPickerKind(model, c.left) : '';
         let html = operandControls(model, scope, o, i, 'left', c.left) + operatorSelect(scope, o, i, c.operator);
         if (logic.isBetweenOperator(c.operator)) {
-            html += operandControls(model, scope, o, i, 'right', c.right) + '<span>AND</span>' +
-                operandControls(model, scope, o, i, 'right2', c.right2);
+            html += operandControls(model, scope, o, i, 'right', c.right, kind) + '<span>AND</span>' +
+                operandControls(model, scope, o, i, 'right2', c.right2, kind);
         } else if (!logic.isUnaryOperator(c.operator)) {
-            html += operandControls(model, scope, o, i, 'right', c.right);
+            html += operandControls(model, scope, o, i, 'right', c.right, kind);
         }
         return html;
     }
@@ -1104,6 +1129,16 @@
         const rootEl = document.createElement('div');
         rootEl.className = 'jb';
         container.appendChild(rootEl);
+        let pickers = [];
+
+        // Value boxes compared with a date or timestamp column get the date picker (window.DateTimePicker).
+        function attachPickers() {
+            const picker = root && root.DateTimePicker;
+            if (!picker) return;
+            rootEl.querySelectorAll('input[data-dtp-kind]').forEach(el => {
+                pickers.push(picker.attachDateTimePicker(el, { kind: el.dataset.dtpKind, sqlLiteral: true }));
+            });
+        }
 
         function render() {
             normalizeJoins(model);
@@ -1121,7 +1156,11 @@
             if (sections.where) html += whereHtml(model);
             if (sections.orderBy) html += orderByHtml(model);
             html += carriedHtml(model);
+
+            pickers.forEach(p => p.destroy());
+            pickers = [];
             rootEl.innerHTML = html;
+            attachPickers();
         }
 
         function changed(rerender) {
@@ -1377,6 +1416,8 @@
                 return false;
             },
             destroy() {
+                pickers.forEach(p => p.destroy());
+                pickers = [];
                 listeners.forEach(l => rootEl.removeEventListener(l[0], l[1]));
                 rootEl.removeEventListener('toggle', onToggle, true);
                 rootEl.remove();
@@ -1409,6 +1450,7 @@
         moveItem,
         removeItem,
         conditionText,
+        operandPickerKind,
         createJoinBuilder
     };
     if (typeof module !== 'undefined' && module.exports) {

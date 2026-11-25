@@ -144,25 +144,73 @@ function isValidDate(year: number, month: number, day: number): boolean {
     return day <= days;
 }
 
-/** `YYYY-MM-DD` with a real calendar day, or `null`. */
-export function parseDateInput(text: string): string | null {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(text ?? '').trim());
-    if (!m) return null;
-    return isValidDate(Number(m[1]), Number(m[2]), Number(m[3])) ? m[0] : null;
+/** `YYYY-MM-DD` of a real calendar day written as `YYYY-MM-DD` or `DD.MM.YYYY`, or `null`. */
+function parseDatePart(text: string): string | null {
+    const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(text);
+    const dotted = iso ? null : /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(text);
+    const [y, m, d] = iso ? [iso[1], iso[2], iso[3]] : dotted ? [dotted[3], dotted[2], dotted[1]] : ['', '', ''];
+    if (!y || !isValidDate(Number(y), Number(m), Number(d))) return null;
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
 }
 
 /**
- * `YYYY-MM-DD[T ]HH:MM[:SS[.ffffff]]` (or a bare date, meaning midnight) as
- * `YYYY-MM-DD HH:MM:SS[.ffffff]`, or `null`.
+ * The date and time forms the date picker of the form accepts (its
+ * `parseDateTimeInput`): `YYYY-MM-DD` or `DD.MM.YYYY`, optionally followed by
+ * `T` or spaces and a 24-hour `HH:MM[:SS[.ffffff]]`, optionally with an offset
+ * `Z` / `?hh[:mm]`. The picker turns `now`, `today` and a bare `HH:MM` into
+ * this form before the form posts its values (its keydown handler on the
+ * input runs before the form's Enter handler on the document), so the host
+ * never needs to know the browser's clock.
+ */
+const DATE_TIME_INPUT = /^(\S+?)(?:(?:T\s*|\s+)(\d{1,2}):(\d{2})(?::(\d{2})(\.\d{1,6})?)?(Z|\s*[+-]\d{2}(?::?\d{2})?)?)?$/i;
+
+interface DateTimeInput {
+    date: string;
+    time?: { hh: string; mm: string; ss?: string; frac: string };
+    /** The offset as written (`+01`, `-05:30`, `Z`), '' for none. */
+    zone: string;
+}
+
+function readDateTimeInput(text: string): DateTimeInput | 'infinity' | '-infinity' | null {
+    const s = String(text ?? '').trim();
+    const inf = /^([+-]?)infinity$/i.exec(s);
+    if (inf) return inf[1] === '-' ? '-infinity' : 'infinity';
+    const m = DATE_TIME_INPUT.exec(s);
+    const date = m ? parseDatePart(m[1]) : null;
+    if (!m || !date) return null;
+    if (m[2] === undefined) return { date, zone: '' };
+    const time = { hh: m[2].padStart(2, '0'), mm: m[3], ss: m[4], frac: m[5] ?? '' };
+    if (Number(time.hh) > 23 || Number(time.mm) > 59 || Number(time.ss ?? 0) > 59) return null;
+    return { date, time, zone: (m[6] ?? '').trim().toUpperCase() };
+}
+
+/**
+ * A real calendar day as `YYYY-MM-DD` ? typed as `YYYY-MM-DD` or
+ * `DD.MM.YYYY`; a time after it is dropped, as by the date picker ? or
+ * `infinity` / `-infinity`; `null` for anything else, also for a time with
+ * an offset (a date has no time zone).
+ */
+export function parseDateInput(text: string): string | null {
+    const r = readDateTimeInput(text);
+    if (r === null || typeof r === 'string') return r;
+    return r.zone ? null : r.date;
+}
+
+function readTimestampInput(text: string): { text: string; zoned: boolean } | null {
+    const r = readDateTimeInput(text);
+    if (r === null || typeof r === 'string') return r === null ? null : { text: r, zoned: false };
+    const t = r.time ?? { hh: '00', mm: '00', ss: '00', frac: '' };
+    return { text: `${r.date} ${t.hh}:${t.mm}:${t.ss ?? '00'}${t.frac}${r.zone}`, zoned: r.zone !== '' };
+}
+
+/**
+ * `YYYY-MM-DD[T ]HH:MM[:SS[.ffffff]][offset]` or `DD.MM.YYYY HH:MM?` (or a
+ * bare date, meaning midnight), 24-hour, as `YYYY-MM-DD HH:MM:SS[.ffffff][offset]`
+ * with the offset (`+01`, `-05:30`, `Z`) as typed; `infinity` / `-infinity`;
+ * or `null`.
  */
 export function parseTimestampInput(text: string): string | null {
-    const m = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(\.\d{1,6})?)?)?$/.exec(String(text ?? '').trim());
-    if (!m || !parseDateInput(m[1])) return null;
-    const hh = m[2] ?? '00';
-    const mm = m[3] ?? '00';
-    const ss = m[4] ?? '00';
-    if (Number(hh) > 23 || Number(mm) > 59 || Number(ss) > 59) return null;
-    return `${m[1]} ${hh}:${mm}:${ss}${m[5] ?? ''}`;
+    return readTimestampInput(text)?.text ?? null;
 }
 
 function parseBooleanInput(text: string): boolean | null {
@@ -216,11 +264,13 @@ export function formatVariableValue(value: string, kind: VariableKind, options: 
         }
         case 'date': {
             const d = parseDateInput(text);
-            return d ? { sql: `DATE '${d}'` } : { error: 'Enter a date as YYYY-MM-DD.' };
+            return d ? { sql: `DATE '${d}'` } : { error: 'Enter a date as YYYY-MM-DD or DD.MM.YYYY.' };
         }
         case 'timestamp': {
-            const ts = parseTimestampInput(text);
-            return ts ? { sql: `TIMESTAMP '${ts}'` } : { error: 'Enter a timestamp as YYYY-MM-DD HH:MM[:SS].' };
+            const ts = readTimestampInput(text);
+            // An offset names an instant: TIMESTAMPTZ keeps it instead of dropping it.
+            if (ts) return { sql: `${ts.zoned ? 'TIMESTAMPTZ' : 'TIMESTAMP'} '${ts.text}'` };
+            return { error: 'Enter a timestamp as YYYY-MM-DD HH:MM[:SS] (24-hour) or DD.MM.YYYY HH:MM.' };
         }
         case 'boolean': {
             const b = parseBooleanInput(text);

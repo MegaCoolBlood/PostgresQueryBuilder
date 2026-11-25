@@ -578,9 +578,14 @@ th.col-drop-target {
     font-size: var(--fs-xs);
 }
 
-.filter-input[type="datetime-local"],
-.filter-input[type="date"] {
-    min-width: 100px;
+/* Date and timestamp filters hold ISO text (2026-11-25 10:39) and carry the
+   calendar button of the date picker (dateTimePicker.css). */
+.filter-input[data-dtp-kind="timestamp"] {
+    min-width: 17ch;
+}
+
+.filter-input[data-dtp-kind="date"] {
+    min-width: 11ch;
 }
 
 .filter-input-range {
@@ -589,11 +594,6 @@ th.col-drop-target {
 
 .filter-input-range[type="number"] {
     min-width: 60px;
-}
-
-.filter-input-range[type="datetime-local"],
-.filter-input-range[type="date"] {
-    min-width: 80px;
 }
 
 .filter-input:focus {
@@ -1662,6 +1662,19 @@ body.export-file-assist .export-dialog .export-target-preview {
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
     pointer-events: none;
+}
+
+/* The calendar button of a date or timestamp cell in edit mode, placed at the
+   cell's right edge at runtime; it opens the date picker (dateTimePicker.css). */
+.cell-date-btn {
+    position: fixed;
+    top: var(--cell-date-top, 0);
+    left: var(--cell-date-left, 0);
+    z-index: var(--z-dropdown);
+}
+
+.cell-date-btn[hidden] {
+    display: none;
 }
 
 .record-row-actions {
